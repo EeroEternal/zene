@@ -1,0 +1,21 @@
+{
+  "name": "@zene/worker",
+  "version": "0.1.0",
+  "description": "Zene Agent Cloud - Cloudflare Worker",
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "build": "tsc"
+  },
+  "dependencies": {
+    "@hono/node-server": "^1.14.0",
+    "@zene/agent": "workspace:*",
+    "hono": "^4.7.0"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20250410.0",
+    "typescript": "^5.9.2",
+    "wrangler": "^4.83.0"
+  }
+}
