@@ -10,6 +10,7 @@
  *  GET    /api/config/provider       - Get provider config
  */
 import { Hono } from 'hono';
+import { cors } from 'hono/cors';
 import { handleAgentPrompt } from './agent-handler';
 import { handleGetSessions, handleGetSession, handleDeleteSession } from './session-handler';
 import { handleGetConfig, handleSetConfig } from './config-handler';
@@ -21,6 +22,13 @@ interface Env {
 }
 
 const app = new Hono<{ Bindings: Env }>();
+
+// CORS for frontend access
+app.use('/api/*', cors({
+  origin: '*',
+  allowMethods: ['GET', 'POST', 'DELETE', 'OPTIONS'],
+  allowHeaders: ['Content-Type', 'Authorization'],
+}));
 
 // Health check
 app.get('/', (c) => c.json({ status: 'ok', name: 'Zene Agent Cloud Worker' }));
