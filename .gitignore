@@ -55,3 +55,8 @@ www/.vitepress/dist/
 .fastembed_cache/
 temp_workspace/
 zene_config.toml
+
+# Local dev secrets & build artifacts
+apps/worker/.dev.vars
+apps/worker/.wrangler/
+apps/web/.next/

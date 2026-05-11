@@ -19,11 +19,19 @@ export function ChatWindow() {
 
   const [input, setInput] = useState('');
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
 
   // Auto-scroll to bottom
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages, currentSessionId, isStreaming]);
+
+  // Auto-focus input when session changes (e.g., after creating new session)
+  useEffect(() => {
+    if (currentSessionId) {
+      inputRef.current?.focus();
+    }
+  }, [currentSessionId]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -72,6 +80,7 @@ export function ChatWindow() {
       {/* Input */}
       <form onSubmit={handleSubmit} style={styles.inputForm}>
         <input
+          ref={inputRef}
           type="text"
           value={input}
           onChange={(e) => setInput(e.target.value)}

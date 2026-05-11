@@ -46,9 +46,11 @@ export async function readAgentsMd(env: SessionEnv, basePath: string): Promise<s
 
 	for (const filename of ['AGENTS.md', 'CLAUDE.md']) {
 		const filePath = basePath.endsWith('/') ? basePath + filename : `${basePath}/${filename}`;
-		if (await env.exists(filePath)) {
+		try {
 			const content = await env.readFile(filePath);
 			parts.push(content.trim());
+		} catch {
+			// File doesn't exist, skip
 		}
 	}
 
@@ -100,11 +102,14 @@ export async function discoverLocalSkills(
 	basePath: string,
 ): Promise<Record<string, Skill>> {
 	const skillsDir = skillsDirIn(basePath);
-
-	if (!(await env.exists(skillsDir))) return {};
-
 	const skills: Record<string, Skill> = {};
-	const entries = await env.readdir(skillsDir);
+
+	let entries: string[];
+	try {
+		entries = await env.readdir(skillsDir);
+	} catch {
+		return skills;
+	}
 
 	for (const entry of entries) {
 		const skillDir = `${skillsDir}/${entry}`;
@@ -117,9 +122,13 @@ export async function discoverLocalSkills(
 		}
 
 		const skillMdPath = `${skillDir}/SKILL.md`;
-		if (!(await env.exists(skillMdPath))) continue;
+		let content: string;
+		try {
+			content = await env.readFile(skillMdPath);
+		} catch {
+			continue;
+		}
 
-		const content = await env.readFile(skillMdPath);
 		const parsed = parseFrontmatterFile(content, entry);
 		skills[parsed.name] = {
 			name: parsed.name,

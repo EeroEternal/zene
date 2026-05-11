@@ -4,21 +4,14 @@
   "compatibility_date": "2026-04-01",
   "compatibility_flags": ["nodejs_compat"],
   "vars": {
-    "AI_GATEWAY_URL": ""
-  },
-  "ai": {
-    "binding": "AI"
+    "AI_GATEWAY_URL": "",
+    "DEEPSEEK_API_KEY": ""
   },
   "d1_databases": [
     {
       "binding": "DB",
-      "database_id": ""
-    }
-  ],
-  "migrations": [
-    {
-      "tag": "001_create_sessions",
-      "new_sqlite_classes": ["SessionsDO"]
+      "database_name": "zene-agent-cloud",
+      "database_id": "6e0914af-f4ac-489f-9f0f-3032dc7e6725"
     }
   ]
 }

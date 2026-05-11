@@ -9,6 +9,7 @@
  * - Theme
  */
 import { create } from 'zustand';
+import { persist } from 'zustand/middleware';
 import { v4 as uuidv4 } from 'uuid';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
@@ -75,11 +76,13 @@ const API_BASE = process.env.NEXT_PUBLIC_API_URL || '';
 
 // ─── Store Implementation ─────────────────────────────────────────────────
 
-export const useStore = create<Store>((set, get) => ({
-  // ── Sessions ───────────────────────────────────
+export const useStore = create<Store>()(
+  persist(
+    (set, get) => ({
+      // ── Sessions ───────────────────────────────────
 
-  sessions: [],
-  currentSessionId: null,
+      sessions: [],
+      currentSessionId: null,
 
   createSession: () => {
     const id = uuidv4();
@@ -186,7 +189,7 @@ export const useStore = create<Store>((set, get) => ({
   streamedText: '',
 
   startStreaming: async (sessionId: string, prompt: string) => {
-    const { addMessage, updateMessage, setProviderConfig } = get();
+    const { addMessage, updateMessage } = get();
     const { providerConfig } = get();
 
     // Add user message
@@ -220,7 +223,16 @@ export const useStore = create<Store>((set, get) => ({
         }),
       });
 
-      if (!res.ok) throw new Error('Failed to start streaming');
+      if (!res.ok) {
+        let message = 'Failed to start streaming';
+        try {
+          const data = await res.json();
+          message = data.error || message;
+        } catch {
+          message = await res.text().catch(() => message);
+        }
+        throw new Error(message);
+      }
 
       const reader = res.body?.getReader();
       if (!reader) throw new Error('No reader available');
@@ -241,19 +253,23 @@ export const useStore = create<Store>((set, get) => ({
           const data = line.slice(6);
           if (data === '[DONE]') continue;
 
+          let event: any;
           try {
-            const event = JSON.parse(data);
-            if (event.type === 'text_delta') {
-              const { streamedText } = get();
-              const newText = streamedText + event.text;
-              set({ streamedText: newText });
-              updateMessage(sessionId, assistantMsg.id, (msg) => ({
-                ...msg,
-                content: newText,
-              }));
-            }
+            event = JSON.parse(data);
           } catch {
-            // Ignore parse errors
+            throw new Error('Failed to parse streaming response');
+          }
+
+          if (event.type === 'text_delta') {
+            const { streamedText } = get();
+            const newText = streamedText + event.text;
+            set({ streamedText: newText });
+            updateMessage(sessionId, assistantMsg.id, (msg) => ({
+              ...msg,
+              content: newText,
+            }));
+          } else if (event.type === 'error') {
+            throw new Error(event.error || 'Streaming error');
           }
         }
       }
@@ -271,7 +287,19 @@ export const useStore = create<Store>((set, get) => ({
       }));
     } catch (error) {
       console.error('[zene] Streaming error:', error);
-      set({ isStreaming: false, streamedText: '' });
+      const message = error instanceof Error ? error.message : String(error);
+      set((state) => ({
+        isStreaming: false,
+        streamedText: '',
+        messages: {
+          ...state.messages,
+          [sessionId]: (state.messages[sessionId] || []).map((msg) =>
+            msg.id === assistantMsg.id
+              ? { ...msg, content: message, isStreaming: false }
+              : msg
+          ),
+        },
+      }));
     }
   },
 
@@ -282,8 +310,8 @@ export const useStore = create<Store>((set, get) => ({
   // ── Config ─────────────────────────────────────
 
   providerConfig: {
-    provider: 'anthropic',
-    defaultModel: 'claude-sonnet-4-6',
+    provider: 'deepseek',
+    defaultModel: 'deepseek/deepseek-v4-flash',
   },
 
   setProviderConfig: async (config: ProviderConfig) => {
@@ -304,24 +332,32 @@ export const useStore = create<Store>((set, get) => ({
       const res = await fetch(`${API_BASE}/api/config/provider`);
       if (!res.ok) throw new Error('Failed to load config');
       const data = await res.json();
-      set({ providerConfig: data.config || {} });
+      const config = data.config || {};
+      // 如果后端返回空对象（worker 重启后），保留当前值（localStorage 恢复的或默认值）
+      if (Object.keys(config).length === 0) return;
+      set({ providerConfig: config });
     } catch (error) {
       console.error('[zene] Failed to load config:', error);
     }
   },
 
-  // ── Theme ──────────────────────────────────────
+      // ── Theme ──────────────────────────────────────
 
-  theme: (typeof window !== 'undefined' && localStorage.getItem('theme') === 'dark' ? 'dark' : 'light') as 'dark' | 'light',
+      theme: 'light' as 'dark' | 'light',
 
-  toggleTheme: () => {
-    set((state) => {
-      const newTheme = state.theme === 'dark' ? 'light' : 'dark';
-      if (typeof window !== 'undefined') {
-        localStorage.setItem('theme', newTheme);
-        document.documentElement.setAttribute('data-theme', newTheme);
-      }
-      return { theme: newTheme };
-    });
-  },
-}));
+      toggleTheme: () => {
+        set((state) => {
+          const newTheme = state.theme === 'dark' ? 'light' : 'dark';
+          if (typeof window !== 'undefined') {
+            document.documentElement.setAttribute('data-theme', newTheme);
+          }
+          return { theme: newTheme };
+        });
+      },
+    }),
+    {
+      name: 'zene-store',
+      partialize: (state) => ({ theme: state.theme, providerConfig: state.providerConfig }),
+    }
+  )
+);

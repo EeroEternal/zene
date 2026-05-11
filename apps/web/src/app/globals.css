@@ -41,6 +41,12 @@ body {
   transition: background-color 0.2s, color 0.2s;
 }
 
+/* Animations */
+@keyframes blink {
+  0%, 80%, 100% { opacity: 0; }
+  40% { opacity: 1; }
+}
+
 /* Scrollbar styling */
 ::-webkit-scrollbar {
   width: 8px;

@@ -49,10 +49,13 @@ export async function handleSetConfig(c: Context) {
   const currentConfig = getProviderConfig();
   const newConfig = {
     ...currentConfig,
-    [provider]: {
-      ...(currentConfig[provider] ?? {}),
-      ...(apiKey !== undefined && { apiKey }),
-      ...(baseUrl !== undefined && { baseUrl }),
+    providers: {
+      ...(currentConfig.providers ?? {}),
+      [provider]: {
+        ...(currentConfig.providers?.[provider] ?? {}),
+        ...(apiKey !== undefined && { apiKey }),
+        ...(baseUrl !== undefined && { baseUrl }),
+      },
     },
     ...(gatewayUrl !== undefined && { gatewayUrl }),
     ...(defaultModel !== undefined && { defaultModel }),
