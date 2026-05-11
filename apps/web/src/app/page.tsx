@@ -6,16 +6,14 @@
 import { useEffect } from 'react';
 import { ChatWindow } from '@/components/ChatWindow';
 import { SessionList } from '@/components/SessionList';
-import { ConfigPanel } from '@/components/ConfigPanel';
+
 import { ThemeToggle } from '@/components/ThemeToggle';
 import { useStore } from '@/stores/useStore';
 
 export default function Home() {
   const {
     theme,
-    toggleTheme,
     loadSessions,
-    loadProviderConfig,
   } = useStore();
 
   useEffect(() => {
@@ -26,8 +24,7 @@ export default function Home() {
   useEffect(() => {
     // Load initial data
     loadSessions();
-    loadProviderConfig();
-  }, [loadSessions, loadProviderConfig]);
+  }, [loadSessions]);
 
   return (
     <div style={styles.container}>
@@ -37,7 +34,6 @@ export default function Home() {
           <h2 style={styles.logo}>Zene Agent Cloud</h2>
         </div>
         <SessionList />
-        <ConfigPanel />
         <div style={styles.sidebarFooter}>
           <ThemeToggle />
         </div>
