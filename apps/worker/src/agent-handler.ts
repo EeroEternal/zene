@@ -1,13 +1,13 @@
 /**
- * Agent handler - handles agent prompts with SSE streaming
+ * Agent handler - handles agent prompts with SSE streaming via Flue / pi-ai
  */
 import type { Context } from 'hono';
+import { createFlueContext, type FlueContext } from '@zene/agent/client';
+import { resolveModel as resolvePiModel } from '@zene/agent/internal';
 
 interface Env {
-  AI: any;
   DB: D1Database;
   AI_GATEWAY_URL?: string;
-  DEEPSEEK_API_KEY?: string;
 }
 
 // In-memory provider config (module-level)
@@ -27,6 +27,7 @@ export function getProviderConfig(): Record<string, any> {
  * Returns SSE stream
  */
 export async function handleAgentPrompt(c: Context<{ Bindings: Env }>) {
+  const { agentName } = c.req.param();
   const body = await c.req.json<{
     sessionId?: string;
     prompt: string;
@@ -39,111 +40,91 @@ export async function handleAgentPrompt(c: Context<{ Bindings: Env }>) {
     return c.json({ error: 'prompt is required' }, 400);
   }
 
-  // Resolve model and provider
+  const gatewayBaseUrl = c.env.AI_GATEWAY_URL ?? providerConfig.gatewayUrl ?? '';
   const modelStr = model ?? 'deepseek/deepseek-v4-flash';
   const slash = modelStr.indexOf('/');
   const provider = slash === -1 ? modelStr : modelStr.slice(0, slash);
-  const modelId = slash === -1 ? modelStr : modelStr.slice(slash + 1);
 
-  // Resolve API key and base URL
-  let apiKey = '';
-  let baseUrl = '';
-
-  const gatewayBaseUrl = c.env.AI_GATEWAY_URL ?? providerConfig.gatewayUrl ?? '';
-
-  if (provider === 'deepseek') {
-    apiKey = c.env.DEEPSEEK_API_KEY ?? providerConfig.providers?.deepseek?.apiKey ?? '';
-    baseUrl = gatewayBaseUrl
-      ? `${gatewayBaseUrl}/${provider}`
-      : 'https://api.deepseek.com';
-  } else if (provider === 'anthropic') {
-    apiKey = providerConfig.providers?.anthropic?.apiKey ?? '';
-    baseUrl = gatewayBaseUrl
-      ? `${gatewayBaseUrl}/${provider}`
-      : 'https://api.anthropic.com';
-  } else if (provider === 'openai') {
-    apiKey = providerConfig.providers?.openai?.apiKey ?? '';
-    baseUrl = gatewayBaseUrl
-      ? `${gatewayBaseUrl}/${provider}`
-      : 'https://api.openai.com';
-  } else {
-    return c.json({ error: `Unsupported provider: ${provider}` }, 400);
+  // Build provider config: override baseUrl when gateway is configured
+  const providers: Record<string, any> = {
+    ...providerConfig.providers,
+  };
+  if (gatewayBaseUrl && provider !== 'cloudflare') {
+    providers[provider] = {
+      ...(providers[provider] ?? {}),
+      baseUrl: `${gatewayBaseUrl}/${provider}`,
+    };
   }
 
-  if (!apiKey) {
-    return c.json({ error: `No API key configured for provider: ${provider}` }, 400);
-  }
+  // Create Flue context
+  const ctx: FlueContext = createFlueContext({
+    id: agentName,
+    payload: {},
+    env: {
+      AI_GATEWAY_URL: c.env.AI_GATEWAY_URL,
+      ...providerConfig,
+    },
+    agentConfig: {
+      roles: {},
+      skills: {},
+      model: modelStr,
+      systemPrompt: 'You are a helpful AI assistant.',
+      thinkingLevel: 'medium',
+      resolveModel: (modelConfig: string | undefined, p?: any) => {
+        if (typeof modelConfig !== 'string') return undefined;
+        return resolvePiModel(modelConfig, p);
+      },
+    },
+    createDefaultEnv: async () => {
+      return {
+        cwd: '/tmp',
+        exec: async (cmd: string) => ({ stdout: '', stderr: '', exitCode: 0 }),
+        readFile: async (path: string) => '',
+        writeFile: async (path: string, content: string) => {},
+        stat: async (path: string) => ({ isDirectory: false }),
+        readdir: async (path: string) => [],
+      };
+    },
+    defaultStore: {
+      save: async () => {},
+      load: async () => null,
+      delete: async () => {},
+    },
+  });
+
+  // Initialize agent
+  const agent = await ctx.init({
+    model: modelStr,
+    providers,
+  });
+
+  // Get or create session
+  const session = await agent.session(sessionId);
 
   // Set up SSE stream
   const stream = new ReadableStream({
     async start(controller) {
       const encoder = new TextEncoder();
 
+      // Subscribe to agent events
+      ctx.setEventCallback((event) => {
+        const data = `data: ${JSON.stringify(event)}\n\n`;
+        controller.enqueue(encoder.encode(data));
+      });
+
       try {
-        const res = await fetch(`${baseUrl}/v1/chat/completions`, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'Authorization': `Bearer ${apiKey}`,
-          },
-          body: JSON.stringify({
-            model: modelId,
-            messages: [{ role: 'user', content: prompt }],
-            stream: true,
-          }),
-        });
+        // Send prompt
+        await session.prompt(prompt);
 
-        if (!res.ok) {
-          const text = await res.text().catch(() => 'Unknown error');
-          controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type: 'error', error: text })}\n\n`));
-          controller.enqueue(encoder.encode('data: [DONE]\n\n'));
-          controller.close();
-          return;
-        }
-
-        if (!res.body) {
-          controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type: 'error', error: 'Empty response body' })}\n\n`));
-          controller.enqueue(encoder.encode('data: [DONE]\n\n'));
-          controller.close();
-          return;
-        }
-
-        const reader = res.body.getReader();
-        const decoder = new TextDecoder();
-        let buffer = '';
-
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) break;
-
-          buffer += decoder.decode(value, { stream: true });
-          const lines = buffer.split('\n');
-          buffer = lines.pop() || '';
-
-          for (const line of lines) {
-            const trimmed = line.trim();
-            if (!trimmed.startsWith('data: ')) continue;
-            const data = trimmed.slice(6);
-            if (data === '[DONE]') continue;
-
-            try {
-              const chunk = JSON.parse(data);
-              const choice = chunk.choices?.[0];
-              const delta = choice?.delta;
-              if (delta?.content) {
-                controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type: 'text_delta', text: delta.content })}\n\n`));
-              }
-            } catch {
-              // Ignore malformed chunks
-            }
-          }
-        }
-
+        // End stream
         controller.enqueue(encoder.encode('data: [DONE]\n\n'));
         controller.close();
       } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type: 'error', error: message })}\n\n`));
+        const errorData = `data: ${JSON.stringify({
+          type: 'error',
+          error: error instanceof Error ? error.message : String(error),
+        })}\n\n`;
+        controller.enqueue(encoder.encode(errorData));
         controller.enqueue(encoder.encode('data: [DONE]\n\n'));
         controller.close();
       }
