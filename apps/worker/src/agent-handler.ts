@@ -1,9 +1,10 @@
 /**
- * Agent handler - handles agent prompts with SSE streaming via Flue / pi-ai
+ * Agent handler - handles agent prompts with SSE streaming
+ *
+ * Uses direct fetch to Cloudflare AI Gateway compat endpoint,
+ * bypassing pi-ai OpenAI SDK streaming issues in Workers.
  */
 import type { Context } from 'hono';
-import { createFlueContext, type FlueContext } from '@zene/agent/client';
-import { resolveModel as resolvePiModel } from '@zene/agent/internal';
 
 interface Env {
   DB: D1Database;
@@ -22,13 +23,26 @@ export function getProviderConfig(): Record<string, any> {
   return { ...providerConfig };
 }
 
+// In-memory session store (replace with D1 in production)
+const sessionMessages: Record<string, Array<{ role: string; content: string }>> = {};
+
+function getSessionHistory(sessionId: string): Array<{ role: string; content: string }> {
+  return sessionMessages[sessionId] || [];
+}
+
+function addMessage(sessionId: string, role: string, content: string): void {
+  if (!sessionMessages[sessionId]) {
+    sessionMessages[sessionId] = [];
+  }
+  sessionMessages[sessionId].push({ role, content });
+}
+
 /**
  * Handle POST /api/agent/:agentName/prompt
  * Expects JSON body: { sessionId: string, prompt: string, model?: string }
  * Returns SSE stream
  */
 export async function handleAgentPrompt(c: Context<{ Bindings: Env }>) {
-  const { agentName } = c.req.param();
   const body = await c.req.json<{
     sessionId?: string;
     prompt: string;
@@ -44,95 +58,97 @@ export async function handleAgentPrompt(c: Context<{ Bindings: Env }>) {
   const gatewayBaseUrl = c.env.AI_GATEWAY_URL ?? providerConfig.gatewayUrl ?? '';
   const gatewayToken = c.env.AI_GATEWAY_TOKEN ?? providerConfig.gatewayToken ?? '';
   const modelStr = model ?? 'deepseek/deepseek-chat';
-  const slash = modelStr.indexOf('/');
-  const provider = slash === -1 ? modelStr : modelStr.slice(0, slash);
 
-  // Build provider config:
-  // - baseUrl points to Cloudflare AI Gateway compat endpoint (e.g. .../compat)
-  // - cf-aig-authorization header carries the Cloudflare API token
-  const providers: Record<string, any> = {
-    ...providerConfig.providers,
-  };
-  if (gatewayBaseUrl) {
-    providers[provider] = {
-      ...(providers[provider] ?? {}),
-      baseUrl: gatewayBaseUrl,
-      headers: {
-        ...(providers[provider]?.headers ?? {}),
-        ...(gatewayToken ? { 'cf-aig-authorization': `Bearer ${gatewayToken}` } : {}),
-      },
-    };
+  if (!gatewayBaseUrl) {
+    return c.json({ error: 'AI_GATEWAY_URL not configured' }, 500);
   }
 
-  // Create Flue context
-  const ctx: FlueContext = createFlueContext({
-    id: agentName,
-    payload: {},
-    env: {
-      AI_GATEWAY_URL: c.env.AI_GATEWAY_URL,
-      ...providerConfig,
-    },
-    agentConfig: {
-      roles: {},
-      skills: {},
-      model: modelStr,
-      systemPrompt: 'You are a helpful AI assistant.',
-      thinkingLevel: 'medium',
-      resolveModel: (modelConfig: string | undefined, p?: any) => {
-        if (typeof modelConfig !== 'string') return undefined;
-        return resolvePiModel(modelConfig, p);
-      },
-    },
-    createDefaultEnv: async () => {
-      return {
-        cwd: '/tmp',
-        exec: async (cmd: string) => ({ stdout: '', stderr: '', exitCode: 0 }),
-        readFile: async (path: string) => '',
-        writeFile: async (path: string, content: string) => {},
-        stat: async (path: string) => ({ isDirectory: false }),
-        readdir: async (path: string) => [],
-      };
-    },
-    defaultStore: {
-      save: async () => {},
-      load: async () => null,
-      delete: async () => {},
-    },
-  });
+  // Add user message to history
+  addMessage(sessionId, 'user', prompt);
 
-  // Initialize agent
-  const agent = await ctx.init({
-    model: modelStr,
-    providers,
-  });
-
-  // Get or create session
-  const session = await agent.session(sessionId);
+  // Build messages from history
+  const messages = getSessionHistory(sessionId).map((m) => ({
+    role: m.role,
+    content: m.content,
+  }));
 
   // Set up SSE stream
   const stream = new ReadableStream({
     async start(controller) {
       const encoder = new TextEncoder();
-
-      // Subscribe to agent events
-      ctx.setEventCallback((event) => {
-        const data = `data: ${JSON.stringify(event)}\n\n`;
-        controller.enqueue(encoder.encode(data));
-      });
+      let assistantContent = '';
 
       try {
-        // Send prompt
-        await session.prompt(prompt);
+        const res = await fetch(`${gatewayBaseUrl}/chat/completions`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            ...(gatewayToken ? { 'cf-aig-authorization': `Bearer ${gatewayToken}` } : {}),
+          },
+          body: JSON.stringify({
+            model: modelStr,
+            messages,
+            stream: true,
+          }),
+        });
 
-        // End stream
+        if (!res.ok) {
+          const text = await res.text().catch(() => 'Unknown error');
+          controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type: 'error', error: text })}\n\n`));
+          controller.enqueue(encoder.encode('data: [DONE]\n\n'));
+          controller.close();
+          return;
+        }
+
+        if (!res.body) {
+          controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type: 'error', error: 'Empty response body' })}\n\n`));
+          controller.enqueue(encoder.encode('data: [DONE]\n\n'));
+          controller.close();
+          return;
+        }
+
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+
+          buffer += decoder.decode(value, { stream: true });
+          const lines = buffer.split('\n');
+          buffer = lines.pop() || '';
+
+          for (const line of lines) {
+            const trimmed = line.trim();
+            if (!trimmed.startsWith('data: ')) continue;
+            const data = trimmed.slice(6);
+            if (data === '[DONE]') continue;
+
+            try {
+              const chunk = JSON.parse(data);
+              const choice = chunk.choices?.[0];
+              const delta = choice?.delta;
+              if (delta?.content) {
+                assistantContent += delta.content;
+                controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type: 'text_delta', text: delta.content })}\n\n`));
+              }
+            } catch {
+              // Ignore malformed chunks
+            }
+          }
+        }
+
+        // Save assistant message to history
+        if (assistantContent) {
+          addMessage(sessionId, 'assistant', assistantContent);
+        }
+
         controller.enqueue(encoder.encode('data: [DONE]\n\n'));
         controller.close();
       } catch (error) {
-        const errorData = `data: ${JSON.stringify({
-          type: 'error',
-          error: error instanceof Error ? error.message : String(error),
-        })}\n\n`;
-        controller.enqueue(encoder.encode(errorData));
+        const message = error instanceof Error ? error.message : String(error);
+        controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type: 'error', error: message })}\n\n`));
         controller.enqueue(encoder.encode('data: [DONE]\n\n'));
         controller.close();
       }
