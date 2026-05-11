@@ -73,7 +73,6 @@ export function ChatWindow() {
         {sessionMessages.map((msg) => (
           <MessageBubble key={msg.id} message={msg} />
         ))}
-        {isStreaming && <StreamingText />}
         <div ref={messagesEndRef} />
       </div>
 
