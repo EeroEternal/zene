@@ -4,7 +4,7 @@
   "compatibility_date": "2026-04-01",
   "compatibility_flags": ["nodejs_compat"],
   "vars": {
-    "AI_GATEWAY_URL": ""
+    "AI_GATEWAY_URL": "https://gateway.ai.cloudflare.com/v1/f073aa10866fbb6c4f213d62bee54acb/zene/compat"
   },
   "d1_databases": [
     {
