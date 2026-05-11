@@ -8,6 +8,7 @@ import { resolveModel as resolvePiModel } from '@zene/agent/internal';
 interface Env {
   DB: D1Database;
   AI_GATEWAY_URL?: string;
+  AI_GATEWAY_TOKEN?: string;
 }
 
 // In-memory provider config (module-level)
@@ -41,18 +42,25 @@ export async function handleAgentPrompt(c: Context<{ Bindings: Env }>) {
   }
 
   const gatewayBaseUrl = c.env.AI_GATEWAY_URL ?? providerConfig.gatewayUrl ?? '';
-  const modelStr = model ?? 'deepseek/deepseek-v4-flash';
+  const gatewayToken = c.env.AI_GATEWAY_TOKEN ?? providerConfig.gatewayToken ?? '';
+  const modelStr = model ?? 'deepseek/deepseek-chat';
   const slash = modelStr.indexOf('/');
   const provider = slash === -1 ? modelStr : modelStr.slice(0, slash);
 
-  // Build provider config: override baseUrl when gateway is configured
+  // Build provider config:
+  // - baseUrl points to Cloudflare AI Gateway compat endpoint (e.g. .../compat)
+  // - cf-aig-authorization header carries the Cloudflare API token
   const providers: Record<string, any> = {
     ...providerConfig.providers,
   };
-  if (gatewayBaseUrl && provider !== 'cloudflare') {
+  if (gatewayBaseUrl) {
     providers[provider] = {
       ...(providers[provider] ?? {}),
-      baseUrl: `${gatewayBaseUrl}/${provider}`,
+      baseUrl: gatewayBaseUrl,
+      headers: {
+        ...(providers[provider]?.headers ?? {}),
+        ...(gatewayToken ? { 'cf-aig-authorization': `Bearer ${gatewayToken}` } : {}),
+      },
     };
   }
 

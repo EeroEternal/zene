@@ -311,7 +311,7 @@ export const useStore = create<Store>()(
 
   providerConfig: {
     provider: 'deepseek',
-    defaultModel: 'deepseek/deepseek-v4-flash',
+    defaultModel: 'deepseek/deepseek-chat',
   },
 
   setProviderConfig: async (config: ProviderConfig) => {

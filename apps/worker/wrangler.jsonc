@@ -3,7 +3,10 @@
   "main": "src/index.ts",
   "compatibility_date": "2026-04-01",
   "compatibility_flags": ["nodejs_compat"],
-  "vars": {},
+  "vars": {
+    "AI_GATEWAY_URL": "",
+    "AI_GATEWAY_TOKEN": ""
+  },
   "d1_databases": [
     {
       "binding": "DB",
