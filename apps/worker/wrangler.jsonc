@@ -3,10 +3,7 @@
   "main": "src/index.ts",
   "compatibility_date": "2026-04-01",
   "compatibility_flags": ["nodejs_compat"],
-  "vars": {
-    "AI_GATEWAY_URL": "",
-    "DEEPSEEK_API_KEY": ""
-  },
+  "vars": {},
   "d1_databases": [
     {
       "binding": "DB",
