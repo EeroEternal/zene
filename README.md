@@ -1,54 +1,132 @@
-# Zene Agent Cloud
+# Zene
 
-A web application that provides an OpenAI Codex-style chat interface for users to interact with multiple Flue Agents running on Cloudflare Workers.
+Zene is a local coding agent CLI written in Rust. It runs in your project directory, reads and edits files, executes shell commands, and keeps conversation sessions on disk.
 
-## Features
+## Install
 
-- Chat-style UI (OpenAI Codex Web style)
-- Multiple agent sessions
-- Real-time streaming responses (typewriter effect)
-- Session management (create, switch, delete, history)
-- Dark/light theme toggle
-- Markdown rendering with code highlighting
-- Configurable LLM provider connections via Cloudflare AI Gateway
+From the repo:
+
+```bash
+./install.sh
+```
+
+Or manually:
+
+```bash
+cargo install --path apps/cli --locked
+```
+
+Pre-built binaries are published on [GitHub Releases](https://github.com/ParaTensor/zene/releases) when a version tag (`v*`) is pushed. The release workflow builds `zene-cli` for Linux and macOS (x86_64 + Apple Silicon).
+
+Or run directly without installing:
+
+```bash
+cargo run -p zene-cli
+```
+
+## Configure
+
+On first run, Zene creates `~/.zene/config.toml`. Set your API key there or via environment variables:
+
+```bash
+# OpenAI-compatible (default provider)
+export OPENAI_API_KEY=sk-...
+export ZENE_API_KEY=sk-...
+export ZENE_MODEL=gpt-4o
+export ZENE_BASE_URL=https://api.openai.com/v1
+
+# Anthropic
+export ZENE_PROVIDER=anthropic
+export ANTHROPIC_API_KEY=sk-ant-...
+export ZENE_MODEL=claude-3-5-sonnet-20241022
+export ZENE_ANTHROPIC_BASE_URL=https://api.anthropic.com  # optional
+```
+
+Optional flags in `~/.zene/config.toml`:
+
+```toml
+provider = "openai"  # or "anthropic"
+include_workspace_context = true  # inject AGENTS.md, directory listing, git branch
+
+[[hooks]]
+event = "PreToolUse"
+command = "./scripts/pre-tool.sh"
+```
+
+Per-project overrides in `.zene/config.toml` (merged over global; project wins on key collision):
+
+```toml
+# your-repo/.zene/config.toml
+model = "gpt-4o"
+permission_mode = "manual"
+
+[compaction]
+trigger_ratio = 0.9
+```
+
+### Config files
+
+| Path | Purpose |
+|------|---------|
+| `~/.zene/config.toml` | Model, provider, API keys, compaction, permission mode, inline hooks |
+| `.zene/config.toml` | Project-level config overrides (merged over global) |
+| `~/.zene/hooks.json` | Additional lifecycle hooks (`PreToolUse`, `PostToolUse`) |
+| `~/.zene/mcp.json` | Global MCP server definitions (merged with project config) |
+| `.zene/mcp.json` | Project-level MCP server overrides |
+| `~/.zene/sessions/` | Saved conversation sessions and JSONL records |
+
+Hooks receive JSON on stdin: `{"tool":"<name>","args":"<json string>"}`. A non-zero exit from a `PreToolUse` hook blocks the tool; the stderr message is returned to the model.
+
+Example `~/.zene/hooks.json`:
+
+```json
+{
+  "hooks": [
+    { "event": "PostToolUse", "command": "./scripts/log-tool.sh" }
+  ]
+}
+```
+
+Skills live under `.agents/skills/*/SKILL.md`. Zene lists discovered skills in the system prompt; use the `Skill` tool to load a skill's instructions.
+
+## Usage
+
+```bash
+cd your-project
+zene
+```
+
+Commands inside the REPL:
+
+- `/exit` — quit
+- `/quit` — quit
+
+CLI commands:
+
+```bash
+zene sessions          # list saved sessions for current workdir
+zene config            # show config paths
+zene --session <id>    # resume a session
+zene --no-stream       # disable streaming output
+zene --yolo            # auto-approve Write / Edit / Bash
+zene --tui             # ratatui chat UI (PageUp/PageDown scroll)
+```
 
 ## Architecture
 
 ```
 zene/
-├── apps/
-│   ├── web/              # Next.js web UI
-│   └── worker/           # Cloudflare Worker (agent runtime)
-├── packages/
-│   └── agent/            # Agent SDK (from flue, modified)
-├── package.json
-└── pnpm-workspace.yaml
-```
-
-## Getting Started
-
-### Prerequisites
-
-- Node.js >= 22.18.0
-- pnpm >= 10.0.0
-- Cloudflare account (for worker deployment)
-
-### Installation
-
-```bash
-pnpm install
-```
-
-### Development
-
-```bash
-# Start web UI
-pnpm dev
-
-# Start worker (Cloudflare Worker)
-pnpm worker:dev
+├── apps/cli/          # REPL entrypoint
+└── crates/
+    ├── core/          # agent turn loop, hooks
+    ├── llm/           # OpenAI-compatible + Anthropic chat clients
+    ├── sandbox/       # local filesystem + shell
+    ├── tools/         # Read/Write/Edit/Bash/Grep/Glob/Task
+    ├── session/       # session persistence (~/.zene/sessions/)
+    ├── mcp/           # MCP server integration
+    └── config/        # config loading
 ```
 
 ## License
 
-Apache-2.0
+MIT

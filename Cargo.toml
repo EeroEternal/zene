@@ -1,0 +1,53 @@
+[workspace]
+members = [
+    "apps/cli",
+    "crates/config",
+    "crates/llm",
+    "crates/sandbox",
+    "crates/tools",
+    "crates/session",
+    "crates/core",
+    "crates/mcp",
+]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+authors = ["Zene Contributors"]
+
+[workspace.dependencies]
+anyhow = "1"
+async-trait = "0.1"
+chrono = { version = "0.4", features = ["serde"] }
+clap = { version = "4", features = ["derive"] }
+dirs = "6"
+futures = "0.3"
+jsonschema = "0.26"
+regex = "1"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
+rustyline = "15"
+ratatui = "0.29"
+crossterm = "0.28"
+schemars = "0.8"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+similar = "2"
+thiserror = "2"
+tokio = { version = "1", features = ["full"] }
+tokio-util = "0.7"
+ctrlc = "3"
+toml = "0.8"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+uuid = { version = "1", features = ["v4", "serde"] }
+walkdir = "2"
+zene-config = { path = "crates/config" }
+zene-core = { path = "crates/core" }
+zene-llm = { path = "crates/llm" }
+zene-sandbox = { path = "crates/sandbox" }
+zene-session = { path = "crates/session" }
+zene-tools = { path = "crates/tools" }
+zene-mcp = { path = "crates/mcp" }
+unigateway-sdk = { path = "../unigateway/unigateway-sdk" }

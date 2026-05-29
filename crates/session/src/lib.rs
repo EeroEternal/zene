@@ -1,0 +1,245 @@
+mod record;
+
+use std::fs;
+use std::path::{Path, PathBuf};
+
+use anyhow::{Context, Result};
+use chrono::{DateTime, Utc};
+use serde::{Deserialize, Serialize};
+use uuid::Uuid;
+use zene_config::{sessions_dir, workdir_slug, zene_home};
+use zene_llm::Message;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SessionMeta {
+    pub id: String,
+    pub title: String,
+    pub workdir: String,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CompactionEntry {
+    pub id: String,
+    pub created_at: DateTime<Utc>,
+    pub summary: String,
+    pub compacted_message_count: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SessionRecord {
+    pub meta: SessionMeta,
+    pub messages: Vec<Message>,
+    #[serde(default)]
+    pub compactions: Vec<CompactionEntry>,
+}
+
+impl SessionRecord {
+    pub fn new(workdir: &Path) -> Self {
+        let now = Utc::now();
+        Self {
+            meta: SessionMeta {
+                id: Uuid::new_v4().to_string(),
+                title: "New session".to_string(),
+                workdir: workdir.display().to_string(),
+                created_at: now,
+                updated_at: now,
+            },
+            messages: Vec::new(),
+            compactions: Vec::new(),
+        }
+    }
+
+    pub fn push_message(&mut self, message: Message) {
+        if message.role == zene_llm::Role::System
+            && self.messages.iter().any(|m| m.role == zene_llm::Role::System)
+        {
+            return;
+        }
+        self.messages.push(message);
+        self.meta.updated_at = Utc::now();
+    }
+
+    pub fn ensure_system_message(&mut self, content: &str) {
+        if self
+            .messages
+            .first()
+            .is_some_and(|message| message.role == zene_llm::Role::System)
+        {
+            return;
+        }
+        self.messages.insert(0, Message::system(content));
+        self.meta.updated_at = Utc::now();
+    }
+
+    /// Replace the leading system message, or insert one if missing.
+    pub fn set_system_message(&mut self, content: &str) {
+        if let Some(message) = self.messages.first_mut() {
+            if message.role == zene_llm::Role::System {
+                message.content = Some(content.to_string());
+                self.meta.updated_at = Utc::now();
+                return;
+            }
+        }
+        self.messages.insert(0, Message::system(content));
+        self.meta.updated_at = Utc::now();
+    }
+
+    pub fn set_title_from_prompt(&mut self, prompt: &str) {
+        if self.meta.title == "New session" {
+            let title = prompt.lines().next().unwrap_or(prompt);
+            self.meta.title = title.chars().take(60).collect();
+        }
+    }
+
+    /// Replace older messages with a compaction summary, keeping system + recent tail.
+    pub fn apply_compaction(&mut self, summary: String, compacted_count: usize) -> CompactionEntry {
+        let entry = CompactionEntry {
+            id: Uuid::new_v4().to_string(),
+            created_at: Utc::now(),
+            summary: summary.clone(),
+            compacted_message_count: compacted_count,
+        };
+        self.compactions.push(entry.clone());
+        self.meta.updated_at = Utc::now();
+        entry
+    }
+
+    pub fn replace_messages_after_compaction(
+        &mut self,
+        summary: String,
+        tail_start: usize,
+        compacted_count: usize,
+    ) {
+        let system = self
+            .messages
+            .first()
+            .filter(|m| m.role == zene_llm::Role::System)
+            .cloned();
+        let tail = self.messages[tail_start..].to_vec();
+        let summary_message = Message::compaction_summary(format!(
+            "[Previous conversation summary]\n{summary}"
+        ));
+
+        self.messages.clear();
+        if let Some(system) = system {
+            self.messages.push(system);
+        }
+        self.messages.push(summary_message);
+        self.messages.extend(tail);
+        self.apply_compaction(summary, compacted_count);
+    }
+
+    pub fn save(&self) -> Result<()> {
+        fs::create_dir_all(sessions_dir()).context("create sessions dir")?;
+        let path = session_path(&self.meta.id);
+        let raw = serde_json::to_string_pretty(self).context("serialize session")?;
+        fs::write(path, raw).context("write session file")?;
+        Ok(())
+    }
+
+    pub fn load(id: &str) -> Result<Self> {
+        let path = session_path(id);
+        let raw = fs::read_to_string(&path)
+            .with_context(|| format!("read session file: {}", path.display()))?;
+        serde_json::from_str(&raw).context("parse session file")
+    }
+}
+
+pub fn session_path(id: &str) -> PathBuf {
+    sessions_dir().join(format!("{id}.json"))
+}
+
+pub fn list_sessions_for_workdir(workdir: &Path) -> Result<Vec<SessionMeta>> {
+    fs::create_dir_all(sessions_dir()).context("create sessions dir")?;
+    let slug = workdir_slug(workdir);
+    let mut sessions = Vec::new();
+    for entry in fs::read_dir(sessions_dir()).context("read sessions dir")? {
+        let entry = entry.context("read session entry")?;
+        if entry.path().extension().and_then(|ext| ext.to_str()) != Some("json") {
+            continue;
+        }
+        let raw = fs::read_to_string(entry.path()).context("read session file")?;
+        let record: SessionRecord = serde_json::from_str(&raw).context("parse session file")?;
+        if workdir_slug(Path::new(&record.meta.workdir)) == slug {
+            sessions.push(record.meta);
+        }
+    }
+    sessions.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+    Ok(sessions)
+}
+
+pub fn ensure_zene_home() -> Result<()> {
+    fs::create_dir_all(zene_home()).context("create zene home")?;
+    fs::create_dir_all(sessions_dir()).context("create sessions dir")?;
+    Ok(())
+}
+
+pub use record::{export_session, record_path, session_record_dir, AgentRecordWriter, RecordEntry};
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::Path;
+
+    #[test]
+    fn ensure_system_message_is_idempotent() {
+        let mut session = SessionRecord::new(Path::new("."));
+        session.ensure_system_message("system prompt");
+        session.ensure_system_message("system prompt");
+        assert_eq!(session.messages.len(), 1);
+        assert_eq!(session.messages[0].content.as_deref(), Some("system prompt"));
+    }
+
+    #[test]
+    fn push_message_skips_duplicate_system() {
+        let mut session = SessionRecord::new(Path::new("."));
+        session.ensure_system_message("system prompt");
+        session.push_message(Message::system("another system"));
+        assert_eq!(session.messages.len(), 1);
+    }
+
+    #[test]
+    fn compaction_replaces_prefix_and_records_history() {
+        let mut session = SessionRecord::new(Path::new("."));
+        session.ensure_system_message("system prompt");
+        session.push_message(Message::user("old request"));
+        session.push_message(Message::assistant("old reply"));
+        session.push_message(Message::user("recent request"));
+        session.push_message(Message::assistant("recent reply"));
+
+        session.replace_messages_after_compaction(
+            "summarized old work".into(),
+            3,
+            2,
+        );
+
+        assert_eq!(session.messages.len(), 4);
+        assert_eq!(session.messages[0].content.as_deref(), Some("system prompt"));
+        assert_eq!(
+            session.messages[1].kind,
+            Some(zene_llm::MessageKind::CompactionSummary)
+        );
+        assert!(session.messages[1]
+            .content
+            .as_deref()
+            .unwrap()
+            .contains("summarized old work"));
+        assert_eq!(session.messages[2].content.as_deref(), Some("recent request"));
+        assert_eq!(session.compactions.len(), 1);
+        assert_eq!(session.compactions[0].compacted_message_count, 2);
+    }
+
+    #[test]
+    fn compaction_session_roundtrip_serialization() {
+        let mut session = SessionRecord::new(Path::new("."));
+        session.ensure_system_message("sys");
+        session.replace_messages_after_compaction("summary".into(), 1, 0);
+
+        let raw = serde_json::to_string(&session).expect("serialize");
+        let loaded: SessionRecord = serde_json::from_str(&raw).expect("deserialize");
+        assert_eq!(loaded.compactions.len(), 1);
+        assert_eq!(loaded.compactions[0].summary, "summary");
+    }
+}

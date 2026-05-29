@@ -1,0 +1,625 @@
+use std::collections::HashMap;
+use std::env;
+use std::fs;
+use std::path::{Path, PathBuf};
+
+use serde::{Deserialize, Serialize};
+use thiserror::Error;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProviderKind {
+    OpenAi,
+    Anthropic,
+}
+
+impl ProviderKind {
+    pub fn parse(s: &str) -> Result<Self, String> {
+        match s.trim().to_lowercase().as_str() {
+            "openai" | "openai-compatible" | "openai_compatible" => Ok(Self::OpenAi),
+            "anthropic" => Ok(Self::Anthropic),
+            other if other.is_empty() => Ok(Self::OpenAi),
+            other => Err(format!(
+                "unknown provider `{other}`; expected `openai` or `anthropic`"
+            )),
+        }
+    }
+}
+
+#[derive(Debug, Error)]
+pub enum ConfigError {
+    #[error("failed to read config at {path}: {source}")]
+    Read {
+        path: PathBuf,
+        source: std::io::Error,
+    },
+    #[error("failed to parse config at {path}: {source}")]
+    Parse {
+        path: PathBuf,
+        source: toml::de::Error,
+    },
+    #[error("failed to parse JSON at {path}: {source}")]
+    ParseJson {
+        path: PathBuf,
+        source: serde_json::Error,
+    },
+    #[error("failed to write config at {path}: {source}")]
+    Write {
+        path: PathBuf,
+        source: std::io::Error,
+    },
+}
+
+pub const DEFAULT_CONTEXT_WINDOW_TOKENS: u32 = 128_000;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CompactionConfig {
+    #[serde(default = "default_compaction_trigger_ratio")]
+    pub trigger_ratio: f32,
+    #[serde(default = "default_keep_recent_ratio")]
+    pub keep_recent_ratio: f32,
+    #[serde(default = "default_context_window_tokens")]
+    pub context_window_tokens: u32,
+}
+
+fn default_compaction_trigger_ratio() -> f32 {
+    0.85
+}
+
+fn default_keep_recent_ratio() -> f32 {
+    0.25
+}
+
+fn default_context_window_tokens() -> u32 {
+    DEFAULT_CONTEXT_WINDOW_TOKENS
+}
+
+impl Default for CompactionConfig {
+    fn default() -> Self {
+        Self {
+            trigger_ratio: default_compaction_trigger_ratio(),
+            keep_recent_ratio: default_keep_recent_ratio(),
+            context_window_tokens: default_context_window_tokens(),
+        }
+    }
+}
+
+fn merge_config_toml(global_path: &Path, project_path: &Path) -> Result<toml::Value, ConfigError> {
+    let global_raw = fs::read_to_string(global_path).map_err(|source| ConfigError::Read {
+        path: global_path.to_path_buf(),
+        source,
+    })?;
+    let mut merged: toml::Value = toml::from_str(&global_raw).map_err(|source| ConfigError::Parse {
+        path: global_path.to_path_buf(),
+        source,
+    })?;
+
+    if project_path.exists() {
+        let project_raw = fs::read_to_string(project_path).map_err(|source| ConfigError::Read {
+            path: project_path.to_path_buf(),
+            source,
+        })?;
+        let project: toml::Value = toml::from_str(&project_raw).map_err(|source| ConfigError::Parse {
+            path: project_path.to_path_buf(),
+            source,
+        })?;
+        merge_toml_values(&mut merged, project);
+    }
+
+    Ok(merged)
+}
+
+fn merge_toml_values(base: &mut toml::Value, overlay: toml::Value) {
+    match (base, overlay) {
+        (toml::Value::Table(base_table), toml::Value::Table(overlay_table)) => {
+            for (key, overlay_value) in overlay_table {
+                match base_table.get_mut(&key) {
+                    Some(base_value) if base_value.is_table() && overlay_value.is_table() => {
+                        merge_toml_values(base_value, overlay_value);
+                    }
+                    _ => {
+                        base_table.insert(key, overlay_value);
+                    }
+                }
+            }
+        }
+        (base_slot, overlay) => *base_slot = overlay,
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct HookEntry {
+    pub event: String,
+    pub command: String,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct HooksFile {
+    #[serde(default)]
+    pub hooks: Vec<HookEntry>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ZeneConfig {
+    #[serde(default = "default_provider")]
+    pub provider: String,
+    #[serde(default = "default_model")]
+    pub model: String,
+    #[serde(default)]
+    pub api_key: Option<String>,
+    #[serde(default = "default_base_url")]
+    pub base_url: String,
+    #[serde(default)]
+    pub anthropic_base_url: Option<String>,
+    #[serde(default)]
+    pub anthropic_api_key: Option<String>,
+    #[serde(default)]
+    pub model_context_windows: HashMap<String, u32>,
+    #[serde(default = "default_max_turns")]
+    pub max_turns: u32,
+    #[serde(default = "default_system_prompt")]
+    pub system_prompt: String,
+    #[serde(default)]
+    pub compaction: CompactionConfig,
+    #[serde(default = "default_include_workspace_context")]
+    pub include_workspace_context: bool,
+    #[serde(default = "default_permission_mode")]
+    pub permission_mode: String,
+    #[serde(default)]
+    pub hooks: Vec<HookEntry>,
+}
+
+fn default_provider() -> String {
+    "openai".to_string()
+}
+
+fn default_permission_mode() -> String {
+    "manual".to_string()
+}
+
+fn default_include_workspace_context() -> bool {
+    true
+}
+
+fn default_model() -> String {
+    "deepseek-chat".to_string()
+}
+
+fn default_base_url() -> String {
+    "https://api.deepseek.com".to_string()
+}
+
+fn default_max_turns() -> u32 {
+    50
+}
+
+fn default_system_prompt() -> String {
+    "You are Zene, a local coding agent. You help users read, edit, and navigate codebases using the provided tools. Prefer small, focused changes. Explain briefly what you did.".to_string()
+}
+
+impl Default for ZeneConfig {
+    fn default() -> Self {
+        Self {
+            provider: default_provider(),
+            model: default_model(),
+            api_key: None,
+            base_url: default_base_url(),
+            anthropic_base_url: None,
+            anthropic_api_key: None,
+            model_context_windows: HashMap::new(),
+            max_turns: default_max_turns(),
+            system_prompt: default_system_prompt(),
+            compaction: CompactionConfig::default(),
+            include_workspace_context: default_include_workspace_context(),
+            permission_mode: default_permission_mode(),
+            hooks: Vec::new(),
+        }
+    }
+}
+
+impl ZeneConfig {
+    /// Load global `~/.zene/config.toml`, merge project `.zene/config.toml` when present
+    /// (project wins on key collision), then apply environment overrides.
+    pub fn load(workdir: &Path) -> Result<Self, ConfigError> {
+        let global_path = config_path();
+        if !global_path.exists() {
+            Self::default().ensure_file()?;
+        }
+
+        let project_path = project_config_path(workdir);
+        let merged = merge_config_toml(&global_path, &project_path)?;
+        let mut config: Self = merged.try_into().map_err(|source| ConfigError::Parse {
+            path: global_path.clone(),
+            source,
+        })?;
+
+        config.apply_env_overrides();
+        config.apply_model_context_window();
+        Ok(config)
+    }
+
+    pub fn load_hooks(&self) -> Result<Vec<HookEntry>, ConfigError> {
+        load_hooks(&self.hooks)
+    }
+
+    pub fn ensure_file(&self) -> Result<(), ConfigError> {
+        let path = config_path();
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).map_err(|source| ConfigError::Write {
+                path: path.clone(),
+                source,
+            })?;
+        }
+        if !path.exists() {
+            let raw = toml::to_string_pretty(self).expect("config serializes");
+            fs::write(&path, raw).map_err(|source| ConfigError::Write {
+                path: path.clone(),
+                source,
+            })?;
+        }
+        Ok(())
+    }
+
+    pub fn provider_kind(&self) -> ProviderKind {
+        self.provider_kind_parse()
+            .unwrap_or(ProviderKind::OpenAi)
+    }
+
+    pub fn provider_kind_parse(&self) -> Result<ProviderKind, String> {
+        ProviderKind::parse(&self.provider)
+    }
+
+    pub fn context_window_for_model(&self) -> u32 {
+        if let Some(tokens) = self.model_context_windows.get(&self.model) {
+            return *tokens;
+        }
+        default_context_window_for_model(&self.model)
+    }
+
+    fn apply_model_context_window(&mut self) {
+        if self.compaction.context_window_tokens == DEFAULT_CONTEXT_WINDOW_TOKENS {
+            let window = self.context_window_for_model();
+            if window != DEFAULT_CONTEXT_WINDOW_TOKENS {
+                self.compaction.context_window_tokens = window;
+            }
+        }
+    }
+
+    pub fn openai_base_url(&self) -> String {
+        self.base_url.clone()
+    }
+
+    pub fn openai_api_key(&self) -> Result<String, anyhow::Error> {
+        if let Some(key) = &self.api_key {
+            if !key.is_empty() {
+                return Ok(key.clone());
+            }
+        }
+        for var in ["DEEPSEEK_API_KEY", "ZENE_API_KEY", "OPENAI_API_KEY"] {
+            if let Ok(key) = env::var(var) {
+                if !key.is_empty() {
+                    return Ok(key);
+                }
+            }
+        }
+        anyhow::bail!(
+            "No OpenAI-compatible API key found. Set OPENAI_API_KEY, ZENE_API_KEY, or DEEPSEEK_API_KEY, or add api_key to {}",
+            config_path().display()
+        )
+    }
+
+    pub fn anthropic_base_url(&self) -> String {
+        self.anthropic_base_url
+            .clone()
+            .filter(|url| !url.is_empty())
+            .unwrap_or_else(|| "https://api.anthropic.com".to_string())
+    }
+
+    pub fn anthropic_api_key(&self) -> Result<String, anyhow::Error> {
+        if let Some(key) = &self.anthropic_api_key {
+            if !key.is_empty() {
+                return Ok(key.clone());
+            }
+        }
+        if let Ok(key) = env::var("ANTHROPIC_API_KEY") {
+            if !key.is_empty() {
+                return Ok(key);
+            }
+        }
+        anyhow::bail!(
+            "No Anthropic API key found. Set ANTHROPIC_API_KEY or add anthropic_api_key to {}",
+            config_path().display()
+        )
+    }
+
+    pub fn api_key(&self) -> Result<String, anyhow::Error> {
+        match self.provider_kind() {
+            ProviderKind::Anthropic => self.anthropic_api_key(),
+            ProviderKind::OpenAi => self.openai_api_key(),
+        }
+    }
+
+    pub fn provider_family(&self) -> String {
+        let base = self.base_url.to_lowercase();
+        if base.contains("deepseek") {
+            "deepseek".to_string()
+        } else if base.contains("anthropic") {
+            "anthropic".to_string()
+        } else if base.contains("openai") {
+            "openai".to_string()
+        } else {
+            "openai".to_string()
+        }
+    }
+
+    fn apply_env_overrides(&mut self) {
+        if let Ok(provider) = env::var("ZENE_PROVIDER") {
+            if !provider.is_empty() {
+                self.provider = provider;
+            }
+        }
+        if let Ok(model) = env::var("ZENE_MODEL") {
+            if !model.is_empty() {
+                self.model = model;
+            }
+        }
+        if let Ok(base_url) = env::var("ZENE_BASE_URL") {
+            if !base_url.is_empty() {
+                self.base_url = base_url;
+            }
+        }
+        if let Ok(base_url) = env::var("ZENE_ANTHROPIC_BASE_URL") {
+            if !base_url.is_empty() {
+                self.anthropic_base_url = Some(base_url);
+            }
+        }
+        if let Ok(key) = env::var("ZENE_API_KEY") {
+            if !key.is_empty() {
+                self.api_key = Some(key);
+            }
+        } else if let Ok(key) = env::var("DEEPSEEK_API_KEY") {
+            if !key.is_empty() {
+                self.api_key = Some(key);
+            }
+        } else if let Ok(key) = env::var("OPENAI_API_KEY") {
+            if !key.is_empty() {
+                self.api_key = Some(key);
+            }
+        }
+        if let Ok(key) = env::var("ANTHROPIC_API_KEY") {
+            if !key.is_empty() {
+                self.anthropic_api_key = Some(key);
+            }
+        }
+    }
+}
+
+pub fn load_hooks(from_config: &[HookEntry]) -> Result<Vec<HookEntry>, ConfigError> {
+    let mut hooks = from_config.to_vec();
+    let path = hooks_path();
+    if path.exists() {
+        let raw = fs::read_to_string(&path).map_err(|source| ConfigError::Read {
+            path: path.clone(),
+            source,
+        })?;
+        let file: HooksFile = serde_json::from_str(&raw).map_err(|source| ConfigError::ParseJson {
+            path: path.clone(),
+            source,
+        })?;
+        hooks.extend(file.hooks);
+    }
+    Ok(hooks)
+}
+
+pub fn default_context_window_for_model(model: &str) -> u32 {
+    match model {
+        "gpt-4o" | "gpt-4o-mini" | "gpt-4-turbo" | "gpt-4" => 128_000,
+        "gpt-3.5-turbo" => 16_385,
+        "deepseek-chat" | "deepseek-reasoner" => 64_000,
+        "claude-3-5-sonnet-20241022"
+        | "claude-3-5-sonnet-latest"
+        | "claude-3-5-haiku-20241022"
+        | "claude-3-opus-20240229"
+        | "claude-3-sonnet-20240229"
+        | "claude-3-haiku-20240307" => 200_000,
+        _ => DEFAULT_CONTEXT_WINDOW_TOKENS,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::env;
+
+    fn with_temp_home<F: FnOnce()>(test: F) {
+        static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        let _guard = LOCK.lock().expect("test lock");
+        let temp = tempfile::tempdir().expect("tempdir");
+        let prev = env::var("ZENE_HOME").ok();
+        env::set_var("ZENE_HOME", temp.path());
+        test();
+        match prev {
+            Some(value) => env::set_var("ZENE_HOME", value),
+            None => env::remove_var("ZENE_HOME"),
+        }
+    }
+
+    #[test]
+    fn load_hooks_merges_config_and_file() {
+        with_temp_home(|| {
+            fs::write(
+                hooks_path(),
+                r#"{"hooks":[{"event":"PostToolUse","command":"./post.sh"}]}"#,
+            )
+            .expect("write hooks.json");
+
+            let from_config = vec![HookEntry {
+                event: "PreToolUse".into(),
+                command: "./pre.sh".into(),
+            }];
+            let loaded = load_hooks(&from_config).expect("load hooks");
+            assert_eq!(loaded.len(), 2);
+            assert_eq!(loaded[0].event, "PreToolUse");
+            assert_eq!(loaded[1].event, "PostToolUse");
+        });
+    }
+
+    #[test]
+    fn hooks_deserialize_from_config_toml() {
+        let raw = r#"
+[[hooks]]
+event = "PreToolUse"
+command = "./scripts/pre-tool.sh"
+"#;
+        let config: ZeneConfig = toml::from_str(raw).expect("parse config");
+        assert_eq!(config.hooks.len(), 1);
+        assert_eq!(config.hooks[0].event, "PreToolUse");
+    }
+
+    #[test]
+    fn load_merges_global_and_project_config() {
+        with_temp_home(|| {
+            let workdir = tempfile::tempdir().expect("workdir");
+            fs::create_dir_all(workdir.path().join(".zene")).expect("project .zene");
+
+            fs::write(
+                config_path(),
+                r#"
+model = "gpt-4o"
+max_turns = 50
+permission_mode = "manual"
+
+[compaction]
+trigger_ratio = 0.85
+context_window_tokens = 128000
+"#,
+            )
+            .expect("write global config");
+
+            fs::write(
+                project_config_path(workdir.path()),
+                r#"
+model = "deepseek-chat"
+permission_mode = "yolo"
+
+[compaction]
+trigger_ratio = 0.9
+
+[model_context_windows]
+deepseek-chat = 64000
+"#,
+            )
+            .expect("write project config");
+
+            let config = ZeneConfig::load(workdir.path()).expect("load config");
+            assert_eq!(config.model, "deepseek-chat");
+            assert_eq!(config.max_turns, 50);
+            assert_eq!(config.permission_mode, "yolo");
+            assert!((config.compaction.trigger_ratio - 0.9).abs() < f32::EPSILON);
+            assert_eq!(config.compaction.context_window_tokens, 64_000);
+            assert_eq!(
+                config.model_context_windows.get("deepseek-chat"),
+                Some(&64_000)
+            );
+        });
+    }
+
+    #[test]
+    fn load_uses_global_when_no_project_config() {
+        with_temp_home(|| {
+            let workdir = tempfile::tempdir().expect("workdir");
+
+            fs::write(
+                config_path(),
+                r#"
+model = "gpt-4o-mini"
+"#,
+            )
+            .expect("write global config");
+
+            let config = ZeneConfig::load(workdir.path()).expect("load config");
+            assert_eq!(config.model, "gpt-4o-mini");
+        });
+    }
+}
+
+#[cfg(test)]
+mod provider_tests {
+    use super::*;
+
+    #[test]
+    fn provider_kind_parsing() {
+        assert_eq!(
+            ProviderKind::parse("openai").unwrap(),
+            ProviderKind::OpenAi
+        );
+        assert_eq!(
+            ProviderKind::parse("openai-compatible").unwrap(),
+            ProviderKind::OpenAi
+        );
+        assert_eq!(
+            ProviderKind::parse("anthropic").unwrap(),
+            ProviderKind::Anthropic
+        );
+        assert!(ProviderKind::parse("unknown").is_err());
+    }
+
+    #[test]
+    fn context_window_defaults() {
+        let config = ZeneConfig {
+            model: "gpt-4o".to_string(),
+            ..Default::default()
+        };
+        assert_eq!(config.context_window_for_model(), 128_000);
+    }
+}
+
+pub fn zene_home() -> PathBuf {
+    if let Ok(home) = env::var("ZENE_HOME") {
+        if !home.is_empty() {
+            return PathBuf::from(home);
+        }
+    }
+    dirs::home_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join(".zene")
+}
+
+pub fn config_path() -> PathBuf {
+    zene_home().join("config.toml")
+}
+
+pub fn project_config_path(workdir: &Path) -> PathBuf {
+    workdir.join(".zene").join("config.toml")
+}
+
+pub fn hooks_path() -> PathBuf {
+    zene_home().join("hooks.json")
+}
+
+pub fn mcp_config_path() -> PathBuf {
+    zene_home().join("mcp.json")
+}
+
+pub fn sessions_dir() -> PathBuf {
+    zene_home().join("sessions")
+}
+
+pub fn ensure_home() -> Result<(), ConfigError> {
+    fs::create_dir_all(zene_home()).map_err(|source| ConfigError::Write {
+        path: zene_home(),
+        source,
+    })?;
+    fs::create_dir_all(sessions_dir()).map_err(|source| ConfigError::Write {
+        path: sessions_dir(),
+        source,
+    })?;
+    Ok(())
+}
+
+pub fn workdir_slug(workdir: &Path) -> String {
+    let canonical = workdir.canonicalize().unwrap_or_else(|_| workdir.to_path_buf());
+    let raw = canonical.display().to_string();
+    raw.chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
+        .collect()
+}
