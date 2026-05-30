@@ -14,7 +14,7 @@ use zene_tools::{
 
 use crate::compaction::{compact_message_list_with_chat, should_compact, subagent_compaction_config};
 use crate::permission::PermissionGate;
-use crate::tokens;
+use crate::tokens::{self, TokenEstimator};
 use crate::turn;
 
 #[async_trait]
@@ -203,6 +203,8 @@ async fn run_subagent_tools(
         subagent: Some(subagent_env.clone()),
         permission: permission.clone(),
         plan_mode: None,
+        todos: None,
+        ask_user: None,
     };
 
     for call in tool_calls {
@@ -301,7 +303,9 @@ async fn maybe_compact_subagent_messages(
     model: &str,
     backend: &dyn ChatBackend,
 ) -> Result<()> {
-    let estimated = tokens::estimate_request_tokens(messages, &tools.definitions());
+    let tool_defs = tools.definitions();
+    let estimator = TokenEstimator::default();
+    let estimated = tokens::estimate_context(messages, &tool_defs, &estimator) as u32;
     if !should_compact(estimated, compaction_config) {
         return Ok(());
     }
@@ -311,6 +315,8 @@ async fn maybe_compact_subagent_messages(
         model,
         compaction_config,
         "subagent_token_threshold",
+        &tool_defs,
+        &estimator,
         |request| backend.chat(request),
     )
     .await?
@@ -342,7 +348,7 @@ mod tests {
     use crate::permission::{PermissionGate, PermissionMode, PromptChoice};
     use tempfile::tempdir;
     use zene_llm::ToolCall;
-    use zene_tools::{builtin_tools, SharedToolPermission};
+    use zene_tools::{default_builtin_tools, SharedToolPermission};
 
     fn test_permission_deny() -> SharedToolPermission {
         Arc::new(Mutex::new(PermissionGate::with_prompter(
@@ -544,9 +550,11 @@ mod tests {
             subagent: Some(env),
             permission: None,
             plan_mode: None,
+            todos: None,
+            ask_user: None,
         };
 
-        let result = builtin_tools()
+        let result = default_builtin_tools()
             .execute(
                 "Task",
                 r#"{"prompt":"nested","agent":"explore"}"#,

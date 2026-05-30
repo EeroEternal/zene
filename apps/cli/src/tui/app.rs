@@ -143,6 +143,7 @@ impl App {
                 name,
                 content,
                 is_error,
+                ..
             } => {
                 let mark = if is_error { "✗" } else { "✓" };
                 let body = if name == "Edit" && !is_error {
@@ -192,6 +193,7 @@ impl App {
                 self.run_state = RunState::Idle;
             }
             AgentEvent::StepBegin { .. } => {}
+            AgentEvent::SteerInput { .. } => {}
         }
         self.scroll_to_bottom();
     }

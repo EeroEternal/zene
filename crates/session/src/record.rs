@@ -40,6 +40,10 @@ pub enum RecordEntry {
     Compaction {
         reason: String,
         compacted_count: usize,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        tokens_before: Option<u32>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        tokens_after: Option<u32>,
         ts: DateTime<Utc>,
     },
     Error {
@@ -208,7 +212,24 @@ mod tests {
             let session_id = "export-test";
             let session_file = super::super::session_path(session_id);
             fs::create_dir_all(sessions_dir()).expect("sessions dir");
-            fs::write(&session_file, r#"{"meta":{"id":"export-test"}}"#).expect("session");
+            fs::write(
+                &session_file,
+                r#"{
+                    "meta": {
+                        "id": "export-test",
+                        "title": "New session",
+                        "workdir": ".",
+                        "created_at": "2026-01-01T00:00:00Z",
+                        "updated_at": "2026-01-01T00:00:00Z"
+                    },
+                    "messages": [],
+                    "compactions": [],
+                    "todos": [
+                        { "id": "t1", "content": "Exported todo", "status": "pending" }
+                    ]
+                }"#,
+            )
+            .expect("session");
 
             let writer = AgentRecordWriter::for_session(session_id).expect("writer");
             writer
@@ -226,6 +247,12 @@ mod tests {
             let mut archive = zip::ZipArchive::new(file).expect("zip archive");
             assert!(archive.by_name("export-test.json").is_ok());
             assert!(archive.by_name("record.jsonl").is_ok());
+
+            let mut session_entry = archive.by_name("export-test.json").expect("session entry");
+            let mut session_json = String::new();
+            std::io::Read::read_to_string(&mut session_entry, &mut session_json)
+                .expect("read session zip entry");
+            assert!(session_json.contains("Exported todo"));
         });
     }
 }

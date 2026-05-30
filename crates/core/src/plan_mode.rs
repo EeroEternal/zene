@@ -9,7 +9,7 @@ use zene_config::sessions_dir;
 use zene_tools::{PlanModeState, ToolResult};
 
 pub const PLAN_MODE_REMINDER: &str = r#"<system_reminder>
-You are in Plan mode. Only read-only tools (Read, Grep, Glob, Skill) and ExitPlanMode are available. Do not use Write, Edit, Bash, or Task until you call ExitPlanMode with your plan and the user approves it.
+You are in Plan mode. Only read-only tools (Read, Grep, Glob, Skill, WebSearch, FetchUrl) and ExitPlanMode are available. Do not use Write, Edit, Bash, or Task until you call ExitPlanMode with your plan and the user approves it.
 </system_reminder>"#;
 
 pub type PlanApprovalPrompter =
@@ -84,7 +84,7 @@ pub fn handle_enter_plan_mode(
         }
     };
     state.enter();
-    let mut msg = "Entered plan mode. Use Read/Grep/Glob/Skill to explore, then ExitPlanMode with your plan.".to_string();
+    let mut msg = "Entered plan mode. Use Read/Grep/Glob/Skill/WebSearch to explore, then ExitPlanMode with your plan.".to_string();
     if let Some(reason) = args.reason.filter(|r| !r.trim().is_empty()) {
         msg.push_str(&format!("\nReason: {reason}"));
     }
@@ -160,7 +160,19 @@ pub fn default_plan_approval_prompter(plan_path: &Path, _plan_body: &str) -> io:
 
 pub fn tool_visible_in_definitions(name: &str, plan_active: bool) -> bool {
     if plan_active {
-        matches!(name, "Read" | "Grep" | "Glob" | "Skill" | "ExitPlanMode")
+        matches!(
+            name,
+            "Read"
+                | "Grep"
+                | "Glob"
+                | "Skill"
+                | "AskUserQuestion"
+                | "TodoWrite"
+                | "TodoList"
+                | "FetchUrl"
+                | "WebSearch"
+                | "ExitPlanMode"
+        )
     } else {
         name != "ExitPlanMode"
     }
@@ -232,6 +244,8 @@ mod tests {
     #[test]
     fn definitions_filter_by_mode() {
         assert!(tool_visible_in_definitions("Write", false));
+        assert!(tool_visible_in_definitions("FetchUrl", true));
+        assert!(tool_visible_in_definitions("WebSearch", true));
         assert!(!tool_visible_in_definitions("Write", true));
         assert!(tool_visible_in_definitions("Read", true));
         assert!(!tool_visible_in_definitions("ExitPlanMode", false));

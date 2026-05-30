@@ -102,6 +102,34 @@ Zene 目标：Rust 实现的本地 code agent CLI（对标 kimi-code / flue 的�
 
 ---
 
+### P2.5 Steer (in-turn follow-up)
+
+- [x] `SteerBuffer` + `Agent::steer(text)` inject user messages between steps
+- [x] Reject concurrent `prompt()` with steer hint
+- [x] CLI `/steer <msg>`; `AgentEvent::SteerInput`
+
+参考：kimi `packages/agent-core/src/agent/turn/index.ts` `steerBuffer`。
+
+### P1.1 Token 估算（升级）
+
+- [x] 分 role 估算 + tools JSON 单独计数
+- [x] 可配置 `chars_per_token` / `model_chars_per_token`
+- [x] `estimate_context(messages, tools)` 供 compaction 触发前使用
+- [x] 估算 ≥ 90% 窗口时 warn 日志
+
+### P1.2 Context compaction（细化）
+
+- [x] summarize 前先 **truncate-only** 截断旧 tool result
+- [x] `min_keep_messages` 消息条数下限（默认 20）
+
+### P4.2 Permission 策略
+
+- [x] Write/Edit 硬拒绝 `node_modules/`、`.git/` 路径（与 sandbox 对齐）
+
+详见 [ENGINE.md](./ENGINE.md)。
+
+---
+
 ## P2 — Turn loop 加固
 
 > 让 agent 行为可预期、可中断、可恢复。
@@ -220,7 +248,7 @@ Zene 目标：Rust 实现的本地 code agent CLI（对标 kimi-code / flue 的�
 ### P5.4 多 Provider
 
 - [x] LLM 层抽象出 `Provider` trait（`chat` / `chat_stream`）
-- [x] `OpenAiCompatibleProvider`（OpenAI / DeepSeek / Kimi 等兼容端点）
+- [x] `OpenAiCompatibleProvider`（OpenAI / DeepSeek / Kimi 等兼容端点；底层 intentionally 使用 crates.io 上的 `unigateway-sdk`）
 - [x] `AnthropicProvider` MVP（Messages API + tools + streaming）
 - [x] 配置 `provider = "openai"|"anthropic"`，环境变量 `ZENE_PROVIDER`、`ZENE_BASE_URL`、`ANTHROPIC_API_KEY`、`ZENE_ANTHROPIC_BASE_URL`
 - [x] model 能力元数据：内置 context window 默认值 + `model_context_windows` 配置覆盖
@@ -228,6 +256,23 @@ Zene 目标：Rust 实现的本地 code agent CLI（对标 kimi-code / flue 的�
 参考：kimi `kosong/`，flue `pi-ai` + `runtime/providers.ts`。
 
 **P5 完成标准**：能 dispatch explore 子 agent 搜代码，主 agent 汇总后改代码；能加载一个 MCP server 的工具。
+
+### P5.5 协作与 Web 工具（Kimi-like）
+
+- [x] `AskUserQuestion`：结构化提问，CLI stdin 编号选项或自由文本；`Agent::set_ask_user_prompter` 供 TUI 覆盖
+- [x] `TodoWrite` / `TodoList`：会话级内存 todo 列表，按 id merge，状态 pending / in_progress / completed
+- [x] `FetchUrl`：HTTP GET（30s 超时、100KB 上限），HTML 剥离为纯文本
+- [x] `WebSearch`：可配置 Tavily API 或 DuckDuckGo HTML 回退；plan mode 下允许（只读调研）
+- [x] plan mode 下允许 AskUser / Todo / FetchUrl / WebSearch（只读探索 + 协作）
+- [x] todo 持久化到 SessionRecord（reload 后保留）
+
+参考：kimi `tools/builtin/collaboration/ask-user.ts`、`state/todo-list.ts`、`web/fetch-url.ts`。
+
+### P5.6 Agent profile（可配置工具集）
+
+- [x] `agent_profile = "full" | "explore" | "coder"`（`~/.zene/config.toml` 或 `ZENE_AGENT_PROFILE`）
+- [x] `explore`：只读 + 协作/Web 工具 + plan mode
+- [x] `coder`：读写 + Task 子 agent + 协作/Web 工具
 
 ---
 
@@ -285,6 +330,7 @@ Zene 目标：Rust 实现的本地 code agent CLI（对标 kimi-code / flue 的�
 
 - [x] `cargo install` 路径稳定
 - [x] 可选：单二进制 release（GitHub Actions，`v*` tag 触发）
+- [ ] 验证 Release workflow：tag 推送后各平台二进制成功构建并出现在 GitHub Releases
 - [x] 安装脚本
 
 参考：kimi `apps/kimi-code` TUI + native bundle。
@@ -350,11 +396,11 @@ TUI、record/replay、安装分发。
 |-----------|-----------|-----------|
 | `crates/tools` | `packages/agent-core/src/tools` | `packages/runtime/src/agent.ts` |
 | `crates/core` | `agent/` + `loop/` | `session.ts` + pi-agent-core |
-| `crates/llm` | `packages/kosong` | `@earendil-works/pi-ai` |
+| `crates/llm` | `packages/kosong` | `@earendil-works/pi-ai`（OpenAI-compatible 经 crates.io `unigateway-sdk`） |
 | `crates/sandbox` | `packages/kaos` | `sandbox.ts` / `local()` |
 | `crates/session` | `session/store` | Cloudflare/Node session store |
 | `apps/cli` | `apps/kimi-code` | `packages/cli` |
 
 ---
 
-*最后更新：2026-05-29（P3.3 项目配置合并、P5.2 Skills）*
+*最后更新：2026-05-30（Batch 7：WebSearch、compaction v2、todo 持久化；`agent_profile` 配置；`unigateway-sdk` crates.io）*

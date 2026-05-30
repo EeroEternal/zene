@@ -1,5 +1,6 @@
 use std::io::{self, Write};
 use std::sync::{Arc, Mutex};
+use std::time::Instant;
 
 use anyhow::{Context, Result};
 use futures::StreamExt;
@@ -10,6 +11,7 @@ use zene_llm::{ChatClient, ChatRequest, Message, StreamEvent, TokenUsage, ToolCa
 use zene_sandbox::LocalSandbox;
 use zene_session::{AgentRecordWriter, RecordEntry, SessionRecord};
 use zene_tools::{
+    default_ask_user_prompter, shared_todo_store_from, SharedAskUserPrompter, SharedTodoStore,
     shared_plan_mode, PlanModeState, SharedPlanMode, SharedToolPermission, SubagentEnv,
     ToolContext, ToolRegistry, DEFAULT_SUBAGENT_MAX_DEPTH,
 };
@@ -24,35 +26,44 @@ mod skills;
 mod subagent;
 mod tokens;
 mod tool_dedup;
+pub mod tool_scheduler;
 mod turn;
 
-use compaction::{compact_session, is_context_overflow_error, should_compact, CompactionResult};
+use compaction::{
+    apply_overflow_truncate_pass, compact_session, is_context_overflow_error, should_compact,
+    CompactionResult,
+};
 mod workspace;
 
 pub use events::{emit_event, AgentEvent, EventHandler};
 pub use hooks::{HookBlock, HookRunner};
-pub use permission::{approve_tool_call, PermissionGate, PermissionMode, PermissionPrompter, PromptChoice};
+pub use permission::{approve_tool_call, policy_denied, PermissionGate, PermissionMode, PermissionPrompter, PromptChoice};
 pub use plan_mode::PlanApprovalPrompter;
 pub use subagent::{run_subagent, ChatBackend, CoreSubagentRunner};
-pub use turn::{StepId, TurnId, TurnState};
+pub use tokens::{estimate_context, TokenEstimator};
+pub use turn::{SteerBuffer, StepId, TurnId, TurnState};
 use plan_mode::{
     build_effective_system_prompt, default_plan_approval_prompter, handle_enter_plan_mode,
     handle_exit_plan_mode, tool_visible_in_definitions,
 };
-use tool_dedup::{append_reminder, ToolDedup};
+pub use tool_dedup::{append_reminder, ToolDedup};
+pub use tool_scheduler::{classify_tool_accesses, ToolScheduler};
 
 pub struct Agent {
     config: ZeneConfig,
     client: ChatClient,
-    tools: ToolRegistry,
+    tools: Arc<ToolRegistry>,
     sandbox: Arc<LocalSandbox>,
     session: SessionRecord,
     turn_usage: TokenUsage,
     active_turn: Option<TurnState>,
+    steer_buffer: SteerBuffer,
     system_prompt: String,
     permission: SharedToolPermission,
     plan_mode: SharedPlanMode,
     plan_approval: PlanApprovalPrompter,
+    todos: SharedTodoStore,
+    ask_user: SharedAskUserPrompter,
     tool_dedup: ToolDedup,
     hooks: HookRunner,
     record_writer: AgentRecordWriter,
@@ -92,7 +103,7 @@ impl Agent {
         let client = ChatClient::from_config(&config).await?;
         let record_writer = AgentRecordWriter::for_session(&session.meta.id)?;
 
-        let mut tools = zene_tools::builtin_tools();
+        let mut tools = zene_tools::agent_tools(config.agent_profile, config.web_search.clone());
         let (mcp, mcp_tools) = McpManager::connect(&workdir).await?;
         if !mcp_tools.definitions().is_empty() {
             info!(
@@ -107,19 +118,23 @@ impl Agent {
             Vec::new()
         });
         let hooks = HookRunner::new(hook_entries, workdir.clone());
+        let todos = shared_todo_store_from(session.todos.clone());
 
         Ok(Self {
             config,
             client,
-            tools,
+            tools: Arc::new(tools),
             sandbox: Arc::new(sandbox),
             session,
             turn_usage: TokenUsage::default(),
             active_turn: None,
+            steer_buffer: SteerBuffer::default(),
             system_prompt,
             permission: shared_permission(permission_mode),
             plan_mode: shared_plan_mode(),
             plan_approval: Arc::new(default_plan_approval_prompter),
+            todos,
+            ask_user: default_ask_user_prompter(),
             tool_dedup: ToolDedup::new(),
             hooks,
             record_writer,
@@ -198,9 +213,55 @@ impl Agent {
         self.active_turn.is_some()
     }
 
+    pub fn pending_steer_count(&self) -> usize {
+        self.steer_buffer.len()
+    }
+
+    /// Queue follow-up user guidance for the active turn (injected between steps).
+    pub fn steer(&mut self, text: &str) -> Result<()> {
+        if !self.is_turn_active() {
+            return Err(turn::steer_requires_active_turn());
+        }
+        let text = text.trim();
+        if text.is_empty() {
+            anyhow::bail!("steer message cannot be empty");
+        }
+        self.steer_buffer.push(text.to_string());
+        Ok(())
+    }
+
+    fn token_estimator(&self) -> TokenEstimator {
+        TokenEstimator::new(self.config.chars_per_token_for_model())
+    }
+
+    fn estimated_context_tokens(&self, messages: &[Message], tools: &[zene_llm::ToolDefinition]) -> usize {
+        estimate_context(messages, tools, &self.token_estimator())
+    }
+
+    fn warn_if_near_context_limit(&self, estimated_tokens: usize) {
+        let window = self.config.compaction.context_window_tokens as f32;
+        if window <= 0.0 {
+            return;
+        }
+        let ratio = estimated_tokens as f32 / window;
+        if ratio >= 0.9 {
+            warn!(
+                estimated_context_tokens = estimated_tokens,
+                context_window_tokens = self.config.compaction.context_window_tokens,
+                usage_ratio = ratio,
+                "context estimate exceeds 90% of model window"
+            );
+        }
+    }
+
     /// Replace the permission gate (e.g. TUI custom prompter).
     pub fn set_permission_gate(&mut self, gate: PermissionGate) {
         self.permission = Arc::new(Mutex::new(gate));
+    }
+
+    /// Replace the AskUserQuestion prompter (e.g. TUI modal).
+    pub fn set_ask_user_prompter(&mut self, prompter: SharedAskUserPrompter) {
+        self.ask_user = prompter;
     }
 
     pub async fn prompt(&mut self, user_input: &str, options: PromptOptions) -> Result<String> {
@@ -334,12 +395,19 @@ impl Agent {
                 if let Some(tool_calls) = assistant_message.tool_calls.clone() {
                     self.session.push_message(assistant_message);
                     self.run_tools(&tool_calls, options, cancel).await?;
+                    if self.inject_pending_steer(options)? {
+                        continue;
+                    }
                     continue;
                 }
             }
 
+            self.session.push_message(assistant_message.clone());
+            if self.inject_pending_steer(options)? {
+                continue;
+            }
+
             final_text = assistant_message.content.unwrap_or_default();
-            self.session.push_message(Message::assistant(&final_text));
             completed = true;
             break;
         }
@@ -348,8 +416,33 @@ impl Agent {
             return Err(turn::max_steps_error(max_steps));
         }
 
+        self.sync_todos_to_session();
         self.session.save()?;
         Ok(final_text)
+    }
+
+    fn sync_todos_to_session(&mut self) {
+        if let Ok(store) = self.todos.lock() {
+            self.session.todos = store.to_items();
+        }
+    }
+
+    fn inject_pending_steer(&mut self, options: &PromptOptions) -> Result<bool> {
+        let messages = self.steer_buffer.take_all();
+        if messages.is_empty() {
+            return Ok(false);
+        }
+        for text in messages {
+            info!(steer_chars = text.len(), "steer_injected");
+            emit_event(
+                &options.event_handler,
+                AgentEvent::SteerInput {
+                    text: text.clone(),
+                },
+            );
+            self.session.push_message(Message::user(text));
+        }
+        Ok(true)
     }
 
     async fn run_step(
@@ -380,21 +473,26 @@ impl Agent {
     async fn maybe_compact_before_llm(&mut self) -> Result<()> {
         let messages = self.build_messages();
         let tools = self.tool_definitions_for_llm();
-        let estimated_tokens = tokens::estimate_request_tokens(&messages, &tools);
+        let estimated_tokens = self.estimated_context_tokens(&messages, &tools);
         debug!(
             estimated_context_tokens = estimated_tokens,
             message_count = messages.len(),
             tool_count = tools.len(),
+            chars_per_token = self.config.chars_per_token_for_model(),
             "llm request context estimate"
         );
+        self.warn_if_near_context_limit(estimated_tokens);
 
-        if should_compact(estimated_tokens, &self.config.compaction) {
+        if should_compact(estimated_tokens as u32, &self.config.compaction) {
+            let estimator = self.token_estimator();
             if let Some(result) = compact_session(
                 &mut self.session,
                 &self.client,
                 &self.config.model,
                 &self.config.compaction,
                 "token_threshold",
+                &tools,
+                &estimator,
             )
             .await?
             {
@@ -412,7 +510,8 @@ impl Agent {
         options: &PromptOptions,
         cancel: Option<&CancellationToken>,
     ) -> Result<(Message, Option<TokenUsage>)> {
-        let mut overflow_retried = false;
+        let mut overflow_truncated = false;
+        let mut overflow_summarized = false;
 
         loop {
             if Self::check_cancelled(cancel)? {
@@ -420,12 +519,13 @@ impl Agent {
             }
 
             let messages = self.build_messages();
-            let estimated_tokens = tokens::estimate_request_tokens(messages.as_slice(), tools);
+            let estimated_tokens = self.estimated_context_tokens(&messages, tools);
             debug!(
                 estimated_context_tokens = estimated_tokens,
                 message_count = messages.len(),
                 "llm step context estimate"
             );
+            self.warn_if_near_context_limit(estimated_tokens);
 
             let request = ChatRequest {
                 model: self.config.model.clone(),
@@ -445,22 +545,42 @@ impl Agent {
 
             match result {
                 Ok(value) => return Ok(value),
-                Err(err) if !overflow_retried && is_context_overflow_error(&err) => {
-                    overflow_retried = true;
-                    if let Some(result) = compact_session(
-                        &mut self.session,
-                        &self.client,
-                        &self.config.model,
-                        &self.config.compaction,
-                        "context_overflow",
-                    )
-                    .await?
-                    {
-                        self.record_compaction(&result)?;
+                Err(err) if is_context_overflow_error(&err) => {
+                    if !overflow_truncated {
+                        overflow_truncated = true;
+                        let estimator = self.token_estimator();
+                        if apply_overflow_truncate_pass(
+                            &mut self.session,
+                            &self.config.compaction,
+                            &estimator,
+                        ) {
+                            info!("context overflow: applied truncate pass before retry");
+                            self.session
+                                .ensure_system_message(&self.system_prompt);
+                            continue;
+                        }
                     }
-                    self.session
-                        .ensure_system_message(&self.system_prompt);
-                    continue;
+                    if !overflow_summarized {
+                        overflow_summarized = true;
+                        let estimator = self.token_estimator();
+                        if let Some(result) = compact_session(
+                            &mut self.session,
+                            &self.client,
+                            &self.config.model,
+                            &self.config.compaction,
+                            "context_overflow",
+                            tools,
+                            &estimator,
+                        )
+                        .await?
+                        {
+                            self.record_compaction(&result)?;
+                        }
+                        self.session
+                            .ensure_system_message(&self.system_prompt);
+                        continue;
+                    }
+                    return Err(err);
                 }
                 Err(err) => return Err(err),
             }
@@ -583,7 +703,17 @@ impl Agent {
             }),
             permission: Some(permission),
             plan_mode: Some(Arc::clone(&plan_mode)),
+            todos: Some(Arc::clone(&self.todos)),
+            ask_user: Some(Arc::clone(&self.ask_user)),
         };
+
+        struct PreparedTool {
+            call: ToolCall,
+            immediate: Option<(zene_tools::ToolResult, Option<u64>)>,
+            schedule: Option<(tool_scheduler::ToolAccesses, String, String)>,
+        }
+
+        let mut prepared = Vec::with_capacity(tool_calls.len());
 
         for call in tool_calls {
             if Self::check_cancelled(cancel)? {
@@ -601,7 +731,7 @@ impl Agent {
                 },
             );
 
-            let result = if call.name == "EnterPlanMode" {
+            let immediate = if call.name == "EnterPlanMode" {
                 let mut result = zene_tools::ToolResult {
                     content: "plan mode lock poisoned".to_string(),
                     is_error: true,
@@ -614,7 +744,7 @@ impl Agent {
                 if should_sync {
                     self.sync_plan_mode_system();
                 }
-                result
+                Some((result, None))
             } else if call.name == "ExitPlanMode" {
                 let mut result = zene_tools::ToolResult {
                     content: "plan mode lock poisoned".to_string(),
@@ -638,16 +768,27 @@ impl Agent {
                 if should_sync {
                     self.sync_plan_mode_system();
                 }
-                result
+                Some((result, None))
             } else if let Some(block) = self
                 .hooks
                 .run_pre_tool_use(&call.name, &call.arguments)
                 .await?
             {
-                zene_tools::ToolResult {
-                    content: format!("Hook blocked tool: {}", block.reason),
-                    is_error: true,
-                }
+                Some((
+                    zene_tools::ToolResult {
+                        content: format!("Hook blocked tool: {}", block.reason),
+                        is_error: true,
+                    },
+                    None,
+                ))
+            } else if !self.tools.contains(&call.name) {
+                Some((
+                    zene_tools::ToolResult {
+                        content: format!("unknown tool: {}", call.name),
+                        is_error: true,
+                    },
+                    None,
+                ))
             } else if self.is_plan_mode_active() {
                 let allowed_in_plan = self
                     .plan_mode
@@ -655,18 +796,15 @@ impl Agent {
                     .map(|s| s.is_tool_allowed(&call.name))
                     .unwrap_or(true);
                 if !allowed_in_plan {
-                    zene_tools::ToolResult {
-                        content: PlanModeState::blocked_message(&call.name),
-                        is_error: true,
-                    }
-                } else {
-                    self.tools
-                        .execute(&call.name, &call.arguments, &ctx)
-                        .await
-                        .unwrap_or_else(|err| zene_tools::ToolResult {
-                            content: err.to_string(),
+                    Some((
+                        zene_tools::ToolResult {
+                            content: PlanModeState::blocked_message(&call.name),
                             is_error: true,
-                        })
+                        },
+                        None,
+                    ))
+                } else {
+                    None
                 }
             } else {
                 let allowed = match self.permission.lock() {
@@ -687,20 +825,84 @@ impl Agent {
                     }
                 };
                 if !allowed {
-                    zene_tools::ToolResult {
-                        content: PermissionGate::denied_message(&call.name),
-                        is_error: true,
-                    }
+                    Some((
+                        zene_tools::ToolResult {
+                            content: PermissionGate::permission_denied_message(
+                                &call.name,
+                                &call.arguments,
+                            ),
+                            is_error: true,
+                        },
+                        None,
+                    ))
                 } else {
-                    self.tools
-                        .execute(&call.name, &call.arguments, &ctx)
+                    None
+                }
+            };
+
+            let schedule = if immediate.is_some() {
+                None
+            } else {
+                Some((
+                    classify_tool_accesses(&call.name, &call.arguments),
+                    call.name.clone(),
+                    call.arguments.clone(),
+                ))
+            };
+
+            prepared.push(PreparedTool {
+                call: call.clone(),
+                immediate,
+                schedule,
+            });
+        }
+
+        let tools = Arc::clone(&self.tools);
+        let mut scheduled = Vec::new();
+        for item in &prepared {
+            if let Some((accesses, name, arguments)) = item.schedule.as_ref() {
+                let ctx = ToolContext {
+                    sandbox: Arc::clone(&ctx.sandbox),
+                    cancel: ctx.cancel.clone(),
+                    subagent: ctx.subagent.clone(),
+                    permission: ctx.permission.clone(),
+                    plan_mode: ctx.plan_mode.clone(),
+                    todos: ctx.todos.clone(),
+                    ask_user: ctx.ask_user.clone(),
+                };
+                let tools = Arc::clone(&tools);
+                let name = name.clone();
+                let arguments = arguments.clone();
+                let future: std::pin::Pin<
+                    Box<dyn std::future::Future<Output = (zene_tools::ToolResult, Option<u64>)> + Send>,
+                > = Box::pin(async move {
+                    let started = Instant::now();
+                    let result = tools
+                        .execute(&name, &arguments, &ctx)
                         .await
                         .unwrap_or_else(|err| zene_tools::ToolResult {
                             content: err.to_string(),
                             is_error: true,
-                        })
-                }
+                        });
+                    (result, Some(started.elapsed().as_millis() as u64))
+                });
+                scheduled.push((accesses.clone(), future));
+            }
+        }
+
+        let scheduled_results = ToolScheduler::run_ordered(scheduled).await;
+        let mut scheduled_iter = scheduled_results.into_iter();
+
+        for item in prepared {
+            let (result, duration_ms) = if let Some(immediate) = item.immediate {
+                immediate
+            } else {
+                scheduled_iter
+                    .next()
+                    .expect("missing scheduled tool result")
             };
+
+            let call = item.call;
 
             if !result.is_error {
                 self.hooks
@@ -732,6 +934,7 @@ impl Agent {
                     name: call.name.clone(),
                     content: content.clone(),
                     is_error: result.is_error,
+                    duration_ms,
                 },
             );
 
@@ -750,6 +953,8 @@ impl Agent {
         self.record_writer.append(&RecordEntry::Compaction {
             reason: result.reason.clone(),
             compacted_count: result.compacted_count,
+            tokens_before: Some(result.stats.tokens_before),
+            tokens_after: Some(result.stats.tokens_after),
             ts: chrono::Utc::now(),
         })
     }
@@ -811,6 +1016,7 @@ fn record_entry_from_agent_event(event: &AgentEvent) -> Option<RecordEntry> {
             name,
             content,
             is_error,
+            duration_ms: _,
         } => Some(RecordEntry::ToolResult {
             name: name.clone(),
             content: content.clone(),
@@ -826,6 +1032,6 @@ fn record_entry_from_agent_event(event: &AgentEvent) -> Option<RecordEntry> {
             message: message.clone(),
             ts,
         }),
-        AgentEvent::TurnStart { .. } | AgentEvent::TextDelta { .. } => None,
+        AgentEvent::TurnStart { .. } | AgentEvent::TextDelta { .. } | AgentEvent::SteerInput { .. } => None,
     }
 }

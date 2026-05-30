@@ -25,6 +25,7 @@ pub enum AgentEvent {
         name: String,
         content: String,
         is_error: bool,
+        duration_ms: Option<u64>,
     },
     TurnEnd {
         turn_id: TurnId,
@@ -32,6 +33,9 @@ pub enum AgentEvent {
     },
     Error {
         message: String,
+    },
+    SteerInput {
+        text: String,
     },
 }
 
@@ -80,6 +84,7 @@ mod tests {
                 name: "Read".to_string(),
                 content: "file contents".to_string(),
                 is_error: false,
+                duration_ms: Some(12),
             },
         );
         emit_event(&options, AgentEvent::TurnEnd { turn_id, steps: 1 });

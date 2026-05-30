@@ -8,9 +8,11 @@ use tokio_util::sync::CancellationToken;
 use zene_llm::ToolDefinition;
 use zene_sandbox::LocalSandbox;
 
+use crate::ask_user::SharedAskUserPrompter;
 use crate::permission::SharedToolPermission;
 use crate::plan_mode::SharedPlanMode;
 use crate::subagent::SubagentEnv;
+use crate::todo_store::SharedTodoStore;
 
 pub struct ToolContext {
     pub sandbox: Arc<LocalSandbox>,
@@ -18,6 +20,8 @@ pub struct ToolContext {
     pub subagent: Option<SubagentEnv>,
     pub permission: Option<SharedToolPermission>,
     pub plan_mode: Option<SharedPlanMode>,
+    pub todos: Option<SharedTodoStore>,
+    pub ask_user: Option<SharedAskUserPrompter>,
 }
 
 impl ToolContext {
@@ -28,6 +32,8 @@ impl ToolContext {
             subagent: None,
             permission: None,
             plan_mode: None,
+            todos: None,
+            ask_user: None,
         }
     }
 }
@@ -78,6 +84,10 @@ impl ToolRegistry {
 
     pub fn definitions(&self) -> Vec<ToolDefinition> {
         self.tools.iter().map(|tool| tool.definition()).collect()
+    }
+
+    pub fn contains(&self, name: &str) -> bool {
+        self.tools.iter().any(|tool| tool.name() == name)
     }
 
     pub async fn execute(&self, name: &str, arguments: &str, ctx: &ToolContext) -> Result<ToolResult> {

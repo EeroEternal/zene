@@ -1,4 +1,5 @@
 mod record;
+mod todo;
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -9,6 +10,8 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 use zene_config::{sessions_dir, workdir_slug, zene_home};
 use zene_llm::Message;
+
+pub use todo::{TodoItem, TodoStatus};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SessionMeta {
@@ -25,6 +28,12 @@ pub struct CompactionEntry {
     pub created_at: DateTime<Utc>,
     pub summary: String,
     pub compacted_message_count: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tokens_before: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tokens_after: Option<u32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -33,6 +42,8 @@ pub struct SessionRecord {
     pub messages: Vec<Message>,
     #[serde(default)]
     pub compactions: Vec<CompactionEntry>,
+    #[serde(default)]
+    pub todos: Vec<TodoItem>,
 }
 
 impl SessionRecord {
@@ -48,6 +59,7 @@ impl SessionRecord {
             },
             messages: Vec::new(),
             compactions: Vec::new(),
+            todos: Vec::new(),
         }
     }
 
@@ -95,11 +107,31 @@ impl SessionRecord {
 
     /// Replace older messages with a compaction summary, keeping system + recent tail.
     pub fn apply_compaction(&mut self, summary: String, compacted_count: usize) -> CompactionEntry {
+        self.record_compaction_event(
+            "llm_summarize",
+            compacted_count,
+            Some(summary),
+            None,
+            None,
+        )
+    }
+
+    pub fn record_compaction_event(
+        &mut self,
+        reason: &str,
+        compacted_count: usize,
+        summary: Option<String>,
+        tokens_before: Option<u32>,
+        tokens_after: Option<u32>,
+    ) -> CompactionEntry {
         let entry = CompactionEntry {
             id: Uuid::new_v4().to_string(),
             created_at: Utc::now(),
-            summary: summary.clone(),
+            summary: summary.unwrap_or_default(),
             compacted_message_count: compacted_count,
+            reason: Some(reason.to_string()),
+            tokens_before,
+            tokens_after,
         };
         self.compactions.push(entry.clone());
         self.meta.updated_at = Utc::now();
@@ -111,6 +143,25 @@ impl SessionRecord {
         summary: String,
         tail_start: usize,
         compacted_count: usize,
+    ) {
+        self.replace_messages_after_compaction_with_stats(
+            summary,
+            tail_start,
+            compacted_count,
+            "llm_summarize",
+            None,
+            None,
+        );
+    }
+
+    pub fn replace_messages_after_compaction_with_stats(
+        &mut self,
+        summary: String,
+        tail_start: usize,
+        compacted_count: usize,
+        reason: &str,
+        tokens_before: Option<u32>,
+        tokens_after: Option<u32>,
     ) {
         let system = self
             .messages
@@ -128,7 +179,13 @@ impl SessionRecord {
         }
         self.messages.push(summary_message);
         self.messages.extend(tail);
-        self.apply_compaction(summary, compacted_count);
+        self.record_compaction_event(
+            reason,
+            compacted_count,
+            Some(summary),
+            tokens_before,
+            tokens_after,
+        );
     }
 
     pub fn save(&self) -> Result<()> {
@@ -241,5 +298,39 @@ mod tests {
         let loaded: SessionRecord = serde_json::from_str(&raw).expect("deserialize");
         assert_eq!(loaded.compactions.len(), 1);
         assert_eq!(loaded.compactions[0].summary, "summary");
+    }
+
+    #[test]
+    fn todos_session_roundtrip_serialization() {
+        let mut session = SessionRecord::new(Path::new("."));
+        session.todos.push(TodoItem {
+            id: "task-1".into(),
+            content: "Ship persistence".into(),
+            status: TodoStatus::InProgress,
+        });
+
+        let raw = serde_json::to_string(&session).expect("serialize");
+        let loaded: SessionRecord = serde_json::from_str(&raw).expect("deserialize");
+        assert_eq!(loaded.todos.len(), 1);
+        assert_eq!(loaded.todos[0].id, "task-1");
+        assert_eq!(loaded.todos[0].content, "Ship persistence");
+        assert_eq!(loaded.todos[0].status, TodoStatus::InProgress);
+    }
+
+    #[test]
+    fn old_session_without_todos_defaults_empty() {
+        let raw = r#"{
+            "meta": {
+                "id": "legacy",
+                "title": "New session",
+                "workdir": ".",
+                "created_at": "2026-01-01T00:00:00Z",
+                "updated_at": "2026-01-01T00:00:00Z"
+            },
+            "messages": [],
+            "compactions": []
+        }"#;
+        let session: SessionRecord = serde_json::from_str(raw).expect("deserialize");
+        assert!(session.todos.is_empty());
     }
 }

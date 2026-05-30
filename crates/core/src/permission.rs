@@ -63,6 +63,10 @@ impl PermissionGate {
 
     /// Returns `Ok(true)` if the tool may run, `Ok(false)` if denied.
     pub fn check(&mut self, tool_name: &str, arguments: &str) -> io::Result<bool> {
+        if policy_denied(tool_name, arguments).is_some() {
+            return Ok(false);
+        }
+
         if self.mode == PermissionMode::Yolo || !Self::requires_confirmation(tool_name) {
             return Ok(true);
         }
@@ -89,6 +93,44 @@ impl PermissionGate {
     pub fn denied_message(tool_name: &str) -> String {
         format!("Tool `{tool_name}` was denied by the user.")
     }
+
+    pub fn permission_denied_message(tool_name: &str, arguments: &str) -> String {
+        policy_denied(tool_name, arguments)
+            .unwrap_or_else(|| Self::denied_message(tool_name))
+    }
+}
+
+/// Hard deny Write/Edit under protected path segments (aligned with sandbox `.git` rules).
+pub fn policy_denied(tool_name: &str, arguments: &str) -> Option<String> {
+    if !matches!(tool_name, "Write" | "Edit") {
+        return None;
+    }
+    let path = extract_tool_path(arguments)?;
+    if is_protected_write_path(&path) {
+        Some(format!(
+            "Policy denied `{tool_name}` on `{path}`: writes under `node_modules/` and `.git/` are blocked."
+        ))
+    } else {
+        None
+    }
+}
+
+fn extract_tool_path(arguments: &str) -> Option<String> {
+    let value: Value = serde_json::from_str(arguments).ok()?;
+    value
+        .get("path")
+        .and_then(|p| p.as_str())
+        .map(str::to_string)
+}
+
+fn is_protected_write_path(path: &str) -> bool {
+    let normalized = path.replace('\\', "/");
+    let trimmed = normalized.trim_start_matches("./");
+    path_has_segment(trimmed, "node_modules") || path_has_segment(trimmed, ".git")
+}
+
+fn path_has_segment(path: &str, segment: &str) -> bool {
+    path.split('/').any(|part| part == segment)
 }
 
 pub fn approve_tool_call(
@@ -195,6 +237,29 @@ mod tests {
     #[test]
     fn mcp_tools_require_confirmation() {
         assert!(PermissionGate::requires_confirmation("mcp__git__status"));
+    }
+
+    #[test]
+    fn policy_denies_node_modules_and_git_writes() {
+        let mut gate = PermissionGate::new(PermissionMode::Yolo);
+        assert!(!gate
+            .check("Write", r#"{"path":"node_modules/pkg/index.js","content":"x"}"#)
+            .unwrap());
+        assert!(!gate
+            .check("Edit", r#"{"path":"foo/.git/config","old_string":"a","new_string":"b"}"#)
+            .unwrap());
+        assert!(gate
+            .check("Write", r#"{"path":"src/main.rs","content":"x"}"#)
+            .unwrap());
+    }
+
+    #[test]
+    fn policy_denied_message_is_specific() {
+        let msg = PermissionGate::permission_denied_message(
+            "Write",
+            r#"{"path":"node_modules/x"}"#,
+        );
+        assert!(msg.contains("node_modules"));
     }
 
     #[test]

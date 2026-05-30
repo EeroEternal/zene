@@ -51,6 +51,10 @@ include_workspace_context = true  # inject AGENTS.md, directory listing, git bra
 [[hooks]]
 event = "PreToolUse"
 command = "./scripts/pre-tool.sh"
+
+[web_search]
+provider = "tavily"   # or "duckduckgo" (no API key, limited HTML parsing)
+api_key = "tvly-..."  # or export ZENE_WEB_SEARCH_API_KEY
 ```
 
 Per-project overrides in `.zene/config.toml` (merged over global; project wins on key collision):
@@ -89,6 +93,8 @@ Example `~/.zene/hooks.json`:
 
 Skills live under `.agents/skills/*/SKILL.md`. Zene lists discovered skills in the system prompt; use the `Skill` tool to load a skill's instructions.
 
+**Web search:** Configure `[web_search]` in `~/.zene/config.toml`. With `provider = "tavily"` and an API key ([Tavily](https://tavily.com/) — simple REST API), results include title, URL, and snippet. Without a key, `provider = "duckduckgo"` scrapes DuckDuckGo HTML (fragile, fewer results, may break if markup changes).
+
 ## Usage
 
 ```bash
@@ -119,7 +125,7 @@ zene/
 ├── apps/cli/          # REPL entrypoint
 └── crates/
     ├── core/          # agent turn loop, hooks
-    ├── llm/           # OpenAI-compatible + Anthropic chat clients
+    ├── llm/           # OpenAI-compatible (unigateway-sdk from crates.io) + Anthropic clients
     ├── sandbox/       # local filesystem + shell
     ├── tools/         # Read/Write/Edit/Bash/Grep/Glob/Task
     ├── session/       # session persistence (~/.zene/sessions/)

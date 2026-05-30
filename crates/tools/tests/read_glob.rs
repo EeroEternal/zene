@@ -2,6 +2,7 @@ use std::sync::Arc;
 
 use tempfile::tempdir;
 use zene_sandbox::LocalSandbox;
+use zene_config::WebSearchConfig;
 use zene_tools::{builtin_tools, ToolContext};
 
 fn ctx(workdir: &std::path::Path) -> ToolContext {
@@ -11,11 +12,13 @@ fn ctx(workdir: &std::path::Path) -> ToolContext {
         subagent: None,
         permission: None,
         plan_mode: None,
+        todos: None,
+        ask_user: None,
     }
 }
 
 async fn run_tool(name: &str, args: serde_json::Value, ctx: &ToolContext) -> zene_tools::ToolResult {
-    builtin_tools()
+    builtin_tools(WebSearchConfig::default())
         .execute(name, &args.to_string(), ctx)
         .await
         .expect("tool execution should not fail")

@@ -24,7 +24,19 @@ impl PlanModeState {
         if !self.active {
             return true;
         }
-        matches!(name, "Read" | "Grep" | "Glob" | "Skill" | "ExitPlanMode")
+        matches!(
+            name,
+            "Read"
+                | "Grep"
+                | "Glob"
+                | "Skill"
+                | "AskUserQuestion"
+                | "TodoWrite"
+                | "TodoList"
+                | "FetchUrl"
+                | "WebSearch"
+                | "ExitPlanMode"
+        )
     }
 
     pub fn blocked_message(tool_name: &str) -> String {

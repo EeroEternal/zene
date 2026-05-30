@@ -51,6 +51,32 @@ pub enum ConfigError {
 
 pub const DEFAULT_CONTEXT_WINDOW_TOKENS: u32 = 128_000;
 
+/// Main agent tool profile. Subset of built-in tools; MCP tools are always merged on top.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum AgentProfile {
+    /// All built-in tools (default).
+    #[default]
+    Full,
+    /// Read-only exploration: Read/Grep/Glob + collaboration + plan tools.
+    Explore,
+    /// Read/write coding: Write/Edit/Bash + collaboration + Task subagent + plan tools.
+    Coder,
+}
+
+impl AgentProfile {
+    pub fn parse(s: &str) -> Result<Self, String> {
+        match s.trim().to_lowercase().as_str() {
+            "" | "full" | "default" => Ok(Self::Full),
+            "explore" => Ok(Self::Explore),
+            "coder" => Ok(Self::Coder),
+            other => Err(format!(
+                "unknown agent profile `{other}`; expected `full`, `explore`, or `coder`"
+            )),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CompactionConfig {
     #[serde(default = "default_compaction_trigger_ratio")]
@@ -59,6 +85,8 @@ pub struct CompactionConfig {
     pub keep_recent_ratio: f32,
     #[serde(default = "default_context_window_tokens")]
     pub context_window_tokens: u32,
+    #[serde(default = "default_min_keep_messages")]
+    pub min_keep_messages: usize,
 }
 
 fn default_compaction_trigger_ratio() -> f32 {
@@ -73,12 +101,17 @@ fn default_context_window_tokens() -> u32 {
     DEFAULT_CONTEXT_WINDOW_TOKENS
 }
 
+fn default_min_keep_messages() -> usize {
+    20
+}
+
 impl Default for CompactionConfig {
     fn default() -> Self {
         Self {
             trigger_ratio: default_compaction_trigger_ratio(),
             keep_recent_ratio: default_keep_recent_ratio(),
             context_window_tokens: default_context_window_tokens(),
+            min_keep_messages: default_min_keep_messages(),
         }
     }
 }
@@ -138,6 +171,58 @@ pub struct HooksFile {
     pub hooks: Vec<HookEntry>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WebSearchProviderKind {
+    Tavily,
+    DuckDuckGo,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct WebSearchConfig {
+    #[serde(default = "default_web_search_provider")]
+    pub provider: String,
+    #[serde(default)]
+    pub api_key: Option<String>,
+}
+
+fn default_web_search_provider() -> String {
+    "duckduckgo".to_string()
+}
+
+impl Default for WebSearchConfig {
+    fn default() -> Self {
+        Self {
+            provider: default_web_search_provider(),
+            api_key: None,
+        }
+    }
+}
+
+impl WebSearchConfig {
+    pub fn resolved_api_key(&self) -> Option<String> {
+        if let Some(key) = &self.api_key {
+            if !key.is_empty() {
+                return Some(key.clone());
+            }
+        }
+        if let Ok(key) = env::var("ZENE_WEB_SEARCH_API_KEY") {
+            if !key.is_empty() {
+                return Some(key);
+            }
+        }
+        None
+    }
+
+    pub fn effective_provider(&self) -> WebSearchProviderKind {
+        match self.provider.trim().to_lowercase().as_str() {
+            "tavily" => WebSearchProviderKind::Tavily,
+            "duckduckgo" | "ddg" => WebSearchProviderKind::DuckDuckGo,
+            _ if self.resolved_api_key().is_some() => WebSearchProviderKind::Tavily,
+            _ => WebSearchProviderKind::DuckDuckGo,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ZeneConfig {
     #[serde(default = "default_provider")]
@@ -154,6 +239,10 @@ pub struct ZeneConfig {
     pub anthropic_api_key: Option<String>,
     #[serde(default)]
     pub model_context_windows: HashMap<String, u32>,
+    #[serde(default = "default_chars_per_token")]
+    pub chars_per_token: f32,
+    #[serde(default)]
+    pub model_chars_per_token: HashMap<String, f32>,
     #[serde(default = "default_max_turns")]
     pub max_turns: u32,
     #[serde(default = "default_system_prompt")]
@@ -166,6 +255,10 @@ pub struct ZeneConfig {
     pub permission_mode: String,
     #[serde(default)]
     pub hooks: Vec<HookEntry>,
+    #[serde(default)]
+    pub web_search: WebSearchConfig,
+    #[serde(default)]
+    pub agent_profile: AgentProfile,
 }
 
 fn default_provider() -> String {
@@ -192,6 +285,10 @@ fn default_max_turns() -> u32 {
     50
 }
 
+fn default_chars_per_token() -> f32 {
+    4.0
+}
+
 fn default_system_prompt() -> String {
     "You are Zene, a local coding agent. You help users read, edit, and navigate codebases using the provided tools. Prefer small, focused changes. Explain briefly what you did.".to_string()
 }
@@ -206,12 +303,16 @@ impl Default for ZeneConfig {
             anthropic_base_url: None,
             anthropic_api_key: None,
             model_context_windows: HashMap::new(),
+            chars_per_token: default_chars_per_token(),
+            model_chars_per_token: HashMap::new(),
             max_turns: default_max_turns(),
             system_prompt: default_system_prompt(),
             compaction: CompactionConfig::default(),
             include_workspace_context: default_include_workspace_context(),
             permission_mode: default_permission_mode(),
             hooks: Vec::new(),
+            web_search: WebSearchConfig::default(),
+            agent_profile: AgentProfile::default(),
         }
     }
 }
@@ -273,6 +374,13 @@ impl ZeneConfig {
             return *tokens;
         }
         default_context_window_for_model(&self.model)
+    }
+
+    pub fn chars_per_token_for_model(&self) -> f32 {
+        if let Some(ratio) = self.model_chars_per_token.get(&self.model) {
+            return ratio.max(1.0);
+        }
+        self.chars_per_token.max(1.0)
     }
 
     fn apply_model_context_window(&mut self) {
@@ -388,6 +496,18 @@ impl ZeneConfig {
         if let Ok(key) = env::var("ANTHROPIC_API_KEY") {
             if !key.is_empty() {
                 self.anthropic_api_key = Some(key);
+            }
+        }
+        if let Ok(key) = env::var("ZENE_WEB_SEARCH_API_KEY") {
+            if !key.is_empty() {
+                self.web_search.api_key = Some(key);
+            }
+        }
+        if let Ok(profile) = env::var("ZENE_AGENT_PROFILE") {
+            if !profile.is_empty() {
+                if let Ok(parsed) = AgentProfile::parse(&profile) {
+                    self.agent_profile = parsed;
+                }
             }
         }
     }
@@ -564,12 +684,37 @@ mod provider_tests {
     }
 
     #[test]
+    fn web_search_config_defaults_to_duckduckgo() {
+        let config = WebSearchConfig::default();
+        assert_eq!(config.provider, "duckduckgo");
+        assert_eq!(config.effective_provider(), WebSearchProviderKind::DuckDuckGo);
+    }
+
+    #[test]
+    fn web_search_tavily_when_configured() {
+        let config = WebSearchConfig {
+            provider: "tavily".into(),
+            api_key: Some("tvly-test".into()),
+        };
+        assert_eq!(config.effective_provider(), WebSearchProviderKind::Tavily);
+        assert_eq!(config.resolved_api_key().as_deref(), Some("tvly-test"));
+    }
+
+    #[test]
     fn context_window_defaults() {
         let config = ZeneConfig {
             model: "gpt-4o".to_string(),
             ..Default::default()
         };
         assert_eq!(config.context_window_for_model(), 128_000);
+    }
+
+    #[test]
+    fn agent_profile_parsing() {
+        assert_eq!(AgentProfile::parse("full").unwrap(), AgentProfile::Full);
+        assert_eq!(AgentProfile::parse("explore").unwrap(), AgentProfile::Explore);
+        assert_eq!(AgentProfile::parse("coder").unwrap(), AgentProfile::Coder);
+        assert!(AgentProfile::parse("unknown").is_err());
     }
 }
 

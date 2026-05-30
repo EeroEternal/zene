@@ -12,7 +12,7 @@ pub async fn run_repl(agent: &mut Agent, cli: &Cli) -> Result<()> {
     println!("Zene coding agent");
     println!("Workdir: {}", agent.session().meta.workdir);
     println!("Session: {}", agent.session().meta.id);
-    println!("Type a prompt, /plan for plan mode, /cancel to abort a turn, or /exit to quit.");
+    println!("Type a prompt, /steer <msg> during a turn, /plan for plan mode, /cancel to abort a turn, or /exit to quit.");
     println!("Ctrl+C cancels the current turn while a prompt is running.\n");
 
     let mut rl = DefaultEditor::new().map_err(|err| anyhow::anyhow!(err))?;
@@ -38,6 +38,18 @@ pub async fn run_repl(agent: &mut Agent, cli: &Cli) -> Result<()> {
                 if input == "/plan" {
                     agent.enter_plan_mode();
                     eprintln!("Entered plan mode (read-only tools + ExitPlanMode).");
+                    continue;
+                }
+                if let Some(msg) = input.strip_prefix("/steer ") {
+                    let msg = msg.trim();
+                    if msg.is_empty() {
+                        eprintln!("Usage: /steer <message>");
+                        continue;
+                    }
+                    match agent.steer(msg) {
+                        Ok(()) => eprintln!("Steer queued ({} chars).", msg.len()),
+                        Err(err) => eprintln!("Steer failed: {err:#}"),
+                    }
                     continue;
                 }
 
@@ -106,6 +118,7 @@ fn verbose_event_handler(enabled: bool) -> Option<EventHandler> {
             name,
             content,
             is_error,
+            ..
         } => {
             let status = if is_error { "error" } else { "ok" };
             eprintln!(

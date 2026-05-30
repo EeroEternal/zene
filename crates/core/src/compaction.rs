@@ -1,12 +1,17 @@
 use anyhow::{Context, Result};
 use tracing::info;
 use zene_config::CompactionConfig;
-use zene_llm::{ChatClient, ChatRequest, ChatResponse, Message, Role, ToolDefinition};
+use zene_llm::{ChatClient, ChatRequest, ChatResponse, Message, MessageKind, Role, ToolDefinition};
 use zene_session::SessionRecord;
 
-use crate::tokens;
+use crate::tokens::{self, TokenEstimator};
 
 const SUMMARY_SYSTEM_PROMPT: &str = "You summarize coding agent conversations. Preserve key user requests, files discussed or modified, tool outcomes, and current task state. Be concise.";
+
+/// Max chars kept in a tool result before truncate-only compaction replaces the body.
+const TRUNCATE_TOOL_RESULT_MAX_CHARS: usize = 800;
+/// Max chars kept in assistant text before truncate-only compaction replaces the body.
+const TRUNCATE_ASSISTANT_TEXT_MAX_CHARS: usize = 1_200;
 
 pub fn should_compact(estimated_tokens: u32, config: &CompactionConfig) -> bool {
     let threshold =
@@ -18,19 +23,33 @@ pub fn keep_recent_token_budget(config: &CompactionConfig) -> u32 {
     (config.context_window_tokens as f32 * config.keep_recent_ratio).floor() as u32
 }
 
+fn system_prefix_start(messages: &[Message]) -> usize {
+    messages
+        .first()
+        .filter(|m| m.role == Role::System)
+        .map(|_| 1usize)
+        .unwrap_or(0)
+}
+
 /// Index where the recent tail begins. Returns `None` if there is nothing worth compacting.
-pub fn tail_start_index(messages: &[Message], keep_recent_tokens: u32) -> Option<usize> {
+pub fn tail_start_index(
+    messages: &[Message],
+    keep_recent_tokens: u32,
+    min_keep_messages: usize,
+    estimator: &TokenEstimator,
+) -> Option<usize> {
     if messages.is_empty() {
         return None;
     }
 
-    let prefix_start = messages
-        .first()
-        .filter(|m| m.role == Role::System)
-        .map(|_| 1usize)
-        .unwrap_or(0);
+    let prefix_start = system_prefix_start(messages);
 
     if prefix_start >= messages.len() {
+        return None;
+    }
+
+    let non_system_count = messages.len() - prefix_start;
+    if non_system_count <= min_keep_messages {
         return None;
     }
 
@@ -38,11 +57,16 @@ pub fn tail_start_index(messages: &[Message], keep_recent_tokens: u32) -> Option
     let mut tail_start = messages.len();
 
     for i in (prefix_start..messages.len()).rev() {
-        tokens += tokens::estimate_message_tokens(&messages[i]);
+        tokens += estimator.estimate_message_tokens(&messages[i]);
         tail_start = i;
         if tokens >= keep_recent_tokens {
             break;
         }
+    }
+
+    let max_tail_start = messages.len().saturating_sub(min_keep_messages);
+    if tail_start > max_tail_start {
+        tail_start = max_tail_start;
     }
 
     if tail_start <= prefix_start {
@@ -124,18 +148,30 @@ pub struct CompactionPlan {
     pub compacted_count: usize,
 }
 
+#[derive(Debug, Clone, Copy)]
+pub struct CompactionStats {
+    pub tokens_before: u32,
+    pub tokens_after: u32,
+}
+
 pub struct CompactionResult {
     pub reason: String,
     pub compacted_count: usize,
+    pub stats: CompactionStats,
 }
 
-pub fn plan_compaction(messages: &[Message], config: &CompactionConfig) -> Option<CompactionPlan> {
-    let tail_start = tail_start_index(messages, keep_recent_token_budget(config))?;
-    let prefix_start = messages
-        .first()
-        .filter(|m| m.role == Role::System)
-        .map(|_| 1usize)
-        .unwrap_or(0);
+pub fn plan_compaction(
+    messages: &[Message],
+    config: &CompactionConfig,
+    estimator: &TokenEstimator,
+) -> Option<CompactionPlan> {
+    let tail_start = tail_start_index(
+        messages,
+        keep_recent_token_budget(config),
+        config.min_keep_messages,
+        estimator,
+    )?;
+    let prefix_start = system_prefix_start(messages);
     let compacted_count = tail_start.saturating_sub(prefix_start);
     if compacted_count == 0 {
         return None;
@@ -146,11 +182,236 @@ pub fn plan_compaction(messages: &[Message], config: &CompactionConfig) -> Optio
     })
 }
 
+fn truncate_message_body(content: &str, max_content_chars: usize) -> Option<String> {
+    if content.starts_with("[truncated ") {
+        return None;
+    }
+    let char_count = content.chars().count();
+    if char_count <= max_content_chars {
+        return None;
+    }
+    Some(format!("[truncated {char_count} chars]"))
+}
+
+/// Phase 1: replace very old tool results and long assistant text with short placeholders.
+pub fn truncate_old_message_bodies(
+    messages: &mut [Message],
+    prefix_start: usize,
+    tail_start: usize,
+    max_tool_result_chars: usize,
+    max_assistant_text_chars: usize,
+) -> usize {
+    let mut truncated = 0usize;
+    for message in &mut messages[prefix_start..tail_start] {
+        match message.role {
+            Role::Tool => {
+                let Some(content) = message.content.as_ref() else {
+                    continue;
+                };
+                if let Some(replacement) = truncate_message_body(content, max_tool_result_chars) {
+                    message.content = Some(replacement);
+                    truncated += 1;
+                }
+            }
+            Role::Assistant if message.kind != Some(MessageKind::CompactionSummary) => {
+                let Some(content) = message.content.as_ref() else {
+                    continue;
+                };
+                if let Some(replacement) = truncate_message_body(content, max_assistant_text_chars) {
+                    message.content = Some(replacement);
+                    truncated += 1;
+                }
+            }
+            _ => {}
+        }
+    }
+    truncated
+}
+
+/// Replace very old tool result bodies with a short placeholder (legacy alias).
+pub fn truncate_old_tool_results(
+    messages: &mut [Message],
+    prefix_start: usize,
+    tail_start: usize,
+    max_content_chars: usize,
+) -> usize {
+    truncate_old_message_bodies(
+        messages,
+        prefix_start,
+        tail_start,
+        max_content_chars,
+        TRUNCATE_ASSISTANT_TEXT_MAX_CHARS,
+    )
+}
+
+pub fn build_sliced_messages(messages: &[Message], tail_start: usize) -> Vec<Message> {
+    let prefix_start = system_prefix_start(messages);
+    let mut kept = Vec::new();
+
+    if let Some(system) = messages.first().filter(|m| m.role == Role::System) {
+        kept.push(system.clone());
+    }
+
+    for message in &messages[prefix_start..tail_start] {
+        if message.kind == Some(MessageKind::CompactionSummary) {
+            kept.push(message.clone());
+        }
+    }
+
+    kept.extend_from_slice(&messages[tail_start..]);
+    kept
+}
+
+/// Phase 2: drop old prefix messages, keeping system, compaction summaries, and recent tail.
+pub fn apply_slice_keep(messages: &mut Vec<Message>, tail_start: usize) -> usize {
+    let prefix_start = system_prefix_start(messages);
+    if tail_start <= prefix_start {
+        return 0;
+    }
+
+    let summaries_kept = messages[prefix_start..tail_start]
+        .iter()
+        .filter(|m| m.kind == Some(MessageKind::CompactionSummary))
+        .count();
+    let removed = tail_start.saturating_sub(prefix_start).saturating_sub(summaries_kept);
+    let sliced = build_sliced_messages(messages, tail_start);
+    *messages = sliced;
+    removed
+}
+
+fn estimate_session_tokens(
+    session: &SessionRecord,
+    tools: &[ToolDefinition],
+    estimator: &TokenEstimator,
+) -> u32 {
+    tokens::estimate_context(&session.messages, tools, estimator) as u32
+}
+
+fn record_compaction_result(
+    session: &mut SessionRecord,
+    result: &CompactionResult,
+    summary: Option<String>,
+) {
+    session.record_compaction_event(
+        &result.reason,
+        result.compacted_count,
+        summary,
+        Some(result.stats.tokens_before),
+        Some(result.stats.tokens_after),
+    );
+}
+
+fn try_truncate_only_compaction(
+    session: &mut SessionRecord,
+    config: &CompactionConfig,
+    tools: &[ToolDefinition],
+    estimator: &TokenEstimator,
+) -> Option<CompactionResult> {
+    let tokens_before = estimate_session_tokens(session, tools, estimator);
+    let plan = plan_compaction(&session.messages, config, estimator)?;
+    let prefix_start = system_prefix_start(&session.messages);
+    let truncated = truncate_old_message_bodies(
+        &mut session.messages,
+        prefix_start,
+        plan.tail_start,
+        TRUNCATE_TOOL_RESULT_MAX_CHARS,
+        TRUNCATE_ASSISTANT_TEXT_MAX_CHARS,
+    );
+    if truncated == 0 {
+        return None;
+    }
+
+    let tokens_after = estimate_session_tokens(session, tools, estimator);
+    if should_compact(tokens_after, config) {
+        return None;
+    }
+
+    info!(
+        reason = "truncate_only",
+        truncated_messages = truncated,
+        tokens_before,
+        tokens_after,
+        "context compaction avoided LLM summarize via in-place truncation"
+    );
+
+    let result = CompactionResult {
+        reason: "truncate_only".to_string(),
+        compacted_count: truncated,
+        stats: CompactionStats {
+            tokens_before,
+            tokens_after,
+        },
+    };
+    record_compaction_result(session, &result, None);
+    Some(result)
+}
+
+fn try_slice_keep_compaction(
+    session: &mut SessionRecord,
+    config: &CompactionConfig,
+    tools: &[ToolDefinition],
+    estimator: &TokenEstimator,
+) -> Option<CompactionResult> {
+    let tokens_before = estimate_session_tokens(session, tools, estimator);
+    let plan = plan_compaction(&session.messages, config, estimator)?;
+
+    let sliced = build_sliced_messages(&session.messages, plan.tail_start);
+    let tokens_after =
+        tokens::estimate_context(&sliced, tools, estimator) as u32;
+    if should_compact(tokens_after, config) {
+        return None;
+    }
+
+    let removed = apply_slice_keep(&mut session.messages, plan.tail_start);
+    if removed == 0 {
+        return None;
+    }
+
+    info!(
+        reason = "slice_keep",
+        removed_messages = removed,
+        tokens_before,
+        tokens_after,
+        "context compaction avoided LLM summarize via slice keep"
+    );
+
+    let result = CompactionResult {
+        reason: "slice_keep".to_string(),
+        compacted_count: removed,
+        stats: CompactionStats {
+            tokens_before,
+            tokens_after,
+        },
+    };
+    record_compaction_result(session, &result, None);
+    Some(result)
+}
+
+/// Overflow recovery: apply phase-1 truncation in place before a retry (no threshold check).
+pub fn apply_overflow_truncate_pass(
+    session: &mut SessionRecord,
+    config: &CompactionConfig,
+    estimator: &TokenEstimator,
+) -> bool {
+    let Some(plan) = plan_compaction(&session.messages, config, estimator) else {
+        return false;
+    };
+    let prefix_start = system_prefix_start(&session.messages);
+    truncate_old_message_bodies(
+        &mut session.messages,
+        prefix_start,
+        plan.tail_start,
+        TRUNCATE_TOOL_RESULT_MAX_CHARS,
+        TRUNCATE_ASSISTANT_TEXT_MAX_CHARS,
+    ) > 0
+}
+
 pub fn subagent_compaction_config(parent: &CompactionConfig) -> CompactionConfig {
     CompactionConfig {
         context_window_tokens: parent.context_window_tokens.min(16_000),
         trigger_ratio: 0.5,
         keep_recent_ratio: parent.keep_recent_ratio.max(0.3),
+        min_keep_messages: parent.min_keep_messages,
     }
 }
 
@@ -178,43 +439,152 @@ pub fn apply_compaction_to_messages(
     let _ = compacted_count;
 }
 
+async fn compact_with_phases<F, Fut>(
+    messages: &mut Vec<Message>,
+    model: &str,
+    config: &CompactionConfig,
+    reason: &str,
+    tools: &[ToolDefinition],
+    estimator: &TokenEstimator,
+    chat: F,
+) -> Result<Option<CompactionResult>>
+where
+    F: Fn(ChatRequest) -> Fut,
+    Fut: std::future::Future<Output = Result<ChatResponse>>,
+{
+    let tokens_before =
+        tokens::estimate_context(messages, tools, estimator) as u32;
+
+    if let Some(result) = try_truncate_only_on_messages(messages, config, tools, estimator) {
+        return Ok(Some(result));
+    }
+
+    if let Some(result) = try_slice_keep_on_messages(messages, config, tools, estimator) {
+        return Ok(Some(result));
+    }
+
+    let plan = match plan_compaction(messages, config, estimator) {
+        Some(plan) => plan,
+        None => return Ok(None),
+    };
+
+    let prefix_start = system_prefix_start(messages);
+    let prefix = messages[prefix_start..plan.tail_start].to_vec();
+    let request = ChatRequest {
+        model: model.to_string(),
+        messages: vec![
+            Message::system(SUMMARY_SYSTEM_PROMPT),
+            Message::user(format!(
+                "Summarize this conversation for a coding agent to continue work:\n\n{}",
+                format_messages_for_summary(&prefix)
+            )),
+        ],
+        tools: Vec::new(),
+        stream: false,
+    };
+    let response = chat(request).await.context("compaction summary")?;
+    let summary = response
+        .message
+        .content
+        .unwrap_or_else(|| "(empty summary)".to_string());
+
+    apply_compaction_to_messages(messages, summary.clone(), plan.tail_start, plan.compacted_count);
+    let tokens_after = tokens::estimate_context(messages, tools, estimator) as u32;
+
+    info!(
+        reason,
+        compacted_messages = plan.compacted_count,
+        tail_messages = messages.len(),
+        summary_chars = summary.len(),
+        tokens_before,
+        tokens_after,
+        "context compaction applied via LLM summarize"
+    );
+
+    Ok(Some(CompactionResult {
+        reason: reason.to_string(),
+        compacted_count: plan.compacted_count,
+        stats: CompactionStats {
+            tokens_before,
+            tokens_after,
+        },
+    }))
+}
+
+fn try_truncate_only_on_messages(
+    messages: &mut Vec<Message>,
+    config: &CompactionConfig,
+    tools: &[ToolDefinition],
+    estimator: &TokenEstimator,
+) -> Option<CompactionResult> {
+    let tokens_before = tokens::estimate_context(messages, tools, estimator) as u32;
+    let plan = plan_compaction(messages, config, estimator)?;
+    let prefix_start = system_prefix_start(messages);
+    let truncated = truncate_old_message_bodies(
+        messages,
+        prefix_start,
+        plan.tail_start,
+        TRUNCATE_TOOL_RESULT_MAX_CHARS,
+        TRUNCATE_ASSISTANT_TEXT_MAX_CHARS,
+    );
+    if truncated == 0 {
+        return None;
+    }
+    let tokens_after = tokens::estimate_context(messages, tools, estimator) as u32;
+    if should_compact(tokens_after, config) {
+        return None;
+    }
+    Some(CompactionResult {
+        reason: "truncate_only".to_string(),
+        compacted_count: truncated,
+        stats: CompactionStats {
+            tokens_before,
+            tokens_after,
+        },
+    })
+}
+
+fn try_slice_keep_on_messages(
+    messages: &mut Vec<Message>,
+    config: &CompactionConfig,
+    tools: &[ToolDefinition],
+    estimator: &TokenEstimator,
+) -> Option<CompactionResult> {
+    let tokens_before = tokens::estimate_context(messages, tools, estimator) as u32;
+    let plan = plan_compaction(messages, config, estimator)?;
+    let sliced = build_sliced_messages(messages, plan.tail_start);
+    let tokens_after = tokens::estimate_context(&sliced, tools, estimator) as u32;
+    if should_compact(tokens_after, config) {
+        return None;
+    }
+    let removed = apply_slice_keep(messages, plan.tail_start);
+    if removed == 0 {
+        return None;
+    }
+    Some(CompactionResult {
+        reason: "slice_keep".to_string(),
+        compacted_count: removed,
+        stats: CompactionStats {
+            tokens_before,
+            tokens_after,
+        },
+    })
+}
+
 pub async fn compact_message_list_with_chat<F, Fut>(
     messages: &mut Vec<Message>,
     model: &str,
     config: &CompactionConfig,
     reason: &str,
+    tools: &[ToolDefinition],
+    estimator: &TokenEstimator,
     chat: F,
 ) -> Result<Option<CompactionResult>>
 where
-    F: FnOnce(ChatRequest) -> Fut,
+    F: Fn(ChatRequest) -> Fut,
     Fut: std::future::Future<Output = Result<ChatResponse>>,
 {
-    let plan = match plan_compaction(messages, config) {
-        Some(plan) => plan,
-        None => return Ok(None),
-    };
-
-    let prefix_start = messages
-        .first()
-        .filter(|m| m.role == Role::System)
-        .map(|_| 1usize)
-        .unwrap_or(0);
-    let prefix = &messages[prefix_start..plan.tail_start];
-    let summary = summarize_messages_with_chat(model, prefix, chat).await?;
-
-    info!(
-        reason = reason,
-        compacted_messages = plan.compacted_count,
-        tail_messages = messages.len() - plan.tail_start,
-        summary_chars = summary.len(),
-        "subagent context compaction applied"
-    );
-
-    apply_compaction_to_messages(messages, summary, plan.tail_start, plan.compacted_count);
-    Ok(Some(CompactionResult {
-        reason: reason.to_string(),
-        compacted_count: plan.compacted_count,
-    }))
+    compact_with_phases(messages, model, config, reason, tools, estimator, chat).await
 }
 
 pub async fn summarize_messages_with_chat<F, Fut>(
@@ -252,18 +622,24 @@ pub async fn compact_session(
     model: &str,
     config: &CompactionConfig,
     reason: &str,
+    tools: &[ToolDefinition],
+    estimator: &TokenEstimator,
 ) -> Result<Option<CompactionResult>> {
-    let plan = match plan_compaction(&session.messages, config) {
+    if let Some(result) = try_truncate_only_compaction(session, config, tools, estimator) {
+        return Ok(Some(result));
+    }
+
+    if let Some(result) = try_slice_keep_compaction(session, config, tools, estimator) {
+        return Ok(Some(result));
+    }
+
+    let tokens_before = estimate_session_tokens(session, tools, estimator);
+    let plan = match plan_compaction(&session.messages, config, estimator) {
         Some(plan) => plan,
         None => return Ok(None),
     };
 
-    let prefix_start = session
-        .messages
-        .first()
-        .filter(|m| m.role == Role::System)
-        .map(|_| 1usize)
-        .unwrap_or(0);
+    let prefix_start = system_prefix_start(&session.messages);
     let prefix = &session.messages[prefix_start..plan.tail_start];
     let summary = summarize_messages(client, model, prefix).await?;
 
@@ -272,13 +648,31 @@ pub async fn compact_session(
         compacted_messages = plan.compacted_count,
         tail_messages = session.messages.len() - plan.tail_start,
         summary_chars = summary.len(),
-        "context compaction applied"
+        tokens_before,
+        "context compaction applying LLM summarize"
     );
 
-    session.replace_messages_after_compaction(summary, plan.tail_start, plan.compacted_count);
+    session.replace_messages_after_compaction_with_stats(
+        summary.clone(),
+        plan.tail_start,
+        plan.compacted_count,
+        reason,
+        Some(tokens_before),
+        None,
+    );
+
+    let tokens_after = estimate_session_tokens(session, tools, estimator);
+    if let Some(entry) = session.compactions.last_mut() {
+        entry.tokens_after = Some(tokens_after);
+    }
+
     Ok(Some(CompactionResult {
         reason: reason.to_string(),
         compacted_count: plan.compacted_count,
+        stats: CompactionStats {
+            tokens_before,
+            tokens_after,
+        },
     }))
 }
 
@@ -288,6 +682,10 @@ mod tests {
     use zene_config::CompactionConfig;
     use zene_llm::ToolCall;
 
+    fn estimator() -> TokenEstimator {
+        TokenEstimator::default()
+    }
+
     fn user_msg(text: &str) -> Message {
         Message::user(text)
     }
@@ -296,16 +694,36 @@ mod tests {
         Message::assistant(text)
     }
 
+    fn tool_msg(content: &str) -> Message {
+        Message::tool_result("call_1", "Read", content)
+    }
+
     #[test]
     fn should_compact_when_over_threshold() {
         let config = CompactionConfig {
             trigger_ratio: 0.5,
             keep_recent_ratio: 0.25,
             context_window_tokens: 1000,
+            min_keep_messages: 4,
         };
         assert!(!should_compact(499, &config));
         assert!(should_compact(500, &config));
         assert!(should_compact(600, &config));
+    }
+
+    #[test]
+    fn should_compact_with_estimated_messages() {
+        let config = CompactionConfig {
+            trigger_ratio: 0.5,
+            keep_recent_ratio: 0.25,
+            context_window_tokens: 200,
+            min_keep_messages: 2,
+        };
+        let messages: Vec<Message> = (0..30)
+            .map(|i| user_msg(&format!("message {i}: {}", "x".repeat(200))))
+            .collect();
+        let est = tokens::estimate_context(&messages, &[], &estimator()) as u32;
+        assert!(should_compact(est, &config));
     }
 
     #[test]
@@ -317,15 +735,24 @@ mod tests {
             user_msg(&"z".repeat(400)),
             assistant_msg("recent"),
         ];
-        let tail_start = tail_start_index(&messages, 100).expect("tail start");
+        let tail_start = tail_start_index(&messages, 100, 2, &estimator()).expect("tail start");
         assert!(tail_start >= 3);
         assert!(tail_start < messages.len());
     }
 
     #[test]
-    fn tail_start_none_when_too_few_messages() {
+    fn tail_start_respects_message_count_floor() {
+        let messages: Vec<Message> = std::iter::once(Message::system("sys"))
+            .chain((0..25).map(|i| user_msg(&format!("msg {i}"))))
+            .collect();
+        let tail_start = tail_start_index(&messages, 10, 20, &estimator()).expect("tail start");
+        assert_eq!(messages.len() - tail_start, 20);
+    }
+
+    #[test]
+    fn tail_start_none_when_below_message_floor() {
         let messages = vec![Message::system("sys"), user_msg("hi")];
-        assert!(tail_start_index(&messages, 100).is_none());
+        assert!(tail_start_index(&messages, 100, 20, &estimator()).is_none());
     }
 
     #[test]
@@ -341,10 +768,74 @@ mod tests {
             trigger_ratio: 0.85,
             keep_recent_ratio: 0.5,
             context_window_tokens: 100,
+            min_keep_messages: 2,
         };
-        let plan = plan_compaction(&messages, &config).expect("plan");
+        let plan = plan_compaction(&messages, &config, &estimator()).expect("plan");
         assert!(plan.compacted_count >= 1);
         assert!(plan.tail_start > 1);
+    }
+
+    #[test]
+    fn truncate_old_tool_results_replaces_large_bodies() {
+        let mut messages = vec![
+            Message::system("sys"),
+            tool_msg(&"x".repeat(2000)),
+            user_msg("recent"),
+        ];
+        let truncated = truncate_old_tool_results(&mut messages, 1, 2, 100);
+        assert_eq!(truncated, 1);
+        assert_eq!(
+            messages[1].content.as_deref(),
+            Some("[truncated 2000 chars]")
+        );
+    }
+
+    #[test]
+    fn truncate_old_assistant_text_replaces_large_bodies() {
+        let mut messages = vec![
+            Message::system("sys"),
+            assistant_msg(&"x".repeat(3000)),
+            user_msg("recent"),
+        ];
+        let truncated = truncate_old_message_bodies(&mut messages, 1, 2, 800, 500);
+        assert_eq!(truncated, 1);
+        assert_eq!(
+            messages[1].content.as_deref(),
+            Some("[truncated 3000 chars]")
+        );
+    }
+
+    #[test]
+    fn truncate_reduces_token_estimate() {
+        let est = estimator();
+        let mut messages = vec![
+            Message::system("sys"),
+            tool_msg(&"x".repeat(5000)),
+            assistant_msg(&"y".repeat(5000)),
+            user_msg("recent"),
+        ];
+        let before = tokens::estimate_context(&messages, &[], &est);
+        let truncated = truncate_old_message_bodies(&mut messages, 1, 3, 800, 1200);
+        let after = tokens::estimate_context(&messages, &[], &est);
+        assert!(truncated >= 2);
+        assert!(after < before);
+    }
+
+    #[test]
+    fn slice_keep_preserves_compaction_summaries() {
+        let mut messages = vec![
+            Message::system("sys"),
+            Message::compaction_summary("old summary"),
+            user_msg("old user"),
+            assistant_msg("old assistant"),
+            user_msg("recent"),
+        ];
+        let removed = apply_slice_keep(&mut messages, 4);
+        assert_eq!(removed, 2);
+        assert_eq!(messages.len(), 3);
+        assert_eq!(messages[0].role, Role::System);
+        assert_eq!(messages[1].kind, Some(MessageKind::CompactionSummary));
+        assert_eq!(messages[2].content.as_deref(), Some("recent"));
     }
 
     #[test]
@@ -353,10 +844,12 @@ mod tests {
             trigger_ratio: 0.85,
             keep_recent_ratio: 0.25,
             context_window_tokens: 128_000,
+            min_keep_messages: 20,
         };
         let sub = subagent_compaction_config(&parent);
         assert_eq!(sub.context_window_tokens, 16_000);
         assert_eq!(sub.trigger_ratio, 0.5);
+        assert_eq!(sub.min_keep_messages, 20);
     }
 
     #[test]
