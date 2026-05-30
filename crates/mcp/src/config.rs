@@ -132,8 +132,8 @@ mod tests {
         )
         .unwrap();
 
-        let global_path = global_mcp_config_path();
         let _guard = EnvOverride::set("ZENE_HOME", temp.path());
+        let global_path = global_mcp_config_path();
 
         // Write to the actual global path under temp ZENE_HOME
         fs::write(
