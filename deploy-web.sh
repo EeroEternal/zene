@@ -43,7 +43,7 @@ case "$OPTION" in
       exit 1
     fi
     echo "Deploying 'web' directory to Cloudflare Pages..."
-    npx wrangler pages deploy web --project-name zene --branch main
+    npx wrangler pages deploy web --project-name zene-docs --branch main
     ;;
   *)
     echo "Exited."
