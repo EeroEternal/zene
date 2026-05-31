@@ -55,9 +55,13 @@ pub struct Cli {
     #[arg(long)]
     yolo: bool,
 
-    /// Launch ratatui TUI instead of line REPL
+    /// Launch ratatui TUI instead of line REPL (now default)
     #[arg(long)]
     tui: bool,
+
+    /// Launch line REPL instead of ratatui TUI
+    #[arg(long)]
+    repl: bool,
 
     /// Print tool_call / tool_result events to stderr
     #[arg(long)]
@@ -92,7 +96,10 @@ async fn main() -> Result<()> {
         .with_target(false)
         .init();
 
-    if !std::env::args().any(|a| a == "--tui") {
+    let cli_args: Vec<String> = std::env::args().collect();
+    let is_repl = cli_args.iter().any(|a| a == "--repl");
+
+    if is_repl {
         ctrlc::set_handler(|| {
             if cancel_active_turn() {
                 eprintln!("\n[cancelled]");
@@ -169,7 +176,7 @@ async fn main() -> Result<()> {
     let sandbox = LocalSandbox::new(&workdir);
     let mut agent = Agent::new(config.clone(), sandbox, session, permission_mode).await?;
 
-    if cli.tui {
+    if !cli.repl {
         return tui::run(agent, &config, &cli).await;
     }
 
