@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Zene Web deployment helper script.
-# This script makes it easy to preview locally and deploy/sync the website to zene.run.
+# This script makes it easy to preview locally and deploy/sync the website to zene.sh.
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
@@ -34,7 +34,7 @@ case "$OPTION" in
     
     echo "Pushing to main branch..."
     git push origin main
-    echo "Sync complete! CI/CD will build and deploy the changes to https://zene.run/ shortly."
+    echo "Sync complete! CI/CD will build and deploy the changes to https://zene.sh/ shortly."
     ;;
   3)
     echo "Checking if wrangler is installed..."

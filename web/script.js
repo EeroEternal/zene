@@ -1,5 +1,5 @@
 /* ═══════════════════════════════════════════════════════════════
-   zene.run — Minimal interactive logic
+   zene.sh — Minimal interactive logic
    ═══════════════════════════════════════════════════════════════ */
 
 (function() {
