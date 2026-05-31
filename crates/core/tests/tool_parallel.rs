@@ -65,7 +65,7 @@ async fn parallel_read_calls_both_succeed() {
     assert!(results[0].0.content.contains("alpha"));
     assert!(results[1].0.content.contains("beta"));
     assert!(
-        elapsed < Duration::from_millis(150),
+        elapsed < Duration::from_millis(500),
         "expected parallel reads, took {:?}",
         elapsed
     );

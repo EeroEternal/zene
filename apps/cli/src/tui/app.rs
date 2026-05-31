@@ -29,11 +29,49 @@ pub struct PermissionPrompt {
     pub response_tx: std::sync::mpsc::Sender<PromptChoice>,
 }
 
-pub struct ApiKeyPrompt {
-    pub provider: String,
-    pub model: String,
-    pub base_url: Option<String>,
-    pub input_key: String,
+#[derive(Debug, Clone)]
+pub struct ModelPreset {
+    pub display_name: &'static str,
+    pub model_name: &'static str,
+    pub provider: &'static str,
+    pub base_url: &'static str,
+    pub requires_key: bool,
+}
+
+pub const MODEL_PRESETS: &[ModelPreset] = &[
+    ModelPreset {
+        display_name: "DeepSeek Chat",
+        model_name: "deepseek-chat",
+        provider: "openai",
+        base_url: "https://api.deepseek.com",
+        requires_key: true,
+    },
+    ModelPreset {
+        display_name: "OpenAI GPT-4o",
+        model_name: "gpt-4o",
+        provider: "openai",
+        base_url: "https://api.openai.com/v1",
+        requires_key: true,
+    },
+    ModelPreset {
+        display_name: "Anthropic Claude 3.5 Sonnet",
+        model_name: "claude-3-5-sonnet-20241022",
+        provider: "anthropic",
+        base_url: "https://api.anthropic.com",
+        requires_key: true,
+    },
+    ModelPreset {
+        display_name: "Ollama (Local Qwen2.5-Coder)",
+        model_name: "qwen2.5-coder",
+        provider: "openai",
+        base_url: "http://localhost:11434/v1",
+        requires_key: false,
+    },
+];
+
+pub struct ModelSelector {
+    pub selected_index: usize,
+    pub input_key: Option<String>,
 }
 
 struct PendingEdit {
@@ -52,7 +90,7 @@ pub struct App {
     pub permission_mode: PermissionMode,
     pub run_state: RunState,
     pub permission: Option<PermissionPrompt>,
-    pub api_key_prompt: Option<ApiKeyPrompt>,
+    pub model_selector: Option<ModelSelector>,
     pub should_quit: bool,
     pub last_esc: Option<Instant>,
     pub scroll: u16,
@@ -74,7 +112,7 @@ impl App {
             permission_mode,
             run_state: RunState::Idle,
             permission: None,
-            api_key_prompt: None,
+            model_selector: None,
             should_quit: false,
             last_esc: None,
             scroll: 0,

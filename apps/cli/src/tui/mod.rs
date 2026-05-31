@@ -89,8 +89,8 @@ pub async fn run(agent: Agent, config: &ZeneConfig, cli: &Cli) -> Result<()> {
                     continue;
                 }
 
-                if app.api_key_prompt.is_some() {
-                    handle_api_key_prompt_key(&mut app, &agent, key.code, ui_tx.clone());
+                if app.model_selector.is_some() {
+                    handle_model_selector_key(&mut app, &agent, key.code, ui_tx.clone()).await;
                     continue;
                 }
 
@@ -126,21 +126,9 @@ pub async fn run(agent: Agent, config: &ZeneConfig, cli: &Cli) -> Result<()> {
                             continue;
                         }
                         if input == "/models" || input == "/model" {
-                            let agent_guard = agent.lock().await;
-                            let config = agent_guard.config();
-                            let provider = config.provider.clone();
-                            let model = config.model.clone();
-                            let base_url = if provider.trim().to_lowercase() == "anthropic" {
-                                config.anthropic_base_url.clone()
-                            } else {
-                                Some(config.base_url.clone())
-                            };
-                            
-                            app.api_key_prompt = Some(app::ApiKeyPrompt {
-                                provider,
-                                model,
-                                base_url,
-                                input_key: String::new(),
+                            app.model_selector = Some(app::ModelSelector {
+                                selected_index: 0,
+                                input_key: None,
                             });
                             continue;
                         }
@@ -174,21 +162,20 @@ pub async fn run(agent: Agent, config: &ZeneConfig, cli: &Cli) -> Result<()> {
                                     }
                                 }
 
-                                let (provider_name, has_key) = {
+                                let has_key = {
                                     let agent_guard = agent.lock().await;
                                     let config = agent_guard.config();
                                     let provider_name = provider.clone().unwrap_or_else(|| {
                                         config.provider.clone()
                                     });
-                                    let has_key = api_key.is_some() || {
+                                    api_key.is_some() || {
                                         if provider_name.trim().to_lowercase() == "anthropic" {
                                             config.anthropic_api_key.as_deref().map_or(false, |k| !k.is_empty()) || std::env::var("ANTHROPIC_API_KEY").is_ok()
                                         } else {
                                             config.api_key.as_deref().map_or(false, |k| !k.is_empty()) || 
                                                 ["DEEPSEEK_API_KEY", "ZENE_API_KEY", "OPENAI_API_KEY"].iter().any(|var| std::env::var(var).is_ok())
                                         }
-                                    };
-                                    (provider_name, has_key)
+                                    }
                                 };
 
                                 let is_ollama = raw_model.starts_with("ollama/");
@@ -211,11 +198,14 @@ pub async fn run(agent: Agent, config: &ZeneConfig, cli: &Cli) -> Result<()> {
                                         }
                                     }
                                 } else {
-                                    app.api_key_prompt = Some(app::ApiKeyPrompt {
-                                        provider: provider_name,
-                                        model,
-                                        base_url,
-                                        input_key: String::new(),
+                                    let selected_index = app::MODEL_PRESETS
+                                        .iter()
+                                        .position(|p| p.model_name == model)
+                                        .unwrap_or(0);
+
+                                    app.model_selector = Some(app::ModelSelector {
+                                        selected_index,
+                                        input_key: Some(String::new()),
                                     });
                                 }
                             }
@@ -343,54 +333,140 @@ fn handle_permission_key(app: &mut App, code: KeyCode) {
     let _ = prompt.response_tx.send(choice);
 }
 
-fn handle_api_key_prompt_key(
+async fn handle_model_selector_key(
     app: &mut App,
     agent: &Arc<AsyncMutex<Agent>>,
     code: KeyCode,
     ui_tx: std::sync::mpsc::Sender<UiMessage>,
 ) {
-    let mut finished = false;
-    let mut cancel = false;
+    let Some(ref mut selector) = app.model_selector else {
+        return;
+    };
 
-    if let Some(ref mut prompt) = app.api_key_prompt {
+    if let Some(ref mut input_key) = selector.input_key {
         match code {
             KeyCode::Char(c) => {
-                prompt.input_key.push(c);
+                input_key.push(c);
             }
             KeyCode::Backspace => {
-                prompt.input_key.pop();
+                input_key.pop();
             }
             KeyCode::Esc => {
-                cancel = true;
+                selector.input_key = None;
             }
             KeyCode::Enter => {
-                finished = true;
+                let preset = &app::MODEL_PRESETS[selector.selected_index];
+                let model = preset.model_name.to_string();
+                let provider = preset.provider.to_string();
+                let base_url = preset.base_url.to_string();
+                let key = input_key.clone();
+
+                app.model_selector = None;
+
+                let agent = Arc::clone(agent);
+                let tx_done = ui_tx;
+                tokio::spawn(async move {
+                    let mut agent_guard = agent.lock().await;
+                    let res = agent_guard
+                        .switch_model(
+                            &model,
+                            Some(provider),
+                            Some(base_url),
+                            Some(key),
+                        )
+                        .await;
+                    let msg = res.map(|_| agent_guard.config().model.clone());
+                    let _ = tx_done.send(UiMessage::ModelSwitchFinished(msg));
+                });
             }
             _ => {}
         }
-    }
+    } else {
+        match code {
+            KeyCode::Up => {
+                let len = app::MODEL_PRESETS.len();
+                selector.selected_index = (selector.selected_index + len - 1) % len;
+            }
+            KeyCode::Down => {
+                let len = app::MODEL_PRESETS.len();
+                selector.selected_index = (selector.selected_index + 1) % len;
+            }
+            KeyCode::Esc => {
+                app.model_selector = None;
+                app.lines.push(app::ChatLine::Assistant("Model selection cancelled.".to_string()));
+                app.scroll_to_bottom();
+            }
+            KeyCode::Char('k') | KeyCode::Char('K') => {
+                let preset = &app::MODEL_PRESETS[selector.selected_index];
+                if preset.requires_key {
+                    selector.input_key = Some(String::new());
+                }
+            }
+            KeyCode::Enter => {
+                let preset = &app::MODEL_PRESETS[selector.selected_index];
+                if preset.requires_key {
+                    let has_key = {
+                        let agent_guard = agent.lock().await;
+                        let config = agent_guard.config();
+                        let provider_lower = preset.provider.trim().to_lowercase();
+                        if provider_lower == "anthropic" {
+                            config.anthropic_api_key.as_deref().map_or(false, |k| !k.is_empty()) || std::env::var("ANTHROPIC_API_KEY").is_ok()
+                        } else {
+                            config.api_key.as_deref().map_or(false, |k| !k.is_empty()) || 
+                                ["DEEPSEEK_API_KEY", "ZENE_API_KEY", "OPENAI_API_KEY"].iter().any(|var| std::env::var(var).is_ok())
+                        }
+                    };
 
-    if cancel {
-        app.api_key_prompt = None;
-        app.lines.push(app::ChatLine::Assistant("Model switch cancelled.".to_string()));
-        app.scroll_to_bottom();
-    } else if finished {
-        if let Some(prompt) = app.api_key_prompt.take() {
-            let agent = Arc::clone(agent);
-            let tx_done = ui_tx;
-            tokio::spawn(async move {
-                let mut agent_guard = agent.lock().await;
-                let res = agent_guard
-                    .switch_model(
-                        &prompt.model,
-                        Some(prompt.provider.clone()),
-                        prompt.base_url.clone(),
-                        Some(prompt.input_key.clone()),
-                    )
-                    .await;
-                let msg = res.map(|_| agent_guard.config().model.clone());
-                let _ = tx_done.send(UiMessage::ModelSwitchFinished(msg));
-            });
+                    if has_key {
+                        let model = preset.model_name.to_string();
+                        let provider = preset.provider.to_string();
+                        let base_url = preset.base_url.to_string();
+
+                        app.model_selector = None;
+
+                        let agent = Arc::clone(agent);
+                        let tx_done = ui_tx;
+                        tokio::spawn(async move {
+                            let mut agent_guard = agent.lock().await;
+                            let res = agent_guard
+                                .switch_model(
+                                    &model,
+                                    Some(provider),
+                                    Some(base_url),
+                                    None,
+                                )
+                                .await;
+                            let msg = res.map(|_| agent_guard.config().model.clone());
+                            let _ = tx_done.send(UiMessage::ModelSwitchFinished(msg));
+                        });
+                    } else {
+                        selector.input_key = Some(String::new());
+                    }
+                } else {
+                    let model = preset.model_name.to_string();
+                    let provider = preset.provider.to_string();
+                    let base_url = preset.base_url.to_string();
+
+                    app.model_selector = None;
+
+                    let agent = Arc::clone(agent);
+                    let tx_done = ui_tx;
+                    tokio::spawn(async move {
+                        let mut agent_guard = agent.lock().await;
+                        let res = agent_guard
+                            .switch_model(
+                                &model,
+                                Some(provider),
+                                Some(base_url),
+                                Some("ollama".to_string()),
+                            )
+                            .await;
+                        let msg = res.map(|_| agent_guard.config().model.clone());
+                        let _ = tx_done.send(UiMessage::ModelSwitchFinished(msg));
+                    });
+                }
+            }
+            _ => {}
         }
     }
 }
