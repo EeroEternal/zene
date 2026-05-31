@@ -197,6 +197,41 @@ impl Agent {
         Ok(())
     }
 
+    pub fn config(&self) -> &ZeneConfig {
+        &self.config
+    }
+
+    pub async fn switch_model(
+        &mut self,
+        model: &str,
+        provider: Option<String>,
+        base_url: Option<String>,
+        api_key: Option<String>,
+    ) -> Result<()> {
+        if let Some(p) = provider {
+            self.config.provider = p;
+        }
+        self.config.model = model.to_string();
+        if let Some(url) = base_url {
+            if self.config.provider.trim().to_lowercase() == "anthropic" {
+                self.config.anthropic_base_url = Some(url);
+            } else {
+                self.config.base_url = url;
+            }
+        }
+        if let Some(key) = api_key {
+            if self.config.provider.trim().to_lowercase() == "anthropic" {
+                self.config.anthropic_api_key = Some(key);
+            } else {
+                self.config.api_key = Some(key);
+            }
+        }
+
+        // Recreate the client
+        self.client = zene_llm::ChatClient::from_config(&self.config).await?;
+        Ok(())
+    }
+
     pub fn session(&self) -> &SessionRecord {
         &self.session
     }

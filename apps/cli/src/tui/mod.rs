@@ -114,6 +114,47 @@ pub async fn run(agent: Agent, config: &ZeneConfig, cli: &Cli) -> Result<()> {
                         app.lines.push(app::ChatLine::User(input.clone()));
                         app.scroll_to_bottom();
 
+                        // Slash command handling
+                        if input == "/exit" || input == "/quit" {
+                            app.should_quit = true;
+                            continue;
+                        }
+                        if input == "/models" || input == "/model" {
+                            let msg = crate::repl::get_models_help_message(&*agent.lock().await);
+                            app.lines.push(app::ChatLine::Assistant(msg));
+                            app.scroll_to_bottom();
+                            continue;
+                        }
+                        if let Some(args_str) = input.strip_prefix("/model ") {
+                            let args_str = args_str.trim().to_string();
+                            let agent_clone = Arc::clone(&agent);
+                            let mut agent_guard = agent_clone.lock().await;
+                            match crate::repl::handle_model_switch(&mut *agent_guard, &args_str).await {
+                                Ok(_) => {
+                                    app.model = agent_guard.config().model.clone();
+                                    app.lines.push(app::ChatLine::Assistant(format!(
+                                        "Successfully switched to model: {}",
+                                        app.model
+                                    )));
+                                }
+                                Err(err) => {
+                                    app.lines.push(app::ChatLine::Error(format!(
+                                        "Error switching model: {err:#}"
+                                    )));
+                                }
+                            }
+                            app.scroll_to_bottom();
+                            continue;
+                        }
+                        if input == "/plan" {
+                            agent.lock().await.enter_plan_mode();
+                            app.lines.push(app::ChatLine::Assistant(
+                                "Entered plan mode (read-only tools + ExitPlanMode).".to_string()
+                            ));
+                            app.scroll_to_bottom();
+                            continue;
+                        }
+
                         let cancel = CancellationToken::new();
                         active_cancel = Some(cancel.clone());
 

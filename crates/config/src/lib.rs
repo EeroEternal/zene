@@ -409,10 +409,7 @@ impl ZeneConfig {
                 }
             }
         }
-        anyhow::bail!(
-            "No OpenAI-compatible API key found. Set OPENAI_API_KEY, ZENE_API_KEY, or DEEPSEEK_API_KEY, or add api_key to {}",
-            config_path().display()
-        )
+        Ok("".to_string())
     }
 
     pub fn anthropic_base_url(&self) -> String {
@@ -433,10 +430,7 @@ impl ZeneConfig {
                 return Ok(key);
             }
         }
-        anyhow::bail!(
-            "No Anthropic API key found. Set ANTHROPIC_API_KEY or add anthropic_api_key to {}",
-            config_path().display()
-        )
+        Ok("".to_string())
     }
 
     pub fn api_key(&self) -> Result<String, anyhow::Error> {
