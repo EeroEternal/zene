@@ -26,6 +26,7 @@ enum UiMessage {
     AgentEvent(AgentEvent),
     Permission(PermissionPrompt),
     PromptFinished(Result<()>),
+    ModelSwitchFinished(Result<String>),
 }
 
 pub async fn run(agent: Agent, config: &ZeneConfig, cli: &Cli) -> Result<()> {
@@ -88,6 +89,11 @@ pub async fn run(agent: Agent, config: &ZeneConfig, cli: &Cli) -> Result<()> {
                     continue;
                 }
 
+                if app.api_key_prompt.is_some() {
+                    handle_api_key_prompt_key(&mut app, &agent, key.code, ui_tx.clone());
+                    continue;
+                }
+
                 match key.code {
                     KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                         if let Some(cancel) = active_cancel.take() {
@@ -120,27 +126,97 @@ pub async fn run(agent: Agent, config: &ZeneConfig, cli: &Cli) -> Result<()> {
                             continue;
                         }
                         if input == "/models" || input == "/model" {
-                            let msg = crate::repl::get_models_help_message(&*agent.lock().await);
-                            app.lines.push(app::ChatLine::Assistant(msg));
-                            app.scroll_to_bottom();
+                            let agent_guard = agent.lock().await;
+                            let config = agent_guard.config();
+                            let provider = config.provider.clone();
+                            let model = config.model.clone();
+                            let base_url = if provider.trim().to_lowercase() == "anthropic" {
+                                config.anthropic_base_url.clone()
+                            } else {
+                                Some(config.base_url.clone())
+                            };
+                            
+                            app.api_key_prompt = Some(app::ApiKeyPrompt {
+                                provider,
+                                model,
+                                base_url,
+                                input_key: String::new(),
+                            });
                             continue;
                         }
                         if let Some(args_str) = input.strip_prefix("/model ") {
                             let args_str = args_str.trim().to_string();
-                            let agent_clone = Arc::clone(&agent);
-                            let mut agent_guard = agent_clone.lock().await;
-                            match crate::repl::handle_model_switch(&mut *agent_guard, &args_str).await {
-                                Ok(_) => {
-                                    app.model = agent_guard.config().model.clone();
-                                    app.lines.push(app::ChatLine::Assistant(format!(
-                                        "Successfully switched to model: {}",
-                                        app.model
-                                    )));
+                            let parts: Vec<&str> = args_str.split_whitespace().collect();
+                            if !parts.is_empty() {
+                                let raw_model = parts[0];
+                                let mut model = raw_model.to_string();
+                                let mut provider = parts.get(1).map(|s| s.to_string());
+                                let mut base_url = parts.get(2).map(|s| s.to_string());
+                                let mut api_key = parts.get(3).map(|s| s.to_string());
+
+                                // Resolve presets
+                                if raw_model == "deepseek-chat" {
+                                    provider = Some("openai".to_string());
+                                    base_url = Some("https://api.deepseek.com".to_string());
+                                } else if raw_model == "gpt-4o" {
+                                    provider = Some("openai".to_string());
+                                    base_url = Some("https://api.openai.com/v1".to_string());
+                                } else if raw_model == "claude-3-5-sonnet" || raw_model == "claude-3-5-sonnet-20241022" {
+                                    model = "claude-3-5-sonnet-20241022".to_string();
+                                    provider = Some("anthropic".to_string());
+                                    base_url = Some("https://api.anthropic.com".to_string());
+                                } else if let Some(ollama_model) = raw_model.strip_prefix("ollama/") {
+                                    model = ollama_model.to_string();
+                                    provider = Some("openai".to_string());
+                                    base_url = Some("http://localhost:11434/v1".to_string());
+                                    if api_key.is_none() {
+                                        api_key = Some("ollama".to_string()); // dummy key
+                                    }
                                 }
-                                Err(err) => {
-                                    app.lines.push(app::ChatLine::Error(format!(
-                                        "Error switching model: {err:#}"
-                                    )));
+
+                                let (provider_name, has_key) = {
+                                    let agent_guard = agent.lock().await;
+                                    let config = agent_guard.config();
+                                    let provider_name = provider.clone().unwrap_or_else(|| {
+                                        config.provider.clone()
+                                    });
+                                    let has_key = api_key.is_some() || {
+                                        if provider_name.trim().to_lowercase() == "anthropic" {
+                                            config.anthropic_api_key.as_deref().map_or(false, |k| !k.is_empty()) || std::env::var("ANTHROPIC_API_KEY").is_ok()
+                                        } else {
+                                            config.api_key.as_deref().map_or(false, |k| !k.is_empty()) || 
+                                                ["DEEPSEEK_API_KEY", "ZENE_API_KEY", "OPENAI_API_KEY"].iter().any(|var| std::env::var(var).is_ok())
+                                        }
+                                    };
+                                    (provider_name, has_key)
+                                };
+
+                                let is_ollama = raw_model.starts_with("ollama/");
+
+                                if has_key || is_ollama {
+                                    let agent_clone = Arc::clone(&agent);
+                                    let mut agent_guard = agent_clone.lock().await;
+                                    match agent_guard.switch_model(&model, provider, base_url, api_key).await {
+                                        Ok(_) => {
+                                            app.model = agent_guard.config().model.clone();
+                                            app.lines.push(app::ChatLine::Assistant(format!(
+                                                "Successfully switched to model: {}",
+                                                app.model
+                                            )));
+                                        }
+                                        Err(err) => {
+                                            app.lines.push(app::ChatLine::Error(format!(
+                                                "Error switching model: {err:#}"
+                                            )));
+                                        }
+                                    }
+                                } else {
+                                    app.api_key_prompt = Some(app::ApiKeyPrompt {
+                                        provider: provider_name,
+                                        model,
+                                        base_url,
+                                        input_key: String::new(),
+                                    });
                                 }
                             }
                             app.scroll_to_bottom();
@@ -220,6 +296,23 @@ pub async fn run(agent: Agent, config: &ZeneConfig, cli: &Cli) -> Result<()> {
                     }
                     app.scroll_to_bottom();
                 }
+                UiMessage::ModelSwitchFinished(res) => {
+                    match res {
+                        Ok(new_model) => {
+                            app.model = new_model;
+                            app.lines.push(app::ChatLine::Assistant(format!(
+                                "Successfully switched to model and configured API key: {}",
+                                app.model
+                            )));
+                        }
+                        Err(err) => {
+                            app.lines.push(app::ChatLine::Error(format!(
+                                "Error configuring model and API key: {err:#}"
+                            )));
+                        }
+                    }
+                    app.scroll_to_bottom();
+                }
             }
         }
     }
@@ -248,6 +341,58 @@ fn handle_permission_key(app: &mut App, code: KeyCode) {
         }
     };
     let _ = prompt.response_tx.send(choice);
+}
+
+fn handle_api_key_prompt_key(
+    app: &mut App,
+    agent: &Arc<AsyncMutex<Agent>>,
+    code: KeyCode,
+    ui_tx: std::sync::mpsc::Sender<UiMessage>,
+) {
+    let mut finished = false;
+    let mut cancel = false;
+
+    if let Some(ref mut prompt) = app.api_key_prompt {
+        match code {
+            KeyCode::Char(c) => {
+                prompt.input_key.push(c);
+            }
+            KeyCode::Backspace => {
+                prompt.input_key.pop();
+            }
+            KeyCode::Esc => {
+                cancel = true;
+            }
+            KeyCode::Enter => {
+                finished = true;
+            }
+            _ => {}
+        }
+    }
+
+    if cancel {
+        app.api_key_prompt = None;
+        app.lines.push(app::ChatLine::Assistant("Model switch cancelled.".to_string()));
+        app.scroll_to_bottom();
+    } else if finished {
+        if let Some(prompt) = app.api_key_prompt.take() {
+            let agent = Arc::clone(agent);
+            let tx_done = ui_tx;
+            tokio::spawn(async move {
+                let mut agent_guard = agent.lock().await;
+                let res = agent_guard
+                    .switch_model(
+                        &prompt.model,
+                        Some(prompt.provider.clone()),
+                        prompt.base_url.clone(),
+                        Some(prompt.input_key.clone()),
+                    )
+                    .await;
+                let msg = res.map(|_| agent_guard.config().model.clone());
+                let _ = tx_done.send(UiMessage::ModelSwitchFinished(msg));
+            });
+        }
+    }
 }
 
 #[cfg(test)]

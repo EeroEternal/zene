@@ -25,6 +25,8 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
 
     if let Some(perm) = &app.permission {
         draw_permission_overlay(frame, perm);
+    } else if let Some(prompt) = &app.api_key_prompt {
+        draw_api_key_prompt_overlay(frame, prompt);
     }
 }
 
@@ -138,7 +140,7 @@ fn draw_input(frame: &mut Frame, area: Rect, app: &App) {
 
     frame.render_widget(input, area);
 
-    if app.run_state == RunState::Idle && app.permission.is_none() {
+    if app.run_state == RunState::Idle && app.permission.is_none() && app.api_key_prompt.is_none() {
         let cursor_x = area.x + 1 + prompt.len() as u16 + app.input.chars().count() as u16;
         let cursor_y = area.y + 1;
         frame.set_cursor_position((cursor_x.min(area.right() - 1), cursor_y));
@@ -190,6 +192,45 @@ fn draw_permission_overlay(frame: &mut Frame, perm: &super::app::PermissionPromp
         .style(Style::default().fg(Color::White).bg(Color::DarkGray));
 
     frame.render_widget(Paragraph::new(text).block(block).wrap(Wrap { trim: true }), area);
+}
+
+fn draw_api_key_prompt_overlay(frame: &mut Frame, prompt: &super::app::ApiKeyPrompt) {
+    let area = centered_rect(75, 30, frame.area());
+    frame.render_widget(
+        Block::default().style(Style::default().bg(Color::Black)),
+        frame.area(),
+    );
+
+    let text = vec![
+        Line::from(Span::styled(
+            "API Key Configuration Required",
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        )),
+        Line::from(""),
+        Line::from(format!("Model:    {}", prompt.model)),
+        Line::from(format!("Provider: {}", prompt.provider)),
+        Line::from(format!("Base URL: {}", prompt.base_url.as_deref().unwrap_or("default"))),
+        Line::from(""),
+        Line::from(format!("Enter API Key: {}", prompt.input_key)),
+        Line::from(""),
+        Line::from(Span::styled(
+            "[Enter] submit  [Esc] cancel",
+            Style::default().fg(Color::DarkGray),
+        )),
+    ];
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title("API Key Configuration")
+        .style(Style::default().fg(Color::White).bg(Color::DarkGray));
+
+    frame.render_widget(Paragraph::new(text).block(block).wrap(Wrap { trim: true }), area);
+
+    let cursor_x = area.x + 16 + prompt.input_key.chars().count() as u16;
+    let cursor_y = area.y + 7;
+    frame.set_cursor_position((cursor_x.min(area.right() - 2), cursor_y));
 }
 
 fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {

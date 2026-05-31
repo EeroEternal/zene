@@ -29,6 +29,13 @@ pub struct PermissionPrompt {
     pub response_tx: std::sync::mpsc::Sender<PromptChoice>,
 }
 
+pub struct ApiKeyPrompt {
+    pub provider: String,
+    pub model: String,
+    pub base_url: Option<String>,
+    pub input_key: String,
+}
+
 struct PendingEdit {
     path: String,
     old_string: String,
@@ -45,6 +52,7 @@ pub struct App {
     pub permission_mode: PermissionMode,
     pub run_state: RunState,
     pub permission: Option<PermissionPrompt>,
+    pub api_key_prompt: Option<ApiKeyPrompt>,
     pub should_quit: bool,
     pub last_esc: Option<Instant>,
     pub scroll: u16,
@@ -66,6 +74,7 @@ impl App {
             permission_mode,
             run_state: RunState::Idle,
             permission: None,
+            api_key_prompt: None,
             should_quit: false,
             last_esc: None,
             scroll: 0,
