@@ -6,7 +6,7 @@ use rustyline::DefaultEditor;
 use tokio_util::sync::CancellationToken;
 use zene_core::{Agent, AgentEvent, EventHandler, PromptOptions};
 
-use crate::{cancel_active_turn, set_active_cancel, Cli};
+use crate::{cancel_active_turn, model_config, set_active_cancel, Cli};
 
 pub async fn run_repl(agent: &mut Agent, cli: &Cli) -> Result<()> {
     println!("Zene coding agent");
@@ -19,7 +19,7 @@ pub async fn run_repl(agent: &mut Agent, cli: &Cli) -> Result<()> {
         if key.is_empty() {
             println!("⚠️  Warning: No API key is set for the current provider.");
             println!("   You can configure it in ~/.zene/config.toml, set environment variables,");
-            println!("   or use the `/model` command to switch to another model or local provider.");
+            println!("   or use `/model <id>`, `/models`, or `/provider` to configure.");
             println!("   If you are running a local model (e.g. Ollama), this warning can be ignored.\n");
         }
     }
@@ -49,18 +49,29 @@ pub async fn run_repl(agent: &mut Agent, cli: &Cli) -> Result<()> {
                     eprintln!("Entered plan mode (read-only tools + ExitPlanMode).");
                     continue;
                 }
-                if input == "/models" || input == "/model" {
-                    println!("{}", get_models_help_message(agent));
+                if input == "/models" {
+                    println!("{}", model_config::models_help_message(agent));
+                    continue;
+                }
+                if input == "/provider" || input == "/providers" {
+                    println!("{}", model_config::providers_help_message());
+                    continue;
+                }
+                if input == "/model" {
+                    println!("{}", model_config::models_help_message(agent));
                     continue;
                 }
                 if let Some(args_str) = input.strip_prefix("/model ") {
                     let args_str = args_str.trim();
                     if args_str.is_empty() {
-                        println!("{}", get_models_help_message(agent));
+                        println!("{}", model_config::models_help_message(agent));
                         continue;
                     }
                     match handle_model_switch(agent, args_str).await {
-                        Ok(_) => println!("Successfully switched to model: {}", agent.config().model),
+                        Ok(_) => println!(
+                            "Successfully switched to model (saved): {}",
+                            agent.config().model
+                        ),
                         Err(err) => eprintln!("Error switching model: {err:#}"),
                     }
                     continue;
@@ -127,69 +138,21 @@ pub async fn run_repl(agent: &mut Agent, cli: &Cli) -> Result<()> {
     Ok(())
 }
 
-pub fn get_models_help_message(agent: &Agent) -> String {
-    let config = agent.config();
-    let mut msg = String::new();
-    msg.push_str("Current Model Configuration:\n");
-    msg.push_str(&format!("  Model:    {}\n", config.model));
-    msg.push_str(&format!("  Provider: {}\n", config.provider));
-    msg.push_str(&format!("  Base URL: {}\n", if config.provider.trim().to_lowercase() == "anthropic" {
-        config.anthropic_base_url.clone().unwrap_or_else(|| "https://api.anthropic.com".to_string())
-    } else {
-        config.base_url.clone()
-    }));
-
-    let key_set = if config.provider.trim().to_lowercase() == "anthropic" {
-        config.anthropic_api_key.as_deref().map_or(false, |k| !k.is_empty()) || std::env::var("ANTHROPIC_API_KEY").is_ok()
-    } else {
-        config.api_key.as_deref().map_or(false, |k| !k.is_empty()) ||
-            ["DEEPSEEK_API_KEY", "ZENE_API_KEY", "OPENAI_API_KEY"].iter().any(|var| std::env::var(var).is_ok())
-    };
-    msg.push_str(&format!("  API Key:  {}\n", if key_set { "Configured" } else { "Not set" }));
-    msg.push_str("\nTo switch model, use:\n");
-    msg.push_str("  /model <preset>\n");
-    msg.push_str("  /model <model_name> [provider] [base_url] [api_key]\n\n");
-    msg.push_str("Presets available:\n");
-    msg.push_str("  /model deepseek-chat            Switch to DeepSeek Chat\n");
-    msg.push_str("  /model gpt-4o                   Switch to OpenAI GPT-4o\n");
-    msg.push_str("  /model claude-3-5-sonnet        Switch to Anthropic Claude 3.5 Sonnet\n");
-    msg.push_str("  /model ollama/<model_name>      Switch to local Ollama (e.g. /model ollama/qwen2.5-coder)");
-    msg
-}
-
 pub async fn handle_model_switch(agent: &mut Agent, args_str: &str) -> Result<()> {
     let parts: Vec<&str> = args_str.split_whitespace().collect();
     if parts.is_empty() {
         return Ok(());
     }
 
-    let raw_model = parts[0];
-    let mut model = raw_model.to_string();
-    let mut provider = parts.get(1).map(|s| s.to_string());
-    let mut base_url = parts.get(2).map(|s| s.to_string());
-    let mut api_key = parts.get(3).map(|s| s.to_string());
-
-    // Handle presets
-    if raw_model == "deepseek-chat" {
-        provider = Some("openai".to_string());
-        base_url = Some("https://api.deepseek.com".to_string());
-    } else if raw_model == "gpt-4o" {
-        provider = Some("openai".to_string());
-        base_url = Some("https://api.openai.com/v1".to_string());
-    } else if raw_model == "claude-3-5-sonnet" || raw_model == "claude-3-5-sonnet-20241022" {
-        model = "claude-3-5-sonnet-20241022".to_string();
-        provider = Some("anthropic".to_string());
-        base_url = Some("https://api.anthropic.com".to_string());
-    } else if let Some(ollama_model) = raw_model.strip_prefix("ollama/") {
-        model = ollama_model.to_string();
-        provider = Some("openai".to_string());
-        base_url = Some("http://localhost:11434/v1".to_string());
-        if api_key.is_none() {
-            api_key = Some("ollama".to_string()); // dummy key
-        }
-    }
-
-    agent.switch_model(&model, provider, base_url, api_key).await?;
+    let resolved = crate::model_config::resolve_model_args(parts[0], &parts);
+    agent
+        .switch_model(
+            &resolved.model,
+            resolved.provider,
+            resolved.base_url,
+            resolved.api_key,
+        )
+        .await?;
     Ok(())
 }
 

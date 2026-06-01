@@ -148,6 +148,11 @@ fn wrap_plain_line(line: &str, width: usize) -> Vec<String> {
         .collect()
 }
 
+/// Word-wrap styled spans to `width` columns (one display row per returned [`Line`]).
+pub fn wrap_line_spans(spans: Vec<Span<'static>>, width: usize) -> Vec<Line<'static>> {
+    wrap_spans(spans, width)
+}
+
 fn wrap_spans(spans: Vec<Span<'static>>, width: usize) -> Vec<Line<'static>> {
     let mut lines: Vec<Line<'static>> = Vec::new();
     let mut current_spans: Vec<Span<'static>> = Vec::new();

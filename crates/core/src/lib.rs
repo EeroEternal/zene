@@ -57,7 +57,7 @@ pub struct Agent {
     session: SessionRecord,
     turn_usage: TokenUsage,
     active_turn: Option<TurnState>,
-    steer_buffer: SteerBuffer,
+    steer_buffer: Arc<Mutex<SteerBuffer>>,
     system_prompt: String,
     permission: SharedToolPermission,
     plan_mode: SharedPlanMode,
@@ -128,7 +128,7 @@ impl Agent {
             session,
             turn_usage: TokenUsage::default(),
             active_turn: None,
-            steer_buffer: SteerBuffer::default(),
+            steer_buffer: Arc::new(Mutex::new(SteerBuffer::default())),
             system_prompt,
             permission: shared_permission(permission_mode),
             plan_mode: shared_plan_mode(),
@@ -227,8 +227,13 @@ impl Agent {
             }
         }
 
+        self.config.refresh_model_context_window();
+
         // Recreate the client
         self.client = zene_llm::ChatClient::from_config(&self.config).await?;
+        self.config
+            .persist_connection_settings()
+            .context("save model settings to ~/.zene/config.toml")?;
         Ok(())
     }
 
@@ -249,11 +254,18 @@ impl Agent {
     }
 
     pub fn pending_steer_count(&self) -> usize {
-        self.steer_buffer.len()
+        self.steer_buffer
+            .lock()
+            .map(|buf| buf.len())
+            .unwrap_or(0)
+    }
+
+    pub fn steer_buffer(&self) -> Arc<Mutex<SteerBuffer>> {
+        Arc::clone(&self.steer_buffer)
     }
 
     /// Queue follow-up user guidance for the active turn (injected between steps).
-    pub fn steer(&mut self, text: &str) -> Result<()> {
+    pub fn queue_steer(&self, text: &str) -> Result<()> {
         if !self.is_turn_active() {
             return Err(turn::steer_requires_active_turn());
         }
@@ -261,8 +273,16 @@ impl Agent {
         if text.is_empty() {
             anyhow::bail!("steer message cannot be empty");
         }
-        self.steer_buffer.push(text.to_string());
+        self.steer_buffer
+            .lock()
+            .map_err(|_| anyhow::anyhow!("steer buffer lock poisoned"))?
+            .push(text.to_string());
         Ok(())
+    }
+
+    /// Queue follow-up user guidance for the active turn (injected between steps).
+    pub fn steer(&mut self, text: &str) -> Result<()> {
+        self.queue_steer(text)
     }
 
     fn token_estimator(&self) -> TokenEstimator {
@@ -463,7 +483,11 @@ impl Agent {
     }
 
     fn inject_pending_steer(&mut self, options: &PromptOptions) -> Result<bool> {
-        let messages = self.steer_buffer.take_all();
+        let messages = self
+            .steer_buffer
+            .lock()
+            .map_err(|_| anyhow::anyhow!("steer buffer lock poisoned"))?
+            .take_all();
         if messages.is_empty() {
             return Ok(false);
         }
@@ -694,15 +718,17 @@ impl Agent {
             println!();
         }
 
-        let built_calls = tool_calls
-            .into_iter()
-            .filter(|call| !call.name.is_empty())
-            .map(|call| ToolCall {
-                id: call.id,
-                name: call.name,
-                arguments: call.arguments,
-            })
-            .collect::<Vec<_>>();
+        let built_calls = normalize_tool_calls(
+            tool_calls
+                .into_iter()
+                .filter(|call| !call.name.is_empty())
+                .map(|call| ToolCall {
+                    id: call.id,
+                    name: call.name,
+                    arguments: call.arguments,
+                })
+                .collect(),
+        );
 
         let message = if built_calls.is_empty() {
             Message::assistant(text)
@@ -1000,6 +1026,29 @@ struct ToolCallBuilder {
     id: String,
     name: String,
     arguments: String,
+}
+
+/// Streaming providers sometimes omit tool call ids; API follow-up turns require stable unique ids.
+fn normalize_tool_calls(calls: Vec<ToolCall>) -> Vec<ToolCall> {
+    let mut used_ids = std::collections::HashSet::new();
+    calls
+        .into_iter()
+        .enumerate()
+        .map(|(index, mut call)| {
+            if call.id.trim().is_empty() {
+                call.id = format!("call_{index}");
+            }
+            let base = call.id.clone();
+            let mut unique = base.clone();
+            let mut suffix = 0u32;
+            while !used_ids.insert(unique.clone()) {
+                suffix += 1;
+                unique = format!("{base}_{suffix}");
+            }
+            call.id = unique;
+            call
+        })
+        .collect()
 }
 
 fn truncate(input: &str, max: usize) -> String {

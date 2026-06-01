@@ -392,6 +392,11 @@ impl ZeneConfig {
         }
     }
 
+    /// Recompute compaction window after model change (e.g. from agent `switch_model`).
+    pub fn refresh_model_context_window(&mut self) {
+        self.apply_model_context_window();
+    }
+
     pub fn openai_base_url(&self) -> String {
         self.base_url.clone()
     }
@@ -402,7 +407,14 @@ impl ZeneConfig {
                 return Ok(key.clone());
             }
         }
-        for var in ["DEEPSEEK_API_KEY", "ZENE_API_KEY", "OPENAI_API_KEY"] {
+        for var in [
+            "DEEPSEEK_API_KEY",
+            "MOONSHOT_API_KEY",
+            "ZHIPUAI_API_KEY",
+            "ZHIPU_API_KEY",
+            "ZENE_API_KEY",
+            "OPENAI_API_KEY",
+        ] {
             if let Ok(key) = env::var(var) {
                 if !key.is_empty() {
                     return Ok(key);
@@ -444,6 +456,10 @@ impl ZeneConfig {
         let base = self.base_url.to_lowercase();
         if base.contains("deepseek") {
             "deepseek".to_string()
+        } else if base.contains("moonshot") {
+            "moonshot".to_string()
+        } else if base.contains("bigmodel") {
+            "glm".to_string()
         } else if base.contains("anthropic") {
             "anthropic".to_string()
         } else if base.contains("openai") {
@@ -486,6 +502,18 @@ impl ZeneConfig {
             if !key.is_empty() {
                 self.api_key = Some(key);
             }
+        } else if let Ok(key) = env::var("MOONSHOT_API_KEY") {
+            if !key.is_empty() {
+                self.api_key = Some(key);
+            }
+        } else if let Ok(key) = env::var("ZHIPUAI_API_KEY") {
+            if !key.is_empty() {
+                self.api_key = Some(key);
+            }
+        } else if let Ok(key) = env::var("ZHIPU_API_KEY") {
+            if !key.is_empty() {
+                self.api_key = Some(key);
+            }
         }
         if let Ok(key) = env::var("ANTHROPIC_API_KEY") {
             if !key.is_empty() {
@@ -504,6 +532,62 @@ impl ZeneConfig {
                 }
             }
         }
+    }
+
+    /// Persist model/provider/base_url/api_key to `~/.zene/config.toml`.
+    pub fn persist_connection_settings(&self) -> Result<(), ConfigError> {
+        let path = config_path();
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).map_err(|source| ConfigError::Write {
+                path: path.clone(),
+                source,
+            })?;
+        }
+
+        let mut table = if path.exists() {
+            let raw = fs::read_to_string(&path).map_err(|source| ConfigError::Read {
+                path: path.clone(),
+                source,
+            })?;
+            match toml::from_str::<toml::Value>(&raw) {
+                Ok(toml::Value::Table(t)) => t,
+                _ => toml::map::Map::new(),
+            }
+        } else {
+            toml::map::Map::new()
+        };
+
+        table.insert("provider".into(), toml::Value::String(self.provider.clone()));
+        table.insert("model".into(), toml::Value::String(self.model.clone()));
+        table.insert("base_url".into(), toml::Value::String(self.base_url.clone()));
+        if let Some(ref key) = self.api_key {
+            if !key.is_empty() {
+                table.insert("api_key".into(), toml::Value::String(key.clone()));
+            }
+        }
+        if let Some(ref url) = self.anthropic_base_url {
+            if !url.is_empty() {
+                table.insert(
+                    "anthropic_base_url".into(),
+                    toml::Value::String(url.clone()),
+                );
+            }
+        }
+        if let Some(ref key) = self.anthropic_api_key {
+            if !key.is_empty() {
+                table.insert(
+                    "anthropic_api_key".into(),
+                    toml::Value::String(key.clone()),
+                );
+            }
+        }
+
+        let raw = toml::to_string_pretty(&toml::Value::Table(table)).expect("config serializes");
+        fs::write(&path, raw).map_err(|source| ConfigError::Write {
+            path,
+            source,
+        })?;
+        Ok(())
     }
 }
 
@@ -528,7 +612,9 @@ pub fn default_context_window_for_model(model: &str) -> u32 {
     match model {
         "gpt-4o" | "gpt-4o-mini" | "gpt-4-turbo" | "gpt-4" => 128_000,
         "gpt-3.5-turbo" => 16_385,
-        "deepseek-chat" | "deepseek-reasoner" => 64_000,
+        "deepseek-v4-flash" | "deepseek-v4-pro" | "deepseek-chat" | "deepseek-reasoner" => 1_000_000,
+        m if m.starts_with("moonshot-") || m.starts_with("kimi-") => 128_000,
+        "glm-4" | "glm-4-flash" | "glm-4-plus" | "glm-4-air" => 128_000,
         "claude-3-5-sonnet-20241022"
         | "claude-3-5-sonnet-latest"
         | "claude-3-5-haiku-20241022"

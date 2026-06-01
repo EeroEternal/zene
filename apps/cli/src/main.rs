@@ -10,6 +10,7 @@ use zene_sandbox::LocalSandbox;
 use zene_session::{export_session, list_sessions_for_workdir, SessionRecord};
 
 mod repl;
+mod model_config;
 mod tui;
 
 /// Shared cancel token for the in-flight REPL turn (Ctrl+C or `/cancel`).
@@ -89,15 +90,27 @@ enum Commands {
     },
 }
 
-#[tokio::main]
-async fn main() -> Result<()> {
+fn init_tracing(use_tui: bool) {
+    if use_tui {
+        // Ratatui uses the alternate screen on stdout; stderr writes also corrupt the UI.
+        tracing_subscriber::fmt()
+            .with_env_filter("off")
+            .with_target(false)
+            .with_writer(std::io::sink)
+            .init();
+        return;
+    }
     tracing_subscriber::fmt()
         .with_env_filter("zene=info")
         .with_target(false)
         .init();
+}
 
+#[tokio::main]
+async fn main() -> Result<()> {
     let cli_args: Vec<String> = std::env::args().collect();
     let is_repl = cli_args.iter().any(|a| a == "--repl");
+    init_tracing(!is_repl);
 
     if is_repl {
         ctrlc::set_handler(|| {
