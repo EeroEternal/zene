@@ -450,6 +450,16 @@ fn run_tui_sync(
                             app.scroll_to_bottom();
                             continue;
                         }
+                        if input == "/context" || input == "/tokens" {
+                            let (report, pct) = agent_rt.block_on(async {
+                                let g = agent.lock().await;
+                                (g.context_report(), g.context_water().usage_percent())
+                            });
+                            app.context_usage_percent = pct;
+                            app.lines.push(app::ChatLine::Assistant(report));
+                            app.scroll_to_bottom();
+                            continue;
+                        }
                         if input == "/session-info" {
                             let (sid, model, pct, window, msgs) = agent_rt.block_on(async {
                                 let g = agent.lock().await;

@@ -409,11 +409,11 @@ TUI、record/replay、安装分发。
 
 | 阶段 | 状态 | 内容 |
 |------|------|------|
-| P1 采样/上下文 | [x] | usage 水位、full-replace、输入阶梯、LLM 错误分类、`/compact` |
+| P1 采样/上下文 | [x] | usage 水位、full-replace、输入阶梯、LLM 错误分类、`/compact`；续：硬拒绝短摘要、MCP 落盘截断、`/context`、tool-pair 安全切片、preflight、bg reminder、失败抑制 |
 | P2 权限 | [x] | default/accept_edits/dont_ask/bypass + allow/deny/ask 规则 |
 | P3 会话恢复 | [x] | compaction checkpoints、`/rewind`、`/fork`、`/session-info` |
 | P4 运行时 | [x] | 后台 Bash/Task + TaskOutput、`--worktree`、subagent 报告包装 |
 | P5 MCP/扩展 | [x] | stdio + HTTP MCP、`zene mcp doctor` |
 | P6 集成/产品化 | [x] | `zene -p` headless + `--output-format json`；`zene acp` 最小 ACP stdio |
 
-*最后更新：2026-07-18（P6：ACP stdio）*
+*最后更新：2026-07-18（P1 续：采样/上下文 grok 强对齐）*

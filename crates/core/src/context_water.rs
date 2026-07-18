@@ -15,6 +15,9 @@ pub struct ContextWaterLevel {
     pub last_estimate_tokens: Option<u32>,
     /// Configured context window for the active model.
     pub context_window_tokens: u32,
+    /// When true, skip auto-compact until a successful compact or manual `/compact`
+    /// (grok sticky suppression after hard failure).
+    pub auto_compact_suppressed: bool,
 }
 
 impl ContextWaterLevel {
@@ -23,6 +26,7 @@ impl ContextWaterLevel {
             last_prompt_tokens: None,
             last_estimate_tokens: None,
             context_window_tokens,
+            auto_compact_suppressed: false,
         }
     }
 
@@ -57,10 +61,33 @@ impl ContextWaterLevel {
         ((used * 100) / u64::from(window)).min(100) as u8
     }
 
+    pub fn auto_compact_threshold_percent(config: &CompactionConfig) -> u8 {
+        ((config.trigger_ratio * 100.0).round() as u8).clamp(1, 100)
+    }
+
+    pub fn threshold_tokens(config: &CompactionConfig) -> u32 {
+        (config.context_window_tokens as f32 * config.trigger_ratio).floor() as u32
+    }
+
+    /// Over hard window (preflight after large tool results).
+    pub fn exceeds_window(&self) -> bool {
+        self.context_window_tokens > 0
+            && self.effective_tokens() >= self.context_window_tokens
+    }
+
     pub fn should_compact(&self, config: &CompactionConfig) -> bool {
-        let threshold =
-            (config.context_window_tokens as f32 * config.trigger_ratio).floor() as u32;
-        self.effective_tokens() >= threshold
+        if self.auto_compact_suppressed {
+            return false;
+        }
+        self.effective_tokens() >= Self::threshold_tokens(config)
+    }
+
+    pub fn suppress_auto_compact(&mut self) {
+        self.auto_compact_suppressed = true;
+    }
+
+    pub fn clear_auto_compact_suppression(&mut self) {
+        self.auto_compact_suppressed = false;
     }
 }
 
@@ -85,6 +112,26 @@ mod tests {
     fn uses_estimate_when_no_usage() {
         let mut water = ContextWaterLevel::new(1000);
         water.record_estimate(850);
+        assert!(water.should_compact(&CompactionConfig {
+            trigger_ratio: 0.85,
+            keep_recent_ratio: 0.25,
+            context_window_tokens: 1000,
+            min_keep_messages: 4,
+        }));
+    }
+
+    #[test]
+    fn suppression_blocks_auto_compact() {
+        let mut water = ContextWaterLevel::new(1000);
+        water.record_estimate(900);
+        water.suppress_auto_compact();
+        assert!(!water.should_compact(&CompactionConfig {
+            trigger_ratio: 0.85,
+            keep_recent_ratio: 0.25,
+            context_window_tokens: 1000,
+            min_keep_messages: 4,
+        }));
+        water.clear_auto_compact_suppression();
         assert!(water.should_compact(&CompactionConfig {
             trigger_ratio: 0.85,
             keep_recent_ratio: 0.25,
