@@ -90,12 +90,30 @@ impl LocalSandbox {
         cwd: Option<&str>,
         cancel: Option<&CancellationToken>,
     ) -> Result<ExecResult> {
+        self.exec_with_timeout(
+            command,
+            cwd,
+            cancel,
+            Duration::from_secs(BASH_TIMEOUT_SECS),
+        )
+        .await
+    }
+
+    /// Like [`Self::exec`] but with an explicit timeout (used by background Bash).
+    pub async fn exec_with_timeout(
+        &self,
+        command: &str,
+        cwd: Option<&str>,
+        cancel: Option<&CancellationToken>,
+        timeout: Duration,
+    ) -> Result<ExecResult> {
         if cancel.is_some_and(CancellationToken::is_cancelled) {
             anyhow::bail!("aborted");
         }
 
+        let timeout_secs = timeout.as_secs().max(1);
         let work = self.exec_inner(command, cwd);
-        let timed = tokio::time::timeout(Duration::from_secs(BASH_TIMEOUT_SECS), work);
+        let timed = tokio::time::timeout(timeout, work);
 
         if let Some(token) = cancel {
             tokio::select! {
@@ -103,18 +121,14 @@ impl LocalSandbox {
                 result = timed => match result {
                     Ok(inner) => inner,
                     Err(_) => anyhow::bail!(
-                        "command timed out after {} seconds",
-                        BASH_TIMEOUT_SECS
+                        "command timed out after {timeout_secs} seconds"
                     ),
                 },
             }
         } else {
             match timed.await {
                 Ok(inner) => inner,
-                Err(_) => anyhow::bail!(
-                    "command timed out after {} seconds",
-                    BASH_TIMEOUT_SECS
-                ),
+                Err(_) => anyhow::bail!("command timed out after {timeout_secs} seconds"),
             }
         }
     }

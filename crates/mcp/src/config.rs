@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use zene_config::zene_home;
 
@@ -14,11 +14,41 @@ pub struct McpConfig {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct McpServerConfig {
-    pub command: String,
+    /// stdio transport: command to spawn.
+    #[serde(default)]
+    pub command: Option<String>,
     #[serde(default)]
     pub args: Vec<String>,
     #[serde(default)]
     pub env: HashMap<String, String>,
+    /// HTTP / Streamable HTTP transport endpoint.
+    #[serde(default)]
+    pub url: Option<String>,
+    /// Extra HTTP headers (Authorization, etc.).
+    #[serde(default)]
+    pub headers: HashMap<String, String>,
+}
+
+impl McpServerConfig {
+    pub fn is_http(&self) -> bool {
+        self.url.as_ref().is_some_and(|u| !u.trim().is_empty())
+    }
+
+    pub fn is_stdio(&self) -> bool {
+        self.command.as_ref().is_some_and(|c| !c.trim().is_empty())
+    }
+
+    pub fn validate(&self, name: &str) -> Result<()> {
+        match (self.is_stdio(), self.is_http()) {
+            (true, false) | (false, true) => Ok(()),
+            (true, true) => bail!(
+                "MCP server `{name}` sets both `command` and `url`; choose one transport"
+            ),
+            (false, false) => bail!(
+                "MCP server `{name}` needs either `command` (stdio) or `url` (HTTP)"
+            ),
+        }
+    }
 }
 
 pub fn global_mcp_config_path() -> PathBuf {
@@ -78,9 +108,27 @@ mod tests {
         }"#;
         let config: McpConfig = serde_json::from_str(raw).unwrap();
         let server = config.servers.get("demo").unwrap();
-        assert_eq!(server.command, "node");
+        assert_eq!(server.command.as_deref(), Some("node"));
         assert_eq!(server.args, vec!["server.js"]);
         assert_eq!(server.env.get("FOO").map(String::as_str), Some("bar"));
+        assert!(server.is_stdio());
+    }
+
+    #[test]
+    fn parses_http_server_config() {
+        let raw = r#"{
+            "servers": {
+                "remote": {
+                    "url": "https://example.com/mcp",
+                    "headers": { "Authorization": "Bearer tok" }
+                }
+            }
+        }"#;
+        let config: McpConfig = serde_json::from_str(raw).unwrap();
+        let server = config.servers.get("remote").unwrap();
+        assert!(server.is_http());
+        assert_eq!(server.url.as_deref(), Some("https://example.com/mcp"));
+        server.validate("remote").unwrap();
     }
 
     #[test]
@@ -89,9 +137,11 @@ mod tests {
             servers: HashMap::from([(
                 "a".to_string(),
                 McpServerConfig {
-                    command: "global".to_string(),
+                    command: Some("global".to_string()),
                     args: vec![],
                     env: HashMap::new(),
+                    url: None,
+                    headers: HashMap::new(),
                 },
             )]),
         };
@@ -100,24 +150,28 @@ mod tests {
                 (
                     "a".to_string(),
                     McpServerConfig {
-                        command: "project".to_string(),
+                        command: Some("project".to_string()),
                         args: vec!["--local".to_string()],
                         env: HashMap::new(),
+                        url: None,
+                        headers: HashMap::new(),
                     },
                 ),
                 (
                     "b".to_string(),
                     McpServerConfig {
-                        command: "other".to_string(),
+                        command: Some("other".to_string()),
                         args: vec![],
                         env: HashMap::new(),
+                        url: None,
+                        headers: HashMap::new(),
                     },
                 ),
             ]),
         });
         assert_eq!(base.servers.len(), 2);
-        assert_eq!(base.servers["a"].command, "project");
-        assert_eq!(base.servers["b"].command, "other");
+        assert_eq!(base.servers["a"].command.as_deref(), Some("project"));
+        assert_eq!(base.servers["b"].command.as_deref(), Some("other"));
     }
 
     #[test]
@@ -135,7 +189,6 @@ mod tests {
         let _guard = EnvOverride::set("ZENE_HOME", temp.path());
         let global_path = global_mcp_config_path();
 
-        // Write to the actual global path under temp ZENE_HOME
         fs::write(
             global_path,
             r#"{"servers":{"shared":{"command":"global","args":[],"env":{}}}}"#,
@@ -144,8 +197,8 @@ mod tests {
 
         let loaded = load_mcp_config(&workdir).unwrap();
         assert_eq!(loaded.servers.len(), 2);
-        assert_eq!(loaded.servers["shared"].command, "project");
-        assert_eq!(loaded.servers["local"].command, "local-cmd");
+        assert_eq!(loaded.servers["shared"].command.as_deref(), Some("project"));
+        assert_eq!(loaded.servers["local"].command.as_deref(), Some("local-cmd"));
     }
 
     struct EnvOverride;

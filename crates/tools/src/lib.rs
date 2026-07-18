@@ -1,4 +1,5 @@
 mod ask_user;
+mod background;
 mod bash;
 mod builtin;
 mod edit;
@@ -14,12 +15,17 @@ mod registry;
 mod skill;
 mod subagent;
 mod task;
+mod task_output;
 mod todo;
 mod todo_store;
 mod web_search;
 mod write;
 
 pub use ask_user::{default_ask_user_prompter, AskUserOption, AskUserPrompter, SharedAskUserPrompter};
+pub use background::{
+    shared_background_tasks, BackgroundTask, BackgroundTaskKind, BackgroundTaskStatus,
+    BackgroundTaskStore, SharedBackgroundTasks,
+};
 pub use builtin::{agent_tools, builtin_tools, default_builtin_tools, tools_for_profile};
 pub use todo_store::{shared_todo_store, shared_todo_store_from, SharedTodoStore, TodoItem, TodoStatus, TodoStore};
 pub use subagent::{

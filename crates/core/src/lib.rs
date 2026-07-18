@@ -15,9 +15,10 @@ use zene_session::{
     AgentRecordWriter, RecordEntry, SessionRecord,
 };
 use zene_tools::{
-    default_ask_user_prompter, shared_todo_store_from, SharedAskUserPrompter, SharedTodoStore,
-    shared_plan_mode, PlanModeState, SharedPlanMode, SharedToolPermission, SubagentEnv,
-    ToolContext, ToolRegistry, DEFAULT_SUBAGENT_MAX_DEPTH,
+    default_ask_user_prompter, shared_background_tasks, shared_todo_store_from,
+    SharedAskUserPrompter, SharedBackgroundTasks, SharedTodoStore, shared_plan_mode, PlanModeState,
+    SharedPlanMode, SharedToolPermission, SubagentEnv, ToolContext, ToolRegistry,
+    DEFAULT_SUBAGENT_MAX_DEPTH,
 };
 use zene_mcp::McpManager;
 
@@ -34,6 +35,7 @@ mod tokens;
 mod tool_dedup;
 pub mod tool_scheduler;
 mod turn;
+mod worktree;
 
 use compaction::{
     apply_overflow_truncate_pass, compact_session, compact_session_forced, is_context_overflow_error,
@@ -59,6 +61,7 @@ use plan_mode::{
 };
 pub use tool_dedup::{append_reminder, ToolDedup};
 pub use tool_scheduler::{classify_tool_accesses, ToolScheduler};
+pub use worktree::ensure_session_worktree;
 
 pub struct Agent {
     config: ZeneConfig,
@@ -80,6 +83,7 @@ pub struct Agent {
     hooks: HookRunner,
     record_writer: AgentRecordWriter,
     mcp: Option<McpManager>,
+    background: SharedBackgroundTasks,
 }
 
 pub struct PromptOptions {
@@ -158,6 +162,7 @@ impl Agent {
             hooks,
             record_writer,
             mcp,
+            background: shared_background_tasks(),
         })
     }
 
@@ -869,6 +874,7 @@ impl Agent {
             plan_mode: Some(Arc::clone(&plan_mode)),
             todos: Some(Arc::clone(&self.todos)),
             ask_user: Some(Arc::clone(&self.ask_user)),
+            background: Some(Arc::clone(&self.background)),
         };
 
         struct PreparedTool {
@@ -1010,6 +1016,7 @@ impl Agent {
                     plan_mode: ctx.plan_mode.clone(),
                     todos: ctx.todos.clone(),
                     ask_user: ctx.ask_user.clone(),
+                    background: ctx.background.clone(),
                 };
                 let tools = Arc::clone(&tools);
                 let name = name.clone();

@@ -9,6 +9,7 @@ use zene_llm::ToolDefinition;
 use zene_sandbox::LocalSandbox;
 
 use crate::ask_user::SharedAskUserPrompter;
+use crate::background::SharedBackgroundTasks;
 use crate::permission::SharedToolPermission;
 use crate::plan_mode::SharedPlanMode;
 use crate::subagent::SubagentEnv;
@@ -22,6 +23,7 @@ pub struct ToolContext {
     pub plan_mode: Option<SharedPlanMode>,
     pub todos: Option<SharedTodoStore>,
     pub ask_user: Option<SharedAskUserPrompter>,
+    pub background: Option<SharedBackgroundTasks>,
 }
 
 impl ToolContext {
@@ -34,6 +36,7 @@ impl ToolContext {
             plan_mode: None,
             todos: None,
             ask_user: None,
+            background: None,
         }
     }
 }

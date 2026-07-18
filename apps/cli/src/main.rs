@@ -5,7 +5,7 @@ use clap::{Parser, Subcommand};
 use parking_lot::Mutex;
 use tokio_util::sync::CancellationToken;
 use zene_config::{ensure_home, ZeneConfig};
-use zene_core::{Agent, AgentEvent, PermissionMode, PromptOptions};
+use zene_core::{ensure_session_worktree, Agent, AgentEvent, PermissionMode, PromptOptions};
 use zene_sandbox::LocalSandbox;
 use zene_session::{export_session, list_sessions_for_workdir, SessionRecord};
 use std::sync::Arc;
@@ -76,6 +76,10 @@ pub struct Cli {
     /// Headless output format: `text` (default) or `json`
     #[arg(long, default_value = "text")]
     output_format: String,
+
+    /// Run the session inside a dedicated git worktree under `.zene/worktrees/`
+    #[arg(long)]
+    worktree: bool,
 }
 
 #[derive(Subcommand)]
@@ -198,10 +202,20 @@ async fn main() -> Result<()> {
     }
 
     let config = ZeneConfig::load(&workdir).map_err(|err| anyhow::anyhow!(err.to_string()))?;
-    let session = if let Some(ref id) = cli.session {
+    let mut session = if let Some(ref id) = cli.session {
         SessionRecord::load(id).context("load session")?
     } else {
         SessionRecord::new(&workdir)
+    };
+
+    let agent_workdir = if cli.worktree {
+        let wt = ensure_session_worktree(&workdir, &session.meta.id)
+            .context("create session git worktree")?;
+        eprintln!("Using git worktree: {}", wt.display());
+        session.meta.workdir = wt.display().to_string();
+        wt
+    } else {
+        workdir.clone()
     };
 
     let permission_mode = if cli.yolo {
@@ -210,7 +224,7 @@ async fn main() -> Result<()> {
         PermissionMode::parse(&config.permission_mode)
     };
 
-    let sandbox = LocalSandbox::new(&workdir);
+    let sandbox = LocalSandbox::new(&agent_workdir);
     let mut agent = Agent::new(config.clone(), sandbox, session, permission_mode).await?;
 
     if let Some(prompt) = cli.prompt.as_deref() {

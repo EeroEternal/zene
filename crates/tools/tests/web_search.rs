@@ -14,6 +14,7 @@ fn ctx(workdir: &std::path::Path) -> ToolContext {
         plan_mode: None,
         todos: None,
         ask_user: None,
+        background: None,
     }
 }
 

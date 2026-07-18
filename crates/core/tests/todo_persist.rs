@@ -25,6 +25,7 @@ async fn todo_write_persists_across_session_reload() {
         plan_mode: None,
         todos: Some(Arc::clone(&store)),
         ask_user: None,
+        background: None,
     };
 
     let result = default_builtin_tools()
@@ -64,6 +65,7 @@ async fn todo_write_persists_across_session_reload() {
         plan_mode: None,
         todos: Some(reloaded_store),
         ask_user: None,
+        background: None,
     };
     let list_result = default_builtin_tools()
         .execute("TodoList", "{}", &list_ctx)
