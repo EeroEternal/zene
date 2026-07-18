@@ -145,10 +145,11 @@ pub fn assemble_full_replace_history(
     out
 }
 
-/// Post-compaction `<system-reminder>`: actionable todos + running background tasks.
+/// Post-compaction `<system-reminder>`: todos, background tasks, memory.
 pub fn build_compaction_reminder(
     session: &SessionRecord,
     background_tasks: &[BackgroundTask],
+    memory_block: Option<&str>,
 ) -> Option<String> {
     let mut sections = Vec::new();
 
@@ -186,6 +187,12 @@ pub fn build_compaction_reminder(
             lines.push(format!("- {} ({kind}): {}", task.id, task.label));
         }
         sections.push(lines.join("\n"));
+    }
+
+    if let Some(memory) = memory_block {
+        if !memory.trim().is_empty() {
+            sections.push(memory.trim().to_string());
+        }
     }
 
     if sections.is_empty() {
@@ -934,6 +941,7 @@ pub async fn compact_session(
     estimator: &TokenEstimator,
     background_tasks: &[BackgroundTask],
     prefire: Option<&PrefireCache>,
+    memory_block: Option<&str>,
 ) -> Result<Option<CompactionResult>> {
     if let Some(result) = try_truncate_only_compaction(session, config, tools, estimator) {
         return Ok(Some(result));
@@ -983,6 +991,7 @@ pub async fn compact_session(
         reason,
         tokens_before,
         background_tasks,
+        memory_block,
     );
 
     let tokens_after = estimate_session_tokens(session, tools, estimator);
@@ -1014,6 +1023,7 @@ pub async fn compact_session_forced(
     user_hint: Option<&str>,
     background_tasks: &[BackgroundTask],
     prefire: Option<&PrefireCache>,
+    memory_block: Option<&str>,
 ) -> Result<Option<CompactionResult>> {
     if !force_summarize {
         return compact_session(
@@ -1026,6 +1036,7 @@ pub async fn compact_session_forced(
             estimator,
             background_tasks,
             prefire,
+            memory_block,
         )
         .await;
     }
@@ -1075,6 +1086,7 @@ pub async fn compact_session_forced(
         reason,
         tokens_before,
         background_tasks,
+        memory_block,
     );
 
     let tokens_after = estimate_session_tokens(session, tools, estimator);
@@ -1100,6 +1112,7 @@ fn apply_full_replace_to_session(
     reason: &str,
     tokens_before: u32,
     background_tasks: &[BackgroundTask],
+    memory_block: Option<&str>,
 ) {
     let system = session
         .messages
@@ -1119,7 +1132,7 @@ fn apply_full_replace_to_session(
         }
         None => (None, session.messages[tail_start..].to_vec()),
     };
-    let reminder = build_compaction_reminder(session, background_tasks);
+    let reminder = build_compaction_reminder(session, background_tasks, memory_block);
     session.messages =
         assemble_full_replace_history(system, last_user, recent, summary.clone(), reminder);
     session.record_compaction_event(

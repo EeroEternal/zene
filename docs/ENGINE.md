@@ -94,6 +94,14 @@ MCP tool results over `ZENE_MAX_MCP_OUTPUT_BYTES` / `MAX_MCP_OUTPUT_BYTES` (defa
 
 When usage reaches auto-compact threshold minus `ZENE_PREFIRE_LEAD_PERCENT` (default 10pp), a background pass1 summarizes ~95% of history into NOTE₁. At compact time, pass2 merges NOTE₁ with the recent tail (prefire hit). Without a valid cache, large prefixes still use synchronous two-pass. Compacted prefixes are also written under `~/.zene/sessions/<id>/compaction_segments/` for recovery.
 
+### Memory flush + injection
+
+Near compact time, zene may run a no-tools flush turn that extracts durable lessons into `{workdir}/.zene/memory/daily/YYYY-MM-DD.md` (disable with `ZENE_MEMORY=0`). Session start injects recent memory into the system prompt once inside `<memory-context>` (kept stable for KV-friendly prefixes). Post-compact reminders also re-inject memory alongside todos/background tasks. Optional curated notes can live in `{workdir}/.zene/memory/MEMORY.md`.
+
+### Intra-lite tool bounding
+
+Non-MCP tool results over `ZENE_MAX_TOOL_OUTPUT_BYTES` (default 30_000) are truncated into session history and spilled to `.zene/tool-output/` (MCP uses its own 20KB path).
+
 ## Permission modes (grok-aligned)
 
 | Mode | Behavior |

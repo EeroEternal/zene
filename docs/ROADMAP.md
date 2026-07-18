@@ -409,11 +409,11 @@ TUI、record/replay、安装分发。
 
 | 阶段 | 状态 | 内容 |
 |------|------|------|
-| P1 采样/上下文 | [x] | 水位/full-replace/阶梯/错误分类；续1：硬拒绝短摘要、MCP 落盘、`/context`、tool-pair、preflight、reminder、抑制；续2：prefire two-pass、sync two-pass、compaction segments |
+| P1 采样/上下文 | [x] | 水位/full-replace/阶梯；续1 截断/context/tool-pair；续2 prefire two-pass/segments；续3 memory flush/注入 + 工具结果 intra 边界 |
 | P2 权限 | [x] | default/accept_edits/dont_ask/bypass + allow/deny/ask 规则 |
 | P3 会话恢复 | [x] | compaction checkpoints、`/rewind`、`/fork`、`/session-info` |
 | P4 运行时 | [x] | 后台 Bash/Task + TaskOutput、`--worktree`、subagent 报告包装 |
 | P5 MCP/扩展 | [x] | stdio + HTTP MCP、`zene mcp doctor` |
 | P6 集成/产品化 | [x] | `zene -p` headless + `--output-format json`；`zene acp` 最小 ACP stdio |
 
-*最后更新：2026-07-18（P1 续2：prefire two-pass / segments）*
+*最后更新：2026-07-18（P1 续3：memory flush + tool bound）*
