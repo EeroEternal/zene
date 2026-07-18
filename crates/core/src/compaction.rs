@@ -720,7 +720,54 @@ pub fn subagent_compaction_config(parent: &CompactionConfig) -> CompactionConfig
         trigger_ratio: 0.5,
         keep_recent_ratio: parent.keep_recent_ratio.max(0.3),
         min_keep_messages: parent.min_keep_messages,
+        intra_steps_first: parent.intra_steps_first,
     }
+}
+
+/// Max chars for tool results in the current turn's steps during intra pass.
+const STEPS_TOOL_RESULT_MAX_CHARS: usize = 200;
+
+/// Intra Steps-first lite: aggressively truncate tool results after the last
+/// user message. Returns true if any body was truncated.
+pub fn apply_steps_truncate_pass(
+    session: &mut SessionRecord,
+    config: &CompactionConfig,
+) -> bool {
+    if !config.intra_steps_first {
+        return false;
+    }
+    let Some(user_idx) = last_user_query_index(&session.messages) else {
+        return false;
+    };
+    let mut changed = 0usize;
+    for message in session.messages.iter_mut().skip(user_idx + 1) {
+        if message.role != Role::Tool {
+            continue;
+        }
+        let Some(content) = message.content.as_ref() else {
+            continue;
+        };
+        let count = content.chars().count();
+        if count <= STEPS_TOOL_RESULT_MAX_CHARS {
+            continue;
+        }
+        let kept: String = content.chars().take(STEPS_TOOL_RESULT_MAX_CHARS).collect();
+        message.content = Some(format!(
+            "{kept}…[steps-truncated {count} chars]"
+        ));
+        changed += 1;
+    }
+    if changed > 0 {
+        info!(changed, "intra steps-first truncated tool results");
+        let _ = session.record_compaction_event(
+            "steps_truncate",
+            changed,
+            None,
+            None,
+            None,
+        );
+    }
+    changed > 0
 }
 
 pub fn apply_compaction_to_messages(
@@ -1173,6 +1220,7 @@ mod tests {
             keep_recent_ratio: 0.25,
             context_window_tokens: 1000,
             min_keep_messages: 4,
+                    intra_steps_first: true,
         };
         assert!(!should_compact(499, &config));
         assert!(should_compact(500, &config));
@@ -1186,6 +1234,7 @@ mod tests {
             keep_recent_ratio: 0.25,
             context_window_tokens: 200,
             min_keep_messages: 2,
+                    intra_steps_first: true,
         };
         let messages: Vec<Message> = (0..30)
             .map(|i| user_msg(&format!("message {i}: {}", "x".repeat(200))))
@@ -1237,6 +1286,7 @@ mod tests {
             keep_recent_ratio: 0.5,
             context_window_tokens: 100,
             min_keep_messages: 2,
+                    intra_steps_first: true,
         };
         let plan = plan_compaction(&messages, &config, &estimator()).expect("plan");
         assert!(plan.compacted_count >= 1);
@@ -1313,11 +1363,35 @@ mod tests {
             keep_recent_ratio: 0.25,
             context_window_tokens: 128_000,
             min_keep_messages: 20,
+                    intra_steps_first: true,
         };
         let sub = subagent_compaction_config(&parent);
         assert_eq!(sub.context_window_tokens, 16_000);
         assert_eq!(sub.trigger_ratio, 0.5);
         assert_eq!(sub.min_keep_messages, 20);
+    }
+
+    #[test]
+    fn steps_truncate_only_touches_post_user_tools() {
+        let mut session = SessionRecord::new(std::path::Path::new("/tmp"));
+        session.messages = vec![
+            Message::system("sys"),
+            Message::tool_result("0", "Read", "x".repeat(1000)),
+            Message::user("do it"),
+            Message::tool_result("1", "Bash", "y".repeat(1000)),
+        ];
+        let cfg = CompactionConfig::default();
+        assert!(apply_steps_truncate_pass(&mut session, &cfg));
+        assert!(!session.messages[1]
+            .content
+            .as_deref()
+            .unwrap()
+            .contains("steps-truncated"));
+        assert!(session.messages[3]
+            .content
+            .as_deref()
+            .unwrap()
+            .contains("steps-truncated"));
     }
 
     #[test]
