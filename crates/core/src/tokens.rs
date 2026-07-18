@@ -3,16 +3,28 @@ use zene_llm::{Message, MessageKind, Role, ToolDefinition};
 /// Per tool-call JSON/API framing beyond argument string length.
 const TOOL_CALL_FRAME_TOKENS: u32 = 12;
 
+/// How text is converted to token estimates.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum EstimateMode {
+    /// Latin ~`chars_per_token`; CJK ~1 token/char (closer to real BPE for mixed text).
+    #[default]
+    ScriptAware,
+    /// Legacy uniform chars/token ceiling division.
+    Uniform,
+}
+
 /// Heuristic token estimator with configurable chars-per-token ratio.
 #[derive(Debug, Clone, Copy)]
 pub struct TokenEstimator {
     pub chars_per_token: f32,
+    pub mode: EstimateMode,
 }
 
 impl Default for TokenEstimator {
     fn default() -> Self {
         Self {
             chars_per_token: 4.0,
+            mode: EstimateMode::ScriptAware,
         }
     }
 }
@@ -21,14 +33,25 @@ impl TokenEstimator {
     pub fn new(chars_per_token: f32) -> Self {
         Self {
             chars_per_token: chars_per_token.max(1.0),
+            mode: EstimateMode::ScriptAware,
         }
+    }
+
+    pub fn with_mode(mut self, mode: EstimateMode) -> Self {
+        self.mode = mode;
+        self
     }
 
     pub fn estimate_chars_as_tokens(&self, text: &str) -> u32 {
         if text.is_empty() {
             return 0;
         }
-        (text.chars().count() as f32 / self.chars_per_token).ceil() as u32
+        match self.mode {
+            EstimateMode::Uniform => {
+                (text.chars().count() as f32 / self.chars_per_token).ceil() as u32
+            }
+            EstimateMode::ScriptAware => estimate_script_aware(text, self.chars_per_token),
+        }
     }
 
     /// Role-specific framing overhead (JSON keys, role labels, separators).
@@ -107,6 +130,44 @@ impl TokenEstimator {
     }
 }
 
+fn is_cjk(ch: char) -> bool {
+    matches!(ch,
+        '\u{4E00}'..='\u{9FFF}' | // CJK Unified
+        '\u{3400}'..='\u{4DBF}' | // Extension A
+        '\u{F900}'..='\u{FAFF}' | // Compatibility
+        '\u{3040}'..='\u{30FF}' | // Hiragana/Katakana
+        '\u{AC00}'..='\u{D7AF}'   // Hangul
+    )
+}
+
+/// Mixed-script estimate: CJK ≈ 1 tok/char; Latin runs use chars_per_token.
+fn estimate_script_aware(text: &str, chars_per_token: f32) -> u32 {
+    let cpt = chars_per_token.max(1.0);
+    let mut tokens = 0.0f32;
+    let mut latin_run = 0usize;
+    for ch in text.chars() {
+        if is_cjk(ch) {
+            if latin_run > 0 {
+                tokens += (latin_run as f32 / cpt).ceil();
+                latin_run = 0;
+            }
+            tokens += 1.0;
+        } else if ch.is_whitespace() {
+            if latin_run > 0 {
+                tokens += (latin_run as f32 / cpt).ceil();
+                latin_run = 0;
+            }
+            tokens += 0.25;
+        } else {
+            latin_run += 1;
+        }
+    }
+    if latin_run > 0 {
+        tokens += (latin_run as f32 / cpt).ceil();
+    }
+    tokens.ceil().max(1.0) as u32
+}
+
 /// Total estimated context size (messages + tool definitions) for compaction checks.
 pub fn estimate_context(
     messages: &[Message],
@@ -148,16 +209,26 @@ mod tests {
     use zene_llm::ToolCall;
 
     #[test]
-    fn chars_heuristic_uses_ceiling_division() {
-        assert_eq!(estimate_chars_as_tokens(""), 0);
-        assert_eq!(estimate_chars_as_tokens("abcd"), 1);
-        assert_eq!(estimate_chars_as_tokens("abcde"), 2);
+    fn uniform_chars_heuristic_uses_ceiling_division() {
+        let est = TokenEstimator::default().with_mode(EstimateMode::Uniform);
+        assert_eq!(est.estimate_chars_as_tokens(""), 0);
+        assert_eq!(est.estimate_chars_as_tokens("abcd"), 1);
+        assert_eq!(est.estimate_chars_as_tokens("abcde"), 2);
+    }
+
+    #[test]
+    fn script_aware_counts_cjk_higher() {
+        let est = TokenEstimator::default();
+        let latin = est.estimate_chars_as_tokens("abcd"); // ~1
+        let cjk = est.estimate_chars_as_tokens("中文测试"); // ~4
+        assert!(cjk > latin);
+        assert_eq!(cjk, 4);
     }
 
     #[test]
     fn custom_ratio_increases_token_count() {
-        let loose = TokenEstimator::new(8.0);
-        let tight = TokenEstimator::new(2.0);
+        let loose = TokenEstimator::new(8.0).with_mode(EstimateMode::Uniform);
+        let tight = TokenEstimator::new(2.0).with_mode(EstimateMode::Uniform);
         let text = "abcdefgh";
         assert!(loose.estimate_chars_as_tokens(text) < tight.estimate_chars_as_tokens(text));
     }

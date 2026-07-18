@@ -94,6 +94,26 @@ pub fn process_flush_response(response: &str) -> Result<Option<String>, FlushRes
     Ok(Some(content))
 }
 
+fn content_fingerprint(content: &str) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    content.trim().hash(&mut h);
+    h.finish()
+}
+
+fn last_flush_hash_path(workdir: &Path) -> PathBuf {
+    memory_root(workdir).join(".last_flush_hash")
+}
+
+/// Returns true when `content` matches the previous accepted flush (exact text).
+pub fn is_duplicate_flush(workdir: &Path, content: &str) -> bool {
+    let path = last_flush_hash_path(workdir);
+    let Ok(prev) = fs::read_to_string(path) else {
+        return false;
+    };
+    prev.trim() == content_fingerprint(content).to_string()
+}
+
 pub fn append_daily_log(workdir: &Path, content: &str) -> Result<PathBuf> {
     let path = daily_log_path(workdir);
     if let Some(parent) = path.parent() {
@@ -115,6 +135,10 @@ pub fn append_daily_log(workdir: &Path, content: &str) -> Result<PathBuf> {
         .context("open daily memory log")?;
     file.write_all(block.as_bytes())
         .context("write daily memory log")?;
+    let _ = fs::write(
+        last_flush_hash_path(workdir),
+        content_fingerprint(content).to_string(),
+    );
     Ok(path)
 }
 
@@ -252,6 +276,10 @@ pub async fn run_memory_flush(
 
     match process_flush_response(&text) {
         Ok(Some(content)) => {
+            if is_duplicate_flush(workdir, &content) {
+                info!("memory flush: duplicate of last flush; skipped");
+                return Ok(FlushResult::NothingToStore);
+            }
             let path = append_daily_log(workdir, &content)?;
             info!(path = %path.display(), chars = content.len(), "memory flush wrote daily log");
             Ok(FlushResult::Accepted)

@@ -42,7 +42,8 @@ mod two_pass;
 mod worktree;
 
 use compaction::{
-    apply_overflow_truncate_pass, compact_session, compact_session_forced, is_context_overflow_error,
+    apply_overflow_truncate_pass, apply_steps_truncate_pass, compact_session,
+    compact_session_forced, is_context_overflow_error,
 };
 pub use compaction::CompactionResult;
 mod workspace;
@@ -722,6 +723,16 @@ impl Agent {
         let preflight = self.context_water.exceeds_window()
             && !self.context_water.auto_compact_suppressed;
         if self.context_water.should_compact(&self.config.compaction) || preflight {
+            // Intra Steps-first: shrink current-turn tool bodies before full compact.
+            if apply_steps_truncate_pass(&mut self.session, &self.config.compaction) {
+                self.sync_context_water_from_estimate();
+                if !self.context_water.should_compact(&self.config.compaction)
+                    && !self.context_water.exceeds_window()
+                {
+                    info!("intra steps-first truncate relieved pressure; skipping full compact");
+                    return Ok(());
+                }
+            }
             self.sync_todos_to_session();
             self.prefire.await_in_flight().await;
             let prefire_cache = self.prefire_cache_for_current_prefix();

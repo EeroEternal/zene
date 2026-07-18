@@ -12,7 +12,7 @@ Core agent loop lives in `crates/core`. This document tracks engine-level behavi
 
 ## Token estimation (v2 heuristic)
 
-Implemented in `tokens.rs` as `TokenEstimator` — no external tokenizer dependency (Option B). Uses configurable `chars_per_token` (default 4) from global config or per-model `model_chars_per_token`.
+Implemented in `tokens.rs` as `TokenEstimator` — no external tokenizer dependency (Option B). Default **script-aware** mode: Latin/code runs use configurable `chars_per_token` (default 4); CJK characters count ≈1 token each (closer to real BPE on mixed text). Uniform legacy mode remains available via `EstimateMode::Uniform`.
 
 **Per-message estimate** (`estimate_message_tokens` / `TokenEstimator::estimate_message_tokens`):
 
@@ -101,6 +101,10 @@ Near compact time, zene may run a no-tools flush turn that extracts durable less
 ### Intra-lite tool bounding
 
 Non-MCP tool results over `ZENE_MAX_TOOL_OUTPUT_BYTES` (default 30_000) are truncated into session history and spilled to `.zene/tool-output/` (MCP uses its own 20KB path).
+
+### Intra Steps-first
+
+When auto-compact is about to fire, zene first runs a Steps-first pass (`compaction.intra_steps_first`, default true): tool results after the last user message are truncated to ~200 chars. If that alone brings usage under the threshold, full summarize is skipped (grok Intra `StepsOnly` / HistoryThenSteps lite).
 
 ## Permission modes (grok-aligned)
 
