@@ -76,15 +76,19 @@ Avoids paying for LLM summarize when truncation alone fixes the overflow.
 
 ### Usage-driven water level
 
-`ContextWaterLevel` (`context_water.rs`) tracks the last provider `prompt_tokens` and the heuristic estimate. Auto-compact triggers on `max(usage, estimate)` vs `context_window * trigger_ratio` (default 85%). Session persists `context_window_usage` / `context_tokens_used`; TUI status shows `ctx N%`.
+`ContextWaterLevel` (`context_water.rs`) tracks the last provider `prompt_tokens` and the heuristic estimate. Auto-compact triggers on `max(usage, estimate)` vs `context_window * trigger_ratio` (default 85%). After tool results, a preflight pass also compacts when the estimate exceeds the hard window. Failed summarize sets sticky suppression until a successful `/compact`. Session persists `context_window_usage` / `context_tokens_used`; TUI shows `ctx N%`; `/context` (alias `/tokens`) prints the report.
 
 ### Full-replace assemble + input ladder
 
 LLM summarize rebuilds history as:
 
-`system + last_user_query + recent_after_query + compaction_summary + optional <system-reminder> (todos)`
+`system + last_user_query + recent_after_query + compaction_summary + optional <system-reminder> (todos + running background tasks)`
 
-Summarizer input steps `verbatim → fitted → lossy` on overflow or degenerate (too-short) summaries (`input_ladder.rs`). Manual `/compact [hint]` forces summarize and writes compaction checkpoints.
+Tail selection snaps so assistant `tool_calls` are never split from their tool results. Summarizer input steps `verbatim → fitted → lossy` (`input_ladder.rs`): fitted shrinks bodies and drops oldest whole turns; lossy flattens tool results. Summaries shorter than **500** chars are rejected (retries, then hard fail — aligned with grok-build). Manual `/compact [hint]` forces summarize and writes compaction checkpoints.
+
+### MCP output bounding
+
+MCP tool results over `ZENE_MAX_MCP_OUTPUT_BYTES` / `MAX_MCP_OUTPUT_BYTES` (default 20_000) are truncated inline and spilled to `.zene/tool-output/` so large payloads do not force premature auto-compact.
 
 ## Permission modes (grok-aligned)
 

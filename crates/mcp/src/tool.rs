@@ -51,10 +51,12 @@ impl Tool for McpTool {
         }
     }
 
-    async fn execute(&self, arguments: &str, _ctx: &ToolContext) -> Result<ToolResult> {
+    async fn execute(&self, arguments: &str, ctx: &ToolContext) -> Result<ToolResult> {
         let args: Value = serde_json::from_str(arguments).unwrap_or(json!({}));
         let mut client = self.client.lock().await;
         let (content, is_error) = client.call_tool(&self.tool_name, args).await?;
+        let content =
+            crate::truncate::truncate_mcp_output(content, ctx.sandbox.workdir(), &self.registry_name);
         Ok(ToolResult { content, is_error })
     }
 }

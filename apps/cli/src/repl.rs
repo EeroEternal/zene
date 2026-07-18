@@ -82,6 +82,10 @@ pub async fn run_repl(agent: &mut Agent, cli: &Cli) -> Result<()> {
                     }
                     continue;
                 }
+                if input == "/context" || input == "/tokens" {
+                    println!("{}", agent.context_report());
+                    continue;
+                }
                 if input == "/session-info" {
                     let water = agent.context_water();
                     println!(

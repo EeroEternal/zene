@@ -264,8 +264,10 @@ impl Agent {
 
     /// Manually compact the conversation (`/compact [hint]`).
     pub async fn compact_now(&mut self, user_hint: Option<&str>) -> Result<Option<CompactionResult>> {
+        self.sync_todos_to_session();
         let tools = self.tool_definitions_for_llm();
         let estimator = self.token_estimator();
+        let background_tasks = self.background.lock().list();
         let _ = save_checkpoint(&self.session, "pre_manual_compact");
         let result = compact_session_forced(
             &mut self.session,
@@ -277,16 +279,68 @@ impl Agent {
             &estimator,
             true,
             user_hint,
+            &background_tasks,
         )
-        .await?;
-        if let Some(result) = &result {
-            self.record_compaction(result)?;
-            let _ = save_checkpoint(&self.session, "post_manual_compact");
-            self.sync_context_water_from_estimate();
+        .await;
+        match result {
+            Ok(result) => {
+                self.context_water.clear_auto_compact_suppression();
+                if let Some(result) = &result {
+                    self.record_compaction(result)?;
+                    let _ = save_checkpoint(&self.session, "post_manual_compact");
+                    self.sync_context_water_from_estimate();
+                }
+                self.session.ensure_system_message(&self.system_prompt);
+                self.session.save()?;
+                Ok(result)
+            }
+            Err(err) => {
+                self.context_water.suppress_auto_compact();
+                Err(err)
+            }
         }
-        self.session.ensure_system_message(&self.system_prompt);
-        self.session.save()?;
-        Ok(result)
+    }
+
+    /// Human-readable context report for `/context` (grok-aligned).
+    pub fn context_report(&self) -> String {
+        let water = &self.context_water;
+        let cfg = &self.config.compaction;
+        let threshold_pct = ContextWaterLevel::auto_compact_threshold_percent(cfg);
+        let threshold_tokens = ContextWaterLevel::threshold_tokens(cfg);
+        let used = water.effective_tokens();
+        let window = water.context_window_tokens.max(1);
+        let mut lines = vec![
+            format!(
+                "context: {}% ({} / {} tokens)",
+                water.usage_percent(),
+                used,
+                window
+            ),
+            format!(
+                "auto-compact at {}% ({} tokens)",
+                threshold_pct, threshold_tokens
+            ),
+            format!(
+                "sources: usage={} estimate={}",
+                water
+                    .last_prompt_tokens
+                    .map(|v| v.to_string())
+                    .unwrap_or_else(|| "-".into()),
+                water
+                    .last_estimate_tokens
+                    .map(|v| v.to_string())
+                    .unwrap_or_else(|| "-".into())
+            ),
+            format!("messages: {}", self.session.messages.len()),
+            format!("model: {}", self.config.model),
+        ];
+        if water.auto_compact_suppressed {
+            lines.push(
+                "auto-compact: suppressed (last summarize failed; use /compact to retry)"
+                    .to_string(),
+            );
+        }
+        lines.join("\n")
     }
 
     /// Rewind to the latest compaction checkpoint (or a specific id).
@@ -536,6 +590,8 @@ impl Agent {
                 if let Some(tool_calls) = assistant_message.tool_calls.clone() {
                     self.session.push_message(assistant_message);
                     self.run_tools(&tool_calls, options, cancel).await?;
+                    // Prefight: tool results may have pushed us over the window.
+                    self.maybe_compact_before_llm().await?;
                     if self.inject_pending_steer(options)? {
                         continue;
                     }
@@ -631,23 +687,41 @@ impl Agent {
         );
         self.warn_if_near_context_limit(self.context_water.effective_tokens() as usize);
 
-        if self.context_water.should_compact(&self.config.compaction) {
+        let preflight = self.context_water.exceeds_window()
+            && !self.context_water.auto_compact_suppressed;
+        if self.context_water.should_compact(&self.config.compaction) || preflight {
+            self.sync_todos_to_session();
             let _ = save_checkpoint(&self.session, "pre_auto_compact");
             let estimator = self.token_estimator();
-            if let Some(result) = compact_session(
+            let background_tasks = self.background.lock().list();
+            let reason = if preflight {
+                "preflight_overflow"
+            } else {
+                "token_threshold"
+            };
+            match compact_session(
                 &mut self.session,
                 &self.client,
                 &self.config.model,
                 &self.config.compaction,
-                "token_threshold",
+                reason,
                 &tools,
                 &estimator,
+                &background_tasks,
             )
-            .await?
+            .await
             {
-                self.record_compaction(&result)?;
-                let _ = save_checkpoint(&self.session, "post_auto_compact");
-                self.sync_context_water_from_estimate();
+                Ok(Some(result)) => {
+                    self.context_water.clear_auto_compact_suppression();
+                    self.record_compaction(&result)?;
+                    let _ = save_checkpoint(&self.session, "post_auto_compact");
+                    self.sync_context_water_from_estimate();
+                }
+                Ok(None) => {}
+                Err(err) => {
+                    warn!(error = %err, "auto-compact failed; suppressing until /compact");
+                    self.context_water.suppress_auto_compact();
+                }
             }
             self.session
                 .ensure_system_message(&self.system_prompt);
@@ -726,9 +800,11 @@ impl Agent {
                     }
                     if !overflow_summarized {
                         overflow_summarized = true;
+                        self.sync_todos_to_session();
                         let _ = save_checkpoint(&self.session, "pre_overflow_compact");
                         let estimator = self.token_estimator();
-                        if let Some(result) = compact_session(
+                        let background_tasks = self.background.lock().list();
+                        match compact_session(
                             &mut self.session,
                             &self.client,
                             &self.config.model,
@@ -736,12 +812,22 @@ impl Agent {
                             "context_overflow",
                             tools,
                             &estimator,
+                            &background_tasks,
                         )
-                        .await?
+                        .await
                         {
-                            self.record_compaction(&result)?;
-                            let _ = save_checkpoint(&self.session, "post_overflow_compact");
-                            self.sync_context_water_from_estimate();
+                            Ok(Some(result)) => {
+                                self.context_water.clear_auto_compact_suppression();
+                                self.record_compaction(&result)?;
+                                let _ = save_checkpoint(&self.session, "post_overflow_compact");
+                                self.sync_context_water_from_estimate();
+                            }
+                            Ok(None) => {}
+                            Err(compact_err) => {
+                                warn!(error = %compact_err, "overflow compact failed");
+                                self.context_water.suppress_auto_compact();
+                                return Err(compact_err);
+                            }
                         }
                         self.session
                             .ensure_system_message(&self.system_prompt);

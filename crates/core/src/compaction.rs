@@ -1,8 +1,9 @@
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 use tracing::info;
 use zene_config::CompactionConfig;
 use zene_llm::{ChatClient, ChatRequest, ChatResponse, Message, MessageKind, Role, ToolDefinition};
 use zene_session::SessionRecord;
+use zene_tools::{BackgroundTask, BackgroundTaskStatus};
 
 use crate::input_ladder::{prepare_summary_input, InputLadderStage};
 use crate::tokens::{self, TokenEstimator};
@@ -13,8 +14,9 @@ const SUMMARY_SYSTEM_PROMPT: &str = "You summarize coding agent conversations. P
 const TRUNCATE_TOOL_RESULT_MAX_CHARS: usize = 800;
 /// Max chars kept in assistant text before truncate-only compaction replaces the body.
 const TRUNCATE_ASSISTANT_TEXT_MAX_CHARS: usize = 1_200;
-/// Cleaned summaries shorter than this are treated as degenerate and retried.
-const MIN_SUMMARY_SEED_CHARS: usize = 80;
+/// Cleaned summaries shorter than this are treated as degenerate and retried
+/// (aligned with grok-build `MIN_SUMMARY_SEED_CHARS`).
+pub const MIN_SUMMARY_SEED_CHARS: usize = 500;
 
 pub fn should_compact(estimated_tokens: u32, config: &CompactionConfig) -> bool {
     let threshold =
@@ -70,6 +72,11 @@ pub fn tail_start_index(
     let max_tail_start = messages.len().saturating_sub(min_keep_messages);
     if tail_start > max_tail_start {
         tail_start = max_tail_start;
+    }
+
+    // Never split assistant tool_calls from their tool results (grok tool-pair snap).
+    while tail_start > prefix_start && messages[tail_start].role == Role::Tool {
+        tail_start -= 1;
     }
 
     if tail_start <= prefix_start {
@@ -131,20 +138,54 @@ pub fn assemble_full_replace_history(
     out
 }
 
-fn build_todo_reminder(session: &SessionRecord) -> Option<String> {
-    if session.todos.is_empty() {
-        return None;
+/// Post-compaction `<system-reminder>`: actionable todos + running background tasks.
+pub fn build_compaction_reminder(
+    session: &SessionRecord,
+    background_tasks: &[BackgroundTask],
+) -> Option<String> {
+    let mut sections = Vec::new();
+
+    let actionable: Vec<_> = session
+        .todos
+        .iter()
+        .filter(|item| {
+            !matches!(item.status, zene_session::TodoStatus::Completed)
+        })
+        .collect();
+    if !actionable.is_empty() {
+        let mut lines = vec!["Active todos:".to_string()];
+        for item in actionable {
+            let status = match item.status {
+                zene_session::TodoStatus::Pending => "pending",
+                zene_session::TodoStatus::InProgress => "in_progress",
+                zene_session::TodoStatus::Completed => "completed",
+            };
+            lines.push(format!("- [{status}] {}", item.content));
+        }
+        sections.push(lines.join("\n"));
     }
-    let mut lines = vec!["Active todos:".to_string()];
-    for item in &session.todos {
-        let status = match item.status {
-            zene_session::TodoStatus::Pending => "pending",
-            zene_session::TodoStatus::InProgress => "in_progress",
-            zene_session::TodoStatus::Completed => "completed",
-        };
-        lines.push(format!("- [{status}] {}", item.content));
+
+    let running: Vec<_> = background_tasks
+        .iter()
+        .filter(|t| t.status == BackgroundTaskStatus::Running)
+        .collect();
+    if !running.is_empty() {
+        let mut lines = vec!["Background tasks still running:".to_string()];
+        for task in running {
+            let kind = match task.kind {
+                zene_tools::BackgroundTaskKind::Bash => "bash",
+                zene_tools::BackgroundTaskKind::Subagent => "task",
+            };
+            lines.push(format!("- {} ({kind}): {}", task.id, task.label));
+        }
+        sections.push(lines.join("\n"));
     }
-    Some(lines.join("\n"))
+
+    if sections.is_empty() {
+        None
+    } else {
+        Some(sections.join("\n\n"))
+    }
 }
 
 fn format_messages_for_summary(messages: &[Message]) -> String {
@@ -227,6 +268,11 @@ pub async fn summarize_messages_with_ladder(
                         stage = next;
                         continue;
                     }
+                    bail!(
+                        "compaction summary too short ({} chars; need ≥ {}); refusing to discard conversation state",
+                        summary.chars().count(),
+                        MIN_SUMMARY_SEED_CHARS
+                    );
                 }
                 return Ok(summary);
             }
@@ -734,6 +780,7 @@ pub async fn compact_session(
     reason: &str,
     tools: &[ToolDefinition],
     estimator: &TokenEstimator,
+    background_tasks: &[BackgroundTask],
 ) -> Result<Option<CompactionResult>> {
     if let Some(result) = try_truncate_only_compaction(session, config, tools, estimator) {
         return Ok(Some(result));
@@ -776,6 +823,7 @@ pub async fn compact_session(
         plan.compacted_count,
         reason,
         tokens_before,
+        background_tasks,
     );
 
     let tokens_after = estimate_session_tokens(session, tools, estimator);
@@ -805,9 +853,20 @@ pub async fn compact_session_forced(
     estimator: &TokenEstimator,
     force_summarize: bool,
     user_hint: Option<&str>,
+    background_tasks: &[BackgroundTask],
 ) -> Result<Option<CompactionResult>> {
     if !force_summarize {
-        return compact_session(session, client, model, config, reason, tools, estimator).await;
+        return compact_session(
+            session,
+            client,
+            model,
+            config,
+            reason,
+            tools,
+            estimator,
+            background_tasks,
+        )
+        .await;
     }
 
     let tokens_before = estimate_session_tokens(session, tools, estimator);
@@ -856,6 +915,7 @@ pub async fn compact_session_forced(
         plan.compacted_count,
         reason,
         tokens_before,
+        background_tasks,
     );
 
     let tokens_after = estimate_session_tokens(session, tools, estimator);
@@ -880,6 +940,7 @@ fn apply_full_replace_to_session(
     compacted_count: usize,
     reason: &str,
     tokens_before: u32,
+    background_tasks: &[BackgroundTask],
 ) {
     let system = session
         .messages
@@ -899,7 +960,7 @@ fn apply_full_replace_to_session(
         }
         None => (None, session.messages[tail_start..].to_vec()),
     };
-    let reminder = build_todo_reminder(session);
+    let reminder = build_compaction_reminder(session, background_tasks);
     session.messages =
         assemble_full_replace_history(system, last_user, recent, summary.clone(), reminder);
     session.record_compaction_event(
@@ -1101,7 +1162,8 @@ mod tests {
         assert!(is_degenerate_summary(""));
         assert!(is_degenerate_summary("(empty summary)"));
         assert!(is_degenerate_summary("short"));
-        assert!(!is_degenerate_summary(&"x".repeat(120)));
+        assert!(is_degenerate_summary(&"x".repeat(120)));
+        assert!(!is_degenerate_summary(&"x".repeat(500)));
     }
 
     #[test]
