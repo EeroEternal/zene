@@ -29,12 +29,14 @@ mod hooks;
 mod input_ladder;
 mod permission;
 mod plan_mode;
+mod prefire;
 mod skills;
 mod subagent;
 mod tokens;
 mod tool_dedup;
 pub mod tool_scheduler;
 mod turn;
+mod two_pass;
 mod worktree;
 
 use compaction::{
@@ -84,6 +86,7 @@ pub struct Agent {
     record_writer: AgentRecordWriter,
     mcp: Option<McpManager>,
     background: SharedBackgroundTasks,
+    prefire: prefire::PrefireState,
 }
 
 pub struct PromptOptions {
@@ -163,6 +166,7 @@ impl Agent {
             record_writer,
             mcp,
             background: shared_background_tasks(),
+            prefire: prefire::PrefireState::new(),
         })
     }
 
@@ -268,6 +272,8 @@ impl Agent {
         let tools = self.tool_definitions_for_llm();
         let estimator = self.token_estimator();
         let background_tasks = self.background.lock().list();
+        self.prefire.await_in_flight().await;
+        let prefire_cache = self.prefire_cache_for_current_prefix();
         let _ = save_checkpoint(&self.session, "pre_manual_compact");
         let result = compact_session_forced(
             &mut self.session,
@@ -280,8 +286,10 @@ impl Agent {
             true,
             user_hint,
             &background_tasks,
+            prefire_cache.as_ref(),
         )
         .await;
+        self.prefire.clear();
         match result {
             Ok(result) => {
                 self.context_water.clear_auto_compact_suppression();
@@ -340,6 +348,11 @@ impl Agent {
                     .to_string(),
             );
         }
+        if self.prefire.has_cache() {
+            lines.push("prefire: NOTE₁ cached (two-pass ready)".to_string());
+        } else if self.prefire.is_in_flight() {
+            lines.push("prefire: pass1 in flight".to_string());
+        }
         lines.join("\n")
     }
 
@@ -357,6 +370,7 @@ impl Agent {
             self.context_water.last_prompt_tokens = Some(tokens);
             self.context_water.last_estimate_tokens = Some(tokens);
         }
+        self.prefire.clear();
         self.session.save()?;
         Ok(id)
     }
@@ -371,6 +385,7 @@ impl Agent {
         self.session = forked;
         self.record_writer = AgentRecordWriter::for_session(&id)?;
         self.todos = shared_todo_store_from(self.session.todos.clone());
+        self.prefire.clear();
         Ok(id)
     }
 
@@ -687,10 +702,14 @@ impl Agent {
         );
         self.warn_if_near_context_limit(self.context_water.effective_tokens() as usize);
 
+        self.maybe_start_prefire();
+
         let preflight = self.context_water.exceeds_window()
             && !self.context_water.auto_compact_suppressed;
         if self.context_water.should_compact(&self.config.compaction) || preflight {
             self.sync_todos_to_session();
+            self.prefire.await_in_flight().await;
+            let prefire_cache = self.prefire_cache_for_current_prefix();
             let _ = save_checkpoint(&self.session, "pre_auto_compact");
             let estimator = self.token_estimator();
             let background_tasks = self.background.lock().list();
@@ -708,10 +727,12 @@ impl Agent {
                 &tools,
                 &estimator,
                 &background_tasks,
+                prefire_cache.as_ref(),
             )
             .await
             {
                 Ok(Some(result)) => {
+                    self.prefire.clear();
                     self.context_water.clear_auto_compact_suppression();
                     self.record_compaction(&result)?;
                     let _ = save_checkpoint(&self.session, "post_auto_compact");
@@ -727,6 +748,108 @@ impl Agent {
                 .ensure_system_message(&self.system_prompt);
         }
         Ok(())
+    }
+
+    fn prefire_cache_for_current_prefix(&self) -> Option<prefire::PrefireCache> {
+        let prefix_start = if self
+            .session
+            .messages
+            .first()
+            .is_some_and(|m| m.role == zene_llm::Role::System)
+        {
+            1
+        } else {
+            0
+        };
+        let body = &self.session.messages[prefix_start..];
+        self.prefire.valid_cache_for(body)
+    }
+
+    fn maybe_start_prefire(&self) {
+        let lead = prefire::prefire_lead_percent();
+        if !self
+            .context_water
+            .should_prefire(&self.config.compaction, lead)
+        {
+            return;
+        }
+        if self.prefire.is_in_flight() || self.prefire.has_cache() {
+            return;
+        }
+
+        let estimator = self.token_estimator();
+        let messages = self.session.messages.clone();
+        let prefix_start = if messages
+            .first()
+            .is_some_and(|m| m.role == zene_llm::Role::System)
+        {
+            1
+        } else {
+            0
+        };
+        if messages.len().saturating_sub(prefix_start) < 8 {
+            return;
+        }
+        let body = messages[prefix_start..].to_vec();
+        let split = two_pass::split_messages_for_two_pass(
+            &body,
+            &estimator,
+            two_pass::TWO_PASS_DEFAULT_SPLIT_FRACTION,
+        );
+        if split.split_idx == 0 || split.split_idx >= body.len() {
+            return;
+        }
+        let pass1_prefix = body[..split.split_idx].to_vec();
+        let fingerprint = two_pass::fingerprint_messages(&pass1_prefix);
+        if self.prefire.already_launched_for(fingerprint) {
+            return;
+        }
+
+        let config = self.config.clone();
+        let model = self.config.model.clone();
+        let window = self.config.compaction.context_window_tokens;
+        let split_idx = split.split_idx;
+        info!(
+            split_idx,
+            usage_percent = self.context_water.usage_percent(),
+            "starting prefire pass1"
+        );
+        let handle = tokio::spawn(async move {
+            let client = match ChatClient::from_config(&config).await {
+                Ok(c) => c,
+                Err(err) => {
+                    warn!(error = %err, "prefire: failed to create client");
+                    return None;
+                }
+            };
+            match compaction::summarize_messages_with_ladder(
+                &client,
+                &model,
+                &pass1_prefix,
+                Some(window),
+                &estimator,
+            )
+            .await
+            {
+                Ok(note1) => {
+                    if note1.trim().is_empty() {
+                        return None;
+                    }
+                    info!(note1_chars = note1.len(), "prefire pass1 cached NOTE₁");
+                    Some(prefire::PrefireCache {
+                        note1,
+                        fingerprint,
+                        split_idx,
+                        prefix_end: prefix_start + split_idx,
+                    })
+                }
+                Err(err) => {
+                    warn!(error = %err, "prefire pass1 failed");
+                    None
+                }
+            }
+        });
+        self.prefire.set_handle(fingerprint, handle);
     }
 
     fn sync_context_water_from_estimate(&mut self) {
@@ -801,6 +924,8 @@ impl Agent {
                     if !overflow_summarized {
                         overflow_summarized = true;
                         self.sync_todos_to_session();
+                        self.prefire.await_in_flight().await;
+                        let prefire_cache = self.prefire_cache_for_current_prefix();
                         let _ = save_checkpoint(&self.session, "pre_overflow_compact");
                         let estimator = self.token_estimator();
                         let background_tasks = self.background.lock().list();
@@ -813,10 +938,12 @@ impl Agent {
                             tools,
                             &estimator,
                             &background_tasks,
+                            prefire_cache.as_ref(),
                         )
                         .await
                         {
                             Ok(Some(result)) => {
+                                self.prefire.clear();
                                 self.context_water.clear_auto_compact_suppression();
                                 self.record_compaction(&result)?;
                                 let _ = save_checkpoint(&self.session, "post_overflow_compact");

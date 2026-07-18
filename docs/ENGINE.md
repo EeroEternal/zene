@@ -90,6 +90,10 @@ Tail selection snaps so assistant `tool_calls` are never split from their tool r
 
 MCP tool results over `ZENE_MAX_MCP_OUTPUT_BYTES` / `MAX_MCP_OUTPUT_BYTES` (default 20_000) are truncated inline and spilled to `.zene/tool-output/` so large payloads do not force premature auto-compact.
 
+### Prefire two-pass + segments
+
+When usage reaches auto-compact threshold minus `ZENE_PREFIRE_LEAD_PERCENT` (default 10pp), a background pass1 summarizes ~95% of history into NOTE₁. At compact time, pass2 merges NOTE₁ with the recent tail (prefire hit). Without a valid cache, large prefixes still use synchronous two-pass. Compacted prefixes are also written under `~/.zene/sessions/<id>/compaction_segments/` for recovery.
+
 ## Permission modes (grok-aligned)
 
 | Mode | Behavior |
