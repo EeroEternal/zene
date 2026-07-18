@@ -27,12 +27,14 @@ mod context_water;
 mod events;
 mod hooks;
 mod input_ladder;
+mod memory;
 mod permission;
 mod plan_mode;
 mod prefire;
 mod skills;
 mod subagent;
 mod tokens;
+mod tool_bound;
 mod tool_dedup;
 pub mod tool_scheduler;
 mod turn;
@@ -87,6 +89,8 @@ pub struct Agent {
     mcp: Option<McpManager>,
     background: SharedBackgroundTasks,
     prefire: prefire::PrefireState,
+    /// Compaction cycle index of the last successful memory flush.
+    last_memory_flush_compaction: u64,
 }
 
 pub struct PromptOptions {
@@ -119,6 +123,7 @@ impl Agent {
         let system_prompt =
             workspace::build_system_prompt(&config.system_prompt, &workdir, config.include_workspace_context);
         session.ensure_system_message(&system_prompt);
+        memory::ensure_memory_in_system(&mut session.messages, &workdir);
         let client = ChatClient::from_config(&config).await?;
         let record_writer = AgentRecordWriter::for_session(&session.meta.id)?;
 
@@ -167,6 +172,7 @@ impl Agent {
             mcp,
             background: shared_background_tasks(),
             prefire: prefire::PrefireState::new(),
+            last_memory_flush_compaction: 0,
         })
     }
 
@@ -274,6 +280,8 @@ impl Agent {
         let background_tasks = self.background.lock().list();
         self.prefire.await_in_flight().await;
         let prefire_cache = self.prefire_cache_for_current_prefix();
+        let _ = self.maybe_flush_memory().await;
+        let memory_block = memory::memory_reminder(self.sandbox.workdir());
         let _ = save_checkpoint(&self.session, "pre_manual_compact");
         let result = compact_session_forced(
             &mut self.session,
@@ -287,6 +295,7 @@ impl Agent {
             user_hint,
             &background_tasks,
             prefire_cache.as_ref(),
+            memory_block.as_deref(),
         )
         .await;
         self.prefire.clear();
@@ -352,6 +361,12 @@ impl Agent {
             lines.push("prefire: NOTE₁ cached (two-pass ready)".to_string());
         } else if self.prefire.is_in_flight() {
             lines.push("prefire: pass1 in flight".to_string());
+        }
+        if memory::memory_enabled() {
+            let root = memory::memory_root(self.sandbox.workdir());
+            lines.push(format!("memory: {} (ZENE_MEMORY)", root.display()));
+        } else {
+            lines.push("memory: disabled".to_string());
         }
         lines.join("\n")
     }
@@ -710,6 +725,8 @@ impl Agent {
             self.sync_todos_to_session();
             self.prefire.await_in_flight().await;
             let prefire_cache = self.prefire_cache_for_current_prefix();
+            let _ = self.maybe_flush_memory().await;
+            let memory_block = memory::memory_reminder(self.sandbox.workdir());
             let _ = save_checkpoint(&self.session, "pre_auto_compact");
             let estimator = self.token_estimator();
             let background_tasks = self.background.lock().list();
@@ -728,6 +745,7 @@ impl Agent {
                 &estimator,
                 &background_tasks,
                 prefire_cache.as_ref(),
+                memory_block.as_deref(),
             )
             .await
             {
@@ -926,6 +944,8 @@ impl Agent {
                         self.sync_todos_to_session();
                         self.prefire.await_in_flight().await;
                         let prefire_cache = self.prefire_cache_for_current_prefix();
+                        let _ = self.maybe_flush_memory().await;
+                        let memory_block = memory::memory_reminder(self.sandbox.workdir());
                         let _ = save_checkpoint(&self.session, "pre_overflow_compact");
                         let estimator = self.token_estimator();
                         let background_tasks = self.background.lock().list();
@@ -939,6 +959,7 @@ impl Agent {
                             &estimator,
                             &background_tasks,
                             prefire_cache.as_ref(),
+                            memory_block.as_deref(),
                         )
                         .await
                         {
@@ -1282,7 +1303,7 @@ impl Agent {
                     "(tool returned no output)".to_string()
                 }
             } else {
-                result.content
+                tool_bound::bound_tool_result(result.content, &workdir, &call.name)
             };
 
             if let Some(reminder) = self.tool_dedup.on_call(&call.name, &call.arguments) {
@@ -1318,6 +1339,35 @@ impl Agent {
             tokens_after: Some(result.stats.tokens_after),
             ts: chrono::Utc::now(),
         })
+    }
+
+    async fn maybe_flush_memory(&mut self) -> Result<()> {
+        let cycle = self.session.compactions.len() as u64;
+        let marker = cycle.saturating_add(1);
+        let threshold = ContextWaterLevel::auto_compact_threshold_percent(&self.config.compaction);
+        if !memory::should_flush(
+            self.context_water.usage_percent(),
+            threshold,
+            self.last_memory_flush_compaction == marker,
+        ) {
+            return Ok(());
+        }
+        match memory::run_memory_flush(
+            &self.client,
+            &self.config.model,
+            &self.session.messages,
+            self.sandbox.workdir(),
+        )
+        .await?
+        {
+            memory::FlushResult::Accepted => {
+                self.last_memory_flush_compaction = marker;
+            }
+            other => {
+                debug!(?other, "memory flush finished without write");
+            }
+        }
+        Ok(())
     }
 }
 
