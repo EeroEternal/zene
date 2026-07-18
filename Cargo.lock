@@ -3520,7 +3520,7 @@ dependencies = [
 
 [[package]]
 name = "zene-cli"
-version = "0.1.6"
+version = "0.1.7"
 dependencies = [
  "anyhow",
  "clap",
@@ -3547,7 +3547,7 @@ dependencies = [
 
 [[package]]
 name = "zene-config"
-version = "0.1.6"
+version = "0.1.7"
 dependencies = [
  "anyhow",
  "dirs",
@@ -3560,7 +3560,7 @@ dependencies = [
 
 [[package]]
 name = "zene-core"
-version = "0.1.6"
+version = "0.1.7"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3586,7 +3586,7 @@ dependencies = [
 
 [[package]]
 name = "zene-llm"
-version = "0.1.6"
+version = "0.1.7"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3604,7 +3604,7 @@ dependencies = [
 
 [[package]]
 name = "zene-mcp"
-version = "0.1.6"
+version = "0.1.7"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3622,7 +3622,7 @@ dependencies = [
 
 [[package]]
 name = "zene-sandbox"
-version = "0.1.6"
+version = "0.1.7"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3638,7 +3638,7 @@ dependencies = [
 
 [[package]]
 name = "zene-session"
-version = "0.1.6"
+version = "0.1.7"
 dependencies = [
  "anyhow",
  "chrono",
@@ -3655,7 +3655,7 @@ dependencies = [
 
 [[package]]
 name = "zene-tools"
-version = "0.1.6"
+version = "0.1.7"
 dependencies = [
  "anyhow",
  "async-trait",
