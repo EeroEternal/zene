@@ -98,11 +98,17 @@ impl HookRunner {
             .with_context(|| format!("spawn hook command: {}", hook.command))?;
 
         if let Some(mut stdin) = child.stdin.take() {
-            stdin
-                .write_all(input.as_bytes())
-                .await
-                .context("write hook stdin")?;
-            stdin.shutdown().await.context("close hook stdin")?;
+            // Hooks may exit before consuming stdin (e.g. immediate deny). Treat
+            // broken pipe as non-fatal so we can still read the exit status.
+            if let Err(err) = stdin.write_all(input.as_bytes()).await {
+                if err.kind() != std::io::ErrorKind::BrokenPipe {
+                    return Err(err).context("write hook stdin");
+                }
+            } else if let Err(err) = stdin.shutdown().await {
+                if err.kind() != std::io::ErrorKind::BrokenPipe {
+                    return Err(err).context("close hook stdin");
+                }
+            }
         }
 
         let output = child
@@ -164,7 +170,8 @@ mod tests {
     #[tokio::test]
     async fn pre_tool_use_blocks_on_non_zero_exit() {
         let _guard = TEST_LOCK.lock().expect("test lock");
-        let (_temp, runner) = sample_hook("PreToolUse", r#"echo "not allowed" >&2; exit 1"#);
+        let (_temp, runner) =
+            sample_hook("PreToolUse", r#"cat >/dev/null; echo "not allowed" >&2; exit 1"#);
         let block = runner
             .run_pre_tool_use("Write", r#"{"path":"foo.txt"}"#)
             .await
@@ -187,7 +194,8 @@ mod tests {
     #[tokio::test]
     async fn post_tool_use_does_not_block() {
         let _guard = TEST_LOCK.lock().expect("test lock");
-        let (_temp, runner) = sample_hook("PostToolUse", "echo blocked >&2; exit 1");
+        let (_temp, runner) =
+            sample_hook("PostToolUse", "cat >/dev/null; echo blocked >&2; exit 1");
         runner.run_post_tool_use("Read", "{}").await;
     }
 
