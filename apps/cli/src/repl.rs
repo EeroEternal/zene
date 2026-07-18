@@ -49,6 +49,51 @@ pub async fn run_repl(agent: &mut Agent, cli: &Cli) -> Result<()> {
                     eprintln!("Entered plan mode (read-only tools + ExitPlanMode).");
                     continue;
                 }
+                if input == "/compact" || input.starts_with("/compact ") {
+                    let hint = input.strip_prefix("/compact").unwrap_or("").trim();
+                    let hint = if hint.is_empty() { None } else { Some(hint) };
+                    match agent.compact_now(hint).await {
+                        Ok(Some(r)) => println!(
+                            "Compacted {} messages ({} → {} tokens, reason={}). ctx={}%.",
+                            r.compacted_count,
+                            r.stats.tokens_before,
+                            r.stats.tokens_after,
+                            r.reason,
+                            agent.context_water().usage_percent()
+                        ),
+                        Ok(None) => println!("Nothing to compact."),
+                        Err(err) => eprintln!("Compact failed: {err:#}"),
+                    }
+                    continue;
+                }
+                if input == "/rewind" || input.starts_with("/rewind ") {
+                    let id = input.strip_prefix("/rewind").unwrap_or("").trim();
+                    let id = if id.is_empty() { None } else { Some(id) };
+                    match agent.rewind_to_checkpoint(id) {
+                        Ok(cp) => println!("Rewound to checkpoint {cp}."),
+                        Err(err) => eprintln!("Rewind failed: {err:#}"),
+                    }
+                    continue;
+                }
+                if input == "/fork" {
+                    match agent.fork_session() {
+                        Ok(id) => println!("Forked session; now on {id}."),
+                        Err(err) => eprintln!("Fork failed: {err:#}"),
+                    }
+                    continue;
+                }
+                if input == "/session-info" {
+                    let water = agent.context_water();
+                    println!(
+                        "session={}\nmodel={}\ncontext={}% of {}\nmessages={}",
+                        agent.session().meta.id,
+                        agent.config().model,
+                        water.usage_percent(),
+                        agent.config().compaction.context_window_tokens,
+                        agent.session().messages.len()
+                    );
+                    continue;
+                }
                 if input == "/models" {
                     println!("{}", model_config::models_help_message(agent));
                     continue;

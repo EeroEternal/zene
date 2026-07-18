@@ -5,9 +5,10 @@ use clap::{Parser, Subcommand};
 use parking_lot::Mutex;
 use tokio_util::sync::CancellationToken;
 use zene_config::{ensure_home, ZeneConfig};
-use zene_core::{Agent, PermissionMode};
+use zene_core::{Agent, AgentEvent, PermissionMode, PromptOptions};
 use zene_sandbox::LocalSandbox;
 use zene_session::{export_session, list_sessions_for_workdir, SessionRecord};
+use std::sync::Arc;
 
 mod repl;
 mod model_config;
@@ -67,6 +68,14 @@ pub struct Cli {
     /// Hide per-turn token usage line
     #[arg(long)]
     quiet_usage: bool,
+
+    /// Run a single prompt headlessly (no TUI/REPL) and exit
+    #[arg(short = 'p', long = "prompt")]
+    prompt: Option<String>,
+
+    /// Headless output format: `text` (default) or `json`
+    #[arg(long, default_value = "text")]
+    output_format: String,
 }
 
 #[derive(Subcommand)]
@@ -84,6 +93,17 @@ enum Commands {
         #[arg(long)]
         output: PathBuf,
     },
+    /// Probe configured MCP servers (stdio connectivity)
+    Mcp {
+        #[command(subcommand)]
+        command: McpCommands,
+    },
+}
+
+#[derive(Subcommand)]
+enum McpCommands {
+    /// List configured MCP servers and attempt a short connect
+    Doctor,
 }
 
 fn init_tracing(use_tui: bool) {
@@ -166,6 +186,14 @@ async fn main() -> Result<()> {
             println!("Exported session {} to {}", session, output.display());
             return Ok(());
         }
+        Some(Commands::Mcp { command }) => {
+            match command {
+                McpCommands::Doctor => {
+                    run_mcp_doctor(&workdir).await?;
+                }
+            }
+            return Ok(());
+        }
         None => {}
     }
 
@@ -177,13 +205,19 @@ async fn main() -> Result<()> {
     };
 
     let permission_mode = if cli.yolo {
-        PermissionMode::Yolo
+        PermissionMode::BypassPermissions
     } else {
         PermissionMode::parse(&config.permission_mode)
     };
 
     let sandbox = LocalSandbox::new(&workdir);
     let mut agent = Agent::new(config.clone(), sandbox, session, permission_mode).await?;
+
+    if let Some(prompt) = cli.prompt.as_deref() {
+        run_headless(&mut agent, prompt, &cli).await?;
+        agent.shutdown().await?;
+        return Ok(());
+    }
 
     if !cli.repl {
         return tui::run(agent, &config, &cli).await;
@@ -192,5 +226,110 @@ async fn main() -> Result<()> {
     repl::run_repl(&mut agent, &cli).await?;
     agent.shutdown().await?;
 
+    Ok(())
+}
+
+async fn run_headless(agent: &mut Agent, prompt: &str, cli: &Cli) -> Result<()> {
+    let json_mode = cli.output_format.eq_ignore_ascii_case("json");
+    let events: Arc<Mutex<Vec<serde_json::Value>>> = Arc::new(Mutex::new(Vec::new()));
+    let events_for_handler = Arc::clone(&events);
+    let event_handler: Option<zene_core::EventHandler> = if json_mode {
+        Some(Arc::new(move |event: AgentEvent| {
+            if let Some(value) = headless_event_json(&event) {
+                events_for_handler.lock().push(value);
+            }
+        }))
+    } else {
+        None
+    };
+
+    let text = agent
+        .prompt(
+            prompt,
+            PromptOptions {
+                stream: !cli.no_stream && !json_mode,
+                cancel: None,
+                event_handler,
+                quiet: json_mode,
+            },
+        )
+        .await?;
+
+    if json_mode {
+        let payload = serde_json::json!({
+            "sessionId": agent.session().meta.id,
+            "model": agent.config().model,
+            "text": text,
+            "usage": {
+                "prompt_tokens": agent.turn_usage().prompt_tokens,
+                "completion_tokens": agent.turn_usage().completion_tokens,
+                "total_tokens": agent.turn_usage().total_tokens,
+            },
+            "context": {
+                "percent": agent.context_water().usage_percent(),
+                "window": agent.config().compaction.context_window_tokens,
+            },
+            "events": *events.lock(),
+        });
+        println!("{}", serde_json::to_string_pretty(&payload)?);
+    } else if cli.no_stream {
+        println!("{text}");
+    } else if !cli.quiet_usage {
+        let usage = agent.turn_usage();
+        eprintln!(
+            "tokens: input {} / output {} ({}) | ctx {}%",
+            usage.prompt_tokens,
+            usage.completion_tokens,
+            usage.total_tokens,
+            agent.context_water().usage_percent()
+        );
+    }
+    Ok(())
+}
+
+fn headless_event_json(event: &AgentEvent) -> Option<serde_json::Value> {
+    match event {
+        AgentEvent::ToolCall { name, arguments } => Some(serde_json::json!({
+            "type": "tool_call",
+            "name": name,
+            "arguments": arguments,
+        })),
+        AgentEvent::ToolResult {
+            name,
+            content,
+            is_error,
+            duration_ms,
+        } => Some(serde_json::json!({
+            "type": "tool_result",
+            "name": name,
+            "content": content,
+            "is_error": is_error,
+            "duration_ms": duration_ms,
+        })),
+        AgentEvent::Error { message } => Some(serde_json::json!({
+            "type": "error",
+            "message": message,
+        })),
+        _ => None,
+    }
+}
+
+async fn run_mcp_doctor(workdir: &std::path::Path) -> Result<()> {
+    use zene_mcp::McpManager;
+    let (manager, tools) = McpManager::connect(workdir).await?;
+    if manager.is_empty() {
+        println!("No MCP servers configured.");
+        println!(
+            "Add servers in {} or {}.",
+            zene_config::mcp_config_path().display(),
+            workdir.join(".zene").join("mcp.json").display()
+        );
+        return Ok(());
+    }
+    let defs = tools.definitions();
+    println!("Connected MCP tools: {}", defs.len());
+    for def in defs {
+        println!("  - {}", def.name);
+    }
     Ok(())
 }

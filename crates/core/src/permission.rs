@@ -4,9 +4,19 @@ use std::io::{self, Write};
 use serde_json::Value;
 use zene_tools::ToolPermission;
 
+/// Permission modes aligned with grok-style agent safety.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum PermissionMode {
+    /// Ask before Write / Edit / Bash / MCP (default).
     #[default]
+    Default,
+    /// Auto-approve file edits (Write/Edit); still ask for Bash / MCP.
+    AcceptEdits,
+    /// Never prompt; deny anything that would have required confirmation.
+    DontAsk,
+    /// Auto-approve all gated tools (alias: yolo / bypassPermissions).
+    BypassPermissions,
+    /// Legacy aliases kept for config compatibility.
     Manual,
     Yolo,
 }
@@ -14,9 +24,39 @@ pub enum PermissionMode {
 impl PermissionMode {
     pub fn parse(s: &str) -> Self {
         match s.trim().to_lowercase().as_str() {
-            "yolo" => Self::Yolo,
-            _ => Self::Manual,
+            "yolo" | "bypass" | "bypasspermissions" | "bypass_permissions" => {
+                Self::BypassPermissions
+            }
+            "accept_edits" | "acceptedits" | "accept-edits" => Self::AcceptEdits,
+            "dont_ask" | "dontask" | "dont-ask" => Self::DontAsk,
+            "plan" => Self::Default, // plan mode is orthogonal; treat as default ask
+            "manual" | "default" | "" => Self::Default,
+            _ => Self::Default,
         }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Default | Self::Manual => "default",
+            Self::AcceptEdits => "accept_edits",
+            Self::DontAsk => "dont_ask",
+            Self::BypassPermissions | Self::Yolo => "bypass",
+        }
+    }
+
+    fn auto_approves_all(self) -> bool {
+        matches!(self, Self::BypassPermissions | Self::Yolo)
+    }
+
+    fn auto_approves_edits(self) -> bool {
+        matches!(
+            self,
+            Self::AcceptEdits | Self::BypassPermissions | Self::Yolo
+        )
+    }
+
+    fn denies_without_prompt(self) -> bool {
+        matches!(self, Self::DontAsk)
     }
 }
 
@@ -27,12 +67,43 @@ pub enum PromptChoice {
     Deny,
 }
 
+/// A single allow/deny/ask rule matched against tool name (glob-ish prefix/suffix `*`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PermissionRule {
+    pub pattern: String,
+    pub action: RuleAction,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RuleAction {
+    Allow,
+    Deny,
+    Ask,
+}
+
+impl PermissionRule {
+    pub fn matches(&self, tool_name: &str) -> bool {
+        let pat = self.pattern.as_str();
+        if pat == "*" {
+            return true;
+        }
+        if let Some(prefix) = pat.strip_suffix('*') {
+            return tool_name.starts_with(prefix);
+        }
+        if let Some(suffix) = pat.strip_prefix('*') {
+            return tool_name.ends_with(suffix);
+        }
+        tool_name == pat
+    }
+}
+
 pub type PermissionPrompter = dyn Fn(&str, &str) -> io::Result<PromptChoice> + Send + Sync;
 
 /// Gate for Write / Edit / Bash before execution.
 pub struct PermissionGate {
     mode: PermissionMode,
     approved_session: HashSet<String>,
+    rules: Vec<PermissionRule>,
     prompter: Box<PermissionPrompter>,
 }
 
@@ -41,6 +112,7 @@ impl PermissionGate {
         Self {
             mode,
             approved_session: HashSet::new(),
+            rules: Vec::new(),
             prompter: Box::new(default_prompter),
         }
     }
@@ -49,16 +121,35 @@ impl PermissionGate {
         Self {
             mode,
             approved_session: HashSet::new(),
+            rules: Vec::new(),
             prompter,
         }
     }
 
+    pub fn with_rules(mut self, rules: Vec<PermissionRule>) -> Self {
+        self.rules = rules;
+        self
+    }
+
+    pub fn set_rules(&mut self, rules: Vec<PermissionRule>) {
+        self.rules = rules;
+    }
+
     pub fn mode(&self) -> PermissionMode {
-        self.mode
+        // Normalize legacy aliases for display.
+        match self.mode {
+            PermissionMode::Manual => PermissionMode::Default,
+            PermissionMode::Yolo => PermissionMode::BypassPermissions,
+            other => other,
+        }
     }
 
     pub fn requires_confirmation(tool_name: &str) -> bool {
         matches!(tool_name, "Write" | "Edit" | "Bash") || tool_name.starts_with("mcp__")
+    }
+
+    fn matching_rule(&self, tool_name: &str) -> Option<&PermissionRule> {
+        self.rules.iter().find(|r| r.matches(tool_name))
     }
 
     /// Returns `Ok(true)` if the tool may run, `Ok(false)` if denied.
@@ -67,8 +158,37 @@ impl PermissionGate {
             return Ok(false);
         }
 
-        if self.mode == PermissionMode::Yolo || !Self::requires_confirmation(tool_name) {
-            return Ok(true);
+        let forced_ask = matches!(
+            self.matching_rule(tool_name).map(|r| r.action),
+            Some(RuleAction::Ask)
+        );
+
+        if let Some(rule) = self.matching_rule(tool_name) {
+            match rule.action {
+                RuleAction::Allow => return Ok(true),
+                RuleAction::Deny => return Ok(false),
+                RuleAction::Ask => { /* force prompt below */ }
+            }
+        }
+
+        if !forced_ask {
+            if self.mode.auto_approves_all() {
+                return Ok(true);
+            }
+
+            if !Self::requires_confirmation(tool_name) {
+                return Ok(true);
+            }
+
+            if self.mode.auto_approves_edits() && matches!(tool_name, "Write" | "Edit") {
+                return Ok(true);
+            }
+
+            if self.mode.denies_without_prompt() {
+                return Ok(false);
+            }
+        } else if self.mode.denies_without_prompt() {
+            return Ok(false);
         }
 
         if let Some(key) = session_approval_key(tool_name, arguments) {
@@ -215,6 +335,67 @@ mod tests {
     }
 
     #[test]
+    fn accept_edits_auto_allows_write_but_asks_bash() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let calls_clone = Arc::clone(&calls);
+        let mut gate = PermissionGate::with_prompter(PermissionMode::AcceptEdits, {
+            Box::new(move |_tool, _args| {
+                calls_clone.fetch_add(1, Ordering::SeqCst);
+                Ok(PromptChoice::AllowOnce)
+            })
+        });
+        assert!(gate
+            .check("Write", r#"{"path":"a.txt","content":"x"}"#)
+            .unwrap());
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+        assert!(gate.check("Bash", r#"{"command":"ls"}"#).unwrap());
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn dont_ask_denies_gated_tools() {
+        let mut gate = PermissionGate::new(PermissionMode::DontAsk);
+        assert!(!gate
+            .check("Bash", r#"{"command":"ls"}"#)
+            .unwrap());
+        assert!(gate.check("Read", r#"{"path":"a.txt"}"#).unwrap());
+    }
+
+    #[test]
+    fn deny_rule_beats_bypass() {
+        let mut gate = PermissionGate::new(PermissionMode::BypassPermissions).with_rules(vec![
+            PermissionRule {
+                pattern: "Bash".into(),
+                action: RuleAction::Deny,
+            },
+        ]);
+        assert!(!gate.check("Bash", r#"{"command":"ls"}"#).unwrap());
+        assert!(gate
+            .check("Write", r#"{"path":"a.txt","content":"x"}"#)
+            .unwrap());
+    }
+
+    #[test]
+    fn allow_rule_skips_prompt() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let calls_clone = Arc::clone(&calls);
+        let mut gate = PermissionGate::with_prompter(PermissionMode::Default, {
+            Box::new(move |_tool, _args| {
+                calls_clone.fetch_add(1, Ordering::SeqCst);
+                Ok(PromptChoice::Deny)
+            })
+        })
+        .with_rules(vec![PermissionRule {
+            pattern: "mcp__*".into(),
+            action: RuleAction::Allow,
+        }]);
+        assert!(gate
+            .check("mcp__git__status", r#"{"repo":"."}"#)
+            .unwrap());
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
     fn manual_prompts_and_session_approve() {
         let mut gate = PermissionGate::with_prompter(PermissionMode::Manual, {
             Box::new(|_tool, _args| Ok(PromptChoice::AllowSession))
@@ -272,5 +453,13 @@ mod tests {
             session_approval_key("Bash", r#"{"command":"ls"}"#).as_deref(),
             Some("Bash:ls")
         );
+    }
+
+    #[test]
+    fn parse_aliases() {
+        assert_eq!(PermissionMode::parse("yolo"), PermissionMode::BypassPermissions);
+        assert_eq!(PermissionMode::parse("accept_edits"), PermissionMode::AcceptEdits);
+        assert_eq!(PermissionMode::parse("dont_ask"), PermissionMode::DontAsk);
+        assert_eq!(PermissionMode::parse("manual"), PermissionMode::Default);
     }
 }

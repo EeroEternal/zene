@@ -68,7 +68,7 @@ fn run_tui_sync(
     let session_id = agent.session().meta.id.clone();
     let model = config.model.clone();
     let permission_mode = if yolo {
-        PermissionMode::Yolo
+        PermissionMode::BypassPermissions
     } else {
         PermissionMode::parse(&config.permission_mode)
     };
@@ -167,10 +167,15 @@ fn run_tui_sync(
                     }
                 }
                 app.finish_turn();
-                if !quiet_usage {
-                    let usage = agent_rt
-                        .block_on(async { *agent.lock().await.turn_usage() });
-                    app.update_usage(&usage);
+                {
+                    let (usage, pct) = agent_rt.block_on(async {
+                        let g = agent.lock().await;
+                        (*g.turn_usage(), g.context_water().usage_percent())
+                    });
+                    if !quiet_usage {
+                        app.update_usage(&usage);
+                    }
+                    app.context_usage_percent = pct;
                 }
                 app.scroll_to_bottom();
                 try_start_next_pending(
@@ -368,6 +373,98 @@ fn run_tui_sync(
                             app.lines.push(app::ChatLine::Assistant(
                                 "Entered plan mode (read-only tools + ExitPlanMode).".to_string()
                             ));
+                            app.scroll_to_bottom();
+                            continue;
+                        }
+                        if input == "/compact" || input.starts_with("/compact ") {
+                            let hint = input.strip_prefix("/compact").unwrap_or("").trim();
+                            let hint = if hint.is_empty() { None } else { Some(hint) };
+                            let result = agent_rt.block_on(async {
+                                agent.lock().await.compact_now(hint).await
+                            });
+                            match result {
+                                Ok(Some(r)) => {
+                                    let pct = agent_rt.block_on(async {
+                                        agent.lock().await.context_water().usage_percent()
+                                    });
+                                    app.context_usage_percent = pct;
+                                    app.lines.push(app::ChatLine::Assistant(format!(
+                                        "Compacted {} messages ({} → {} tokens, reason={}).",
+                                        r.compacted_count,
+                                        r.stats.tokens_before,
+                                        r.stats.tokens_after,
+                                        r.reason
+                                    )));
+                                }
+                                Ok(None) => app.lines.push(app::ChatLine::Assistant(
+                                    "Nothing to compact.".to_string(),
+                                )),
+                                Err(err) => app.lines.push(app::ChatLine::Error(format!(
+                                    "Compact failed: {err:#}"
+                                ))),
+                            }
+                            app.scroll_to_bottom();
+                            continue;
+                        }
+                        if input == "/rewind" || input.starts_with("/rewind ") {
+                            let id = input
+                                .strip_prefix("/rewind")
+                                .unwrap_or("")
+                                .trim();
+                            let id = if id.is_empty() { None } else { Some(id) };
+                            let result = agent_rt.block_on(async {
+                                agent.lock().await.rewind_to_checkpoint(id)
+                            });
+                            match result {
+                                Ok(cp) => {
+                                    let pct = agent_rt.block_on(async {
+                                        agent.lock().await.context_water().usage_percent()
+                                    });
+                                    app.context_usage_percent = pct;
+                                    app.lines.push(app::ChatLine::Assistant(format!(
+                                        "Rewound to checkpoint {cp}."
+                                    )));
+                                }
+                                Err(err) => app.lines.push(app::ChatLine::Error(format!(
+                                    "Rewind failed: {err:#}"
+                                ))),
+                            }
+                            app.scroll_to_bottom();
+                            continue;
+                        }
+                        if input == "/fork" {
+                            let result = agent_rt.block_on(async {
+                                agent.lock().await.fork_session()
+                            });
+                            match result {
+                                Ok(id) => {
+                                    app.session_id = id.clone();
+                                    app.lines.push(app::ChatLine::Assistant(format!(
+                                        "Forked session; now on {id}."
+                                    )));
+                                }
+                                Err(err) => app.lines.push(app::ChatLine::Error(format!(
+                                    "Fork failed: {err:#}"
+                                ))),
+                            }
+                            app.scroll_to_bottom();
+                            continue;
+                        }
+                        if input == "/session-info" {
+                            let (sid, model, pct, window, msgs) = agent_rt.block_on(async {
+                                let g = agent.lock().await;
+                                (
+                                    g.session().meta.id.clone(),
+                                    g.config().model.clone(),
+                                    g.context_water().usage_percent(),
+                                    g.config().compaction.context_window_tokens,
+                                    g.session().messages.len(),
+                                )
+                            });
+                            app.context_usage_percent = pct;
+                            app.lines.push(app::ChatLine::Assistant(format!(
+                                "session={sid}\nmodel={model}\ncontext={pct}% of {window}\nmessages={msgs}"
+                            )));
                             app.scroll_to_bottom();
                             continue;
                         }

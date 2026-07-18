@@ -4,14 +4,17 @@ use zene_config::CompactionConfig;
 use zene_llm::{ChatClient, ChatRequest, ChatResponse, Message, MessageKind, Role, ToolDefinition};
 use zene_session::SessionRecord;
 
+use crate::input_ladder::{prepare_summary_input, InputLadderStage};
 use crate::tokens::{self, TokenEstimator};
 
-const SUMMARY_SYSTEM_PROMPT: &str = "You summarize coding agent conversations. Preserve key user requests, files discussed or modified, tool outcomes, and current task state. Be concise.";
+const SUMMARY_SYSTEM_PROMPT: &str = "You summarize coding agent conversations. Preserve key user requests, files discussed or modified, tool outcomes, errors and fixes, and current task state. Prefer tight prose over verbatim dumps. Aim for a few hundred to a few thousand words.";
 
 /// Max chars kept in a tool result before truncate-only compaction replaces the body.
 const TRUNCATE_TOOL_RESULT_MAX_CHARS: usize = 800;
 /// Max chars kept in assistant text before truncate-only compaction replaces the body.
 const TRUNCATE_ASSISTANT_TEXT_MAX_CHARS: usize = 1_200;
+/// Cleaned summaries shorter than this are treated as degenerate and retried.
+const MIN_SUMMARY_SEED_CHARS: usize = 80;
 
 pub fn should_compact(estimated_tokens: u32, config: &CompactionConfig) -> bool {
     let threshold =
@@ -77,16 +80,71 @@ pub fn tail_start_index(
 }
 
 pub fn is_context_overflow_error(err: &anyhow::Error) -> bool {
-    let msg = err.to_string().to_lowercase();
-    msg.contains("context length")
-        || msg.contains("context window")
-        || msg.contains("maximum context")
-        || msg.contains("max context")
-        || msg.contains("token limit")
-        || msg.contains("too many tokens")
-        || msg.contains("context overflow")
-        || msg.contains("prompt is too long")
-        || msg.contains("request too large")
+    zene_llm::is_context_overflow(&err.to_string())
+}
+
+/// Whether a compaction summary is too short / empty to be useful.
+pub fn is_degenerate_summary(summary: &str) -> bool {
+    let cleaned = summary.trim();
+    cleaned.is_empty()
+        || cleaned == "(empty summary)"
+        || cleaned.chars().count() < MIN_SUMMARY_SEED_CHARS
+}
+
+/// Find the last real user turn (non-empty content) for full-replace assembly.
+pub fn last_user_query_index(messages: &[Message]) -> Option<usize> {
+    messages.iter().rposition(|m| {
+        m.role == Role::User
+            && m.content
+                .as_ref()
+                .is_some_and(|c| !c.trim().is_empty())
+    })
+}
+
+/// Rebuild history after LLM summarize (grok-style full-replace):
+/// `system + last_user_query + recent_after_query + summary + optional reminder`.
+pub fn assemble_full_replace_history(
+    system: Option<Message>,
+    last_user_query: Option<Message>,
+    recent_after_query: Vec<Message>,
+    summary: String,
+    system_reminder: Option<String>,
+) -> Vec<Message> {
+    let mut out = Vec::new();
+    if let Some(system) = system {
+        out.push(system);
+    }
+    if let Some(query) = last_user_query {
+        out.push(query);
+    }
+    out.extend(recent_after_query);
+    out.push(Message::compaction_summary(format!(
+        "[Previous conversation summary]\n{summary}"
+    )));
+    if let Some(reminder) = system_reminder {
+        if !reminder.trim().is_empty() {
+            out.push(Message::user(format!(
+                "<system-reminder>\n{reminder}\n</system-reminder>"
+            )));
+        }
+    }
+    out
+}
+
+fn build_todo_reminder(session: &SessionRecord) -> Option<String> {
+    if session.todos.is_empty() {
+        return None;
+    }
+    let mut lines = vec!["Active todos:".to_string()];
+    for item in &session.todos {
+        let status = match item.status {
+            zene_session::TodoStatus::Pending => "pending",
+            zene_session::TodoStatus::InProgress => "in_progress",
+            zene_session::TodoStatus::Completed => "completed",
+        };
+        lines.push(format!("- [{status}] {}", item.content));
+    }
+    Some(lines.join("\n"))
 }
 
 fn format_messages_for_summary(messages: &[Message]) -> String {
@@ -118,29 +176,73 @@ fn format_messages_for_summary(messages: &[Message]) -> String {
     out
 }
 
+/// Summarize with input ladder + degenerate-summary retries.
+#[allow(dead_code)]
 pub async fn summarize_messages(
     client: &ChatClient,
     model: &str,
     messages: &[Message],
 ) -> Result<String> {
-    let conversation = format_messages_for_summary(messages);
-    let request = ChatRequest {
-        model: model.to_string(),
-        messages: vec![
-            Message::system(SUMMARY_SYSTEM_PROMPT),
-            Message::user(format!(
-                "Summarize this conversation for a coding agent to continue work:\n\n{conversation}"
-            )),
-        ],
-        tools: Vec::<ToolDefinition>::new(),
-        stream: false,
-    };
+    summarize_messages_with_ladder(client, model, messages, None, &TokenEstimator::default()).await
+}
 
-    let response = client.chat(request).await.context("compaction summary")?;
-    Ok(response
-        .message
-        .content
-        .unwrap_or_else(|| "(empty summary)".to_string()))
+pub async fn summarize_messages_with_ladder(
+    client: &ChatClient,
+    model: &str,
+    messages: &[Message],
+    context_window: Option<u32>,
+    estimator: &TokenEstimator,
+) -> Result<String> {
+    let mut stage = InputLadderStage::Verbatim;
+    let budget = context_window.map(|w| (w as f32 * 0.7).floor() as u32);
+
+    loop {
+        let input = prepare_summary_input(messages, stage, budget, estimator);
+        let conversation = format_messages_for_summary(&input);
+        let request = ChatRequest {
+            model: model.to_string(),
+            messages: vec![
+                Message::system(SUMMARY_SYSTEM_PROMPT),
+                Message::user(format!(
+                    "Summarize this conversation for a coding agent to continue work:\n\n{conversation}"
+                )),
+            ],
+            tools: Vec::<ToolDefinition>::new(),
+            stream: false,
+        };
+
+        match client.chat(request).await {
+            Ok(response) => {
+                let summary = response
+                    .message
+                    .content
+                    .unwrap_or_else(|| "(empty summary)".to_string());
+                if is_degenerate_summary(&summary) {
+                    info!(
+                        stage = stage.as_str(),
+                        summary_chars = summary.chars().count(),
+                        "compaction summary degenerate; retrying"
+                    );
+                    if let Some(next) = stage.next() {
+                        stage = next;
+                        continue;
+                    }
+                }
+                return Ok(summary);
+            }
+            Err(err) if is_context_overflow_error(&err) => {
+                info!(
+                    stage = stage.as_str(),
+                    "compaction summary overflow; stepping input ladder"
+                );
+                match stage.next() {
+                    Some(next) => stage = next,
+                    None => return Err(err).context("compaction summary overflow at lossy stage"),
+                }
+            }
+            Err(err) => return Err(err).context("compaction summary"),
+        }
+    }
 }
 
 pub struct CompactionPlan {
@@ -426,17 +528,23 @@ pub fn apply_compaction_to_messages(
         .first()
         .filter(|m| m.role == Role::System)
         .cloned();
-    let tail = messages[tail_start..].to_vec();
-    let summary_message = Message::compaction_summary(format!(
-        "[Previous conversation summary]\n{summary}"
-    ));
+    let (last_user, recent) = match last_user_query_index(messages) {
+        Some(idx) if idx >= tail_start => {
+            let query = messages[idx].clone();
+            let recent = messages[idx + 1..].to_vec();
+            (Some(query), recent)
+        }
+        Some(idx) => {
+            // Last user query is in the compacted prefix — re-inject it and keep
+            // the planned recent tail (which may include later tool work).
+            let query = messages[idx].clone();
+            let recent = messages[tail_start..].to_vec();
+            (Some(query), recent)
+        }
+        None => (None, messages[tail_start..].to_vec()),
+    };
 
-    messages.clear();
-    if let Some(system) = system {
-        messages.push(system);
-    }
-    messages.push(summary_message);
-    messages.extend(tail);
+    *messages = assemble_full_replace_history(system, last_user, recent, summary, None);
     let _ = compacted_count;
 }
 
@@ -642,8 +750,15 @@ pub async fn compact_session(
     };
 
     let prefix_start = system_prefix_start(&session.messages);
-    let prefix = &session.messages[prefix_start..plan.tail_start];
-    let summary = summarize_messages(client, model, prefix).await?;
+    let prefix = session.messages[prefix_start..plan.tail_start].to_vec();
+    let summary = summarize_messages_with_ladder(
+        client,
+        model,
+        &prefix,
+        Some(config.context_window_tokens),
+        estimator,
+    )
+    .await?;
 
     info!(
         reason = reason,
@@ -651,16 +766,16 @@ pub async fn compact_session(
         tail_messages = session.messages.len() - plan.tail_start,
         summary_chars = summary.len(),
         tokens_before,
-        "context compaction applying LLM summarize"
+        "context compaction applying LLM summarize (full-replace)"
     );
 
-    session.replace_messages_after_compaction_with_stats(
-        summary.clone(),
+    apply_full_replace_to_session(
+        session,
+        summary,
         plan.tail_start,
         plan.compacted_count,
         reason,
-        Some(tokens_before),
-        None,
+        tokens_before,
     );
 
     let tokens_after = estimate_session_tokens(session, tools, estimator);
@@ -676,6 +791,124 @@ pub async fn compact_session(
             tokens_after,
         },
     }))
+}
+
+/// Force a compaction pass (manual `/compact`), skipping truncate/slice when
+/// `force_summarize` is true.
+pub async fn compact_session_forced(
+    session: &mut SessionRecord,
+    client: &ChatClient,
+    model: &str,
+    config: &CompactionConfig,
+    reason: &str,
+    tools: &[ToolDefinition],
+    estimator: &TokenEstimator,
+    force_summarize: bool,
+    user_hint: Option<&str>,
+) -> Result<Option<CompactionResult>> {
+    if !force_summarize {
+        return compact_session(session, client, model, config, reason, tools, estimator).await;
+    }
+
+    let tokens_before = estimate_session_tokens(session, tools, estimator);
+    let plan = match plan_compaction(&session.messages, config, estimator) {
+        Some(plan) => plan,
+        None => {
+            let prefix_start = system_prefix_start(&session.messages);
+            let min_keep = config.min_keep_messages.min(4).max(1);
+            if session.messages.len().saturating_sub(prefix_start) <= min_keep {
+                return Ok(None);
+            }
+            CompactionPlan {
+                tail_start: session.messages.len().saturating_sub(min_keep),
+                compacted_count: session
+                    .messages
+                    .len()
+                    .saturating_sub(prefix_start)
+                    .saturating_sub(min_keep),
+            }
+        }
+    };
+
+    let prefix_start = system_prefix_start(&session.messages);
+    let mut prefix = session.messages[prefix_start..plan.tail_start].to_vec();
+    if let Some(hint) = user_hint {
+        if !hint.trim().is_empty() {
+            prefix.push(Message::user(format!(
+                "Additional compaction guidance from the user: {hint}"
+            )));
+        }
+    }
+
+    let summary = summarize_messages_with_ladder(
+        client,
+        model,
+        &prefix,
+        Some(config.context_window_tokens),
+        estimator,
+    )
+    .await?;
+
+    apply_full_replace_to_session(
+        session,
+        summary,
+        plan.tail_start,
+        plan.compacted_count,
+        reason,
+        tokens_before,
+    );
+
+    let tokens_after = estimate_session_tokens(session, tools, estimator);
+    if let Some(entry) = session.compactions.last_mut() {
+        entry.tokens_after = Some(tokens_after);
+    }
+
+    Ok(Some(CompactionResult {
+        reason: reason.to_string(),
+        compacted_count: plan.compacted_count,
+        stats: CompactionStats {
+            tokens_before,
+            tokens_after,
+        },
+    }))
+}
+
+fn apply_full_replace_to_session(
+    session: &mut SessionRecord,
+    summary: String,
+    tail_start: usize,
+    compacted_count: usize,
+    reason: &str,
+    tokens_before: u32,
+) {
+    let system = session
+        .messages
+        .first()
+        .filter(|m| m.role == Role::System)
+        .cloned();
+    let (last_user, recent) = match last_user_query_index(&session.messages) {
+        Some(idx) if idx >= tail_start => {
+            let query = session.messages[idx].clone();
+            let recent = session.messages[idx + 1..].to_vec();
+            (Some(query), recent)
+        }
+        Some(idx) => {
+            let query = session.messages[idx].clone();
+            let recent = session.messages[tail_start..].to_vec();
+            (Some(query), recent)
+        }
+        None => (None, session.messages[tail_start..].to_vec()),
+    };
+    let reminder = build_todo_reminder(session);
+    session.messages =
+        assemble_full_replace_history(system, last_user, recent, summary.clone(), reminder);
+    session.record_compaction_event(
+        reason,
+        compacted_count,
+        Some(summary),
+        Some(tokens_before),
+        None,
+    );
 }
 
 #[cfg(test)]
@@ -861,6 +1094,34 @@ mod tests {
         )));
         assert!(is_context_overflow_error(&anyhow::anyhow!("prompt is too long")));
         assert!(!is_context_overflow_error(&anyhow::anyhow!("connection reset")));
+    }
+
+    #[test]
+    fn degenerate_summary_detection() {
+        assert!(is_degenerate_summary(""));
+        assert!(is_degenerate_summary("(empty summary)"));
+        assert!(is_degenerate_summary("short"));
+        assert!(!is_degenerate_summary(&"x".repeat(120)));
+    }
+
+    #[test]
+    fn full_replace_keeps_last_user_and_summary() {
+        let history = assemble_full_replace_history(
+            Some(Message::system("sys")),
+            Some(Message::user("do the thing")),
+            vec![Message::assistant("working")],
+            "long enough summary ".repeat(10),
+            Some("Active todos:\n- [pending] ship".into()),
+        );
+        assert_eq!(history[0].role, Role::System);
+        assert_eq!(history[1].content.as_deref(), Some("do the thing"));
+        assert_eq!(history[2].content.as_deref(), Some("working"));
+        assert_eq!(history[3].kind, Some(MessageKind::CompactionSummary));
+        assert!(history[4]
+            .content
+            .as_deref()
+            .unwrap()
+            .contains("system-reminder"));
     }
 
     #[test]

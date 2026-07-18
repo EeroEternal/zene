@@ -132,6 +132,8 @@ pub struct App {
     pub session_id: String,
     pub model: String,
     pub usage: TokenUsage,
+    /// Context window occupancy percent (0..=100) from agent water level.
+    pub context_usage_percent: u8,
     pub permission_mode: PermissionMode,
     pub run_state: RunState,
     /// Short label for the current phase (shown in status bar while running).
@@ -172,6 +174,7 @@ impl App {
             session_id,
             model,
             usage: TokenUsage::default(),
+            context_usage_percent: 0,
             permission_mode,
             run_state: RunState::Idle,
             activity: String::new(),

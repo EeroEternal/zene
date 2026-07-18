@@ -294,8 +294,10 @@ fn draw_input(frame: &mut Frame, area: Rect, app: &mut App, visible_rows: u16) {
 
 fn draw_status(frame: &mut Frame, area: Rect, app: &App) {
     let mode = match app.permission_mode {
-        zene_core::PermissionMode::Yolo => "yolo",
-        zene_core::PermissionMode::Manual => "manual",
+        zene_core::PermissionMode::Yolo | zene_core::PermissionMode::BypassPermissions => "bypass",
+        zene_core::PermissionMode::Manual | zene_core::PermissionMode::Default => "default",
+        zene_core::PermissionMode::AcceptEdits => "accept_edits",
+        zene_core::PermissionMode::DontAsk => "dont_ask",
     };
     let state = match app.run_state {
         RunState::Idle => "ready",
@@ -313,9 +315,10 @@ fn draw_status(frame: &mut Frame, area: Rect, app: &App) {
         String::new()
     };
     let mut status = format!(
-        "{spinner}{} | session {} | in {} / out {} ({}) | {} | {}{} ",
+        "{spinner}{} | session {} | ctx {}% | in {} / out {} ({}) | {} | {}{} ",
         app.model,
         &app.session_id[..8.min(app.session_id.len())],
+        app.context_usage_percent,
         app.usage.prompt_tokens,
         app.usage.completion_tokens,
         app.usage.total_tokens,

@@ -254,6 +254,8 @@ pub struct ZeneConfig {
     #[serde(default = "default_permission_mode")]
     pub permission_mode: String,
     #[serde(default)]
+    pub permission_rules: PermissionRulesConfig,
+    #[serde(default)]
     pub hooks: Vec<HookEntry>,
     #[serde(default)]
     pub web_search: WebSearchConfig,
@@ -266,7 +268,51 @@ fn default_provider() -> String {
 }
 
 fn default_permission_mode() -> String {
-    "manual".to_string()
+    "default".to_string()
+}
+
+/// Permission allow/deny/ask rule loaded from config.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PermissionRuleConfig {
+    /// Tool name pattern (`Bash`, `mcp__*`, `*`).
+    pub pattern: String,
+    /// `allow` | `deny` | `ask`
+    pub action: String,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PermissionRulesConfig {
+    #[serde(default)]
+    pub allow: Vec<String>,
+    #[serde(default)]
+    pub deny: Vec<String>,
+    #[serde(default)]
+    pub ask: Vec<String>,
+}
+
+impl PermissionRulesConfig {
+    pub fn to_flat_rules(&self) -> Vec<PermissionRuleConfig> {
+        let mut out = Vec::new();
+        for pattern in &self.deny {
+            out.push(PermissionRuleConfig {
+                pattern: pattern.clone(),
+                action: "deny".into(),
+            });
+        }
+        for pattern in &self.allow {
+            out.push(PermissionRuleConfig {
+                pattern: pattern.clone(),
+                action: "allow".into(),
+            });
+        }
+        for pattern in &self.ask {
+            out.push(PermissionRuleConfig {
+                pattern: pattern.clone(),
+                action: "ask".into(),
+            });
+        }
+        out
+    }
 }
 
 fn default_include_workspace_context() -> bool {
@@ -310,6 +356,7 @@ impl Default for ZeneConfig {
             compaction: CompactionConfig::default(),
             include_workspace_context: default_include_workspace_context(),
             permission_mode: default_permission_mode(),
+            permission_rules: PermissionRulesConfig::default(),
             hooks: Vec::new(),
             web_search: WebSearchConfig::default(),
             agent_profile: AgentProfile::default(),
