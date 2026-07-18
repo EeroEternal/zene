@@ -1,6 +1,6 @@
 # Changelog
 
-## v0.2.0 (2026-07-18)
+## v0.1.6 (2026-07-18)
 
 ### Added
 - Usage-driven context water level, full-replace compaction, and input ladder (`verbatim → fitted → lossy`).
