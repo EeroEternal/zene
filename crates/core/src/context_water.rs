@@ -82,6 +82,16 @@ impl ContextWaterLevel {
         self.effective_tokens() >= Self::threshold_tokens(config)
     }
 
+    /// Start background prefire when usage reaches `threshold% - lead`.
+    pub fn should_prefire(&self, config: &CompactionConfig, lead_percent: u8) -> bool {
+        if self.auto_compact_suppressed || self.should_compact(config) {
+            return false;
+        }
+        let threshold_pct = Self::auto_compact_threshold_percent(config);
+        let start = threshold_pct.saturating_sub(lead_percent);
+        self.usage_percent() >= start
+    }
+
     pub fn suppress_auto_compact(&mut self) {
         self.auto_compact_suppressed = true;
     }
@@ -138,5 +148,21 @@ mod tests {
             context_window_tokens: 1000,
             min_keep_messages: 4,
         }));
+    }
+
+    #[test]
+    fn prefire_starts_before_threshold() {
+        let cfg = CompactionConfig {
+            trigger_ratio: 0.85,
+            keep_recent_ratio: 0.25,
+            context_window_tokens: 1000,
+            min_keep_messages: 4,
+        };
+        let mut water = ContextWaterLevel::new(1000);
+        water.record_estimate(760); // 76% — lead 10pp below 85%
+        assert!(water.should_prefire(&cfg, 10));
+        assert!(!water.should_compact(&cfg));
+        water.record_estimate(900);
+        assert!(!water.should_prefire(&cfg, 10)); // already at compact
     }
 }

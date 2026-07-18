@@ -1,12 +1,19 @@
+use std::fs;
+use std::path::PathBuf;
+
 use anyhow::{bail, Context, Result};
 use tracing::info;
 use zene_config::CompactionConfig;
 use zene_llm::{ChatClient, ChatRequest, ChatResponse, Message, MessageKind, Role, ToolDefinition};
-use zene_session::SessionRecord;
+use zene_session::{session_record_dir, SessionRecord};
 use zene_tools::{BackgroundTask, BackgroundTaskStatus};
 
 use crate::input_ladder::{prepare_summary_input, InputLadderStage};
+use crate::prefire::PrefireCache;
 use crate::tokens::{self, TokenEstimator};
+use crate::two_pass::{
+    note_for_pass2, pass2_user_prompt, split_messages_for_two_pass, TWO_PASS_DEFAULT_SPLIT_FRACTION,
+};
 
 const SUMMARY_SYSTEM_PROMPT: &str = "You summarize coding agent conversations. Preserve key user requests, files discussed or modified, tool outcomes, errors and fixes, and current task state. Prefer tight prose over verbatim dumps. Aim for a few hundred to a few thousand words.";
 
@@ -234,6 +241,25 @@ pub async fn summarize_messages_with_ladder(
     context_window: Option<u32>,
     estimator: &TokenEstimator,
 ) -> Result<String> {
+    summarize_prepared_input(
+        client,
+        model,
+        messages,
+        context_window,
+        estimator,
+        "Summarize this conversation for a coding agent to continue work",
+    )
+    .await
+}
+
+async fn summarize_prepared_input(
+    client: &ChatClient,
+    model: &str,
+    messages: &[Message],
+    context_window: Option<u32>,
+    estimator: &TokenEstimator,
+    user_lead: &str,
+) -> Result<String> {
     let mut stage = InputLadderStage::Verbatim;
     let budget = context_window.map(|w| (w as f32 * 0.7).floor() as u32);
 
@@ -244,9 +270,7 @@ pub async fn summarize_messages_with_ladder(
             model: model.to_string(),
             messages: vec![
                 Message::system(SUMMARY_SYSTEM_PROMPT),
-                Message::user(format!(
-                    "Summarize this conversation for a coding agent to continue work:\n\n{conversation}"
-                )),
+                Message::user(format!("{user_lead}:\n\n{conversation}")),
             ],
             tools: Vec::<ToolDefinition>::new(),
             stream: false,
@@ -289,6 +313,134 @@ pub async fn summarize_messages_with_ladder(
             Err(err) => return Err(err).context("compaction summary"),
         }
     }
+}
+
+/// Pass2 of two-pass compaction: merge NOTE₁ with recent tail messages.
+pub async fn summarize_pass2(
+    client: &ChatClient,
+    model: &str,
+    system: Option<&Message>,
+    note1: &str,
+    tail: &[Message],
+    context_window: Option<u32>,
+    estimator: &TokenEstimator,
+    hint: Option<&str>,
+) -> Result<String> {
+    let mut msgs = Vec::new();
+    if let Some(system) = system {
+        msgs.push(system.clone());
+    }
+    msgs.push(Message::user(format!(
+        "Your conversation was summarized due to context constraints. \
+         Here is the summary of the conversation so far:\n\n\
+         <summary_content>\n{}\n</summary_content>",
+        note_for_pass2(note1)
+    )));
+    msgs.extend(tail.iter().cloned());
+    msgs.push(Message::user(pass2_user_prompt(note1, hint)));
+    summarize_prepared_input(
+        client,
+        model,
+        &msgs,
+        context_window,
+        estimator,
+        "Produce the final compaction summary",
+    )
+    .await
+}
+
+/// Summarize a compactable prefix, using prefire NOTE₁ when valid, else sync two-pass
+/// for large prefixes, else single-pass ladder.
+pub async fn summarize_prefix(
+    client: &ChatClient,
+    model: &str,
+    prefix: &[Message],
+    context_window: Option<u32>,
+    estimator: &TokenEstimator,
+    prefire: Option<&PrefireCache>,
+    hint: Option<&str>,
+) -> Result<String> {
+    let system = prefix.first().filter(|m| m.role == Role::System);
+    let body_start = if system.is_some() { 1 } else { 0 };
+    let body = &prefix[body_start..];
+
+    if let Some(cache) = prefire {
+        if cache.split_idx > 0 && cache.split_idx < body.len() {
+            let pass1_prefix = &body[..cache.split_idx];
+            let tail = &body[cache.split_idx..];
+            info!(
+                split_idx = cache.split_idx,
+                note1_chars = cache.note1.len(),
+                "compaction using prefire NOTE₁ (two-pass pass2)"
+            );
+            return summarize_pass2(
+                client,
+                model,
+                system,
+                &cache.note1,
+                tail,
+                context_window,
+                estimator,
+                hint,
+            )
+            .await;
+        }
+    }
+
+    let body_tokens = estimator.estimate_messages_tokens(body);
+    let two_pass_min = context_window
+        .map(|w| (w as f32 * 0.35).floor() as u32)
+        .unwrap_or(8_000);
+    if body.len() >= 8 && body_tokens >= two_pass_min {
+        let split = split_messages_for_two_pass(body, estimator, TWO_PASS_DEFAULT_SPLIT_FRACTION);
+        if split.split_idx > 0 && split.split_idx < body.len() {
+            info!(
+                split_idx = split.split_idx,
+                body_tokens, "compaction sync two-pass (no prefire cache)"
+            );
+            let note1 = summarize_messages_with_ladder(
+                client,
+                model,
+                &body[..split.split_idx],
+                context_window,
+                estimator,
+            )
+            .await?;
+            return summarize_pass2(
+                client,
+                model,
+                system,
+                &note1,
+                &body[split.split_idx..],
+                context_window,
+                estimator,
+                hint,
+            )
+            .await;
+        }
+    }
+
+    summarize_messages_with_ladder(client, model, prefix, context_window, estimator).await
+}
+
+/// Persist compacted prefix for recovery (grok CompactionMode::Segments lite).
+pub fn persist_compaction_segment(
+    session_id: &str,
+    prefix: &[Message],
+    summary: &str,
+) -> Result<PathBuf> {
+    let dir = session_record_dir(session_id).join("compaction_segments");
+    fs::create_dir_all(&dir).context("create compaction_segments dir")?;
+    let ts = chrono::Utc::now().format("%Y%m%dT%H%M%SZ");
+    let path = dir.join(format!("{ts}.md"));
+    let mut body = String::new();
+    body.push_str("# Compaction segment\n\n");
+    body.push_str("## Final summary\n\n");
+    body.push_str(summary);
+    body.push_str("\n\n## Compacted prefix\n\n");
+    body.push_str(&format_messages_for_summary(prefix));
+    fs::write(&path, body).context("write compaction segment")?;
+    Ok(path)
 }
 
 pub struct CompactionPlan {
@@ -781,6 +933,7 @@ pub async fn compact_session(
     tools: &[ToolDefinition],
     estimator: &TokenEstimator,
     background_tasks: &[BackgroundTask],
+    prefire: Option<&PrefireCache>,
 ) -> Result<Option<CompactionResult>> {
     if let Some(result) = try_truncate_only_compaction(session, config, tools, estimator) {
         return Ok(Some(result));
@@ -798,14 +951,20 @@ pub async fn compact_session(
 
     let prefix_start = system_prefix_start(&session.messages);
     let prefix = session.messages[prefix_start..plan.tail_start].to_vec();
-    let summary = summarize_messages_with_ladder(
+    let summary = summarize_prefix(
         client,
         model,
         &prefix,
         Some(config.context_window_tokens),
         estimator,
+        prefire,
+        None,
     )
     .await?;
+
+    if let Ok(path) = persist_compaction_segment(&session.meta.id, &prefix, &summary) {
+        info!(path = %path.display(), "wrote compaction segment");
+    }
 
     info!(
         reason = reason,
@@ -854,6 +1013,7 @@ pub async fn compact_session_forced(
     force_summarize: bool,
     user_hint: Option<&str>,
     background_tasks: &[BackgroundTask],
+    prefire: Option<&PrefireCache>,
 ) -> Result<Option<CompactionResult>> {
     if !force_summarize {
         return compact_session(
@@ -865,6 +1025,7 @@ pub async fn compact_session_forced(
             tools,
             estimator,
             background_tasks,
+            prefire,
         )
         .await;
     }
@@ -890,23 +1051,21 @@ pub async fn compact_session_forced(
     };
 
     let prefix_start = system_prefix_start(&session.messages);
-    let mut prefix = session.messages[prefix_start..plan.tail_start].to_vec();
-    if let Some(hint) = user_hint {
-        if !hint.trim().is_empty() {
-            prefix.push(Message::user(format!(
-                "Additional compaction guidance from the user: {hint}"
-            )));
-        }
-    }
-
-    let summary = summarize_messages_with_ladder(
+    let prefix = session.messages[prefix_start..plan.tail_start].to_vec();
+    let summary = summarize_prefix(
         client,
         model,
         &prefix,
         Some(config.context_window_tokens),
         estimator,
+        prefire,
+        user_hint,
     )
     .await?;
+
+    if let Ok(path) = persist_compaction_segment(&session.meta.id, &prefix, &summary) {
+        info!(path = %path.display(), "wrote compaction segment");
+    }
 
     apply_full_replace_to_session(
         session,
