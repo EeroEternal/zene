@@ -58,7 +58,7 @@ pub use permission::{
 };
 pub use plan_mode::PlanApprovalPrompter;
 pub use subagent::{run_subagent, ChatBackend, CoreSubagentRunner};
-pub use tokens::{estimate_context, TokenEstimator};
+pub use tokens::{estimate_context, EstimateMode, TiktokenEncoding, TokenEstimator};
 pub use turn::{SteerBuffer, StepId, TurnId, TurnState};
 use plan_mode::{
     build_effective_system_prompt, default_plan_approval_prompter, handle_enter_plan_mode,
@@ -457,7 +457,11 @@ impl Agent {
     }
 
     fn token_estimator(&self) -> TokenEstimator {
-        TokenEstimator::new(self.config.chars_per_token_for_model())
+        TokenEstimator::for_provider(
+            self.config.provider_kind(),
+            &self.config.model,
+            self.config.chars_per_token_for_model(),
+        )
     }
 
     fn estimated_context_tokens(&self, messages: &[Message], tools: &[zene_llm::ToolDefinition]) -> usize {
@@ -724,6 +728,7 @@ impl Agent {
             message_count = messages.len(),
             tool_count = tools.len(),
             chars_per_token = self.config.chars_per_token_for_model(),
+            estimate_mode = ?self.token_estimator().mode,
             "llm request context water level"
         );
         self.warn_if_near_context_limit(self.context_water.effective_tokens() as usize);

@@ -53,3 +53,4 @@ zene-tools = { path = "crates/tools" }
 zene-mcp = { path = "crates/mcp" }
 unigateway-sdk = "2.1.1"
 llm_providers = "0.12.0"
+tiktoken-rs = "0.12"
