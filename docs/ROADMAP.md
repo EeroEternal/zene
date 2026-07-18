@@ -75,7 +75,7 @@ Zene 目标：Rust 实现的本地 code agent CLI（对标 kimi-code / flue 的�
 
 ### P1.1 Token 估算
 
-- [x] 实现 message + tools 的 token 估算（初期可用字符数/heuristic，后期接 tiktoken 或 provider usage）
+- [x] 实现 message + tools 的 token 估算（启发式 + OpenAI 路径 `tiktoken-rs`；另累计 provider usage）
 - [x] 每次 LLM 调用前记录 context 大小
 - [x] 从 provider response 读取真实 usage 并累计
 
@@ -409,11 +409,11 @@ TUI、record/replay、安装分发。
 
 | 阶段 | 状态 | 内容 |
 |------|------|------|
-| P1 采样/上下文 | [x] | …续3 memory；续4 script-aware token 估计、Intra steps-first、memory 指纹去重 |
+| P1 采样/上下文 | [x] | …续4 script-aware；续5 OpenAI 路径 `tiktoken-rs` BPE 计数（未知兼容模型回退启发式） |
 | P2 权限 | [x] | default/accept_edits/dont_ask/bypass + allow/deny/ask 规则 |
 | P3 会话恢复 | [x] | compaction checkpoints、`/rewind`、`/fork`、`/session-info` |
 | P4 运行时 | [x] | 后台 Bash/Task + TaskOutput、`--worktree`、subagent 报告包装 |
 | P5 MCP/扩展 | [x] | stdio + HTTP MCP、`zene mcp doctor` |
 | P6 集成/产品化 | [x] | `zene -p` headless + `--output-format json`；`zene acp` 最小 ACP stdio |
 
-*最后更新：2026-07-18（P1 续4：script-aware tokens + steps-first）*
+*最后更新：2026-07-18（P1 续5：OpenAI tiktoken-rs）*

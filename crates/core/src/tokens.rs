@@ -1,7 +1,47 @@
+use tiktoken_rs::tokenizer::{Tokenizer, get_tokenizer};
+use tiktoken_rs::{
+    CoreBPE, cl100k_base_singleton, o200k_base_singleton, o200k_harmony_singleton,
+};
+use zene_config::ProviderKind;
 use zene_llm::{Message, MessageKind, Role, ToolDefinition};
 
 /// Per tool-call JSON/API framing beyond argument string length.
 const TOOL_CALL_FRAME_TOKENS: u32 = 12;
+
+/// OpenAI tiktoken BPE encoding used for accurate text counting.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TiktokenEncoding {
+    Cl100kBase,
+    O200kBase,
+    O200kHarmony,
+}
+
+impl TiktokenEncoding {
+    /// Resolve encoding for a known OpenAI model name (via `tiktoken-rs` model map).
+    pub fn from_model(model: &str) -> Option<Self> {
+        match get_tokenizer(model)? {
+            Tokenizer::Cl100kBase => Some(Self::Cl100kBase),
+            Tokenizer::O200kBase => Some(Self::O200kBase),
+            Tokenizer::O200kHarmony => Some(Self::O200kHarmony),
+            _ => None,
+        }
+    }
+
+    fn bpe(self) -> &'static CoreBPE {
+        match self {
+            Self::Cl100kBase => cl100k_base_singleton(),
+            Self::O200kBase => o200k_base_singleton(),
+            Self::O200kHarmony => o200k_harmony_singleton(),
+        }
+    }
+
+    fn count(self, text: &str) -> u32 {
+        if text.is_empty() {
+            return 0;
+        }
+        self.bpe().encode_ordinary(text).len() as u32
+    }
+}
 
 /// How text is converted to token estimates.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -11,9 +51,11 @@ pub enum EstimateMode {
     ScriptAware,
     /// Legacy uniform chars/token ceiling division.
     Uniform,
+    /// OpenAI BPE via `tiktoken-rs` (encoding selected from model name).
+    Tiktoken(TiktokenEncoding),
 }
 
-/// Heuristic token estimator with configurable chars-per-token ratio.
+/// Token estimator: heuristic by default; OpenAI models use tiktoken BPE.
 #[derive(Debug, Clone, Copy)]
 pub struct TokenEstimator {
     pub chars_per_token: f32,
@@ -42,6 +84,27 @@ impl TokenEstimator {
         self
     }
 
+    /// Build an estimator for the active provider/model.
+    ///
+    /// OpenAI path: use `tiktoken-rs` when the model maps to a known encoding.
+    /// Unknown openai-compatible model names and Anthropic keep the script-aware heuristic.
+    pub fn for_provider(provider: ProviderKind, model: &str, chars_per_token: f32) -> Self {
+        let chars_per_token = chars_per_token.max(1.0);
+        match provider {
+            ProviderKind::OpenAi => {
+                if let Some(encoding) = TiktokenEncoding::from_model(model) {
+                    Self {
+                        chars_per_token,
+                        mode: EstimateMode::Tiktoken(encoding),
+                    }
+                } else {
+                    Self::new(chars_per_token)
+                }
+            }
+            ProviderKind::Anthropic => Self::new(chars_per_token),
+        }
+    }
+
     pub fn estimate_chars_as_tokens(&self, text: &str) -> u32 {
         if text.is_empty() {
             return 0;
@@ -51,16 +114,21 @@ impl TokenEstimator {
                 (text.chars().count() as f32 / self.chars_per_token).ceil() as u32
             }
             EstimateMode::ScriptAware => estimate_script_aware(text, self.chars_per_token),
+            EstimateMode::Tiktoken(encoding) => encoding.count(text),
         }
     }
 
     /// Role-specific framing overhead (JSON keys, role labels, separators).
     fn role_overhead(&self, role: Role, kind: Option<MessageKind>) -> u32 {
-        let base = match role {
-            Role::System => 8,
-            Role::User => 4,
-            Role::Assistant => 4,
-            Role::Tool => 8,
+        let base = match self.mode {
+            // OpenAI cookbook: ~3 tokens framing per chat message.
+            EstimateMode::Tiktoken(_) => 3,
+            EstimateMode::ScriptAware | EstimateMode::Uniform => match role {
+                Role::System => 8,
+                Role::User => 4,
+                Role::Assistant => 4,
+                Role::Tool => 8,
+            },
         };
         if kind == Some(MessageKind::CompactionSummary) {
             base + 4
@@ -69,17 +137,22 @@ impl TokenEstimator {
         }
     }
 
-    /// JSON tool arguments: string length plus structural punctuation overhead.
+    /// JSON tool arguments: BPE count as-is; heuristic adds structural punctuation overhead.
     fn estimate_json_args_tokens(&self, json: &str) -> u32 {
         if json.is_empty() {
             return 0;
         }
-        let content = self.estimate_chars_as_tokens(json);
-        let structure = json
-            .chars()
-            .filter(|c| matches!(c, '{' | '}' | '[' | ']' | ':' | ',' | '"'))
-            .count();
-        content + (structure as f32 / self.chars_per_token).ceil() as u32
+        match self.mode {
+            EstimateMode::Tiktoken(_) => self.estimate_chars_as_tokens(json),
+            EstimateMode::ScriptAware | EstimateMode::Uniform => {
+                let content = self.estimate_chars_as_tokens(json);
+                let structure = json
+                    .chars()
+                    .filter(|c| matches!(c, '{' | '}' | '[' | ']' | ':' | ',' | '"'))
+                    .count();
+                content + (structure as f32 / self.chars_per_token).ceil() as u32
+            }
+        }
     }
 
     pub fn estimate_message_tokens(&self, message: &Message) -> u32 {
@@ -91,7 +164,13 @@ impl TokenEstimator {
 
         if let Some(tool_calls) = &message.tool_calls {
             for call in tool_calls {
-                tokens += TOOL_CALL_FRAME_TOKENS;
+                // Cookbook uses ~1 token per tool call; keep a slightly higher
+                // constant for heuristic modes where argument framing is approximate.
+                let frame = match self.mode {
+                    EstimateMode::Tiktoken(_) => 1,
+                    EstimateMode::ScriptAware | EstimateMode::Uniform => TOOL_CALL_FRAME_TOKENS,
+                };
+                tokens += frame;
                 tokens += self.estimate_chars_as_tokens(&call.id);
                 tokens += self.estimate_chars_as_tokens(&call.name);
                 tokens += self.estimate_json_args_tokens(&call.arguments);
@@ -126,7 +205,13 @@ impl TokenEstimator {
     }
 
     pub fn estimate_request_tokens(&self, messages: &[Message], tools: &[ToolDefinition]) -> u32 {
-        self.estimate_messages_tokens(messages) + self.estimate_tools_tokens(tools)
+        let mut tokens =
+            self.estimate_messages_tokens(messages) + self.estimate_tools_tokens(tools);
+        // OpenAI cookbook reply priming: <|start|>assistant<|message|>
+        if matches!(self.mode, EstimateMode::Tiktoken(_)) {
+            tokens += 3;
+        }
+        tokens
     }
 }
 
@@ -309,5 +394,49 @@ mod tests {
         let plain = Message::assistant("summary text");
         let summary = Message::compaction_summary("summary text");
         assert!(estimator.estimate_message_tokens(&summary) > estimator.estimate_message_tokens(&plain));
+    }
+
+    #[test]
+    fn openai_gpt4o_uses_o200k_tiktoken() {
+        let est = TokenEstimator::for_provider(ProviderKind::OpenAi, "gpt-4o", 4.0);
+        assert_eq!(est.mode, EstimateMode::Tiktoken(TiktokenEncoding::O200kBase));
+        // cl100k/o200k: "hello world" → 2 tokens
+        assert_eq!(est.estimate_chars_as_tokens("hello world"), 2);
+    }
+
+    #[test]
+    fn openai_gpt4_uses_cl100k_tiktoken() {
+        let est = TokenEstimator::for_provider(ProviderKind::OpenAi, "gpt-4", 4.0);
+        assert_eq!(est.mode, EstimateMode::Tiktoken(TiktokenEncoding::Cl100kBase));
+        assert_eq!(est.estimate_chars_as_tokens("hello world"), 2);
+    }
+
+    #[test]
+    fn openai_compatible_unknown_model_falls_back_to_heuristic() {
+        let est = TokenEstimator::for_provider(ProviderKind::OpenAi, "deepseek-chat", 4.0);
+        assert_eq!(est.mode, EstimateMode::ScriptAware);
+    }
+
+    #[test]
+    fn anthropic_keeps_heuristic() {
+        let est = TokenEstimator::for_provider(ProviderKind::Anthropic, "claude-sonnet-4-5", 4.0);
+        assert_eq!(est.mode, EstimateMode::ScriptAware);
+    }
+
+    #[test]
+    fn tiktoken_counts_cjk_higher_than_latin_run() {
+        let est = TokenEstimator::for_provider(ProviderKind::OpenAi, "gpt-4o", 4.0);
+        let latin = est.estimate_chars_as_tokens("abcd");
+        let cjk = est.estimate_chars_as_tokens("中文测试");
+        assert!(cjk > latin);
+    }
+
+    #[test]
+    fn tiktoken_request_includes_reply_priming() {
+        let est = TokenEstimator::for_provider(ProviderKind::OpenAi, "gpt-4o", 4.0);
+        let messages = vec![Message::user("hi")];
+        let msg_only = est.estimate_messages_tokens(&messages);
+        let request = est.estimate_request_tokens(&messages, &[]);
+        assert_eq!(request, msg_only + 3);
     }
 }
