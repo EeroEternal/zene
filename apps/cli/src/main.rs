@@ -10,6 +10,7 @@ use zene_sandbox::LocalSandbox;
 use zene_session::{export_session, list_sessions_for_workdir, SessionRecord};
 use std::sync::Arc;
 
+mod acp;
 mod repl;
 mod model_config;
 mod tui;
@@ -102,6 +103,8 @@ enum Commands {
         #[command(subcommand)]
         command: McpCommands,
     },
+    /// Speak Agent Client Protocol (ACP) over stdio JSON-RPC
+    Acp,
 }
 
 #[derive(Subcommand)]
@@ -130,7 +133,20 @@ fn init_tracing(use_tui: bool) {
 async fn main() -> Result<()> {
     let cli_args: Vec<String> = std::env::args().collect();
     let is_repl = cli_args.iter().any(|a| a == "--repl");
-    init_tracing(!is_repl);
+    let is_acp = cli_args.iter().any(|a| a == "acp");
+    if is_acp {
+        // Keep ACP stdout reserved for NDJSON; send logs to stderr.
+        tracing_subscriber::fmt()
+            .with_env_filter(
+                tracing_subscriber::EnvFilter::try_from_default_env()
+                    .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("zene=warn")),
+            )
+            .with_target(false)
+            .with_writer(std::io::stderr)
+            .init();
+    } else {
+        init_tracing(!is_repl);
+    }
 
     if is_repl {
         ctrlc::set_handler(|| {
@@ -196,6 +212,10 @@ async fn main() -> Result<()> {
                     run_mcp_doctor(&workdir).await?;
                 }
             }
+            return Ok(());
+        }
+        Some(Commands::Acp) => {
+            acp::run_acp(workdir, cli.yolo).await?;
             return Ok(());
         }
         None => {}

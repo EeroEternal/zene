@@ -118,6 +118,17 @@ Before/after compaction, checkpoints are saved under `~/.zene/sessions/<id>/comp
 
 `zene mcp doctor` probes configured servers.
 
+## ACP stdio
+
+`zene acp` (--yolo optional) speaks a minimal Agent Client Protocol subset over stdin/stdout NDJSON JSON-RPC:
+
+- Requests: `initialize`, `session/new`, `session/load`, `session/prompt`
+- Notifications in: `session/cancel`
+- Notifications out: `session/update` (`agent_message_chunk`)
+- Requests out: `session/request_permission` (client replies with `optionId`)
+
+Stdout is reserved for protocol frames; logs go to stderr.
+
 ## LLM layer
 
 - `OpenAiCompatibleProvider` (`crates/llm`) intentionally depends on [`unigateway-sdk`](https://crates.io/crates/unigateway-sdk) from **crates.io** (not a sibling path repo). It drives proxy chat via `UniGatewayEngine` (pools, retry, streaming).

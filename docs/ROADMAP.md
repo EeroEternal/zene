@@ -414,6 +414,6 @@ TUI、record/replay、安装分发。
 | P3 会话恢复 | [x] | compaction checkpoints、`/rewind`、`/fork`、`/session-info` |
 | P4 运行时 | [x] | 后台 Bash/Task + TaskOutput、`--worktree`、subagent 报告包装 |
 | P5 MCP/扩展 | [x] | stdio + HTTP MCP、`zene mcp doctor` |
-| P6 集成/产品化 | [~] | `zene -p` headless + `--output-format json`；ACP 后续 |
+| P6 集成/产品化 | [x] | `zene -p` headless + `--output-format json`；`zene acp` 最小 ACP stdio |
 
-*最后更新：2026-07-18（P4/P5：background tasks、worktree、MCP HTTP）*
+*最后更新：2026-07-18（P6：ACP stdio）*
