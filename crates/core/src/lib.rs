@@ -10,7 +10,10 @@ use tracing::{debug, info, warn};
 use zene_config::ZeneConfig;
 use zene_llm::{ChatClient, ChatRequest, Message, StreamEvent, TokenUsage, ToolCall};
 use zene_sandbox::LocalSandbox;
-use zene_session::{AgentRecordWriter, RecordEntry, SessionRecord};
+use zene_session::{
+    fork_session, latest_checkpoint_id, load_checkpoint, restore_checkpoint, save_checkpoint,
+    AgentRecordWriter, RecordEntry, SessionRecord,
+};
 use zene_tools::{
     default_ask_user_prompter, shared_todo_store_from, SharedAskUserPrompter, SharedTodoStore,
     shared_plan_mode, PlanModeState, SharedPlanMode, SharedToolPermission, SubagentEnv,
@@ -19,8 +22,10 @@ use zene_tools::{
 use zene_mcp::McpManager;
 
 mod compaction;
+mod context_water;
 mod events;
 mod hooks;
+mod input_ladder;
 mod permission;
 mod plan_mode;
 mod skills;
@@ -31,14 +36,19 @@ pub mod tool_scheduler;
 mod turn;
 
 use compaction::{
-    apply_overflow_truncate_pass, compact_session, is_context_overflow_error, should_compact,
-    CompactionResult,
+    apply_overflow_truncate_pass, compact_session, compact_session_forced, is_context_overflow_error,
 };
+pub use compaction::CompactionResult;
 mod workspace;
 
+pub use context_water::ContextWaterLevel;
 pub use events::{emit_event, AgentEvent, EventHandler};
 pub use hooks::{HookBlock, HookRunner};
-pub use permission::{approve_tool_call, policy_denied, PermissionGate, PermissionMode, PermissionPrompter, PromptChoice};
+pub use input_ladder::InputLadderStage;
+pub use permission::{
+    approve_tool_call, policy_denied, PermissionGate, PermissionMode, PermissionPrompter,
+    PermissionRule, PromptChoice, RuleAction,
+};
 pub use plan_mode::PlanApprovalPrompter;
 pub use subagent::{run_subagent, ChatBackend, CoreSubagentRunner};
 pub use tokens::{estimate_context, TokenEstimator};
@@ -57,6 +67,7 @@ pub struct Agent {
     sandbox: Arc<LocalSandbox>,
     session: SessionRecord,
     turn_usage: TokenUsage,
+    context_water: ContextWaterLevel,
     active_turn: Option<TurnState>,
     steer_buffer: Arc<Mutex<SteerBuffer>>,
     system_prompt: String,
@@ -120,6 +131,12 @@ impl Agent {
         });
         let hooks = HookRunner::new(hook_entries, workdir.clone());
         let todos = shared_todo_store_from(session.todos.clone());
+        let context_water =
+            ContextWaterLevel::new(config.compaction.context_window_tokens);
+        let permission = shared_permission_with_rules(
+            permission_mode,
+            permission_rules_from_config(&config),
+        );
 
         Ok(Self {
             config,
@@ -128,10 +145,11 @@ impl Agent {
             sandbox: Arc::new(sandbox),
             session,
             turn_usage: TokenUsage::default(),
+            context_water,
             active_turn: None,
             steer_buffer: Arc::new(Mutex::new(SteerBuffer::default())),
             system_prompt,
-            permission: shared_permission(permission_mode),
+            permission,
             plan_mode: shared_plan_mode(),
             plan_approval: Arc::new(default_plan_approval_prompter),
             todos,
@@ -224,6 +242,8 @@ impl Agent {
         }
 
         self.config.refresh_model_context_window();
+        self.context_water
+            .set_window(self.config.compaction.context_window_tokens);
 
         // Recreate the client
         self.client = zene_llm::ChatClient::from_config(&self.config).await?;
@@ -231,6 +251,68 @@ impl Agent {
             .persist_connection_settings()
             .context("save model settings to ~/.zene/config.toml")?;
         Ok(())
+    }
+
+    pub fn context_water(&self) -> &ContextWaterLevel {
+        &self.context_water
+    }
+
+    /// Manually compact the conversation (`/compact [hint]`).
+    pub async fn compact_now(&mut self, user_hint: Option<&str>) -> Result<Option<CompactionResult>> {
+        let tools = self.tool_definitions_for_llm();
+        let estimator = self.token_estimator();
+        let _ = save_checkpoint(&self.session, "pre_manual_compact");
+        let result = compact_session_forced(
+            &mut self.session,
+            &self.client,
+            &self.config.model,
+            &self.config.compaction,
+            "manual",
+            &tools,
+            &estimator,
+            true,
+            user_hint,
+        )
+        .await?;
+        if let Some(result) = &result {
+            self.record_compaction(result)?;
+            let _ = save_checkpoint(&self.session, "post_manual_compact");
+            self.sync_context_water_from_estimate();
+        }
+        self.session.ensure_system_message(&self.system_prompt);
+        self.session.save()?;
+        Ok(result)
+    }
+
+    /// Rewind to the latest compaction checkpoint (or a specific id).
+    pub fn rewind_to_checkpoint(&mut self, checkpoint_id: Option<&str>) -> Result<String> {
+        let id = match checkpoint_id {
+            Some(id) => id.to_string(),
+            None => latest_checkpoint_id(&self.session.meta.id)?
+                .ok_or_else(|| anyhow::anyhow!("no compaction checkpoint available to rewind"))?,
+        };
+        let checkpoint = load_checkpoint(&self.session.meta.id, &id)?;
+        restore_checkpoint(&mut self.session, &checkpoint);
+        self.session.ensure_system_message(&self.system_prompt);
+        if let Some(tokens) = self.session.context_tokens_used {
+            self.context_water.last_prompt_tokens = Some(tokens);
+            self.context_water.last_estimate_tokens = Some(tokens);
+        }
+        self.session.save()?;
+        Ok(id)
+    }
+
+    /// Fork the current session into a new saved session and switch to it.
+    pub fn fork_session(&mut self) -> Result<String> {
+        let workdir = self.sandbox.workdir().to_path_buf();
+        let forked = fork_session(&self.session, &workdir);
+        let id = forked.meta.id.clone();
+        forked.save()?;
+        let _ = save_checkpoint(&forked, "fork");
+        self.session = forked;
+        self.record_writer = AgentRecordWriter::for_session(&id)?;
+        self.todos = shared_todo_store_from(self.session.todos.clone());
+        Ok(id)
     }
 
     pub fn session(&self) -> &SessionRecord {
@@ -438,6 +520,11 @@ impl Agent {
                     "llm response usage"
                 );
                 self.turn_usage.accumulate(&usage);
+                self.context_water.record_usage(&usage);
+                self.session.update_context_usage(
+                    self.context_water.effective_tokens(),
+                    self.config.compaction.context_window_tokens,
+                );
             }
 
             if had_tool_calls {
@@ -525,16 +612,22 @@ impl Agent {
         let messages = self.build_messages();
         let tools = self.tool_definitions_for_llm();
         let estimated_tokens = self.estimated_context_tokens(&messages, &tools);
+        self.context_water.record_estimate(estimated_tokens as u32);
+        self.context_water
+            .set_window(self.config.compaction.context_window_tokens);
         debug!(
             estimated_context_tokens = estimated_tokens,
+            effective_tokens = self.context_water.effective_tokens(),
+            usage_percent = self.context_water.usage_percent(),
             message_count = messages.len(),
             tool_count = tools.len(),
             chars_per_token = self.config.chars_per_token_for_model(),
-            "llm request context estimate"
+            "llm request context water level"
         );
-        self.warn_if_near_context_limit(estimated_tokens);
+        self.warn_if_near_context_limit(self.context_water.effective_tokens() as usize);
 
-        if should_compact(estimated_tokens as u32, &self.config.compaction) {
+        if self.context_water.should_compact(&self.config.compaction) {
+            let _ = save_checkpoint(&self.session, "pre_auto_compact");
             let estimator = self.token_estimator();
             if let Some(result) = compact_session(
                 &mut self.session,
@@ -548,11 +641,26 @@ impl Agent {
             .await?
             {
                 self.record_compaction(&result)?;
+                let _ = save_checkpoint(&self.session, "post_auto_compact");
+                self.sync_context_water_from_estimate();
             }
             self.session
                 .ensure_system_message(&self.system_prompt);
         }
         Ok(())
+    }
+
+    fn sync_context_water_from_estimate(&mut self) {
+        let messages = self.build_messages();
+        let tools = self.tool_definitions_for_llm();
+        let estimated = self.estimated_context_tokens(&messages, &tools) as u32;
+        self.context_water.record_estimate(estimated);
+        // After compaction, prefer the fresh estimate over stale provider usage.
+        self.context_water.last_prompt_tokens = Some(estimated);
+        self.session.update_context_usage(
+            estimated,
+            self.config.compaction.context_window_tokens,
+        );
     }
 
     async fn run_llm_step(
@@ -613,6 +721,7 @@ impl Agent {
                     }
                     if !overflow_summarized {
                         overflow_summarized = true;
+                        let _ = save_checkpoint(&self.session, "pre_overflow_compact");
                         let estimator = self.token_estimator();
                         if let Some(result) = compact_session(
                             &mut self.session,
@@ -626,6 +735,8 @@ impl Agent {
                         .await?
                         {
                             self.record_compaction(&result)?;
+                            let _ = save_checkpoint(&self.session, "post_overflow_compact");
+                            self.sync_context_water_from_estimate();
                         }
                         self.session
                             .ensure_system_message(&self.system_prompt);
@@ -1028,8 +1139,31 @@ fn truncate(input: &str, max: usize) -> String {
     }
 }
 
-fn shared_permission(mode: PermissionMode) -> SharedToolPermission {
-    Arc::new(Mutex::new(PermissionGate::new(mode)))
+fn shared_permission_with_rules(
+    mode: PermissionMode,
+    rules: Vec<PermissionRule>,
+) -> SharedToolPermission {
+    Arc::new(Mutex::new(PermissionGate::new(mode).with_rules(rules)))
+}
+
+fn permission_rules_from_config(config: &ZeneConfig) -> Vec<PermissionRule> {
+    config
+        .permission_rules
+        .to_flat_rules()
+        .into_iter()
+        .filter_map(|rule| {
+            let action = match rule.action.trim().to_lowercase().as_str() {
+                "allow" => RuleAction::Allow,
+                "deny" => RuleAction::Deny,
+                "ask" => RuleAction::Ask,
+                _ => return None,
+            };
+            Some(PermissionRule {
+                pattern: rule.pattern,
+                action,
+            })
+        })
+        .collect()
 }
 
 fn merge_event_handler(

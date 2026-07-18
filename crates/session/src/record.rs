@@ -156,8 +156,9 @@ mod tests {
     use std::env;
 
     fn with_temp_home<F: FnOnce()>(test: F) {
-        static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-        let _guard = LOCK.lock().expect("test lock");
+        let _guard = crate::ZENE_HOME_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let temp = tempfile::tempdir().expect("tempdir");
         let prev = env::var("ZENE_HOME").ok();
         env::set_var("ZENE_HOME", temp.path());

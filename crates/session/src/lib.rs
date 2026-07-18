@@ -1,3 +1,4 @@
+mod checkpoint;
 mod record;
 mod todo;
 
@@ -11,6 +12,10 @@ use uuid::Uuid;
 use zene_config::{sessions_dir, workdir_slug, zene_home};
 use zene_llm::Message;
 
+pub use checkpoint::{
+    fork_session, latest_checkpoint_id, list_checkpoints, load_checkpoint, restore_checkpoint,
+    save_checkpoint, SessionCheckpoint,
+};
 pub use todo::{TodoItem, TodoStatus};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -44,6 +49,12 @@ pub struct SessionRecord {
     pub compactions: Vec<CompactionEntry>,
     #[serde(default)]
     pub todos: Vec<TodoItem>,
+    /// Last observed context occupancy percent (0..=100).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_window_usage: Option<u8>,
+    /// Last observed effective prompt tokens used for water-level checks.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_tokens_used: Option<u32>,
 }
 
 impl SessionRecord {
@@ -60,7 +71,18 @@ impl SessionRecord {
             messages: Vec::new(),
             compactions: Vec::new(),
             todos: Vec::new(),
+            context_window_usage: None,
+            context_tokens_used: None,
         }
+    }
+
+    pub fn update_context_usage(&mut self, tokens_used: u32, context_window: u32) {
+        self.context_tokens_used = Some(tokens_used);
+        if context_window > 0 {
+            let pct = ((u64::from(tokens_used) * 100) / u64::from(context_window)).min(100) as u8;
+            self.context_window_usage = Some(pct);
+        }
+        self.meta.updated_at = Utc::now();
     }
 
     pub fn push_message(&mut self, message: Message) {
@@ -234,6 +256,9 @@ pub fn ensure_zene_home() -> Result<()> {
 }
 
 pub use record::{export_session, record_path, session_record_dir, AgentRecordWriter, RecordEntry};
+
+#[cfg(test)]
+pub(crate) static ZENE_HOME_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 #[cfg(test)]
 mod tests {

@@ -27,4 +27,5 @@ zene-core = { workspace = true }
 zene-sandbox = { workspace = true }
 zene-session = { workspace = true }
 zene-llm = { workspace = true }
+zene-mcp = { workspace = true }
 llm_providers = { workspace = true }

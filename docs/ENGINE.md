@@ -70,20 +70,42 @@ Config (`compaction` in `config.toml`):
 On provider context-overflow errors in `run_llm_step`:
 
 1. **First retry** — phase-1 truncate pass only (`apply_overflow_truncate_pass`)
-2. **Second retry** — full compaction pipeline (phases 1→3)
+2. **Second retry** — full compaction pipeline (phases 1→3) with input ladder
 
 Avoids paying for LLM summarize when truncation alone fixes the overflow.
 
-## Permission policy (lite)
+### Usage-driven water level
 
-- Hard deny **Write/Edit** on paths containing `node_modules` or `.git` segments (aligned with sandbox `.git` write deny).
-- Applies in all permission modes including `yolo`.
-- User-facing message via `PermissionGate::permission_denied_message`.
+`ContextWaterLevel` (`context_water.rs`) tracks the last provider `prompt_tokens` and the heuristic estimate. Auto-compact triggers on `max(usage, estimate)` vs `context_window * trigger_ratio` (default 85%). Session persists `context_window_usage` / `context_tokens_used`; TUI status shows `ctx N%`.
+
+### Full-replace assemble + input ladder
+
+LLM summarize rebuilds history as:
+
+`system + last_user_query + recent_after_query + compaction_summary + optional <system-reminder> (todos)`
+
+Summarizer input steps `verbatim → fitted → lossy` on overflow or degenerate (too-short) summaries (`input_ladder.rs`). Manual `/compact [hint]` forces summarize and writes compaction checkpoints.
+
+## Permission modes (grok-aligned)
+
+| Mode | Behavior |
+|------|----------|
+| `default` / `manual` | Ask for Write/Edit/Bash/MCP |
+| `accept_edits` | Auto-approve Write/Edit; ask Bash/MCP |
+| `dont_ask` | Deny gated tools without prompting |
+| `bypass` / `yolo` | Auto-approve gated tools |
+
+Config `[permission_rules]` supports `allow` / `deny` / `ask` patterns (`Bash`, `mcp__*`). Hard deny Write/Edit under `node_modules` / `.git` still applies in all modes. Explicit `ask` rules force a prompt even under bypass.
+
+## Session recovery
+
+Before/after compaction, checkpoints are saved under `~/.zene/sessions/<id>/compaction_checkpoints/`. Slash commands: `/rewind [id]`, `/fork`, `/session-info`.
 
 ## LLM layer
 
 - `OpenAiCompatibleProvider` (`crates/llm`) intentionally depends on [`unigateway-sdk`](https://crates.io/crates/unigateway-sdk) from **crates.io** (not a sibling path repo). It drives proxy chat via `UniGatewayEngine` (pools, retry, streaming).
 - Anthropic uses a separate native Messages API client in the same crate.
+- Retry classification (`LlmErrorClass`): context overflow (no transport retry), rate-limit (capped), transient/empty-response (retry), fatal auth/4xx.
 
 ## Coordination
 
