@@ -122,6 +122,7 @@ pub fn estimate_chars_as_tokens(text: &str) -> u32 {
     TokenEstimator::default().estimate_chars_as_tokens(text)
 }
 
+#[allow(dead_code)]
 pub fn estimate_message_tokens(message: &Message) -> u32 {
     TokenEstimator::default().estimate_message_tokens(message)
 }
@@ -136,6 +137,7 @@ pub fn estimate_tools_tokens(tools: &[ToolDefinition]) -> u32 {
     TokenEstimator::default().estimate_tools_tokens(tools)
 }
 
+#[allow(dead_code)]
 pub fn estimate_request_tokens(messages: &[Message], tools: &[ToolDefinition]) -> u32 {
     TokenEstimator::default().estimate_request_tokens(messages, tools)
 }

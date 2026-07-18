@@ -1,5 +1,7 @@
 use std::io;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
+
+use parking_lot::Mutex;
 
 /// Shared permission gate used by main agent and subagents.
 pub trait ToolPermission: Send + Sync {

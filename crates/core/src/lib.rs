@@ -1,9 +1,10 @@
 use std::io::{self, Write};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::Instant;
 
 use anyhow::{Context, Result};
 use futures::StreamExt;
+use parking_lot::Mutex;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
 use zene_config::ZeneConfig;
@@ -145,21 +146,17 @@ impl Agent {
     pub fn is_plan_mode_active(&self) -> bool {
         self.plan_mode
             .lock()
-            .map(|s| s.is_active())
-            .unwrap_or(false)
+            .is_active()
     }
 
     pub fn enter_plan_mode(&mut self) {
         let should_sync = {
-            if let Ok(mut state) = self.plan_mode.lock() {
-                if !state.is_active() {
-                    state.enter();
-                    true
-                } else {
-                    false
-                }
-            } else {
+            let mut state = self.plan_mode.lock();
+            if state.is_active() {
                 false
+            } else {
+                state.enter();
+                true
             }
         };
         if should_sync {
@@ -174,8 +171,7 @@ impl Agent {
         }
         self.plan_mode
             .lock()
-            .map(|s| s.is_tool_allowed(tool_name))
-            .unwrap_or(true)
+            .is_tool_allowed(tool_name)
     }
 
     fn sync_plan_mode_system(&mut self) {
@@ -256,8 +252,7 @@ impl Agent {
     pub fn pending_steer_count(&self) -> usize {
         self.steer_buffer
             .lock()
-            .map(|buf| buf.len())
-            .unwrap_or(0)
+            .len()
     }
 
     pub fn steer_buffer(&self) -> Arc<Mutex<SteerBuffer>> {
@@ -275,7 +270,6 @@ impl Agent {
         }
         self.steer_buffer
             .lock()
-            .map_err(|_| anyhow::anyhow!("steer buffer lock poisoned"))?
             .push(text.to_string());
         Ok(())
     }
@@ -477,16 +471,14 @@ impl Agent {
     }
 
     fn sync_todos_to_session(&mut self) {
-        if let Ok(store) = self.todos.lock() {
-            self.session.todos = store.to_items();
-        }
+        let store = self.todos.lock();
+        self.session.todos = store.to_items();
     }
 
     fn inject_pending_steer(&mut self, options: &PromptOptions) -> Result<bool> {
         let messages = self
             .steer_buffer
             .lock()
-            .map_err(|_| anyhow::anyhow!("steer buffer lock poisoned"))?
             .take_all();
         if messages.is_empty() {
             return Ok(false);
@@ -793,40 +785,26 @@ impl Agent {
             );
 
             let immediate = if call.name == "EnterPlanMode" {
-                let mut result = zene_tools::ToolResult {
-                    content: "plan mode lock poisoned".to_string(),
-                    is_error: true,
-                };
-                let mut should_sync = false;
-                if let Ok(mut state) = plan_mode.lock() {
-                    result = handle_enter_plan_mode(&mut state, &call.arguments);
-                    should_sync = !result.is_error;
-                }
-                if should_sync {
+                let mut state = plan_mode.lock();
+                let result = handle_enter_plan_mode(&mut state, &call.arguments);
+                if !result.is_error {
                     self.sync_plan_mode_system();
                 }
                 Some((result, None))
             } else if call.name == "ExitPlanMode" {
-                let mut result = zene_tools::ToolResult {
-                    content: "plan mode lock poisoned".to_string(),
+                let mut state = plan_mode.lock();
+                let result = handle_exit_plan_mode(
+                    &mut state,
+                    &call.arguments,
+                    &workdir,
+                    &session_id,
+                    &plan_approval,
+                )
+                .unwrap_or_else(|err| zene_tools::ToolResult {
+                    content: err.to_string(),
                     is_error: true,
-                };
-                let mut should_sync = false;
-                if let Ok(mut state) = plan_mode.lock() {
-                    result = handle_exit_plan_mode(
-                        &mut state,
-                        &call.arguments,
-                        &workdir,
-                        &session_id,
-                        &plan_approval,
-                    )
-                    .unwrap_or_else(|err| zene_tools::ToolResult {
-                        content: err.to_string(),
-                        is_error: true,
-                    });
-                    should_sync = !result.is_error;
-                }
-                if should_sync {
+                });
+                if !result.is_error {
                     self.sync_plan_mode_system();
                 }
                 Some((result, None))
@@ -854,8 +832,7 @@ impl Agent {
                 let allowed_in_plan = self
                     .plan_mode
                     .lock()
-                    .map(|s| s.is_tool_allowed(&call.name))
-                    .unwrap_or(true);
+                    .is_tool_allowed(&call.name);
                 if !allowed_in_plan {
                     Some((
                         zene_tools::ToolResult {
@@ -868,19 +845,11 @@ impl Agent {
                     None
                 }
             } else {
-                let allowed = match self.permission.lock() {
-                    Ok(mut gate) => match gate.approve_tool_call(&call.name, &call.arguments) {
-                        Ok(v) => v,
-                        Err(err) => {
-                            if !options.quiet {
-                                eprintln!("permission prompt error: {err}");
-                            }
-                            false
-                        }
-                    },
-                    Err(_) => {
+                let allowed = match self.permission.lock().approve_tool_call(&call.name, &call.arguments) {
+                    Ok(v) => v,
+                    Err(err) => {
                         if !options.quiet {
-                            eprintln!("permission lock poisoned");
+                            eprintln!("permission prompt error: {err}");
                         }
                         false
                     }

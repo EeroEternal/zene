@@ -340,9 +340,9 @@ pub fn models_help_message(agent: &Agent) -> String {
     let config = agent.config();
     let mut msg = String::new();
     msg.push_str("Commands:\n");
-    msg.push_str("  /model <model_id>     Switch model (may change provider)\n");
-    msg.push_str("  /models               List or pick models (TUI picker)\n");
-    msg.push_str("  /provider             Configure or change provider (TUI picker)\n\n");
+    msg.push_str("  /model                Provider → model picker (↑/↓, Enter, API key if needed)\n");
+    msg.push_str("  /model <model_id>     Quick switch by model id\n");
+    msg.push_str("  /provider             Configure or change provider\n\n");
     msg.push_str("Current configuration:\n");
     msg.push_str(&format!("  Model:    {}\n", config.model));
     msg.push_str(&format!("  Provider: {}\n", config.provider));
@@ -355,7 +355,7 @@ pub fn models_help_message(agent: &Agent) -> String {
 
     if let Some(provider) = current_provider(config) {
         msg.push_str(&format!(
-            "\nAvailable models ({}) — use /model <id>:\n",
+            "\nAvailable models ({}) — run /model for interactive picker:\n",
             provider.display_name
         ));
         for variant in preset_models(provider) {

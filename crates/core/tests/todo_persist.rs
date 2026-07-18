@@ -42,9 +42,8 @@ async fn todo_write_persists_across_session_reload() {
         .expect("TodoWrite should run");
     assert!(!result.is_error);
 
-    if let Ok(store) = store.lock() {
-        session.todos = store.to_items();
-    }
+    let store = store.lock();
+    session.todos = store.to_items();
 
     session.save().expect("save session");
     let loaded = SessionRecord::load(&session.meta.id).expect("load session");

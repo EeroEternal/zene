@@ -15,6 +15,8 @@ pub enum ChatLine {
         header: String,
         body: Option<String>,
         is_error: bool,
+        /// True while waiting for ToolResult.
+        running: bool,
     },
     Status(String),
     Error(String),
@@ -41,7 +43,16 @@ pub enum ModelSelectorMode {
     SelectProvider,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ModelSelectorFlow {
+    /// `/model`: provider → model → API key (if needed).
+    Wizard,
+    /// `/provider`: pick provider and apply default model.
+    ProviderOnly,
+}
+
 pub struct ModelSelector {
+    pub flow: ModelSelectorFlow,
     pub mode: ModelSelectorMode,
     pub selected_provider_index: usize,
     pub selected_model_index: usize,
@@ -52,31 +63,14 @@ pub struct ModelSelector {
 }
 
 impl ModelSelector {
-    pub fn for_models(config: &zene_config::ZeneConfig) -> Self {
-        let current = config.model.clone();
-        let base_url = config.base_url.clone();
+    pub fn for_setup(config: &zene_config::ZeneConfig) -> Self {
         let provider_index = crate::model_config::provider_index_for_config(config).unwrap_or(0);
-        let model_index = if let Some(provider) = crate::model_config::current_provider(config) {
-            crate::model_config::model_index_for_provider(provider, &current)
-        } else {
-            let (pi, mi) =
-                crate::model_config::selection_for_model_with_base_url(&current, &base_url);
-            if pi == provider_index {
-                mi
-            } else {
-                0
-            }
-        };
-        let model_name_override = if crate::model_config::is_known_model(&current) {
-            None
-        } else {
-            Some(current)
-        };
         Self {
-            mode: ModelSelectorMode::SelectModel,
+            flow: ModelSelectorFlow::Wizard,
+            mode: ModelSelectorMode::SelectProvider,
             selected_provider_index: provider_index,
-            selected_model_index: model_index,
-            model_name_override,
+            selected_model_index: 0,
+            model_name_override: None,
             input_key: None,
             input_model: None,
         }
@@ -85,6 +79,7 @@ impl ModelSelector {
     pub fn for_providers(config: &zene_config::ZeneConfig) -> Self {
         let provider_index = crate::model_config::provider_index_for_config(config).unwrap_or(0);
         Self {
+            flow: ModelSelectorFlow::ProviderOnly,
             mode: ModelSelectorMode::SelectProvider,
             selected_provider_index: provider_index,
             selected_model_index: 0,
@@ -97,7 +92,8 @@ impl ModelSelector {
     pub fn for_model_with_api_key(model_id: &str) -> Self {
         let (provider_index, model_index) = crate::model_config::selection_for_model(model_id);
         Self {
-            mode: ModelSelectorMode::SelectProvider,
+            flow: ModelSelectorFlow::ProviderOnly,
+            mode: ModelSelectorMode::SelectModel,
             selected_provider_index: provider_index,
             selected_model_index: model_index,
             model_name_override: Some(model_id.to_string()),
@@ -138,6 +134,10 @@ pub struct App {
     pub usage: TokenUsage,
     pub permission_mode: PermissionMode,
     pub run_state: RunState,
+    /// Short label for the current phase (shown in status bar while running).
+    pub activity: String,
+    /// Incremented each frame for spinner animation.
+    pub ui_tick: u64,
     pub permission: Option<PermissionPrompt>,
     pub model_selector: Option<ModelSelector>,
     pub should_quit: bool,
@@ -159,6 +159,8 @@ pub struct App {
     pub input_wrap_width: u16,
     /// When false, mouse capture is off so Shift+drag can select terminal text.
     pub mouse_scroll_enabled: bool,
+    /// Prompts submitted while a turn is running; executed FIFO when idle.
+    pub pending_prompts: VecDeque<String>,
 }
 
 impl App {
@@ -172,6 +174,8 @@ impl App {
             usage: TokenUsage::default(),
             permission_mode,
             run_state: RunState::Idle,
+            activity: String::new(),
+            ui_tick: 0,
             permission: None,
             model_selector: None,
             should_quit: false,
@@ -187,7 +191,17 @@ impl App {
             history_draft: String::new(),
             input_wrap_width: 80,
             mouse_scroll_enabled: true,
+            pending_prompts: VecDeque::new(),
         }
+    }
+
+    pub fn queue_prompt(&mut self, prompt: String) -> usize {
+        self.pending_prompts.push_back(prompt);
+        self.pending_prompts.len()
+    }
+
+    pub fn pending_count(&self) -> usize {
+        self.pending_prompts.len()
     }
 
     pub fn toggle_mouse_scroll(&mut self) -> bool {
@@ -246,6 +260,36 @@ impl App {
     pub fn finish_turn(&mut self) {
         self.run_state = RunState::Idle;
         self.streaming = None;
+        self.activity.clear();
+    }
+
+    pub fn tick(&mut self) {
+        self.ui_tick = self.ui_tick.wrapping_add(1);
+    }
+
+    pub fn spinner(&self) -> &'static str {
+        const FRAMES: [&str; 4] = ["⠋", "⠙", "⠹", "⠸"];
+        FRAMES[(self.ui_tick / 6) as usize % FRAMES.len()]
+    }
+
+    pub fn mark_pending_tools_cancelled(&mut self) {
+        while let Some((idx, _)) = self.pending_tool_lines.pop_front() {
+            if idx < self.lines.len() {
+                if let ChatLine::Tool {
+                    ref mut header,
+                    ref mut is_error,
+                    ref mut running,
+                    ..
+                } = self.lines[idx]
+                {
+                    if *running {
+                        *header = format!("{header} ✗ (cancelled)");
+                        *is_error = true;
+                        *running = false;
+                    }
+                }
+            }
+        }
     }
 
     pub fn request_cancel(&mut self) {
@@ -295,8 +339,10 @@ impl App {
                 self.run_state = RunState::Running;
                 self.streaming = Some(String::new());
                 self.pending_tool_lines.clear();
+                self.activity = "Starting…".to_string();
             }
             AgentEvent::TextDelta { delta } => {
+                self.activity = "Streaming…".to_string();
                 if let Some(buf) = &mut self.streaming {
                     buf.push_str(&delta);
                 } else {
@@ -329,11 +375,13 @@ impl App {
                     self.pending_edit = None;
                 }
                 let summary = format_tool_summary(&name, &arguments);
+                self.activity = format!("Running {name}({summary})…");
                 let idx = self.lines.len();
                 self.lines.push(ChatLine::Tool {
                     header: format!("[tool] {name}({summary})"),
                     body: None,
                     is_error: false,
+                    running: true,
                 });
                 self.pending_tool_lines.push_back((idx, summary));
             }
@@ -374,29 +422,38 @@ impl App {
                     header,
                     body,
                     is_error,
+                    running: false,
                 };
                 if idx < self.lines.len() {
                     self.lines[idx] = line;
                 } else {
                     self.lines.push(line);
                 }
+                if self.pending_tool_lines.is_empty() {
+                    self.activity = "Waiting for model…".to_string();
+                }
             }
             AgentEvent::TurnEnd { .. } => {
                 self.flush_streaming();
                 self.lines.retain(|line| !matches!(line, ChatLine::Status(_)));
                 self.pending_tool_lines.clear();
-                self.finish_turn();
+                self.activity = "Finishing…".to_string();
             }
             AgentEvent::Error { message } => {
                 self.flush_streaming();
                 self.lines.retain(|line| !matches!(line, ChatLine::Status(_)));
-                self.pending_tool_lines.clear();
+                self.mark_pending_tools_cancelled();
                 self.lines.push(ChatLine::Error(message));
-                self.finish_turn();
+                self.activity.clear();
             }
             AgentEvent::StepBegin { step, .. } => {
                 self.flush_streaming();
                 self.lines.retain(|line| !matches!(line, ChatLine::Status(_)));
+                self.activity = if step > 1 {
+                    format!("Continuing (step {step})…")
+                } else {
+                    "Waiting for model…".to_string()
+                };
                 if step > 1 {
                     self.lines.push(ChatLine::Status(format!(
                         "Continuing (step {step})…"
@@ -416,7 +473,7 @@ impl App {
     }
 
     pub fn update_usage(&mut self, usage: &TokenUsage) {
-        self.usage = usage.clone();
+        self.usage = *usage;
     }
 
     /// Show the model's final reply when streaming did not already render it.

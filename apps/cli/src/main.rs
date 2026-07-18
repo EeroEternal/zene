@@ -1,8 +1,8 @@
 use std::path::PathBuf;
-use std::sync::Mutex;
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
+use parking_lot::Mutex;
 use tokio_util::sync::CancellationToken;
 use zene_config::{ensure_home, ZeneConfig};
 use zene_core::{Agent, PermissionMode};
@@ -17,15 +17,11 @@ mod tui;
 static ACTIVE_CANCEL: Mutex<Option<CancellationToken>> = Mutex::new(None);
 
 pub(crate) fn set_active_cancel(token: Option<CancellationToken>) {
-    if let Ok(mut guard) = ACTIVE_CANCEL.lock() {
-        *guard = token;
-    }
+    *ACTIVE_CANCEL.lock() = token;
 }
 
 pub(crate) fn cancel_active_turn() -> bool {
-    let Ok(mut guard) = ACTIVE_CANCEL.lock() else {
-        return false;
-    };
+    let mut guard = ACTIVE_CANCEL.lock();
     if let Some(token) = guard.take() {
         token.cancel();
         true

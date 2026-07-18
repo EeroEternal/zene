@@ -1,4 +1,6 @@
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
+
+use parking_lot::Mutex;
 
 /// Shared plan-mode flag for the main agent (and tool context).
 #[derive(Debug, Clone, Default)]

@@ -82,20 +82,13 @@ impl Tool for TodoWriteTool {
             })
             .collect();
 
-        let summary = match store.lock() {
-            Ok(mut store) => {
-                if args.merge == Some(false) {
-                    *store = crate::todo_store::TodoStore::default();
-                }
-                store.merge(&updates);
-                store.render_summary()
+        let summary = {
+            let mut store = store.lock();
+            if args.merge == Some(false) {
+                *store = crate::todo_store::TodoStore::default();
             }
-            Err(_) => {
-                return Ok(ToolResult {
-                    content: "Todo store lock poisoned.".to_string(),
-                    is_error: true,
-                });
-            }
+            store.merge(&updates);
+            store.render_summary()
         };
 
         Ok(ToolResult {
@@ -132,14 +125,9 @@ impl Tool for TodoListTool {
             });
         };
 
-        let summary = match store.lock() {
-            Ok(store) => store.render_summary(),
-            Err(_) => {
-                return Ok(ToolResult {
-                    content: "Todo store lock poisoned.".to_string(),
-                    is_error: true,
-                });
-            }
+        let summary = {
+            let store = store.lock();
+            store.render_summary()
         };
 
         Ok(ToolResult {

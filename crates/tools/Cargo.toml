@@ -8,6 +8,7 @@ license.workspace = true
 anyhow.workspace = true
 jsonschema.workspace = true
 async-trait.workspace = true
+parking_lot.workspace = true
 regex.workspace = true
 reqwest.workspace = true
 schemars.workspace = true
@@ -23,4 +24,3 @@ zene-session = { workspace = true }
 
 [dev-dependencies]
 tempfile = "3"
-tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }

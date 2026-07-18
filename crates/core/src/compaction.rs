@@ -229,6 +229,7 @@ pub fn truncate_old_message_bodies(
 }
 
 /// Replace very old tool result bodies with a short placeholder (legacy alias).
+#[allow(dead_code)]
 pub fn truncate_old_tool_results(
     messages: &mut [Message],
     prefix_start: usize,
@@ -587,6 +588,7 @@ where
     compact_with_phases(messages, model, config, reason, tools, estimator, chat).await
 }
 
+#[allow(dead_code)]
 pub async fn summarize_messages_with_chat<F, Fut>(
     model: &str,
     messages: &[Message],

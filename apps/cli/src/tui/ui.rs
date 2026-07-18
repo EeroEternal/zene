@@ -77,14 +77,22 @@ fn draw_chat(frame: &mut Frame, area: Rect, app: &mut App) {
                 header,
                 body,
                 is_error,
+                running,
             } => {
                 let color = if *is_error {
                     Color::Red
+                } else if *running {
+                    Color::Yellow
                 } else {
                     Color::DarkGray
                 };
+                let display_header = if *running {
+                    format!("{} {}", app.spinner(), header)
+                } else {
+                    header.clone()
+                };
                 lines.extend(wrap_line_spans(
-                    vec![Span::styled(header.clone(), Style::default().fg(color))],
+                    vec![Span::styled(display_header, Style::default().fg(color))],
                     inner_width,
                 ));
                 if let Some(body) = body {
@@ -131,14 +139,20 @@ fn draw_chat(frame: &mut Frame, area: Rect, app: &mut App) {
     }
 
     let base_title = match app.run_state {
-        RunState::Running => "Chat (running…)",
-        RunState::Cancelling => "Chat (cancelling…)",
-        RunState::Idle => "Chat",
+        RunState::Running => {
+            if app.activity.is_empty() {
+                format!("Chat {} running…", app.spinner())
+            } else {
+                format!("Chat {} {}", app.spinner(), app.activity)
+            }
+        }
+        RunState::Cancelling => format!("Chat {} cancelling…", app.spinner()),
+        RunState::Idle => "Chat".to_string(),
     };
     let title = if max_scroll > 0 && !app.stick_to_bottom {
         format!("{base_title} — wheel/PgUp·PgDn scroll · PgDn→bottom resumes follow")
     } else {
-        base_title.to_string()
+        base_title
     };
 
     let paragraph = Paragraph::new(lines)
@@ -194,9 +208,42 @@ fn draw_input(frame: &mut Frame, area: Rect, app: &mut App, visible_rows: u16) {
     app.input_wrap_width = inner_width;
 
     let title = match app.run_state {
-        RunState::Idle => "Input (Enter send · Alt+Enter newline · ↑↓ history)",
-        RunState::Running => "Input (running — Esc/Ctrl+C cancel · Enter steer)",
-        RunState::Cancelling => "Input (cancelling… — Esc/Ctrl+C retry)",
+        RunState::Idle => {
+            if app.pending_count() > 0 {
+                format!(
+                    "Input (Enter send · {} queued waiting)",
+                    app.pending_count()
+                )
+            } else {
+                "Input (Enter send · Alt+Enter newline · ↑↓ history)".to_string()
+            }
+        }
+        RunState::Running => {
+            let pending = app.pending_count();
+            let pending_note = if pending > 0 {
+                format!(" · {pending} queued")
+            } else {
+                String::new()
+            };
+            if app.activity.is_empty() {
+                format!(
+                    "Input {} running — Enter queue{pending_note} · /steer · Esc cancel",
+                    app.spinner()
+                )
+            } else {
+                format!(
+                    "Input {} {} — Enter queue{pending_note} · /steer · Esc cancel",
+                    app.spinner(),
+                    app.activity
+                )
+            }
+        }
+        RunState::Cancelling => {
+            format!(
+                "Input {} cancelling… — Enter queue · Esc/Ctrl+C retry",
+                app.spinner()
+            )
+        }
     };
 
     let layout = app.input.layout(inner_width);
@@ -255,8 +302,18 @@ fn draw_status(frame: &mut Frame, area: Rect, app: &App) {
         RunState::Running => "running",
         RunState::Cancelling => "cancelling",
     };
+    let activity = if app.activity.is_empty() {
+        String::new()
+    } else {
+        format!(" | {}", app.activity)
+    };
+    let spinner = if app.run_state == RunState::Running || app.run_state == RunState::Cancelling {
+        format!("{} ", app.spinner())
+    } else {
+        String::new()
+    };
     let mut status = format!(
-        " {} | session {} | in {} / out {} ({}) | {} | {} ",
+        "{spinner}{} | session {} | in {} / out {} ({}) | {} | {}{} ",
         app.model,
         &app.session_id[..8.min(app.session_id.len())],
         app.usage.prompt_tokens,
@@ -264,11 +321,15 @@ fn draw_status(frame: &mut Frame, area: Rect, app: &App) {
         app.usage.total_tokens,
         mode,
         state,
+        activity,
     );
     if app.permission.is_some() {
         status.push_str("| [y]/[a]/[n] approve ");
-    } else if app.run_state == RunState::Running {
-        status.push_str("| Esc/Ctrl+C cancel | wheel/PgUp·PgDn scroll ");
+    } else if app.run_state == RunState::Running || app.run_state == RunState::Cancelling {
+        status.push_str("| Enter queue · Esc cancel | wheel/PgUp·PgDn scroll ");
+    }
+    if app.pending_count() > 0 && app.run_state == RunState::Idle {
+        status.push_str(&format!("| {} queued ", app.pending_count()));
     }
     if !app.mouse_scroll_enabled {
         status.push_str("| mouse off (Shift+select · Ctrl+Shift+M toggle) ");
@@ -428,18 +489,22 @@ fn draw_model_selector_overlay(frame: &mut Frame, selector: &super::app::ModelSe
         let cursor_y = area.y + 8;
         frame.set_cursor_position((cursor_x.min(area.right() - 2), cursor_y));
     } else {
-        use super::app::ModelSelectorMode;
+        use super::app::{ModelSelectorFlow, ModelSelectorMode};
 
         let provider = selector.selected_provider();
-        let model = selector.effective_model_name();
         let base_url = preset_base_url(provider);
         let models = preset_models(provider);
 
         match selector.mode {
             ModelSelectorMode::SelectModel => {
+                let step = if selector.flow == ModelSelectorFlow::Wizard {
+                    "Step 2/2 — Select Model"
+                } else {
+                    "Select Model"
+                };
                 let mut lines = vec![
                     Line::from(Span::styled(
-                        "Select Model",
+                        step,
                         Style::default()
                             .fg(Color::Cyan)
                             .add_modifier(Modifier::BOLD),
@@ -448,10 +513,6 @@ fn draw_model_selector_overlay(frame: &mut Frame, selector: &super::app::ModelSe
                     Line::from(vec![
                         Span::styled("Provider: ", Style::default().fg(Color::DarkGray)),
                         Span::styled(provider.display_name, Style::default().fg(Color::White)),
-                    ]),
-                    Line::from(vec![
-                        Span::styled("Model ID: ", Style::default().fg(Color::DarkGray)),
-                        Span::styled(model, Style::default().fg(Color::White)),
                     ]),
                     Line::from(""),
                 ];
@@ -483,8 +544,13 @@ fn draw_model_selector_overlay(frame: &mut Frame, selector: &super::app::ModelSe
                     Span::styled(base_url, Style::default().fg(Color::White)),
                 ]));
                 lines.push(Line::from(""));
+                let footer = if selector.flow == ModelSelectorFlow::Wizard {
+                    "[↑/↓] model  [m] custom  [Enter] apply  [Esc] back to providers"
+                } else {
+                    "[↑/↓] model  [m] custom  [k] API key  [Enter] apply  [Esc] close"
+                };
                 lines.push(Line::from(Span::styled(
-                    "[↑/↓] model  [m] custom  [k] API key  [p] change provider  [Enter] apply  [Esc] close",
+                    footer,
                     Style::default().fg(Color::DarkGray),
                 )));
 
@@ -496,18 +562,18 @@ fn draw_model_selector_overlay(frame: &mut Frame, selector: &super::app::ModelSe
                 frame.render_widget(Paragraph::new(lines).block(block).wrap(Wrap { trim: true }), area);
             }
             ModelSelectorMode::SelectProvider => {
+                let title = if selector.flow == ModelSelectorFlow::Wizard {
+                    "Step 1/2 — Select Provider"
+                } else {
+                    "Select Provider"
+                };
                 let mut lines = vec![
                     Line::from(Span::styled(
-                        "Select Provider",
+                        title,
                         Style::default()
                             .fg(Color::Cyan)
                             .add_modifier(Modifier::BOLD),
                     )),
-                    Line::from(""),
-                    Line::from(vec![
-                        Span::styled("Base URL: ", Style::default().fg(Color::DarkGray)),
-                        Span::styled(base_url, Style::default().fg(Color::White)),
-                    ]),
                     Line::from(""),
                 ];
 
@@ -533,22 +599,38 @@ fn draw_model_selector_overlay(frame: &mut Frame, selector: &super::app::ModelSe
                 }
 
                 lines.push(Line::from(""));
-                lines.push(Line::from(Span::styled(
-                    "Default models after setup:",
-                    Style::default().fg(Color::DarkGray),
-                )));
-                for variant in models.iter().take(8) {
-                    lines.push(Line::from(format!(
-                        "  {} ({})",
-                        variant.display_name, variant.model_id
+                if selector.flow == ModelSelectorFlow::Wizard {
+                    lines.push(Line::from(vec![
+                        Span::styled("Base URL: ", Style::default().fg(Color::DarkGray)),
+                        Span::styled(base_url, Style::default().fg(Color::White)),
+                    ]));
+                    lines.push(Line::from(""));
+                    lines.push(Line::from(Span::styled(
+                        "[↑/↓] provider  [Enter] choose model  [Esc] close",
+                        Style::default().fg(Color::DarkGray),
+                    )));
+                } else {
+                    lines.push(Line::from(vec![
+                        Span::styled("Base URL: ", Style::default().fg(Color::DarkGray)),
+                        Span::styled(base_url, Style::default().fg(Color::White)),
+                    ]));
+                    lines.push(Line::from(""));
+                    lines.push(Line::from(Span::styled(
+                        "Default models after setup:",
+                        Style::default().fg(Color::DarkGray),
+                    )));
+                    for variant in models.iter().take(8) {
+                        lines.push(Line::from(format!(
+                            "  {} ({})",
+                            variant.display_name, variant.model_id
+                        )));
+                    }
+                    lines.push(Line::from(""));
+                    lines.push(Line::from(Span::styled(
+                        "[↑/↓] provider  [k] API key  [Enter] apply  [Esc] close",
+                        Style::default().fg(Color::DarkGray),
                     )));
                 }
-
-                lines.push(Line::from(""));
-                lines.push(Line::from(Span::styled(
-                    "[↑/↓] provider  [k] API key  [Enter] apply  [Esc] close",
-                    Style::default().fg(Color::DarkGray),
-                )));
 
                 let block = Block::default()
                     .borders(Borders::ALL)

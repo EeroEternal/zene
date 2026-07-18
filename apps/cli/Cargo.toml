@@ -11,6 +11,7 @@ path = "src/main.rs"
 [dependencies]
 anyhow.workspace = true
 clap.workspace = true
+parking_lot.workspace = true
 rustyline.workspace = true
 ratatui.workspace = true
 crossterm.workspace = true

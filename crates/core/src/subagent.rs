@@ -213,10 +213,7 @@ async fn run_subagent_tools(
         }
 
         let allowed = if let Some(ref gate) = permission {
-            match gate.lock() {
-                Ok(mut gate) => gate.approve_tool_call(&call.name, &call.arguments)?,
-                Err(_) => false,
-            }
+            gate.lock().approve_tool_call(&call.name, &call.arguments)?
         } else {
             true
         };
@@ -343,7 +340,9 @@ fn ensure_subagent_system_message(messages: &mut Vec<Message>) {
 mod tests {
     use super::*;
     use std::sync::atomic::{AtomicUsize, Ordering};
-    use std::sync::{Arc, Mutex};
+    use std::sync::Arc;
+
+    use parking_lot::Mutex;
 
     use crate::permission::{PermissionGate, PermissionMode, PromptChoice};
     use tempfile::tempdir;
