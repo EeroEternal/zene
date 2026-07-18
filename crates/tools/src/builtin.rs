@@ -10,6 +10,7 @@ use crate::registry::ToolRegistry;
 use crate::skill::SkillTool;
 use crate::subagent::SubagentProfile;
 use crate::task::TaskTool;
+use crate::task_output::TaskOutputTool;
 use crate::todo::{TodoListTool, TodoWriteTool};
 use crate::web_search::WebSearchTool;
 use crate::write::WriteTool;
@@ -59,6 +60,7 @@ fn all_builtin_tool_boxes(web_search: WebSearchConfig) -> Vec<Box<dyn crate::reg
         Box::new(GlobTool),
         Box::new(SkillTool),
         Box::new(TaskTool),
+        Box::new(TaskOutputTool),
         Box::new(AskUserQuestionTool),
         Box::new(TodoWriteTool),
         Box::new(TodoListTool),
@@ -95,6 +97,7 @@ fn coder_agent_tool_boxes(web_search: WebSearchConfig) -> Vec<Box<dyn crate::reg
         Box::new(GlobTool),
         Box::new(SkillTool),
         Box::new(TaskTool),
+        Box::new(TaskOutputTool),
         Box::new(AskUserQuestionTool),
         Box::new(TodoWriteTool),
         Box::new(TodoListTool),

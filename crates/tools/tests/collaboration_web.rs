@@ -14,6 +14,7 @@ fn ctx(workdir: &std::path::Path) -> ToolContext {
         plan_mode: None,
         todos: Some(shared_todo_store()),
         ask_user: None,
+        background: None,
     }
 }
 

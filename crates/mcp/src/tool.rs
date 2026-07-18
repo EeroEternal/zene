@@ -7,7 +7,8 @@ use tokio::sync::Mutex;
 use zene_llm::ToolDefinition;
 use zene_tools::{Tool, ToolContext, ToolResult};
 
-use crate::client::{McpStdioClient, McpToolInfo, mcp_tool_registry_name};
+use crate::client::{McpToolInfo, mcp_tool_registry_name};
+use crate::transport::McpClientHandle;
 
 pub struct McpTool {
     server_name: String,
@@ -15,14 +16,14 @@ pub struct McpTool {
     registry_name: String,
     description: String,
     input_schema: Value,
-    client: Arc<Mutex<McpStdioClient>>,
+    client: Arc<Mutex<McpClientHandle>>,
 }
 
 impl McpTool {
     pub fn from_info(
         server_name: &str,
         info: McpToolInfo,
-        client: Arc<Mutex<McpStdioClient>>,
+        client: Arc<Mutex<McpClientHandle>>,
     ) -> Self {
         let registry_name = mcp_tool_registry_name(server_name, &info.name);
         Self {

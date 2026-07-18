@@ -205,6 +205,7 @@ async fn run_subagent_tools(
         plan_mode: None,
         todos: None,
         ask_user: None,
+        background: None,
     };
 
     for call in tool_calls {
@@ -551,6 +552,7 @@ mod tests {
             plan_mode: None,
             todos: None,
             ask_user: None,
+            background: None,
         };
 
         let result = default_builtin_tools()

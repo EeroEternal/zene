@@ -29,7 +29,11 @@ pub struct McpStdioClient {
 
 impl McpStdioClient {
     pub async fn connect(server_name: &str, config: &McpServerConfig) -> Result<Self> {
-        let mut command = Command::new(&config.command);
+        let cmd = config
+            .command
+            .as_deref()
+            .ok_or_else(|| anyhow!("MCP server `{server_name}` missing stdio command"))?;
+        let mut command = Command::new(cmd);
         command
             .args(&config.args)
             .envs(&config.env)
@@ -40,7 +44,7 @@ impl McpStdioClient {
 
         let mut child = command
             .spawn()
-            .with_context(|| format!("spawn MCP server `{server_name}` ({})", config.command))?;
+            .with_context(|| format!("spawn MCP server `{server_name}` ({cmd})"))?;
 
         let stdin = child
             .stdin

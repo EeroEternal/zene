@@ -101,6 +101,23 @@ Config `[permission_rules]` supports `allow` / `deny` / `ask` patterns (`Bash`, 
 
 Before/after compaction, checkpoints are saved under `~/.zene/sessions/<id>/compaction_checkpoints/`. Slash commands: `/rewind [id]`, `/fork`, `/session-info`.
 
+## Background tasks
+
+`Bash` and `Task` accept `run_in_background=true`. They return a `task_id` immediately; poll or cancel with `TaskOutput` (`action=list|get|kill`). Background Bash uses a longer timeout (30m). Store lives on the main `Agent` for the session.
+
+## Git worktree
+
+`zene --worktree` creates (or reuses) `.zene/worktrees/<session-slug>` via `git worktree add -B zene/<slug>` and runs the agent sandbox there.
+
+## MCP transports
+
+`~/.zene/mcp.json` / `.zene/mcp.json` servers may use:
+
+- **stdio**: `{ "command", "args", "env" }`
+- **HTTP**: `{ "url", "headers" }` (Streamable HTTP / JSON-RPC POST; SSE `data:` frames accepted)
+
+`zene mcp doctor` probes configured servers.
+
 ## LLM layer
 
 - `OpenAiCompatibleProvider` (`crates/llm`) intentionally depends on [`unigateway-sdk`](https://crates.io/crates/unigateway-sdk) from **crates.io** (not a sibling path repo). It drives proxy chat via `UniGatewayEngine` (pools, retry, streaming).

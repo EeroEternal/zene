@@ -17,6 +17,7 @@ fn ctx(workdir: &std::path::Path) -> ToolContext {
         plan_mode: None,
         todos: None,
         ask_user: None,
+        background: None,
     }
 }
 
@@ -40,6 +41,7 @@ async fn parallel_read_calls_both_succeed() {
             plan_mode: tool_ctx.plan_mode.clone(),
             todos: tool_ctx.todos.clone(),
             ask_user: tool_ctx.ask_user.clone(),
+            background: tool_ctx.background.clone(),
         };
         let tools = Arc::clone(&tools);
         let args = format!(r#"{{"path":"{path}"}}"#);
@@ -92,6 +94,7 @@ async fn parallel_read_results_preserve_provider_order() {
             plan_mode: base_ctx.plan_mode.clone(),
             todos: base_ctx.todos.clone(),
             ask_user: base_ctx.ask_user.clone(),
+            background: base_ctx.background.clone(),
         };
         let tools = Arc::clone(&tools);
         let args = format!(r#"{{"path":"{path}"}}"#);

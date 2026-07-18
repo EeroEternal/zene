@@ -8,10 +8,12 @@ use zene_tools::ToolRegistry;
 
 use crate::client::McpStdioClient;
 use crate::config::{load_mcp_config, McpConfig};
+use crate::http::McpHttpClient;
 use crate::tool::McpTool;
+use crate::transport::McpClientHandle;
 
 pub struct McpManager {
-    clients: Vec<Arc<Mutex<McpStdioClient>>>,
+    clients: Vec<Arc<Mutex<McpClientHandle>>>,
 }
 
 impl McpManager {
@@ -25,7 +27,23 @@ impl McpManager {
         let mut tool_boxes: Vec<Box<dyn zene_tools::Tool>> = Vec::new();
 
         for (server_name, server_config) in config.servers {
-            match McpStdioClient::connect(&server_name, &server_config).await {
+            if let Err(err) = server_config.validate(&server_name) {
+                warn!(server = %server_name, error = %err, "mcp config invalid");
+                continue;
+            }
+
+            let connected = if server_config.is_http() {
+                let url = server_config.url.as_deref().unwrap();
+                McpHttpClient::connect(&server_name, url, &server_config.headers)
+                    .await
+                    .map(McpClientHandle::Http)
+            } else {
+                McpStdioClient::connect(&server_name, &server_config)
+                    .await
+                    .map(McpClientHandle::Stdio)
+            };
+
+            match connected {
                 Ok(mut client) => {
                     let tools = match client.list_tools().await {
                         Ok(tools) => tools,
@@ -46,7 +64,12 @@ impl McpManager {
                             Arc::clone(&client),
                         )));
                     }
-                    info!(server = %server_name, tool_count = registered, "mcp connected");
+                    info!(
+                        server = %server_name,
+                        tool_count = registered,
+                        transport = if server_config.is_http() { "http" } else { "stdio" },
+                        "mcp connected"
+                    );
                 }
                 Err(err) => {
                     warn!(server = %server_name, error = %err, "mcp connect failed");
@@ -54,10 +77,7 @@ impl McpManager {
             }
         }
 
-        Ok((
-            Self { clients },
-            ToolRegistry::new(tool_boxes),
-        ))
+        Ok((Self { clients }, ToolRegistry::new(tool_boxes)))
     }
 
     pub fn is_empty(&self) -> bool {
