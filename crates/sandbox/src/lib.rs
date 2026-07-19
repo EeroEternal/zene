@@ -10,6 +10,11 @@ use std::time::Duration;
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use globset::GlobBuilder;
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+use keel_core::backend_process_guard;
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+use keel_core::{backend_local_process, LocalProcessOptions};
+use keel_core::{profile_workspace, Space, SpaceHandle, SpawnRequest, TerminationReason};
 use tokio::io::AsyncReadExt;
 use tokio::process::Command;
 use tokio_util::sync::CancellationToken;
@@ -31,20 +36,72 @@ pub struct ExecResult {
     pub exit_code: i32,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct LocalSandbox {
     workdir: PathBuf,
+    space: Option<SpaceHandle>,
 }
 
 impl LocalSandbox {
+    /// Construct a local-only sandbox, primarily for isolated unit tests.
+    ///
+    /// Production agent entry points should use [`Self::with_keel`].
     pub fn new(workdir: impl Into<PathBuf>) -> Self {
         Self {
             workdir: workdir.into(),
+            space: None,
         }
+    }
+
+    /// Construct a sandbox backed by a Keel execution space.
+    pub async fn with_keel(workdir: impl Into<PathBuf>) -> Result<Self> {
+        let workdir = canonical_workdir(&workdir.into())?;
+        let policy = profile_workspace(&workdir).context("build Keel workspace policy")?;
+
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        let backend = backend_local_process(LocalProcessOptions::default());
+        #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+        let backend = backend_process_guard();
+
+        let space = Space::create(policy, backend)
+            .await
+            .context("create Keel execution space")?;
+        Ok(Self {
+            workdir,
+            space: Some(space),
+        })
     }
 
     pub fn workdir(&self) -> &Path {
         &self.workdir
+    }
+
+    /// Re-scope a child agent to a directory while retaining the same Keel policy.
+    pub fn scoped_to(&self, workdir: impl Into<PathBuf>) -> Result<Self> {
+        let requested = workdir.into();
+        let resolved = self.resolve(requested.to_string_lossy().as_ref())?;
+        if !resolved.is_dir() {
+            anyhow::bail!("sandbox cwd is not a directory: {}", resolved.display());
+        }
+        Ok(Self {
+            workdir: resolved,
+            space: self.space.clone(),
+        })
+    }
+
+    pub async fn shutdown(&self) -> Result<()> {
+        if let Some(space) = &self.space {
+            space
+                .clone()
+                .destroy()
+                .await
+                .context("destroy Keel execution space")?;
+        }
+        Ok(())
+    }
+
+    pub fn events_path(&self) -> Option<&Path> {
+        self.space.as_ref().and_then(SpaceHandle::events_path)
     }
 
     pub fn resolve(&self, path: &str) -> Result<PathBuf> {
@@ -54,6 +111,7 @@ impl LocalSandbox {
     pub async fn read_file_bytes(&self, path: &str, _hint_max: usize) -> Result<Vec<u8>> {
         let resolved = self.resolve(path)?;
         verify_resolved_path(&self.workdir, &resolved)?;
+        self.authorize_fs(&resolved, false).await?;
         read_file_bytes_nofollow(&resolved)
             .await
             .with_context(|| format!("read file: {}", resolved.display()))
@@ -62,9 +120,7 @@ impl LocalSandbox {
     pub async fn read_text(&self, path: &str) -> Result<String> {
         let bytes = self.read_file_bytes(path, 0).await?;
         if is_binary_content(&bytes) {
-            anyhow::bail!(
-                "cannot read binary file: {path}. Read supports text files only."
-            );
+            anyhow::bail!("cannot read binary file: {path}. Read supports text files only.");
         }
         String::from_utf8(bytes).context("file is not valid UTF-8 text")
     }
@@ -74,6 +130,7 @@ impl LocalSandbox {
             anyhow::bail!(msg);
         }
         let resolved = self.resolve_parent(path)?;
+        self.authorize_fs(&resolved, true).await?;
         if let Some(parent) = resolved.parent() {
             tokio::fs::create_dir_all(parent)
                 .await
@@ -90,13 +147,8 @@ impl LocalSandbox {
         cwd: Option<&str>,
         cancel: Option<&CancellationToken>,
     ) -> Result<ExecResult> {
-        self.exec_with_timeout(
-            command,
-            cwd,
-            cancel,
-            Duration::from_secs(BASH_TIMEOUT_SECS),
-        )
-        .await
+        self.exec_with_timeout(command, cwd, cancel, Duration::from_secs(BASH_TIMEOUT_SECS))
+            .await
     }
 
     /// Like [`Self::exec`] but with an explicit timeout (used by background Bash).
@@ -112,6 +164,21 @@ impl LocalSandbox {
         }
 
         let timeout_secs = timeout.as_secs().max(1);
+        if self.space.is_some() {
+            let cwd = match cwd {
+                Some(path) => self.resolve(path)?,
+                None => canonical_workdir(&self.workdir)?,
+            };
+            #[cfg(unix)]
+            let (program, args) = ("bash", vec!["-lc".to_string(), command.to_string()]);
+            #[cfg(windows)]
+            let (program, args) = ("cmd", vec!["/C".to_string(), command.to_string()]);
+
+            return self
+                .exec_keel(program, args, &cwd, cancel, timeout, false)
+                .await;
+        }
+
         let work = self.exec_inner(command, cwd);
         let timed = tokio::time::timeout(timeout, work);
 
@@ -131,6 +198,24 @@ impl LocalSandbox {
                 Err(_) => anyhow::bail!("command timed out after {timeout_secs} seconds"),
             }
         }
+    }
+
+    async fn authorize_fs(&self, path: &Path, write: bool) -> Result<()> {
+        let Some(space) = &self.space else {
+            return Ok(());
+        };
+        if !space
+            .check_fs(path, write)
+            .await
+            .context("check Keel filesystem policy")?
+        {
+            anyhow::bail!(
+                "Keel denied {} access: {}",
+                if write { "write" } else { "read" },
+                path.display()
+            );
+        }
+        Ok(())
     }
 
     async fn exec_inner(&self, command: &str, cwd: Option<&str>) -> Result<ExecResult> {
@@ -177,6 +262,54 @@ impl LocalSandbox {
         })
     }
 
+    async fn exec_keel(
+        &self,
+        program: &str,
+        args: Vec<String>,
+        cwd: &Path,
+        cancel: Option<&CancellationToken>,
+        timeout: Duration,
+        audit_args: bool,
+    ) -> Result<ExecResult> {
+        let space = self
+            .space
+            .as_ref()
+            .context("Keel execution space is not configured")?;
+        let request = SpawnRequest::new(program)
+            .args(args)
+            .cwd(cwd)
+            .audit_args(audit_args);
+        let process = space.spawn(request).await.context("spawn with Keel")?;
+        let (exit, output) = if let Some(token) = cancel {
+            process
+                .wait_with_output_cancel(token, timeout)
+                .await
+                .context("wait for Keel process")?
+        } else {
+            process
+                .wait_with_output_timeout(timeout)
+                .await
+                .context("wait for Keel process")?
+        };
+
+        match exit.termination_reason {
+            TerminationReason::TimedOut => {
+                anyhow::bail!(
+                    "command timed out after {} seconds",
+                    timeout.as_secs().max(1)
+                )
+            }
+            TerminationReason::Cancelled => anyhow::bail!("aborted"),
+            _ => {}
+        }
+
+        Ok(ExecResult {
+            stdout: output_text_limited(&output.stdout, BASH_OUTPUT_LIMIT),
+            stderr: output_text_limited(&output.stderr, BASH_OUTPUT_LIMIT),
+            exit_code: exit.exit_code.unwrap_or(-1),
+        })
+    }
+
     pub fn glob(&self, pattern: &str) -> Result<Vec<String>> {
         let pattern = pattern.trim_start_matches("./");
         let glob = GlobBuilder::new(pattern)
@@ -186,7 +319,10 @@ impl LocalSandbox {
         let matcher = glob.compile_matcher();
 
         let mut matches = Vec::new();
-        for entry in WalkDir::new(&self.workdir).into_iter().filter_map(|e| e.ok()) {
+        for entry in WalkDir::new(&self.workdir)
+            .into_iter()
+            .filter_map(|e| e.ok())
+        {
             if !entry.file_type().is_file() {
                 continue;
             }
@@ -227,6 +363,52 @@ impl LocalSandbox {
     ) -> Result<Option<Vec<GrepMatch>>> {
         let workdir = canonical_workdir(&self.workdir)?;
 
+        if self.space.is_some() {
+            let mut args = vec![
+                "--line-number".to_string(),
+                "--no-heading".to_string(),
+                "--color=never".to_string(),
+                "--max-count".to_string(),
+                GREP_MAX_MATCHES.to_string(),
+            ];
+            if case_insensitive {
+                args.push("-i".to_string());
+            }
+            args.push(pattern.to_string());
+            if let Some(p) = path {
+                let resolved = self.resolve(p)?;
+                args.push(
+                    resolved
+                        .strip_prefix(&workdir)
+                        .unwrap_or(&resolved)
+                        .to_string_lossy()
+                        .into_owned(),
+                );
+            } else {
+                args.push(".".to_string());
+            }
+
+            let output = match self
+                .exec_keel(
+                    "rg",
+                    args,
+                    &workdir,
+                    None,
+                    Duration::from_secs(BASH_TIMEOUT_SECS),
+                    true,
+                )
+                .await
+            {
+                Ok(output) => output,
+                Err(err) if err.to_string().contains("No such file") => return Ok(None),
+                Err(err) => return Err(err).context("spawn rg with Keel"),
+            };
+            if output.exit_code != 0 && output.exit_code != 1 {
+                return Ok(None);
+            }
+            return Ok(Some(parse_rg_output(&output.stdout)));
+        }
+
         let mut cmd = Command::new("rg");
         cmd.arg("--line-number")
             .arg("--no-heading")
@@ -260,17 +442,9 @@ impl LocalSandbox {
             return Ok(None);
         }
 
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        let mut matches = Vec::new();
-        for line in stdout.lines() {
-            if let Some(m) = parse_rg_line(line) {
-                matches.push(m);
-            }
-            if matches.len() >= GREP_MAX_MATCHES {
-                break;
-            }
-        }
-        Ok(Some(matches))
+        Ok(Some(parse_rg_output(&String::from_utf8_lossy(
+            &output.stdout,
+        ))))
     }
 
     async fn grep_fallback(
@@ -393,6 +567,23 @@ fn parse_rg_line(line: &str) -> Option<GrepMatch> {
     })
 }
 
+fn parse_rg_output(stdout: &str) -> Vec<GrepMatch> {
+    stdout
+        .lines()
+        .filter_map(parse_rg_line)
+        .take(GREP_MAX_MATCHES)
+        .collect()
+}
+
+fn output_text_limited(bytes: &[u8], limit: usize) -> String {
+    if bytes.len() <= limit {
+        return String::from_utf8_lossy(bytes).into_owned();
+    }
+    let mut output = String::from_utf8_lossy(&bytes[..limit]).into_owned();
+    output.push_str("\n...[truncated]");
+    output
+}
+
 async fn read_limited(reader: &mut (impl AsyncReadExt + Unpin), limit: usize) -> Result<String> {
     let mut buf = vec![0u8; 8192];
     let mut out = Vec::new();
@@ -440,5 +631,75 @@ impl Sandbox for LocalSandbox {
         cancel: Option<&CancellationToken>,
     ) -> Result<ExecResult> {
         LocalSandbox::exec(self, command, cwd, cancel).await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+
+    #[tokio::test]
+    async fn keel_exec_records_redacted_command_and_completion() {
+        let dir = tempfile::tempdir().unwrap();
+        let sandbox = LocalSandbox::with_keel(dir.path()).await.unwrap();
+        let events = sandbox.events_path().unwrap().to_path_buf();
+
+        let result = sandbox.exec("printf keel-ok", None, None).await.unwrap();
+        assert_eq!(result.stdout, "keel-ok");
+        assert_eq!(result.exit_code, 0);
+
+        sandbox.shutdown().await.unwrap();
+        let audit = fs::read_to_string(events).unwrap();
+        assert!(audit.contains("\"kind\":\"exec\""));
+        assert!(audit.contains("\"args_redacted\":true"));
+        assert!(!audit.contains("printf keel-ok"));
+        assert!(audit.contains("\"kind\":\"exec_finished\""));
+    }
+
+    #[tokio::test]
+    async fn keel_exec_honors_cancellation() {
+        let dir = tempfile::tempdir().unwrap();
+        let sandbox = LocalSandbox::with_keel(dir.path()).await.unwrap();
+        let token = CancellationToken::new();
+        let cancel = token.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            cancel.cancel();
+        });
+
+        let err = sandbox
+            .exec_with_timeout("sleep 30", None, Some(&token), Duration::from_secs(5))
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("aborted"), "{err:#}");
+        sandbox.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn keel_sandbox_blocks_child_write_outside_workspace() {
+        let root = tempfile::Builder::new()
+            .prefix(".zene-keel-test-")
+            .tempdir_in(std::env::current_dir().unwrap())
+            .unwrap();
+        let workspace = root.path().join("workspace");
+        fs::create_dir(&workspace).unwrap();
+        let outside = root.path().join("outside.txt");
+        let sandbox = LocalSandbox::with_keel(&workspace).await.unwrap();
+
+        let command = format!("printf escaped > '{}'", outside.display());
+        let result = sandbox.exec(&command, None, None).await.unwrap();
+        assert_ne!(result.exit_code, 0);
+        assert!(!outside.exists());
+        sandbox.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn keel_policy_and_path_checks_allow_nested_write() {
+        let dir = tempfile::tempdir().unwrap();
+        let sandbox = LocalSandbox::with_keel(dir.path()).await.unwrap();
+        sandbox.write_text("foo/bar.txt", "nested").await.unwrap();
+        assert_eq!(sandbox.read_text("foo/bar.txt").await.unwrap(), "nested");
+        sandbox.shutdown().await.unwrap();
     }
 }

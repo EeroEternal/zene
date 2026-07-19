@@ -282,7 +282,9 @@ impl AcpServer {
         } else {
             PermissionMode::parse(&config.permission_mode)
         };
-        let sandbox = LocalSandbox::new(cwd);
+        let sandbox = LocalSandbox::with_keel(cwd)
+            .await
+            .context("initialize Keel execution layer")?;
         let agent = Agent::new(config, sandbox, session, permission_mode).await?;
         Ok(AcpSession {
             agent,

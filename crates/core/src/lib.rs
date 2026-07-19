@@ -224,6 +224,7 @@ impl Agent {
         if let Some(mcp) = self.mcp.as_mut() {
             mcp.disconnect().await?;
         }
+        self.sandbox.shutdown().await?;
         Ok(())
     }
 
