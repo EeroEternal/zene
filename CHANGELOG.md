@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+### Changed
+- ACP: bridge `tool_call` / `tool_call_update` / `plan` session updates; replay history on `session/load`; implement `session/list`; correlate permission `toolCallId` with live tool calls; accept embedded prompt context; tighten JSON-RPC error codes.
+
 ## v0.1.7 (2026-07-19)
 
 This release finishes the **grok-build long-context / sampling alignment** pass after v0.1.6, adds Keel sandbox productization, and ships OpenAI-accurate BPE token counts.

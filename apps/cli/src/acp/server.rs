@@ -8,18 +8,21 @@ use serde_json::{json, Value};
 use tokio::sync::{mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, warn};
-use uuid::Uuid;
 use zene_config::ZeneConfig;
 use zene_core::{
     Agent, AgentEvent, EventHandler, PermissionGate, PermissionMode, PromptChoice, PromptOptions,
 };
 use zene_sandbox::LocalSandbox;
-use zene_session::SessionRecord;
+use zene_session::{list_sessions_for_workdir, SessionRecord};
 
 use crate::sandbox_opts;
 use super::protocol::{
-    err_response, is_notification, is_request, is_response, ok_response, prompt_text_from_params,
-    RpcId,
+    err_response, error_codes, is_notification, is_request, is_response, ok_response,
+    prompt_text_from_params, RpcId,
+};
+use super::updates::{
+    agent_message_chunk, plan_from_todo_arguments, replay_updates_from_messages,
+    tool_call_result_update, tool_call_update, tool_kind, tool_title,
 };
 
 struct PendingResponse {
@@ -29,6 +32,12 @@ struct PendingResponse {
 struct SharedState {
     next_id: u64,
     pending: HashMap<String, PendingResponse>,
+}
+
+/// Tracks the tool call currently awaiting permission so ACP can reuse its id.
+#[derive(Default)]
+struct PendingToolCall {
+    id: Option<String>,
 }
 
 #[derive(Clone)]
@@ -52,6 +61,16 @@ impl AcpWriter {
                 "params": params,
             })
             .to_string(),
+        )
+    }
+
+    fn session_update(&self, session_id: &str, update: Value) -> Result<()> {
+        self.notify(
+            "session/update",
+            json!({
+                "sessionId": session_id,
+                "update": update,
+            }),
         )
     }
 
@@ -88,6 +107,8 @@ struct AcpSession {
     agent: Agent,
     cancel: Option<CancellationToken>,
     permission_mode: PermissionMode,
+    /// Last tool call id observed via AgentEvent (used by permission prompts).
+    pending_tool: Arc<Mutex<PendingToolCall>>,
 }
 
 pub struct AcpServer {
@@ -198,7 +219,7 @@ impl AcpServer {
                 Ok(result) => ok_response(id, result),
                 Err(e) => {
                     warn!("ACP {method}: {e:#}");
-                    err_response(id, -32000, &format!("{e:#}"))
+                    err_response(id, dispatch_error_code(&method, &e), &format!("{e:#}"))
                 }
             };
             if let Err(e) = server.writer.send_raw(reply.to_string()) {
@@ -222,8 +243,9 @@ impl AcpServer {
             "session/new" => self.handle_session_new(params).await,
             "session/load" => self.handle_session_load(params).await,
             "session/prompt" => self.handle_session_prompt(params).await,
-            "authenticate" | "session/list" => Ok(json!({})),
-            other => Err(anyhow!("method not found: {other}")),
+            "session/list" => self.handle_session_list(params),
+            "authenticate" => Ok(json!({})),
+            other => Err(MethodNotFound(other.to_string()).into()),
         }
     }
 
@@ -243,6 +265,9 @@ impl AcpServer {
                     "image": false,
                     "audio": false,
                     "embeddedContext": true
+                },
+                "sessionCapabilities": {
+                    "list": {}
                 }
             },
             "agentInfo": {
@@ -271,9 +296,47 @@ impl AcpServer {
             .to_string();
         let cwd = resolve_cwd(&params, &self.workdir)?;
         let session = SessionRecord::load(&sid).context("load session")?;
+        let updates = replay_updates_from_messages(&session.messages);
         let acp_session = self.build_session(session, &cwd).await?;
         self.sessions.insert(sid.clone(), acp_session);
+
+        // ACP requires replaying history via session/update before responding.
+        for update in updates {
+            let mut update = update;
+            if let Some(obj) = update.as_object_mut() {
+                obj.insert(
+                    "_meta".into(),
+                    json!({ "isReplay": true }),
+                );
+            }
+            self.writer.session_update(&sid, update)?;
+        }
+
         Ok(json!({ "sessionId": sid }))
+    }
+
+    fn handle_session_list(&self, params: Value) -> Result<Value> {
+        let cwd = params
+            .get("cwd")
+            .and_then(|v| v.as_str())
+            .map(PathBuf::from)
+            .unwrap_or_else(|| self.workdir.clone());
+        let cwd = cwd
+            .canonicalize()
+            .unwrap_or(cwd);
+        let sessions = list_sessions_for_workdir(&cwd).context("list sessions")?;
+        let sessions: Vec<Value> = sessions
+            .into_iter()
+            .map(|meta| {
+                json!({
+                    "sessionId": meta.id,
+                    "cwd": meta.workdir,
+                    "title": meta.title,
+                    "updatedAt": meta.updated_at.to_rfc3339(),
+                })
+            })
+            .collect();
+        Ok(json!({ "sessions": sessions }))
     }
 
     async fn build_session(&self, session: SessionRecord, cwd: &Path) -> Result<AcpSession> {
@@ -292,6 +355,7 @@ impl AcpServer {
             agent,
             cancel: None,
             permission_mode,
+            pending_tool: Arc::new(Mutex::new(PendingToolCall::default())),
         })
     }
 
@@ -313,44 +377,117 @@ impl AcpServer {
             .get_mut(&sid)
             .ok_or_else(|| anyhow!("unknown sessionId: {sid}"))?;
 
+        if sess.cancel.is_some() {
+            bail!("session already has an active prompt; cancel it first");
+        }
+
         let cancel = CancellationToken::new();
         sess.cancel = Some(cancel.clone());
+        let pending_tool = Arc::clone(&sess.pending_tool);
 
         let permission_mode = sess.permission_mode;
         if !yolo {
             let writer_perm = writer.clone();
             let session_id = sid.clone();
             let mode_str = permission_mode.as_str().to_string();
+            let pending_for_perm = Arc::clone(&pending_tool);
             let gate = PermissionGate::with_prompter(
                 permission_mode,
                 Box::new(move |tool_name, preview| {
+                    let tool_call_id = pending_for_perm
+                        .lock()
+                        .unwrap()
+                        .id
+                        .clone()
+                        .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
                     acp_permission_prompt(
                         &writer_perm,
                         &session_id,
                         &mode_str,
                         tool_name,
                         preview,
+                        &tool_call_id,
                     )
                 }),
             );
             sess.agent.set_permission_gate(gate);
         }
 
+        let prompt_id = uuid::Uuid::new_v4().to_string();
+        let event_counter = Arc::new(Mutex::new(0u64));
         let on_event: EventHandler = {
             let writer = writer.clone();
             let session_id = sid.clone();
+            let pending_tool = Arc::clone(&pending_tool);
+            let prompt_id = prompt_id.clone();
+            let event_counter = Arc::clone(&event_counter);
             Arc::new(move |event: AgentEvent| {
-                if let AgentEvent::TextDelta { delta } = event {
-                    let _ = writer.notify(
-                        "session/update",
-                        json!({
-                            "sessionId": session_id,
-                            "update": {
-                                "sessionUpdate": "agent_message_chunk",
-                                "content": { "type": "text", "text": delta }
+                let event_id = {
+                    let mut n = event_counter.lock().unwrap();
+                    *n += 1;
+                    format!("{prompt_id}-{}", *n)
+                };
+                let meta = json!({
+                    "promptId": prompt_id,
+                    "eventId": event_id,
+                    "isReplay": false,
+                });
+                match event {
+                    AgentEvent::TextDelta { delta } => {
+                        let mut update = agent_message_chunk(&delta);
+                        attach_meta(&mut update, meta);
+                        let _ = writer.session_update(&session_id, update);
+                    }
+                    AgentEvent::ToolCall {
+                        id,
+                        name,
+                        arguments,
+                    } => {
+                        pending_tool.lock().unwrap().id = Some(id.clone());
+                        let mut update = tool_call_update(&id, &name, &arguments, "pending");
+                        attach_meta(&mut update, meta);
+                        let _ = writer.session_update(&session_id, update);
+                        if name == "TodoWrite" {
+                            if let Some(mut plan) = plan_from_todo_arguments(&arguments) {
+                                attach_meta(
+                                    &mut plan,
+                                    json!({
+                                        "promptId": prompt_id,
+                                        "isReplay": false,
+                                    }),
+                                );
+                                let _ = writer.session_update(&session_id, plan);
                             }
-                        }),
-                    );
+                        }
+                    }
+                    AgentEvent::ToolResult {
+                        id,
+                        name: _,
+                        content,
+                        is_error,
+                        duration_ms,
+                    } => {
+                        let mut update = tool_call_result_update(&id, &content, is_error);
+                        let mut meta = json!({
+                            "promptId": prompt_id,
+                            "eventId": event_id,
+                            "isReplay": false,
+                        });
+                        if let Some(ms) = duration_ms {
+                            meta.as_object_mut()
+                                .unwrap()
+                                .insert("durationMs".into(), json!(ms));
+                        }
+                        attach_meta(&mut update, meta);
+                        let _ = writer.session_update(&session_id, update);
+                        pending_tool.lock().unwrap().id = None;
+                    }
+                    AgentEvent::Error { message } => {
+                        let mut update = agent_message_chunk(&format!("\n[error] {message}\n"));
+                        attach_meta(&mut update, meta);
+                        let _ = writer.session_update(&session_id, update);
+                    }
+                    _ => {}
                 }
             })
         };
@@ -369,6 +506,7 @@ impl AcpServer {
             .await;
 
         sess.cancel = None;
+        sess.pending_tool.lock().unwrap().id = None;
         let _ = sess.agent.session().save();
 
         match result {
@@ -391,6 +529,12 @@ impl AcpServer {
     }
 }
 
+fn attach_meta(update: &mut Value, meta: Value) {
+    if let Some(obj) = update.as_object_mut() {
+        obj.insert("_meta".into(), meta);
+    }
+}
+
 fn resolve_cwd(params: &Value, fallback: &Path) -> Result<PathBuf> {
     let cwd = params
         .get("cwd")
@@ -407,6 +551,7 @@ fn acp_permission_prompt(
     permission_mode: &str,
     tool_name: &str,
     preview: &str,
+    tool_call_id: &str,
 ) -> io::Result<PromptChoice> {
     let (tx, rx) = std::sync::mpsc::channel::<Result<Value, String>>();
     let writer = writer.clone();
@@ -414,19 +559,22 @@ fn acp_permission_prompt(
     let permission_mode = permission_mode.to_string();
     let tool = tool_name.to_string();
     let preview = preview.to_string();
+    let tool_call_id = tool_call_id.to_string();
     let handle = tokio::runtime::Handle::current();
     handle.spawn(async move {
+        let raw_input = serde_json::from_str::<Value>(&preview)
+            .unwrap_or_else(|_| json!({ "preview": preview }));
         let result = writer
             .request(
                 "session/request_permission",
                 json!({
                     "sessionId": session_id,
                     "toolCall": {
-                        "toolCallId": Uuid::new_v4().to_string(),
-                        "title": format!("Run tool `{tool}`"),
-                        "kind": "execute",
+                        "toolCallId": tool_call_id,
+                        "title": tool_title(&tool, &preview),
+                        "kind": tool_kind(&tool),
                         "status": "pending",
-                        "rawInput": { "preview": preview },
+                        "rawInput": raw_input,
                     },
                     "options": [
                         {
@@ -471,4 +619,35 @@ fn acp_permission_prompt(
         "allow-once" => PromptChoice::AllowOnce,
         _ => PromptChoice::Deny,
     })
+}
+
+#[derive(Debug)]
+struct MethodNotFound(String);
+
+impl std::fmt::Display for MethodNotFound {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "method not found: {}", self.0)
+    }
+}
+
+impl std::error::Error for MethodNotFound {}
+
+fn dispatch_error_code(method: &str, err: &anyhow::Error) -> i64 {
+    if err.downcast_ref::<MethodNotFound>().is_some()
+        || err.to_string().starts_with("method not found:")
+    {
+        return error_codes::METHOD_NOT_FOUND;
+    }
+    let msg = err.to_string();
+    if msg.contains("required")
+        || msg.contains("empty prompt")
+        || msg.contains("invalid cwd")
+        || msg.contains("unsupported protocolVersion")
+        || msg.contains("unknown sessionId")
+        || msg.contains("already has an active prompt")
+    {
+        return error_codes::INVALID_PARAMS;
+    }
+    let _ = method;
+    error_codes::APPLICATION_ERROR
 }

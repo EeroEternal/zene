@@ -1,5 +1,17 @@
 use serde_json::{json, Value};
 
+/// JSON-RPC 2.0 standard / reserved error codes used by the ACP server.
+#[allow(dead_code)]
+pub mod error_codes {
+    pub const PARSE_ERROR: i64 = -32700;
+    pub const INVALID_REQUEST: i64 = -32600;
+    pub const METHOD_NOT_FOUND: i64 = -32601;
+    pub const INVALID_PARAMS: i64 = -32602;
+    pub const INTERNAL_ERROR: i64 = -32603;
+    /// Application-level error (session busy, agent failure, etc.).
+    pub const APPLICATION_ERROR: i64 = -32000;
+}
+
 #[derive(Debug, Clone)]
 pub enum RpcId {
     Number(u64),
@@ -61,15 +73,54 @@ pub fn err_response(id: RpcId, code: i64, message: impl Into<String>) -> Value {
     })
 }
 
-/// Extract plain text from ACP prompt content blocks.
+/// Extract plain text (and embedded context text) from ACP prompt content blocks.
 pub fn prompt_text_from_params(params: &Value) -> String {
     let mut parts = Vec::new();
     if let Some(blocks) = params.get("prompt").and_then(Value::as_array) {
         for block in blocks {
-            if block.get("type").and_then(Value::as_str) == Some("text") {
-                if let Some(text) = block.get("text").and_then(Value::as_str) {
-                    parts.push(text.to_string());
+            match block.get("type").and_then(Value::as_str) {
+                Some("text") => {
+                    if let Some(text) = block.get("text").and_then(Value::as_str) {
+                        parts.push(text.to_string());
+                    }
                 }
+                Some("resource") => {
+                    // Embedded resource: prefer inline text content.
+                    if let Some(text) = block
+                        .pointer("/resource/text")
+                        .or_else(|| block.pointer("/text"))
+                        .and_then(Value::as_str)
+                    {
+                        let uri = block
+                            .pointer("/resource/uri")
+                            .or_else(|| block.get("uri"))
+                            .and_then(Value::as_str)
+                            .unwrap_or("resource");
+                        parts.push(format!("<embedded resource uri=\"{uri}\">\n{text}\n</embedded resource>"));
+                    } else if let Some(uri) = block
+                        .pointer("/resource/uri")
+                        .or_else(|| block.get("uri"))
+                        .and_then(Value::as_str)
+                    {
+                        parts.push(format!("<embedded resource uri=\"{uri}\" />"));
+                    }
+                }
+                Some("resource_link") => {
+                    let uri = block.get("uri").and_then(Value::as_str).unwrap_or("");
+                    let name = block.get("name").and_then(Value::as_str).unwrap_or(uri);
+                    let description = block
+                        .get("description")
+                        .and_then(Value::as_str)
+                        .unwrap_or("");
+                    if description.is_empty() {
+                        parts.push(format!("<resource_link name=\"{name}\" uri=\"{uri}\" />"));
+                    } else {
+                        parts.push(format!(
+                            "<resource_link name=\"{name}\" uri=\"{uri}\">{description}</resource_link>"
+                        ));
+                    }
+                }
+                _ => {}
             }
         }
     }
@@ -96,6 +147,31 @@ mod tests {
             ]
         });
         assert_eq!(prompt_text_from_params(&params), "hello\nworld");
+    }
+
+    #[test]
+    fn extracts_embedded_resource_and_link() {
+        let params = json!({
+            "prompt": [
+                { "type": "text", "text": "look at this" },
+                {
+                    "type": "resource",
+                    "resource": { "uri": "file:///a.rs", "text": "fn main() {}" }
+                },
+                {
+                    "type": "resource_link",
+                    "uri": "file:///b.rs",
+                    "name": "b.rs",
+                    "description": "helper"
+                }
+            ]
+        });
+        let text = prompt_text_from_params(&params);
+        assert!(text.contains("look at this"));
+        assert!(text.contains("fn main() {}"));
+        assert!(text.contains("file:///a.rs"));
+        assert!(text.contains("helper"));
+        assert!(text.contains("b.rs"));
     }
 
     #[test]

@@ -210,7 +210,7 @@ fn verbose_event_handler(enabled: bool) -> Option<EventHandler> {
         return None;
     }
     Some(Arc::new(|event| match event {
-        AgentEvent::ToolCall { name, arguments } => {
+        AgentEvent::ToolCall { name, arguments, .. } => {
             eprintln!(
                 "[event] tool_call {}({})",
                 name,

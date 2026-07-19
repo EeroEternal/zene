@@ -1156,6 +1156,7 @@ impl Agent {
             emit_event(
                 &options.event_handler,
                 AgentEvent::ToolCall {
+                    id: call.id.clone(),
                     name: call.name.clone(),
                     arguments: call.arguments.clone(),
                 },
@@ -1339,6 +1340,7 @@ impl Agent {
             emit_event(
                 &options.event_handler,
                 AgentEvent::ToolResult {
+                    id: call.id.clone(),
                     name: call.name.clone(),
                     content: content.clone(),
                     is_error: result.is_error,
@@ -1495,7 +1497,7 @@ fn record_entry_from_agent_event(event: &AgentEvent) -> Option<RecordEntry> {
             step: *step,
             ts,
         }),
-        AgentEvent::ToolCall { name, arguments } => Some(RecordEntry::ToolCall {
+        AgentEvent::ToolCall { name, arguments, .. } => Some(RecordEntry::ToolCall {
             name: name.clone(),
             arguments: arguments.clone(),
             ts,
@@ -1505,6 +1507,7 @@ fn record_entry_from_agent_event(event: &AgentEvent) -> Option<RecordEntry> {
             content,
             is_error,
             duration_ms: _,
+            ..
         } => Some(RecordEntry::ToolResult {
             name: name.clone(),
             content: content.clone(),
