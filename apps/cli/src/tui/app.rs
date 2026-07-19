@@ -352,7 +352,7 @@ impl App {
                     self.streaming = Some(delta);
                 }
             }
-            AgentEvent::ToolCall { name, arguments } => {
+            AgentEvent::ToolCall { name, arguments, .. } => {
                 self.flush_streaming();
                 if name == "Edit" {
                     if let Ok(value) = serde_json::from_str::<serde_json::Value>(&arguments) {

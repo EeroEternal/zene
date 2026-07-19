@@ -325,18 +325,21 @@ async fn run_headless(agent: &mut Agent, prompt: &str, cli: &Cli) -> Result<()> 
 
 fn headless_event_json(event: &AgentEvent) -> Option<serde_json::Value> {
     match event {
-        AgentEvent::ToolCall { name, arguments } => Some(serde_json::json!({
+        AgentEvent::ToolCall { id, name, arguments } => Some(serde_json::json!({
             "type": "tool_call",
+            "id": id,
             "name": name,
             "arguments": arguments,
         })),
         AgentEvent::ToolResult {
+            id,
             name,
             content,
             is_error,
             duration_ms,
         } => Some(serde_json::json!({
             "type": "tool_result",
+            "id": id,
             "name": name,
             "content": content,
             "is_error": is_error,
