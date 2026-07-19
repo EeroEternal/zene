@@ -12,7 +12,7 @@ members = [
 resolver = "2"
 
 [workspace.package]
-version = "0.1.6"
+version = "0.1.7"
 edition = "2021"
 license = "MIT"
 authors = ["Zene Contributors"]
@@ -53,3 +53,4 @@ zene-tools = { path = "crates/tools" }
 zene-mcp = { path = "crates/mcp" }
 unigateway-sdk = "2.1.1"
 llm_providers = "0.12.0"
+tiktoken-rs = "0.12"
