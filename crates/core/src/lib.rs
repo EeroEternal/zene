@@ -121,6 +121,7 @@ impl Agent {
         permission_mode: PermissionMode,
     ) -> Result<Self> {
         let workdir = sandbox.workdir().to_path_buf();
+        let sandbox = Arc::new(sandbox);
         let system_prompt =
             workspace::build_system_prompt(&config.system_prompt, &workdir, config.include_workspace_context);
         session.ensure_system_message(&system_prompt);
@@ -129,7 +130,8 @@ impl Agent {
         let record_writer = AgentRecordWriter::for_session(&session.meta.id)?;
 
         let mut tools = zene_tools::agent_tools(config.agent_profile, config.web_search.clone());
-        let (mcp, mcp_tools) = McpManager::connect(&workdir).await?;
+        let (mcp, mcp_tools) =
+            McpManager::connect_with_sandbox(&workdir, sandbox.as_ref()).await?;
         if !mcp_tools.definitions().is_empty() {
             info!(
                 tool_count = mcp_tools.definitions().len(),
@@ -155,7 +157,7 @@ impl Agent {
             config,
             client,
             tools: Arc::new(tools),
-            sandbox: Arc::new(sandbox),
+            sandbox,
             session,
             turn_usage: TokenUsage::default(),
             context_water,

@@ -4440,6 +4440,7 @@ dependencies = [
  "tracing",
  "zene-config",
  "zene-llm",
+ "zene-sandbox",
  "zene-tools",
 ]
 

@@ -14,7 +14,10 @@ use globset::GlobBuilder;
 use keel_core::backend_process_guard;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 use keel_core::{backend_local_process, LocalProcessOptions};
-use keel_core::{profile_workspace, Space, SpaceHandle, SpawnRequest, TerminationReason};
+use keel_core::{
+    profile_workspace, ManagedProcess, Space, SpaceHandle, SpawnRequest, StdioMode,
+    TerminationReason,
+};
 use tokio::io::AsyncReadExt;
 use tokio::process::Command;
 use tokio_util::sync::CancellationToken;
@@ -34,6 +37,44 @@ pub struct ExecResult {
     pub stdout: String,
     pub stderr: String,
     pub exit_code: i32,
+}
+
+pub struct InteractiveProcess {
+    inner: InteractiveProcessInner,
+}
+
+enum InteractiveProcessInner {
+    Local(tokio::process::Child),
+    Keel(ManagedProcess),
+}
+
+impl InteractiveProcess {
+    pub fn take_stdin(&mut self) -> Option<tokio::process::ChildStdin> {
+        match &mut self.inner {
+            InteractiveProcessInner::Local(child) => child.stdin.take(),
+            InteractiveProcessInner::Keel(process) => process.take_stdin(),
+        }
+    }
+
+    pub fn take_stdout(&mut self) -> Option<tokio::process::ChildStdout> {
+        match &mut self.inner {
+            InteractiveProcessInner::Local(child) => child.stdout.take(),
+            InteractiveProcessInner::Keel(process) => process.take_stdout(),
+        }
+    }
+
+    pub async fn cancel(self) -> Result<()> {
+        match self.inner {
+            InteractiveProcessInner::Local(mut child) => {
+                let _ = child.kill().await;
+                let _ = child.wait().await;
+            }
+            InteractiveProcessInner::Keel(process) => {
+                process.cancel().await.context("cancel Keel process")?;
+            }
+        }
+        Ok(())
+    }
 }
 
 #[derive(Clone)]
@@ -102,6 +143,45 @@ impl LocalSandbox {
 
     pub fn events_path(&self) -> Option<&Path> {
         self.space.as_ref().and_then(SpaceHandle::events_path)
+    }
+
+    /// Spawn an interactive stdio process such as an MCP server.
+    pub async fn spawn_stdio(
+        &self,
+        program: &str,
+        args: &[String],
+        env: &[(String, String)],
+    ) -> Result<InteractiveProcess> {
+        if let Some(space) = &self.space {
+            let mut request = SpawnRequest::new(program)
+                .args(args.iter().cloned())
+                .cwd(canonical_workdir(&self.workdir)?)
+                .stdin(StdioMode::Piped)
+                .stdout(StdioMode::Piped)
+                .stderr(StdioMode::Inherit);
+            request.env = env.to_vec();
+            let process = space
+                .spawn(request)
+                .await
+                .context("spawn interactive process with Keel")?;
+            return Ok(InteractiveProcess {
+                inner: InteractiveProcessInner::Keel(process),
+            });
+        }
+
+        let mut command = Command::new(program);
+        command
+            .args(args)
+            .envs(env.iter().cloned())
+            .current_dir(canonical_workdir(&self.workdir)?)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::inherit())
+            .kill_on_drop(true);
+        let child = command.spawn().context("spawn interactive process")?;
+        Ok(InteractiveProcess {
+            inner: InteractiveProcessInner::Local(child),
+        })
     }
 
     pub fn resolve(&self, path: &str) -> Result<PathBuf> {
@@ -638,6 +718,7 @@ impl Sandbox for LocalSandbox {
 mod tests {
     use super::*;
     use std::fs;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
     #[tokio::test]
     async fn keel_exec_records_redacted_command_and_completion() {
@@ -700,6 +781,26 @@ mod tests {
         let sandbox = LocalSandbox::with_keel(dir.path()).await.unwrap();
         sandbox.write_text("foo/bar.txt", "nested").await.unwrap();
         assert_eq!(sandbox.read_text("foo/bar.txt").await.unwrap(), "nested");
+        sandbox.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn keel_interactive_stdio_roundtrip() {
+        let dir = tempfile::tempdir().unwrap();
+        let sandbox = LocalSandbox::with_keel(dir.path()).await.unwrap();
+        let mut process = sandbox
+            .spawn_stdio("sh", &["-c".into(), "cat".into()], &[])
+            .await
+            .unwrap();
+        let mut stdin = process.take_stdin().unwrap();
+        let mut stdout = process.take_stdout().unwrap();
+        stdin.write_all(b"mcp-ping\n").await.unwrap();
+        stdin.shutdown().await.unwrap();
+
+        let mut response = String::new();
+        stdout.read_to_string(&mut response).await.unwrap();
+        assert_eq!(response, "mcp-ping\n");
+        process.cancel().await.unwrap();
         sandbox.shutdown().await.unwrap();
     }
 }

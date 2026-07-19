@@ -4,6 +4,7 @@ use std::sync::Arc;
 use anyhow::Result;
 use tokio::sync::Mutex;
 use tracing::{info, warn};
+use zene_sandbox::LocalSandbox;
 use zene_tools::ToolRegistry;
 
 use crate::client::McpStdioClient;
@@ -22,7 +23,22 @@ impl McpManager {
         Self::from_config(config).await
     }
 
+    pub async fn connect_with_sandbox(
+        workdir: &Path,
+        sandbox: &LocalSandbox,
+    ) -> Result<(Self, ToolRegistry)> {
+        let config = load_mcp_config(workdir)?;
+        Self::from_config_inner(config, Some(sandbox)).await
+    }
+
     pub async fn from_config(config: McpConfig) -> Result<(Self, ToolRegistry)> {
+        Self::from_config_inner(config, None).await
+    }
+
+    async fn from_config_inner(
+        config: McpConfig,
+        sandbox: Option<&LocalSandbox>,
+    ) -> Result<(Self, ToolRegistry)> {
         let mut clients = Vec::new();
         let mut tool_boxes: Vec<Box<dyn zene_tools::Tool>> = Vec::new();
 
@@ -38,7 +54,7 @@ impl McpManager {
                     .await
                     .map(McpClientHandle::Http)
             } else {
-                McpStdioClient::connect(&server_name, &server_config)
+                McpStdioClient::connect(&server_name, &server_config, sandbox)
                     .await
                     .map(McpClientHandle::Stdio)
             };

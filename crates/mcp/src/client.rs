@@ -6,6 +6,7 @@ use serde_json::{json, Value};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStdin, Command};
 use tracing::debug;
+use zene_sandbox::{InteractiveProcess, LocalSandbox};
 
 use crate::config::McpServerConfig;
 
@@ -21,43 +22,70 @@ pub struct McpToolInfo {
 
 pub struct McpStdioClient {
     server_name: String,
-    child: Child,
+    process: Option<McpProcess>,
     stdin: ChildStdin,
     stdout: BufReader<tokio::process::ChildStdout>,
     next_id: u64,
 }
 
+enum McpProcess {
+    Direct(Child),
+    Sandboxed(InteractiveProcess),
+}
+
 impl McpStdioClient {
-    pub async fn connect(server_name: &str, config: &McpServerConfig) -> Result<Self> {
+    pub async fn connect(
+        server_name: &str,
+        config: &McpServerConfig,
+        sandbox: Option<&LocalSandbox>,
+    ) -> Result<Self> {
         let cmd = config
             .command
             .as_deref()
             .ok_or_else(|| anyhow!("MCP server `{server_name}` missing stdio command"))?;
-        let mut command = Command::new(cmd);
-        command
-            .args(&config.args)
-            .envs(&config.env)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::inherit())
-            .kill_on_drop(true);
-
-        let mut child = command
-            .spawn()
-            .with_context(|| format!("spawn MCP server `{server_name}` ({cmd})"))?;
-
-        let stdin = child
-            .stdin
-            .take()
-            .ok_or_else(|| anyhow!("MCP server `{server_name}` stdin unavailable"))?;
-        let stdout = child
-            .stdout
-            .take()
-            .ok_or_else(|| anyhow!("MCP server `{server_name}` stdout unavailable"))?;
+        let (process, stdin, stdout) = if let Some(sandbox) = sandbox {
+            let env: Vec<(String, String)> = config
+                .env
+                .iter()
+                .map(|(key, value)| (key.clone(), value.clone()))
+                .collect();
+            let mut process = sandbox
+                .spawn_stdio(cmd, &config.args, &env)
+                .await
+                .with_context(|| format!("spawn MCP server `{server_name}` ({cmd}) with Keel"))?;
+            let stdin = process
+                .take_stdin()
+                .ok_or_else(|| anyhow!("MCP server `{server_name}` stdin unavailable"))?;
+            let stdout = process
+                .take_stdout()
+                .ok_or_else(|| anyhow!("MCP server `{server_name}` stdout unavailable"))?;
+            (McpProcess::Sandboxed(process), stdin, stdout)
+        } else {
+            let mut command = Command::new(cmd);
+            command
+                .args(&config.args)
+                .envs(&config.env)
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::inherit())
+                .kill_on_drop(true);
+            let mut child = command
+                .spawn()
+                .with_context(|| format!("spawn MCP server `{server_name}` ({cmd})"))?;
+            let stdin = child
+                .stdin
+                .take()
+                .ok_or_else(|| anyhow!("MCP server `{server_name}` stdin unavailable"))?;
+            let stdout = child
+                .stdout
+                .take()
+                .ok_or_else(|| anyhow!("MCP server `{server_name}` stdout unavailable"))?;
+            (McpProcess::Direct(child), stdin, stdout)
+        };
 
         let mut client = Self {
             server_name: server_name.to_string(),
-            child,
+            process: Some(process),
             stdin,
             stdout: BufReader::new(stdout),
             next_id: 1,
@@ -111,8 +139,18 @@ impl McpStdioClient {
     }
 
     pub async fn disconnect(&mut self) -> Result<()> {
-        let _ = self.child.kill().await;
-        let _ = self.child.wait().await;
+        let Some(process) = self.process.take() else {
+            return Ok(());
+        };
+        match process {
+            McpProcess::Direct(mut child) => {
+                let _ = child.kill().await;
+                let _ = child.wait().await;
+            }
+            McpProcess::Sandboxed(process) => {
+                process.cancel().await?;
+            }
+        }
         Ok(())
     }
 
