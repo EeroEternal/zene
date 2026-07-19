@@ -1,6 +1,7 @@
 mod path_policy;
 
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 pub use path_policy::check_write_allowed;
 use path_policy::{canonical_workdir, resolve_existing, resolve_for_create, verify_resolved_path};
@@ -77,10 +78,27 @@ impl InteractiveProcess {
     }
 }
 
+/// Optional remote text filesystem (e.g. ACP client `fs/read_text_file`).
+///
+/// When set on a [`LocalSandbox`], text read/write is delegated after local
+/// path policy checks. Glob/exec/resolve still use the local workspace.
+#[async_trait]
+pub trait RemoteTextFs: Send + Sync {
+    fn can_read(&self) -> bool {
+        true
+    }
+    fn can_write(&self) -> bool {
+        true
+    }
+    async fn read_text(&self, absolute_path: &Path) -> Result<String>;
+    async fn write_text(&self, absolute_path: &Path, content: &str) -> Result<()>;
+}
+
 #[derive(Clone)]
 pub struct LocalSandbox {
     workdir: PathBuf,
     space: Option<SpaceHandle>,
+    remote_fs: Option<Arc<dyn RemoteTextFs>>,
 }
 
 impl LocalSandbox {
@@ -91,14 +109,24 @@ impl LocalSandbox {
         Self {
             workdir: workdir.into(),
             space: None,
+            remote_fs: None,
         }
+    }
+
+    /// Attach a remote text FS bridge (ACP client filesystem).
+    pub fn with_remote_fs(mut self, remote: Arc<dyn RemoteTextFs>) -> Self {
+        self.remote_fs = Some(remote);
+        self
+    }
+
+    pub fn set_remote_fs(&mut self, remote: Option<Arc<dyn RemoteTextFs>>) {
+        self.remote_fs = remote;
     }
 
     /// Construct a sandbox backed by a Keel execution space.
     pub async fn with_keel(workdir: impl Into<PathBuf>) -> Result<Self> {
         let workdir = canonical_workdir(&workdir.into())?;
         let policy = profile_workspace(&workdir).context("build Keel workspace policy")?;
-
         #[cfg(any(target_os = "linux", target_os = "macos"))]
         let backend = backend_local_process(LocalProcessOptions::default());
         #[cfg(not(any(target_os = "linux", target_os = "macos")))]
@@ -110,6 +138,7 @@ impl LocalSandbox {
         Ok(Self {
             workdir,
             space: Some(space),
+            remote_fs: None,
         })
     }
 
@@ -127,6 +156,7 @@ impl LocalSandbox {
         Ok(Self {
             workdir: resolved,
             space: self.space.clone(),
+            remote_fs: self.remote_fs.clone(),
         })
     }
 
@@ -199,6 +229,14 @@ impl LocalSandbox {
     }
 
     pub async fn read_text(&self, path: &str) -> Result<String> {
+        let resolved = self.resolve(path)?;
+        verify_resolved_path(&self.workdir, &resolved)?;
+        if let Some(remote) = &self.remote_fs {
+            if remote.can_read() {
+                self.authorize_fs(&resolved, false).await?;
+                return remote.read_text(&resolved).await;
+            }
+        }
         let bytes = self.read_file_bytes(path, 0).await?;
         if is_binary_content(&bytes) {
             anyhow::bail!("cannot read binary file: {path}. Read supports text files only.");
@@ -212,6 +250,11 @@ impl LocalSandbox {
         }
         let resolved = self.resolve_parent(path)?;
         self.authorize_fs(&resolved, true).await?;
+        if let Some(remote) = &self.remote_fs {
+            if remote.can_write() {
+                return remote.write_text(&resolved, content).await;
+            }
+        }
         if let Some(parent) = resolved.parent() {
             tokio::fs::create_dir_all(parent)
                 .await

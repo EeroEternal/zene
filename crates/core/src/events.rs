@@ -1,5 +1,7 @@
 use std::sync::Arc;
 
+use zene_llm::TokenUsage;
+
 use crate::turn::{StepId, TurnId};
 
 pub type EventHandler = Arc<dyn Fn(AgentEvent) + Send + Sync>;
@@ -28,6 +30,17 @@ pub enum AgentEvent {
         content: String,
         is_error: bool,
         duration_ms: Option<u64>,
+    },
+    /// Session operating mode changed (`default` / `plan`).
+    ModeChanged {
+        mode_id: String,
+    },
+    /// Cumulative turn token usage after an LLM step.
+    UsageUpdate {
+        usage: TokenUsage,
+        context_tokens: u32,
+        context_window: u32,
+        context_percent: u8,
     },
     TurnEnd {
         turn_id: TurnId,

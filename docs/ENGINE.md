@@ -142,11 +142,12 @@ Before/after compaction, checkpoints are saved under `~/.zene/sessions/<id>/comp
 
 `zene acp` (--yolo optional) speaks an Agent Client Protocol subset over stdin/stdout NDJSON JSON-RPC:
 
-- Requests: `initialize`, `session/new`, `session/load`, `session/list`, `session/prompt`
+- Requests: `initialize`, `session/new`, `session/load`, `session/list`, `session/close`, `session/set_mode`, `session/prompt`
 - Notifications in: `session/cancel`
-- Notifications out: `session/update` (`agent_message_chunk`, `user_message_chunk`, `tool_call`, `tool_call_update`, `plan`)
+- Notifications out: `session/update` (`agent_message_chunk`, `user_message_chunk`, `tool_call`, `tool_call_update`, `plan`, `current_mode_update`, `available_commands_update`, `usage_update`)
 - Requests out: `session/request_permission` (client replies with `optionId`; `toolCallId` matches the live tool call)
-- `session/load` replays history via `session/update` (`_meta.isReplay=true`) before responding
+- When the client advertises FS capabilities, text Read/Write/Edit go through `fs/read_text_file` / `fs/write_text_file`
+- `session/new` and `session/load` return `modes` (`default` / `plan`); `session/load` also replays history (`_meta.isReplay=true`)
 - Prompt content accepts `text`, embedded `resource`, and `resource_link` blocks
 
 Stdout is reserved for protocol frames; logs go to stderr.

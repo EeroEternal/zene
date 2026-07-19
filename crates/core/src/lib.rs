@@ -2,7 +2,7 @@ use std::io::{self, Write};
 use std::sync::Arc;
 use std::time::Instant;
 
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 use futures::StreamExt;
 use parking_lot::Mutex;
 use tokio_util::sync::CancellationToken;
@@ -186,6 +186,37 @@ impl Agent {
     }
 
     pub fn enter_plan_mode(&mut self) {
+        self.enter_plan_mode_with_handler(&None);
+    }
+
+    pub fn leave_plan_mode(&mut self) {
+        self.leave_plan_mode_with_handler(&None);
+    }
+
+    /// Set ACP/session mode. Returns the active mode id (`default` or `plan`).
+    pub fn set_session_mode(&mut self, mode_id: &str) -> Result<String> {
+        match mode_id {
+            "plan" | "architect" => {
+                self.enter_plan_mode();
+                Ok("plan".into())
+            }
+            "default" | "agent" | "code" | "ask" => {
+                self.leave_plan_mode();
+                Ok("default".into())
+            }
+            other => bail!("unknown session mode: {other}"),
+        }
+    }
+
+    pub fn current_session_mode(&self) -> &'static str {
+        if self.is_plan_mode_active() {
+            "plan"
+        } else {
+            "default"
+        }
+    }
+
+    fn enter_plan_mode_with_handler(&mut self, handler: &Option<EventHandler>) {
         let should_sync = {
             let mut state = self.plan_mode.lock();
             if state.is_active() {
@@ -197,6 +228,33 @@ impl Agent {
         };
         if should_sync {
             self.sync_plan_mode_system();
+            emit_event(
+                handler,
+                AgentEvent::ModeChanged {
+                    mode_id: "plan".into(),
+                },
+            );
+        }
+    }
+
+    fn leave_plan_mode_with_handler(&mut self, handler: &Option<EventHandler>) {
+        let should_sync = {
+            let mut state = self.plan_mode.lock();
+            if !state.is_active() {
+                false
+            } else {
+                state.exit();
+                true
+            }
+        };
+        if should_sync {
+            self.sync_plan_mode_system();
+            emit_event(
+                handler,
+                AgentEvent::ModeChanged {
+                    mode_id: "default".into(),
+                },
+            );
         }
     }
 
@@ -617,6 +675,15 @@ impl Agent {
                 self.session.update_context_usage(
                     self.context_water.effective_tokens(),
                     self.config.compaction.context_window_tokens,
+                );
+                emit_event(
+                    &options.event_handler,
+                    AgentEvent::UsageUpdate {
+                        usage: self.turn_usage,
+                        context_tokens: self.context_water.effective_tokens(),
+                        context_window: self.config.compaction.context_window_tokens,
+                        context_percent: self.context_water.usage_percent(),
+                    },
                 );
             }
 
@@ -1153,8 +1220,15 @@ impl Agent {
             let immediate = if call.name == "EnterPlanMode" {
                 let mut state = plan_mode.lock();
                 let result = handle_enter_plan_mode(&mut state, &call.arguments);
+                drop(state);
                 if !result.is_error {
                     self.sync_plan_mode_system();
+                    emit_event(
+                        &options.event_handler,
+                        AgentEvent::ModeChanged {
+                            mode_id: "plan".into(),
+                        },
+                    );
                 }
                 Some((result, None))
             } else if call.name == "ExitPlanMode" {
@@ -1170,8 +1244,15 @@ impl Agent {
                     content: err.to_string(),
                     is_error: true,
                 });
+                drop(state);
                 if !result.is_error {
                     self.sync_plan_mode_system();
+                    emit_event(
+                        &options.event_handler,
+                        AgentEvent::ModeChanged {
+                            mode_id: "default".into(),
+                        },
+                    );
                 }
                 Some((result, None))
             } else if let Some(block) = self
@@ -1506,6 +1587,10 @@ fn record_entry_from_agent_event(event: &AgentEvent) -> Option<RecordEntry> {
             message: message.clone(),
             ts,
         }),
-        AgentEvent::TurnStart { .. } | AgentEvent::TextDelta { .. } | AgentEvent::SteerInput { .. } => None,
+        AgentEvent::TurnStart { .. }
+        | AgentEvent::TextDelta { .. }
+        | AgentEvent::SteerInput { .. }
+        | AgentEvent::ModeChanged { .. }
+        | AgentEvent::UsageUpdate { .. } => None,
     }
 }
