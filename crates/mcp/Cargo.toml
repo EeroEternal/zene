@@ -15,6 +15,7 @@ tokio.workspace = true
 tracing.workspace = true
 zene-config = { workspace = true }
 zene-llm = { workspace = true }
+zene-sandbox = { version = "0.1.6", path = "../sandbox" }
 zene-tools = { workspace = true }
 
 [dev-dependencies]

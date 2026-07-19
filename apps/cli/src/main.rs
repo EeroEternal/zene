@@ -244,7 +244,9 @@ async fn main() -> Result<()> {
         PermissionMode::parse(&config.permission_mode)
     };
 
-    let sandbox = LocalSandbox::new(&agent_workdir);
+    let sandbox = LocalSandbox::with_keel(&agent_workdir)
+        .await
+        .context("initialize Keel execution layer")?;
     let mut agent = Agent::new(config.clone(), sandbox, session, permission_mode).await?;
 
     if let Some(prompt) = cli.prompt.as_deref() {

@@ -8,25 +8,18 @@ pub fn check_write_allowed(path: &str) -> Result<(), String> {
     let trimmed = normalized.trim_start_matches("./");
 
     if is_sensitive_env_file(trimmed) {
-        return Err(format!(
-            "writes are denied for sensitive env file: {path}"
-        ));
+        return Err(format!("writes are denied for sensitive env file: {path}"));
     }
 
     if is_under_git_internal(trimmed) {
-        return Err(format!(
-            "writes are denied under .git/: {path}"
-        ));
+        return Err(format!("writes are denied under .git/: {path}"));
     }
 
     Ok(())
 }
 
 fn is_sensitive_env_file(path: &str) -> bool {
-    let name = path
-        .rsplit('/')
-        .next()
-        .unwrap_or(path);
+    let name = path.rsplit('/').next().unwrap_or(path);
     if name == ".env" {
         return true;
     }
@@ -98,9 +91,8 @@ pub fn verify_resolved_path(workdir: &Path, resolved: &Path) -> Result<()> {
         .with_context(|| format!("path not found: {}", resolved.display()))?;
 
     if meta.file_type().is_symlink() {
-        let link = std::fs::read_link(resolved).with_context(|| {
-            format!("read symlink: {}", resolved.display())
-        })?;
+        let link = std::fs::read_link(resolved)
+            .with_context(|| format!("read symlink: {}", resolved.display()))?;
         let target = if link.is_absolute() {
             link
         } else {
@@ -163,8 +155,22 @@ fn resolve_missing_leaf(
                     ensure_within_workdir(workdir_canon, &current)?;
                     return Ok(current);
                 }
-                current = resolve_existing_component(&current, original)?;
-                ensure_within_workdir(workdir_canon, &current)?;
+                if current.symlink_metadata().is_ok() {
+                    current = resolve_existing_component(&current, original)?;
+                    ensure_within_workdir(workdir_canon, &current)?;
+                } else {
+                    for remaining in &components[index + 1..] {
+                        match remaining {
+                            Component::Normal(part) => current.push(part),
+                            Component::CurDir => {}
+                            Component::ParentDir | Component::RootDir | Component::Prefix(_) => {
+                                anyhow::bail!("path escapes workspace: {original}");
+                            }
+                        }
+                    }
+                    ensure_within_workdir(workdir_canon, &current)?;
+                    return Ok(current);
+                }
             }
             Component::CurDir => {}
             Component::ParentDir => {
@@ -180,8 +186,15 @@ fn resolve_missing_leaf(
     Ok(current)
 }
 
-fn relative_path_within_workdir(workdir: &Path, candidate: &Path, original: &str) -> Result<String> {
+fn relative_path_within_workdir(
+    workdir: &Path,
+    candidate: &Path,
+    original: &str,
+) -> Result<String> {
     if candidate.is_absolute() {
+        if let Ok(relative) = candidate.strip_prefix(workdir) {
+            return Ok(relative.to_string_lossy().replace('\\', "/"));
+        }
         let workdir_canon = canonical_workdir(workdir)?;
         if let Some(parent) = candidate.parent() {
             if let Ok(parent_canon) = parent.canonicalize() {
@@ -218,9 +231,7 @@ fn resolve_existing_component(path: &Path, original: &str) -> Result<PathBuf> {
         let target = if link.is_absolute() {
             link
         } else {
-            path.parent()
-                .unwrap_or_else(|| Path::new("."))
-                .join(link)
+            path.parent().unwrap_or_else(|| Path::new(".")).join(link)
         };
         return target
             .canonicalize()
@@ -293,7 +304,22 @@ mod tests {
         fs::create_dir_all(dir.path().join("src")).unwrap();
         let resolved = resolve_for_create(dir.path(), "src/new.rs").unwrap();
         assert!(resolved.ends_with("src/new.rs"));
-        assert!(path_starts_with(&resolved, &canonical_workdir(dir.path()).unwrap()));
+        assert!(path_starts_with(
+            &resolved,
+            &canonical_workdir(dir.path()).unwrap()
+        ));
+    }
+
+    #[test]
+    fn resolve_for_create_keeps_missing_intermediate_directories() {
+        let dir = tempdir().unwrap();
+        let resolved = resolve_for_create(dir.path(), "foo/bar/new.rs").unwrap();
+        assert_eq!(
+            resolved
+                .strip_prefix(canonical_workdir(dir.path()).unwrap())
+                .unwrap(),
+            Path::new("foo/bar/new.rs")
+        );
     }
 
     #[test]

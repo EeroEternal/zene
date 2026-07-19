@@ -285,7 +285,7 @@ fn resolve_subagent_sandbox(
             if !resolved.is_dir() {
                 anyhow::bail!("Task cwd is not a directory: {}", resolved.display());
             }
-            Ok(Arc::new(LocalSandbox::new(resolved)))
+            Ok(Arc::new(parent.scoped_to(resolved)?))
         }
     }
 }
