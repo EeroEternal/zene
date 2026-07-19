@@ -796,6 +796,7 @@ mod tests {
         let mut stdout = process.take_stdout().unwrap();
         stdin.write_all(b"mcp-ping\n").await.unwrap();
         stdin.shutdown().await.unwrap();
+        drop(stdin);
 
         let mut response = String::new();
         stdout.read_to_string(&mut response).await.unwrap();
