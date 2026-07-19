@@ -158,7 +158,8 @@ impl LocalSandbox {
                 .cwd(canonical_workdir(&self.workdir)?)
                 .stdin(StdioMode::Piped)
                 .stdout(StdioMode::Piped)
-                .stderr(StdioMode::Inherit);
+                .stderr(StdioMode::Inherit)
+                .audit_args(false);
             request.env = env.to_vec();
             let process = space
                 .spawn(request)
