@@ -192,6 +192,9 @@ fn relative_path_within_workdir(
     original: &str,
 ) -> Result<String> {
     if candidate.is_absolute() {
+        if let Ok(relative) = candidate.strip_prefix(workdir) {
+            return Ok(relative.to_string_lossy().replace('\\', "/"));
+        }
         let workdir_canon = canonical_workdir(workdir)?;
         if let Some(parent) = candidate.parent() {
             if let Ok(parent_canon) = parent.canonicalize() {
