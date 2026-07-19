@@ -148,9 +148,11 @@ impl Agent {
         let todos = shared_todo_store_from(session.todos.clone());
         let context_water =
             ContextWaterLevel::new(config.compaction.context_window_tokens);
+        let auto_allow_bash = config.sandbox.auto_allow_bash && sandbox.is_enforced();
         let permission = shared_permission_with_rules(
             permission_mode,
             permission_rules_from_config(&config),
+            auto_allow_bash,
         );
 
         Ok(Self {
@@ -479,7 +481,12 @@ impl Agent {
     }
 
     /// Replace the permission gate (e.g. TUI custom prompter).
-    pub fn set_permission_gate(&mut self, gate: PermissionGate) {
+    ///
+    /// Re-applies sandbox `auto_allow_bash` and config permission rules so a TUI
+    /// prompter swap does not drop sandbox-linked policy.
+    pub fn set_permission_gate(&mut self, mut gate: PermissionGate) {
+        gate.set_auto_allow_bash(self.config.sandbox.auto_allow_bash && self.sandbox.is_enforced());
+        gate.set_rules(permission_rules_from_config(&self.config));
         self.permission = Arc::new(Mutex::new(gate));
     }
 
@@ -1426,8 +1433,13 @@ fn truncate(input: &str, max: usize) -> String {
 fn shared_permission_with_rules(
     mode: PermissionMode,
     rules: Vec<PermissionRule>,
+    auto_allow_bash: bool,
 ) -> SharedToolPermission {
-    Arc::new(Mutex::new(PermissionGate::new(mode).with_rules(rules)))
+    Arc::new(Mutex::new(
+        PermissionGate::new(mode)
+            .with_rules(rules)
+            .with_auto_allow_bash(auto_allow_bash),
+    ))
 }
 
 fn permission_rules_from_config(config: &ZeneConfig) -> Vec<PermissionRule> {
