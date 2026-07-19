@@ -58,6 +58,13 @@ impl Tool for FetchUrlTool {
             }
         }
 
+        if let Err(err) = ctx.sandbox.authorize_egress(&args.url).await {
+            return Ok(ToolResult {
+                content: format!("FetchUrl blocked by sandbox: {err}"),
+                is_error: true,
+            });
+        }
+
         match fetch_url_text(&args.url).await {
             Ok(text) => {
                 if text.trim().is_empty() {

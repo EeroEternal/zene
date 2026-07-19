@@ -16,6 +16,7 @@ use zene_core::{
 use zene_sandbox::LocalSandbox;
 use zene_session::SessionRecord;
 
+use crate::sandbox_opts;
 use super::protocol::{
     err_response, is_notification, is_request, is_response, ok_response, prompt_text_from_params,
     RpcId,
@@ -282,7 +283,8 @@ impl AcpServer {
         } else {
             PermissionMode::parse(&config.permission_mode)
         };
-        let sandbox = LocalSandbox::with_keel(cwd)
+        let sandbox_opts = sandbox_opts::build_sandbox_options(&config, None);
+        let sandbox = LocalSandbox::with_options(cwd, sandbox_opts)
             .await
             .context("initialize Keel execution layer")?;
         let agent = Agent::new(config, sandbox, session, permission_mode).await?;

@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+### Added
+- Configurable Keel sandbox profiles: `--sandbox` / `ZENE_SANDBOX` / `[sandbox]` in config, plus `~/.zene/sandbox.toml` custom profiles (`off` | `workspace` | `read-only` | `strict` | custom).
+- Host-side egress gating for `FetchUrl`, `WebSearch`, and HTTP MCP via Keel `check_egress`; `allow_hosts` allowlist support.
+- Default credential path denies (read + Keel policy) for `~/.ssh`, `~/.aws`, `**/.env*`, `**/*.pem`, etc.; Read/Write prefer Keel `SpaceFs` when enforced.
+- `[sandbox] auto_allow_bash` to skip Bash prompts while a sandbox profile is active.
+
 ## v0.1.6 (2026-07-18)
 
 ### Added

@@ -270,6 +270,44 @@ pub struct ZeneConfig {
     pub web_search: WebSearchConfig,
     #[serde(default)]
     pub agent_profile: AgentProfile,
+    #[serde(default)]
+    pub sandbox: SandboxSettings,
+}
+
+/// Keel sandbox profile selection and host-side network policy knobs.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub struct SandboxSettings {
+    /// `off` | `workspace` | `read-only` | `strict` | custom name from `sandbox.toml`.
+    /// When omitted, defaults to `workspace` (or `read-only` for `agent_profile = "explore"`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub profile: Option<String>,
+    /// Extra egress allowlist entries (`host` or `host:port`). When non-empty,
+    /// network becomes an allowlist (even on top of workspace).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub allow_hosts: Vec<String>,
+    /// When a sandbox profile is active (not `off`), auto-approve Bash prompts.
+    #[serde(default)]
+    pub auto_allow_bash: bool,
+}
+
+impl SandboxSettings {
+    /// Resolve the effective profile name.
+    pub fn effective_profile(&self, agent_profile: AgentProfile) -> String {
+        if let Some(profile) = self.profile.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+            return normalize_sandbox_profile(profile);
+        }
+        match agent_profile {
+            AgentProfile::Explore => "read-only".to_string(),
+            AgentProfile::Full | AgentProfile::Coder => "workspace".to_string(),
+        }
+    }
+}
+
+fn normalize_sandbox_profile(profile: &str) -> String {
+    match profile.trim().to_lowercase().as_str() {
+        "readonly" | "read_only" => "read-only".to_string(),
+        other => other.to_string(),
+    }
 }
 
 fn default_provider() -> String {
@@ -369,6 +407,7 @@ impl Default for ZeneConfig {
             hooks: Vec::new(),
             web_search: WebSearchConfig::default(),
             agent_profile: AgentProfile::default(),
+            sandbox: SandboxSettings::default(),
         }
     }
 }
@@ -586,6 +625,30 @@ impl ZeneConfig {
                 if let Ok(parsed) = AgentProfile::parse(&profile) {
                     self.agent_profile = parsed;
                 }
+            }
+        }
+        if let Ok(profile) = env::var("ZENE_SANDBOX") {
+            if !profile.is_empty() {
+                self.sandbox.profile = Some(normalize_sandbox_profile(&profile));
+            }
+        }
+        if let Ok(hosts) = env::var("ZENE_SANDBOX_ALLOW_HOSTS") {
+            let parsed: Vec<String> = hosts
+                .split(',')
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(str::to_string)
+                .collect();
+            if !parsed.is_empty() {
+                self.sandbox.allow_hosts = parsed;
+            }
+        }
+        if let Ok(flag) = env::var("ZENE_SANDBOX_AUTO_ALLOW_BASH") {
+            let lower = flag.trim().to_lowercase();
+            if matches!(lower.as_str(), "1" | "true" | "yes" | "on") {
+                self.sandbox.auto_allow_bash = true;
+            } else if matches!(lower.as_str(), "0" | "false" | "no" | "off") {
+                self.sandbox.auto_allow_bash = false;
             }
         }
     }
@@ -851,6 +914,27 @@ mod provider_tests {
         assert_eq!(AgentProfile::parse("explore").unwrap(), AgentProfile::Explore);
         assert_eq!(AgentProfile::parse("coder").unwrap(), AgentProfile::Coder);
         assert!(AgentProfile::parse("unknown").is_err());
+    }
+
+    #[test]
+    fn sandbox_effective_profile_defaults() {
+        let settings = SandboxSettings::default();
+        assert_eq!(
+            settings.effective_profile(AgentProfile::Full),
+            "workspace"
+        );
+        assert_eq!(
+            settings.effective_profile(AgentProfile::Explore),
+            "read-only"
+        );
+        let strict = SandboxSettings {
+            profile: Some("strict".into()),
+            ..SandboxSettings::default()
+        };
+        assert_eq!(
+            strict.effective_profile(AgentProfile::Explore),
+            "strict"
+        );
     }
 }
 

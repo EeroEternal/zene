@@ -105,6 +105,9 @@ pub struct PermissionGate {
     approved_session: HashSet<String>,
     rules: Vec<PermissionRule>,
     prompter: Box<PermissionPrompter>,
+    /// When true and a sandbox profile is active, Bash is auto-approved
+    /// (aligned with grok `GROK_SANDBOX_AUTO_ALLOW_BASH`).
+    auto_allow_bash: bool,
 }
 
 impl PermissionGate {
@@ -114,6 +117,7 @@ impl PermissionGate {
             approved_session: HashSet::new(),
             rules: Vec::new(),
             prompter: Box::new(default_prompter),
+            auto_allow_bash: false,
         }
     }
 
@@ -123,6 +127,7 @@ impl PermissionGate {
             approved_session: HashSet::new(),
             rules: Vec::new(),
             prompter,
+            auto_allow_bash: false,
         }
     }
 
@@ -131,8 +136,33 @@ impl PermissionGate {
         self
     }
 
+    pub fn with_auto_allow_bash(mut self, enabled: bool) -> Self {
+        self.auto_allow_bash = enabled;
+        self
+    }
+
+    pub fn set_auto_allow_bash(&mut self, enabled: bool) {
+        self.auto_allow_bash = enabled;
+    }
+
+    pub fn auto_allow_bash(&self) -> bool {
+        self.auto_allow_bash
+    }
+
     pub fn set_rules(&mut self, rules: Vec<PermissionRule>) {
         self.rules = rules;
+    }
+
+    pub fn set_prompter(&mut self, prompter: Box<PermissionPrompter>) {
+        self.prompter = prompter;
+    }
+
+    /// Copy sandbox/session policy knobs from an existing gate (used when the TUI
+    /// swaps in a custom prompter without resetting rules).
+    pub fn inherit_policy_from(&mut self, other: &Self) {
+        self.auto_allow_bash = other.auto_allow_bash;
+        self.rules = other.rules.clone();
+        self.approved_session = other.approved_session.clone();
     }
 
     pub fn mode(&self) -> PermissionMode {
@@ -181,6 +211,10 @@ impl PermissionGate {
             }
 
             if self.mode.auto_approves_edits() && matches!(tool_name, "Write" | "Edit") {
+                return Ok(true);
+            }
+
+            if self.auto_allow_bash && tool_name == "Bash" {
                 return Ok(true);
             }
 
@@ -349,6 +383,25 @@ mod tests {
             .unwrap());
         assert_eq!(calls.load(Ordering::SeqCst), 0);
         assert!(gate.check("Bash", r#"{"command":"ls"}"#).unwrap());
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn auto_allow_bash_skips_bash_prompt() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let calls_clone = Arc::clone(&calls);
+        let mut gate = PermissionGate::with_prompter(PermissionMode::Default, {
+            Box::new(move |_tool, _args| {
+                calls_clone.fetch_add(1, Ordering::SeqCst);
+                Ok(PromptChoice::Deny)
+            })
+        })
+        .with_auto_allow_bash(true);
+        assert!(gate.check("Bash", r#"{"command":"ls"}"#).unwrap());
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+        assert!(!gate
+            .check("Write", r#"{"path":"a.txt","content":"x"}"#)
+            .unwrap());
         assert_eq!(calls.load(Ordering::SeqCst), 1);
     }
 

@@ -15,6 +15,53 @@ pub fn check_write_allowed(path: &str) -> Result<(), String> {
         return Err(format!("writes are denied under .git/: {path}"));
     }
 
+    if is_sensitive_credential_name(trimmed) {
+        return Err(format!("writes are denied for credential-like path: {path}"));
+    }
+
+    Ok(())
+}
+
+/// Deny Read/Grep of credential and secret paths (host-side soft gate).
+pub fn check_read_allowed(path: &str) -> Result<(), String> {
+    let normalized = path.replace('\\', "/");
+    let trimmed = normalized.trim_start_matches("./");
+
+    if is_sensitive_env_file(trimmed) {
+        return Err(format!("reads are denied for sensitive env file: {path}"));
+    }
+    if is_sensitive_credential_name(trimmed) {
+        return Err(format!("reads are denied for credential-like path: {path}"));
+    }
+    if is_under_secret_home_dir(trimmed) {
+        return Err(format!("reads are denied under protected credential directory: {path}"));
+    }
+    Ok(())
+}
+
+/// Re-check a resolved absolute path against home credential directories.
+pub fn check_read_allowed_resolved(resolved: &Path) -> Result<(), String> {
+    let normalized = resolved.to_string_lossy().replace('\\', "/");
+    if let Some(home) = std::env::var_os("HOME") {
+        let home = PathBuf::from(home);
+        for segment in [".ssh", ".gnupg", ".aws", ".azure"] {
+            let protected = home.join(segment);
+            if path_starts_with(resolved, &protected) {
+                return Err(format!(
+                    "reads are denied under protected credential directory: {normalized}"
+                ));
+            }
+        }
+        let gcloud = home.join(".config").join("gcloud");
+        if path_starts_with(resolved, &gcloud) {
+            return Err(format!(
+                "reads are denied under protected credential directory: {normalized}"
+            ));
+        }
+    }
+    if is_sensitive_env_file(&normalized) || is_sensitive_credential_name(&normalized) {
+        return Err(format!("reads are denied for credential-like path: {normalized}"));
+    }
     Ok(())
 }
 
@@ -24,6 +71,30 @@ fn is_sensitive_env_file(path: &str) -> bool {
         return true;
     }
     name.starts_with(".env.")
+}
+
+fn is_sensitive_credential_name(path: &str) -> bool {
+    let name = path.rsplit('/').next().unwrap_or(path).to_ascii_lowercase();
+    name.ends_with(".pem")
+        || name.ends_with(".key")
+        || name == "id_rsa"
+        || name == "id_ed25519"
+        || name == "credentials"
+        || name == "credentials.json"
+}
+
+fn is_under_secret_home_dir(path: &str) -> bool {
+    let lower = path.to_ascii_lowercase();
+    lower.contains("/.ssh/")
+        || lower.ends_with("/.ssh")
+        || lower.contains("/.gnupg/")
+        || lower.ends_with("/.gnupg")
+        || lower.contains("/.aws/")
+        || lower.ends_with("/.aws")
+        || lower.contains("/.azure/")
+        || lower.ends_with("/.azure")
+        || lower.contains("/.config/gcloud/")
+        || lower.ends_with("/.config/gcloud")
 }
 
 /// Blocks paths inside a `.git/` directory segment (not `.gitignore` at repo root).
@@ -265,6 +336,14 @@ mod tests {
         assert!(check_write_allowed(".env").is_err());
         assert!(check_write_allowed(".env.local").is_err());
         assert!(check_write_allowed("secrets/.env.production").is_err());
+    }
+
+    #[test]
+    fn denies_credential_reads() {
+        assert!(check_read_allowed(".env").is_err());
+        assert!(check_read_allowed("certs/server.pem").is_err());
+        assert!(check_read_allowed("/home/user/.ssh/id_rsa").is_err());
+        assert!(check_read_allowed("src/main.rs").is_ok());
     }
 
     #[test]

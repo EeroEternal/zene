@@ -106,6 +106,20 @@ Non-MCP tool results over `ZENE_MAX_TOOL_OUTPUT_BYTES` (default 30_000) are trun
 
 When auto-compact is about to fire, zene first runs a Steps-first pass (`compaction.intra_steps_first`, default true): tool results after the last user message are truncated to ~200 chars. If that alone brings usage under the threshold, full summarize is skipped (grok Intra `StepsOnly` / HistoryThenSteps lite).
 
+## Sandbox profiles (Keel)
+
+Production entry points build `LocalSandbox::with_options` from config / CLI:
+
+| Profile | Filesystem | Child network | Notes |
+|---------|------------|---------------|-------|
+| `off` | path_policy only | unrestricted | No Keel space |
+| `workspace` (default) | broad read; write workspace + temps | unrestricted | Everyday coding |
+| `read-only` | broad read; write keel home + temps | deny-all | Explore default when unset |
+| `strict` | workspace + system paths only | deny-all | Untrusted repos |
+| custom | from `~/.zene/sandbox.toml` | per profile | Keel `SandboxConfig` loader |
+
+Overrides: CLI `--sandbox` > `ZENE_SANDBOX` > `[sandbox] profile` in config. `allow_hosts` (config / `ZENE_SANDBOX_ALLOW_HOSTS`) turns network into an allowlist and is enforced for Bash children (Keel egress proxy) plus host tools (`FetchUrl`, `WebSearch`, HTTP MCP) via `LocalSandbox::authorize_egress`. Default credential denies (`~/.ssh`, `~/.gnupg`, `~/.aws`, `**/.env*`, `**/*.pem`, …) are injected into every non-`off` policy; host Read also uses `check_read_allowed`. File I/O prefers Keel `SpaceFs` when a space is active. `[sandbox] auto_allow_bash = true` skips Bash permission prompts while enforcement is on.
+
 ## Permission modes (grok-aligned)
 
 | Mode | Behavior |
