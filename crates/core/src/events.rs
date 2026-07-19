@@ -18,10 +18,12 @@ pub enum AgentEvent {
         delta: String,
     },
     ToolCall {
+        id: String,
         name: String,
         arguments: String,
     },
     ToolResult {
+        id: String,
         name: String,
         content: String,
         is_error: bool,
@@ -74,6 +76,7 @@ mod tests {
         emit_event(
             &options,
             AgentEvent::ToolCall {
+                id: "call_1".to_string(),
                 name: "Read".to_string(),
                 arguments: r#"{"path":"foo.rs"}"#.to_string(),
             },
@@ -81,6 +84,7 @@ mod tests {
         emit_event(
             &options,
             AgentEvent::ToolResult {
+                id: "call_1".to_string(),
                 name: "Read".to_string(),
                 content: "file contents".to_string(),
                 is_error: false,
