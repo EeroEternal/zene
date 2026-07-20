@@ -748,3 +748,47 @@ Gateway bootstrap 返回：
 5. 增加模拟 ACP 与真实 `zene acp` 的端到端测试。
 
 这个切片可以最早验证三个关键假设：标准 ACP 是否足够、无 WebSocket 的 HTTP 双向映射是否可靠、Gateway 是否能保持足够薄。验证通过后再建设完整 Web Agent UI，并按迁移门槛移除 TUI。
+
+## 21. 实施状态
+
+### 阶段 A（已落地骨架）
+
+- [x] 设计文档
+- [x] `apps/gateway` / 二进制 `zene-gateway`
+- [x] ACP 子进程管理与 NDJSON 转发
+- [x] `GET /api/v1/bootstrap`、`GET /api/v1/health`
+- [x] `POST /api/v1/agents`
+- [x] `POST /api/v1/agents/{id}/messages`（含 `requestId` 幂等）
+- [x] `GET /api/v1/agents/{id}/events` 长轮询 + cursor journal
+- [x] loopback 默认绑定、`X-Zene-Token`、Origin 校验
+- [x] 嵌入式最小 Web 页（session/new、prompt、stream、permission）
+- [x] `zene-gateway-mock-acp` + HTTP 集成测试
+
+### 阶段 B（已落地）
+
+- [x] 真实 `zene acp` 端到端 smoke（mock OpenAI-compatible LLM）
+- [x] 独立 `apps/web-agent` 静态前端（零构建，由 gateway `include_str!` 嵌入）
+- [x] session list/new/load UI、tool/diff 卡片、usage/context
+- [x] SSE 可选通道（`/events/stream`）与 Web 自动降级到长轮询
+- [x] 多标签页 controller lease（acquire/heartbeat/release + 写保护）
+
+### 阶段 C（已落地）
+
+- [x] Plan 审阅面板与模式切换 UI（`session/set_mode`）
+- [x] Todo / 后台任务面板（基于 `plan` / tool_call 更新）
+- [x] Gateway 本地 `terminal/*` host + Web 终端面板 / HTTP 查询与 kill
+- [x] session close 与 sessions 列表刷新
+
+### 阶段 D（已落地）
+
+- [x] journal 落盘（`~/.zene/gateway` / `--data-dir` / `--no-persist`）
+- [x] Agent 崩溃 `restart` 与 Gateway 重启后 `attach`（不静默重放 prompt）
+- [x] 背压：并发 poll 上限、POST/message 大小限制、超大 payload 截断
+- [x] `zene web` 入口与 [GATEWAY_OPS.md](./GATEWAY_OPS.md) 运维文档
+
+### 阶段 E（已落地）
+
+- [x] AskUser 经标准 `session/request_permission`（`rawInput.askUser`）桥到 Web UI
+- [x] Web UI 暴露 `session/resume`
+- [x] 默认交互入口切到 `zene` / `zene web`
+- [x] 删除 ratatui TUI 代码与依赖；保留 `--repl` 调试入口与迁移说明（[TUI_MIGRATION.md](./TUI_MIGRATION.md)）

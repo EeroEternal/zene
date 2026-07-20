@@ -20,6 +20,7 @@ use zene_tools::{
     SharedPlanMode, SharedToolPermission, SubagentEnv, ToolContext, ToolRegistry,
     DEFAULT_SUBAGENT_MAX_DEPTH,
 };
+pub use zene_tools::AskUserOption;
 use zene_mcp::McpManager;
 
 mod compaction;
@@ -951,7 +952,6 @@ impl Agent {
                         note1,
                         fingerprint,
                         split_idx,
-                        prefix_end: prefix_start + split_idx,
                     })
                 }
                 Err(err) => {

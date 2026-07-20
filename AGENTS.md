@@ -2,7 +2,14 @@
 
 ## Cursor Cloud specific instructions
 
-Zene is a single Rust product: a local coding-agent CLI (binary `zene`, workspace version in `Cargo.toml`). There is no backend server, database, or web app to run — the `web/`, `www/`, `apps/web/`, and root `package.json` files are just static-site copy stubs, not real Node apps. At runtime the CLI makes outbound HTTPS calls to an external LLM provider (OpenAI-compatible or Anthropic); nothing is self-hosted.
+Zene is a local coding-agent product (workspace version in `Cargo.toml`). Primary binaries:
+- `zene` (`apps/cli`): REPL/TUI, headless `-p`, and `zene acp` stdio Agent Client Protocol
+- `zene-gateway` (`apps/gateway`): thin local HTTP gateway that spawns `zene acp` and serves the Web Agent UI via SSE + long-polling fallback (see `docs/WEB_AGENT_GATEWAY.md`)
+- Web Agent UI sources: `apps/web-agent/` (zero-build HTML embedded into the gateway)
+
+The `web/`, `www/`, and root `package.json` files are still mostly static-site copy stubs, not the Agent UI. At runtime the agent makes outbound HTTPS calls to an external LLM provider (OpenAI-compatible or Anthropic); nothing is self-hosted except the optional local gateway.
+
+Gateway tests: `cargo test -p zene-gateway` (includes mock-ACP HTTP tests and a real `zene acp` smoke test that builds `zene` and uses an in-process mock LLM).
 
 Toolchain caveat (non-obvious): a dependency (`unigateway-sdk`) requires Rust `edition2024`, so the toolchain must be Rust >= 1.85. The base image historically defaulted to an older `rustc` (1.83); the update script pins `rustup default stable`. If you ever hit `feature edition2024 is required`, run `rustup default stable`.
 

@@ -1,0 +1,1115 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Zene Web Agent</title>
+  <style>
+    :root {
+      --canvas: #fbfaf7; --surface: #ffffff; --surface-soft: #f5f5f1;
+      --ink: #18332d; --muted: #75817d; --line: #e5e8e4; --accent: #075e4b;
+      --accent-soft: #e9f2ee; --accent-ink: #ffffff; --warn: #a86108;
+      --danger: #b23a45; --ok: #25815c; --tool: #315d6d;
+      --shadow: 0 16px 44px rgba(27, 52, 44, .08);
+      --mono: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      --sans: Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      --display: "Iowan Old Style", "Palatino Linotype", Palatino, Georgia, serif;
+    }
+    * { box-sizing: border-box; }
+    html, body { height: 100%; }
+    body {
+      margin: 0; color: var(--ink); font-family: var(--sans); background: var(--canvas);
+      overflow: hidden;
+    }
+    button, input, textarea, select { font: inherit; }
+    button { cursor: pointer; }
+    button:focus-visible, input:focus-visible, textarea:focus-visible, summary:focus-visible {
+      outline: 3px solid rgba(7, 94, 75, .18); outline-offset: 2px;
+    }
+    .app-shell { display: grid; grid-template-rows: 58px 1fr; height: 100%; }
+    .topbar {
+      display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center;
+      gap: 20px; padding: 0 18px; background: rgba(255,255,255,.88);
+      border-bottom: 1px solid var(--line); backdrop-filter: blur(14px); z-index: 20;
+    }
+    .brand { display: flex; align-items: center; gap: 10px; min-width: 190px; }
+    .brand-mark {
+      display: grid; place-items: center; width: 30px; height: 30px; border-radius: 9px;
+      background: var(--accent); color: #fff; font: 700 17px var(--display);
+      box-shadow: 0 5px 14px rgba(7,94,75,.2);
+    }
+    .brand-name { font: 600 19px var(--display); letter-spacing: -.02em; }
+    .conversation-title { min-width: 0; display: flex; align-items: center; gap: 10px; }
+    .conversation-title strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .state-pill {
+      border-radius: 999px; padding: 4px 8px; background: var(--surface-soft);
+      color: var(--muted); font-size: 10px; font-weight: 700; letter-spacing: .05em;
+      text-transform: uppercase;
+    }
+    .top-actions { display: flex; align-items: center; gap: 8px; }
+    .connection-state { display: flex; align-items: center; gap: 7px; color: var(--muted); font-size: 12px; }
+    .connection-dot { width: 7px; height: 7px; border-radius: 50%; background: #aeb6b2; }
+    .connection-dot.ok { background: var(--ok); box-shadow: 0 0 0 4px rgba(37,129,92,.1); }
+    .connection-dot.err { background: var(--danger); }
+    .icon-button {
+      display: grid; place-items: center; width: 34px; height: 34px; padding: 0;
+      border: 1px solid transparent; border-radius: 9px; background: transparent;
+      color: var(--muted); font-size: 18px;
+    }
+    .icon-button:hover, .icon-button.active { color: var(--accent); background: var(--accent-soft); }
+    .workspace-shell {
+      min-height: 0; display: grid; grid-template-columns: 58px minmax(0, 1fr) 320px;
+    }
+    .rail {
+      padding: 14px 10px; border-right: 1px solid var(--line); background: var(--surface);
+      display: flex; flex-direction: column; align-items: center; gap: 8px;
+    }
+    .rail .icon-button:last-child { margin-top: auto; }
+    .conversation {
+      min-width: 0; min-height: 0; display: grid; grid-template-rows: auto minmax(0, 1fr) auto;
+      background: var(--surface);
+    }
+    .conversation-head {
+      padding: 20px clamp(24px, 6vw, 80px) 8px; max-width: 1040px; width: 100%;
+      margin: 0 auto;
+    }
+    .conversation-head h1 { margin: 0; font: 500 24px var(--display); }
+    .conversation-head p { margin: 5px 0 0; color: var(--muted); font-size: 13px; }
+    #log {
+      width: 100%; max-width: 1040px; margin: 0 auto; padding: 18px clamp(24px, 6vw, 80px) 40px;
+      overflow: auto; scroll-behavior: smooth; line-height: 1.62;
+    }
+    .empty-state {
+      height: 100%; min-height: 260px; display: grid; place-content: center; text-align: center;
+      color: var(--muted);
+    }
+    .empty-state .empty-mark {
+      display: grid; place-items: center; width: 48px; height: 48px; margin: 0 auto 14px;
+      border-radius: 15px; background: var(--accent-soft); color: var(--accent);
+      font: 600 25px var(--display);
+    }
+    .empty-state strong { color: var(--ink); font: 500 23px var(--display); }
+    .empty-state p { margin: 8px 0 0; font-size: 13px; }
+    .msg { position: relative; margin: 0 0 22px; white-space: pre-wrap; word-break: break-word; }
+    .msg::before {
+      display: inline-grid; place-items: center; width: 27px; height: 27px; margin-right: 10px;
+      border-radius: 8px; vertical-align: top; font: 600 13px var(--display);
+    }
+    .msg.user {
+      width: fit-content; max-width: 78%; margin-left: auto; padding: 11px 15px;
+      border-radius: 16px 16px 4px 16px; background: var(--accent); color: #fff;
+    }
+    .msg.user::before { display: none; }
+    .msg.assistant { color: var(--ink); padding-left: 38px; }
+    .msg.assistant::before {
+      content: "Z"; position: absolute; left: 0; top: 0; background: var(--accent-soft); color: var(--accent);
+    }
+    .msg.thought {
+      margin-left: 38px; padding: 0 0 0 13px; border-left: 2px solid var(--line);
+      color: var(--muted); font-size: 13px; font-style: italic;
+    }
+    .msg.thought::before { display: none; }
+    .msg.system {
+      margin: 8px 0; color: var(--muted); font: 11px var(--mono); text-align: center;
+    }
+    .msg.system::before { display: none; }
+    .composer-wrap {
+      padding: 10px clamp(24px, 6vw, 80px) 22px;
+      background: linear-gradient(transparent, var(--surface) 24%);
+    }
+    .composer {
+      max-width: 880px; margin: 0 auto; padding: 12px 12px 10px 16px;
+      border: 1px solid var(--line); border-radius: 16px; background: var(--surface);
+      box-shadow: 0 12px 34px rgba(24,51,45,.1);
+    }
+    .composer textarea {
+      display: block; width: 100%; min-height: 50px; max-height: 180px; resize: none;
+      padding: 4px 2px 8px; border: 0; outline: 0; background: transparent;
+      color: var(--ink); line-height: 1.5;
+    }
+    .composer textarea::placeholder { color: #a7afac; }
+    .composer-actions { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+    .composer-actions .row { justify-content: flex-end; }
+    .keyboard-hint { color: var(--muted); font-size: 11px; }
+    button {
+      border: 0; border-radius: 9px; padding: 8px 12px;
+      background: var(--accent); color: var(--accent-ink); font-weight: 600;
+    }
+    button.secondary { background: transparent; color: var(--ink); border: 1px solid var(--line); }
+    button.secondary:hover { background: var(--surface-soft); }
+    button.danger { background: #fff; color: var(--danger); border: 1px solid #efc8cc; }
+    button.active { border-color: var(--accent); color: var(--accent); background: var(--accent-soft); }
+    button:disabled { opacity: .4; cursor: not-allowed; }
+    .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+    .inspector {
+      min-width: 0; overflow: auto; padding: 16px; border-left: 1px solid var(--line);
+      background: var(--canvas); transition: margin .2s ease, opacity .2s ease;
+    }
+    .inspector.hidden { margin-right: -320px; opacity: 0; pointer-events: none; }
+    .workspace-shell:has(.inspector.hidden) { grid-template-columns: 58px minmax(0, 1fr) 0; }
+    .inspector-head, .drawer-head {
+      display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px;
+    }
+    .inspector h2, .drawer h2 { margin: 0; font: 500 20px var(--display); }
+    details.panel {
+      margin-bottom: 8px; border: 1px solid var(--line); border-radius: 12px; background: var(--surface);
+    }
+    details.panel > summary {
+      display: flex; align-items: center; justify-content: space-between; padding: 12px 13px;
+      cursor: pointer; list-style: none; font-weight: 650; font-size: 13px;
+    }
+    details.panel > summary::-webkit-details-marker { display: none; }
+    details.panel > summary::after { content: "⌄"; color: var(--muted); transition: transform .15s; }
+    details.panel[open] > summary::after { transform: rotate(180deg); }
+    .panel-list { max-height: 270px; overflow: auto; padding: 0 10px 10px; }
+    .panel-item {
+      border-top: 1px solid var(--line); padding: 9px 2px; background: transparent;
+    }
+    .panel-item .title { margin-bottom: 3px; font-size: 12px; }
+    .panel-item .meta { color: var(--muted); font: 10px var(--mono); }
+    .tool-card {
+      margin: 0 0 14px 38px; border: 1px solid var(--line); border-radius: 12px;
+      padding: 10px 12px; background: var(--canvas); color: var(--tool); font-size: 12px;
+    }
+    .tool-card .title { font-weight: 700; }
+    .tool-card .meta { margin: 3px 0 7px; color: var(--muted); font: 10px var(--mono); }
+    .tool-card pre, .term-out {
+      margin: 0; white-space: pre-wrap; word-break: break-word; max-height: 180px; overflow: auto;
+      color: var(--ink); font: 11px/1.5 var(--mono);
+    }
+    .diff-add { color: #1f6b3a; } .diff-del { color: #8b2430; }
+    .pending {
+      margin: 14px 0 18px 38px; padding: 14px; border: 1px solid #e5c795;
+      border-radius: 12px; background: #fffaf0; color: var(--ink);
+    }
+    .drawer {
+      position: fixed; top: 0; right: 0; z-index: 40; width: min(420px, 92vw); height: 100%;
+      padding: 20px; overflow: auto; background: var(--surface); box-shadow: var(--shadow);
+      transform: translateX(105%); transition: transform .22s ease;
+    }
+    .drawer.open { transform: translateX(0); }
+    .drawer-backdrop {
+      position: fixed; inset: 0; z-index: 35; border: 0; border-radius: 0; padding: 0;
+      background: rgba(17, 34, 29, .24); opacity: 0; pointer-events: none; transition: opacity .2s;
+    }
+    .drawer-backdrop.open { opacity: 1; pointer-events: auto; }
+    .settings-section { padding: 14px 0; border-top: 1px solid var(--line); }
+    .settings-section > strong { display: block; margin-bottom: 10px; }
+    label { display: block; margin-bottom: 5px; color: var(--muted); font-size: 11px; font-weight: 650; }
+    input, select {
+      width: 100%; padding: 9px 10px; border: 1px solid var(--line); border-radius: 9px;
+      background: var(--canvas); color: var(--ink);
+    }
+    .status { color: var(--muted); font: 10px var(--mono); }
+    .ok { color: var(--ok); } .err { color: var(--danger); }
+    .session-item {
+      width: 100%; text-align: left; margin: 0 0 4px; white-space: pre-line;
+      background: var(--canvas); color: var(--ink); border: 1px solid var(--line);
+    }
+    .session-item.active { border-color: var(--accent); }
+    .usage { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; }
+    .usage div { border-radius: 9px; padding: 8px; background: var(--canvas); font: 11px var(--mono); }
+    .usage span { display: block; margin-bottom: 4px; color: var(--muted); font-size: 9px; }
+    .banner {
+      border-left: 3px solid var(--warn); margin: 10px 0 0; padding: 7px 10px;
+      background: #fffaf0; color: var(--warn); border-radius: 4px 9px 9px 4px; font-size: 12px;
+    }
+    .todo-pending { opacity: .7; }
+    .todo-completed { text-decoration: line-through; color: var(--muted); }
+    .todo-in_progress { color: var(--accent); font-weight: 700; }
+    @media (max-width: 900px) {
+      .workspace-shell { grid-template-columns: 52px minmax(0, 1fr) 0; }
+      .inspector { position: fixed; right: 0; top: 58px; z-index: 30; width: min(340px, 90vw); height: calc(100% - 58px); box-shadow: var(--shadow); }
+      .inspector.hidden { margin: 0; transform: translateX(105%); }
+      .brand { min-width: auto; } .brand-name { display: none; }
+      .conversation-title .state-pill, .connection-state span { display: none; }
+      .conversation-head { padding-top: 15px; }
+    }
+    @media (max-width: 560px) {
+      .topbar { gap: 10px; padding: 0 10px; }
+      .workspace-shell { grid-template-columns: 1fr 0; }
+      .rail { display: none; }
+      .conversation-head, #log, .composer-wrap { padding-left: 16px; padding-right: 16px; }
+      .keyboard-hint { display: none; }
+      .msg.user { max-width: 90%; }
+    }
+  </style>
+</head>
+<body>
+  <div class="app-shell">
+    <header class="topbar">
+      <div class="brand">
+        <div class="brand-mark">Z</div>
+        <span class="brand-name">Zene</span>
+      </div>
+      <div class="conversation-title">
+        <strong id="conversationTitle">New conversation</strong>
+        <span id="modeBadge" class="state-pill">default</span>
+      </div>
+      <div class="top-actions">
+        <div class="connection-state" title="Gateway connection">
+          <i id="connectionDot" class="connection-dot"></i>
+          <span id="connectionLabel">Offline</span>
+        </div>
+        <button id="btnInspectorTop" class="icon-button active" title="Toggle activity panel" aria-label="Toggle activity panel">◫</button>
+        <button id="btnSettingsTop" class="icon-button" title="Open settings" aria-label="Open settings">⚙</button>
+      </div>
+    </header>
+
+    <div class="workspace-shell">
+      <nav class="rail" aria-label="Primary">
+        <button class="icon-button active" title="Conversation" aria-label="Conversation">◉</button>
+        <button id="btnSessionsRail" class="icon-button" title="Sessions" aria-label="Open sessions">▤</button>
+        <button id="btnInspectorRail" class="icon-button" title="Activity" aria-label="Toggle activity panel">◫</button>
+        <button id="btnSettingsRail" class="icon-button" title="Settings" aria-label="Open settings">⚙</button>
+      </nav>
+
+      <main class="conversation">
+        <div class="conversation-head">
+          <h1>Conversation</h1>
+          <p>Ask Zene to inspect, explain, or change your code.</p>
+          <div id="planBanner" class="banner" style="display:none">
+            Plan mode is active. File writes stay blocked until you return to default mode.
+          </div>
+        </div>
+        <div id="log" aria-live="polite">
+          <div id="emptyState" class="empty-state">
+            <div>
+              <div class="empty-mark">Z</div>
+              <strong>What are we building?</strong>
+              <p>Connect a workspace, then start a conversation.</p>
+            </div>
+          </div>
+        </div>
+        <div class="composer-wrap">
+          <div class="composer">
+            <textarea id="prompt" rows="2" placeholder="Message Zene…" aria-label="Message Zene"></textarea>
+            <div class="composer-actions">
+              <span class="keyboard-hint">Enter to send · Shift + Enter for a new line</span>
+              <div class="row">
+                <button id="btnClear" class="icon-button" title="Clear conversation" aria-label="Clear conversation">↺</button>
+                <button id="btnCancel" class="secondary" disabled>Cancel</button>
+                <button id="btnSend" disabled>Send</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </main>
+
+      <aside id="inspector" class="inspector" aria-label="Activity panel">
+        <div class="inspector-head">
+          <h2>Activity</h2>
+          <button id="btnInspectorClose" class="icon-button" title="Close activity panel" aria-label="Close activity panel">×</button>
+        </div>
+        <details class="panel" open>
+          <summary>Plan</summary>
+          <div id="planPanel" class="panel-list">
+            <p class="status">No plan yet</p>
+          </div>
+        </details>
+        <details class="panel" open>
+          <summary>Todos</summary>
+          <div id="todoPanel" class="panel-list">
+            <p class="status">No todos</p>
+          </div>
+        </details>
+        <details class="panel">
+          <summary>Background tasks</summary>
+          <div id="taskPanel" class="panel-list">
+            <p class="status">No tasks</p>
+          </div>
+        </details>
+        <details class="panel">
+          <summary>Terminals</summary>
+          <div class="panel-list">
+            <button id="btnRefreshTerms" class="secondary" disabled style="margin-bottom:8px">Refresh terminals</button>
+            <div id="termPanel">
+              <p class="status">No terminals</p>
+            </div>
+          </div>
+        </details>
+      </aside>
+    </div>
+  </div>
+
+  <button id="drawerBackdrop" class="drawer-backdrop" aria-label="Close settings"></button>
+  <aside id="settingsDrawer" class="drawer" aria-label="Settings">
+    <div class="drawer-head">
+      <h2>Workspace</h2>
+      <button id="btnSettingsClose" class="icon-button" title="Close settings" aria-label="Close settings">×</button>
+    </div>
+    <section class="settings-section">
+      <strong>Connection</strong>
+        <label for="workspace">Workspace</label>
+        <input id="workspace" placeholder="/absolute/path/to/project" />
+        <label for="token" style="margin-top:8px">Token</label>
+        <input id="token" type="password" placeholder="Loaded from launch URL" />
+        <div class="row" style="margin-top:10px">
+          <button id="btnStart">Connect</button>
+          <button id="btnNew" class="secondary" disabled>New</button>
+          <button id="btnClose" class="secondary" disabled>Close</button>
+        </div>
+        <div class="row" style="margin-top:8px">
+          <button id="btnRefreshSessions" class="secondary" disabled>Sessions</button>
+          <button id="btnTakeover" class="secondary" disabled>Take control</button>
+        </div>
+        <p id="status" class="status" style="margin:10px 0 0">idle</p>
+    </section>
+    <section class="settings-section">
+      <div class="row" style="justify-content:space-between">
+        <strong>Agent mode</strong>
+        <span id="transport" class="status">transport: —</span>
+      </div>
+        <div class="row" style="margin-top:8px">
+          <button id="btnModeDefault" class="secondary" disabled>default</button>
+          <button id="btnModePlan" class="secondary" disabled>plan</button>
+        </div>
+        <p id="modeLine" class="status" style="margin:8px 0 0">mode: —</p>
+    </section>
+    <section id="sessionsSection" class="settings-section">
+      <strong>Sessions</strong>
+        <div id="sessions" style="margin-top:8px"></div>
+    </section>
+    <section class="settings-section">
+      <strong>Usage / context</strong>
+        <div class="usage" style="margin-top:8px">
+          <div><span>prompt</span><b id="uPrompt">—</b></div>
+          <div><span>completion</span><b id="uCompletion">—</b></div>
+          <div><span>total / ctx</span><b id="uTotal">—</b></div>
+        </div>
+    </section>
+  </aside>
+
+  <script>
+    const state = {
+      token: "",
+      clientId: localStorage.getItem("zene.clientId") || ("web_" + Math.random().toString(16).slice(2)),
+      agentId: null,
+      sessionId: null,
+      cursor: 0,
+      nextRpcId: 1,
+      transport: "idle",
+      abortPoll: null,
+      eventSource: null,
+      heartbeat: null,
+      assistantBuf: "",
+      thoughtBuf: "",
+      tools: new Map(),
+      planEntries: [],
+      todos: [],
+      tasks: new Map(),
+      terminals: new Map(),
+      mode: "default",
+      preferSse: true,
+    };
+    localStorage.setItem("zene.clientId", state.clientId);
+
+    const el = (id) => document.getElementById(id);
+    const logEl = el("log");
+
+    function setDrawer(open, focusSessions = false) {
+      el("settingsDrawer").classList.toggle("open", open);
+      el("drawerBackdrop").classList.toggle("open", open);
+      el("settingsDrawer").setAttribute("aria-hidden", String(!open));
+      if (open) {
+        const target = focusSessions ? el("sessionsSection") : el("workspace");
+        setTimeout(() => {
+          if (focusSessions) target.scrollIntoView({ block: "start" });
+          else target.focus();
+        }, 160);
+      }
+    }
+    function setInspector(open) {
+      el("inspector").classList.toggle("hidden", !open);
+      ["btnInspectorTop", "btnInspectorRail"].forEach((id) => {
+        el(id).classList.toggle("active", open);
+        el(id).setAttribute("aria-pressed", String(open));
+      });
+    }
+    function ensureConversationStarted() {
+      const empty = el("emptyState");
+      if (empty) empty.remove();
+    }
+    function showEmptyState() {
+      logEl.innerHTML = `<div id="emptyState" class="empty-state"><div>
+        <div class="empty-mark">Z</div><strong>Conversation cleared</strong>
+        <p>Send a message whenever you are ready.</p></div></div>`;
+    }
+    function setStatus(text, cls) {
+      el("status").textContent = text;
+      el("status").className = "status " + (cls || "");
+      el("connectionLabel").textContent = cls === "ok" ? "Connected" : (cls === "err" ? "Error" : text);
+      el("connectionDot").className = "connection-dot " + (cls || "");
+    }
+    function setTransport(name) {
+      state.transport = name;
+      el("transport").textContent = "transport: " + name;
+    }
+    function setMode(mode) {
+      state.mode = mode || "default";
+      el("modeLine").textContent = "mode: " + state.mode;
+      el("modeBadge").textContent = state.mode;
+      el("planBanner").style.display = state.mode === "plan" ? "block" : "none";
+      el("btnModeDefault").classList.toggle("active", state.mode === "default");
+      el("btnModePlan").classList.toggle("active", state.mode === "plan");
+    }
+    function uuid() {
+      return crypto.randomUUID ? crypto.randomUUID() : ("req-" + Date.now() + Math.random());
+    }
+    function tokenFromHash() {
+      return new URLSearchParams(location.hash.replace(/^#/, "")).get("token") || "";
+    }
+    function headers(extra = {}) {
+      return Object.assign({
+        "content-type": "application/json",
+        "X-Zene-Token": state.token,
+        "X-Zene-Client-Id": state.clientId,
+      }, extra);
+    }
+    async function api(path, options = {}) {
+      const res = await fetch(path, Object.assign({}, options, {
+        headers: headers(options.headers || {}),
+      }));
+      const text = await res.text();
+      let body = null;
+      try { body = text ? JSON.parse(text) : null; } catch { body = { raw: text }; }
+      if (!res.ok) {
+        const msg = (body && (body.message || body.error)) || res.statusText;
+        const err = new Error(msg);
+        err.body = body; err.status = res.status;
+        throw err;
+      }
+      return body;
+    }
+    function appendLog(kind, text) {
+      ensureConversationStarted();
+      const div = document.createElement("div");
+      div.className = "msg " + kind;
+      div.textContent = text;
+      logEl.appendChild(div);
+      logEl.scrollTop = logEl.scrollHeight;
+      return div;
+    }
+    function rpcRequest(method, params) {
+      return { jsonrpc: "2.0", id: state.nextRpcId++, method, params };
+    }
+    async function postMessages(messages) {
+      return api(`/api/v1/agents/${state.agentId}/messages`, {
+        method: "POST",
+        body: JSON.stringify({ requestId: uuid(), messages }),
+      });
+    }
+    function finalizeStreams() {
+      logEl.querySelectorAll(".live-assistant,.live-thought").forEach((n) => {
+        n.classList.remove("live-assistant", "live-thought");
+      });
+      state.assistantBuf = "";
+      state.thoughtBuf = "";
+    }
+    function renderChunk(kind, text) {
+      if (!text) return;
+      if (kind === "assistant") {
+        state.assistantBuf += text;
+        let node = logEl.querySelector(".live-assistant");
+        if (!node) { node = appendLog("assistant", ""); node.classList.add("live-assistant"); }
+        node.textContent = state.assistantBuf;
+      } else {
+        state.thoughtBuf += text;
+        let node = logEl.querySelector(".live-thought");
+        if (!node) { node = appendLog("thought", ""); node.classList.add("live-thought"); }
+        node.textContent = state.thoughtBuf;
+      }
+    }
+    function renderPlan() {
+      const root = el("planPanel");
+      if (!state.planEntries.length) {
+        root.innerHTML = `<p class="status">no plan yet</p>`;
+        return;
+      }
+      root.innerHTML = "";
+      for (const entry of state.planEntries) {
+        const item = document.createElement("div");
+        item.className = "panel-item";
+        const status = entry.status || "pending";
+        item.innerHTML = `<div class="title todo-${status}">${entry.content || JSON.stringify(entry)}</div>
+          <div class="meta">${status}${entry.priority ? " · " + entry.priority : ""}</div>`;
+        root.appendChild(item);
+      }
+    }
+    function renderTodos() {
+      const root = el("todoPanel");
+      if (!state.todos.length) {
+        root.innerHTML = `<p class="status">no todos</p>`;
+        return;
+      }
+      root.innerHTML = "";
+      for (const todo of state.todos) {
+        const item = document.createElement("div");
+        item.className = "panel-item";
+        const status = todo.status || "pending";
+        item.innerHTML = `<div class="title todo-${status}">${todo.content || todo.id || "?"}</div>
+          <div class="meta">${status}</div>`;
+        root.appendChild(item);
+      }
+    }
+    function renderTasks() {
+      const root = el("taskPanel");
+      const tasks = [...state.tasks.values()];
+      if (!tasks.length) {
+        root.innerHTML = `<p class="status">no tasks</p>`;
+        return;
+      }
+      root.innerHTML = "";
+      for (const task of tasks) {
+        const item = document.createElement("div");
+        item.className = "panel-item";
+        item.innerHTML = `<div class="title">${task.title}</div>
+          <div class="meta">${task.status} · ${task.id}</div>`;
+        root.appendChild(item);
+      }
+    }
+    function renderTerminals() {
+      const root = el("termPanel");
+      const terms = [...state.terminals.values()];
+      if (!terms.length) {
+        root.innerHTML = `<p class="status">no terminals</p>`;
+        return;
+      }
+      root.innerHTML = "";
+      for (const term of terms) {
+        const item = document.createElement("div");
+        item.className = "panel-item";
+        const kill = document.createElement("button");
+        kill.className = "danger";
+        kill.textContent = "Kill";
+        kill.disabled = term.status === "exited" || term.status === "released";
+        kill.onclick = () => killTerminal(term.terminalId);
+        item.innerHTML = `<div class="title">${term.command || term.terminalId}</div>
+          <div class="meta">${term.status || "?"} · ${term.terminalId}</div>
+          <pre class="term-out"></pre>`;
+        item.querySelector(".term-out").textContent = term.output || "";
+        item.appendChild(kill);
+        root.appendChild(item);
+      }
+    }
+    function upsertToolCard(update) {
+      const id = update.toolCallId || "tool";
+      let card = state.tools.get(id);
+      if (!card) {
+        ensureConversationStarted();
+        card = document.createElement("div");
+        card.className = "tool-card";
+        card.innerHTML = `<div class="title"></div><div class="meta"></div><pre></pre>`;
+        logEl.appendChild(card);
+        state.tools.set(id, card);
+      }
+      const title = update.title || update.kind || id;
+      card.querySelector(".title").textContent = `${update.sessionUpdate || "tool"} · ${title}`;
+      card.querySelector(".meta").textContent =
+        `id=${id} status=${update.status || "?"} kind=${update.kind || "?"}`;
+      const parts = [];
+      if (update.rawInput) {
+        parts.push(typeof update.rawInput === "string" ? update.rawInput : JSON.stringify(update.rawInput, null, 2));
+        if (update.rawInput.todos) {
+          state.todos = update.rawInput.todos;
+          renderTodos();
+        }
+        if (update.rawInput.run_in_background || /Task|Bash/i.test(title)) {
+          state.tasks.set(id, {
+            id, title, status: update.status || "in_progress",
+          });
+          renderTasks();
+        }
+      }
+      if (update.content) {
+        const content = Array.isArray(update.content) ? update.content : [update.content];
+        for (const c of content) {
+          if (!c) continue;
+          if (c.type === "diff") {
+            parts.push(`diff ${c.path || ""}`);
+            if (c.oldText) parts.push(String(c.oldText).split("\n").map((l) => `- ${l}`).join("\n"));
+            if (c.newText) parts.push(String(c.newText).split("\n").map((l) => `+ ${l}`).join("\n"));
+          } else if (c.text) {
+            parts.push(c.text);
+            const m = String(c.text).match(/task_id["']?\s*[:=]\s*["']?([A-Za-z0-9_-]+)/);
+            if (m) {
+              state.tasks.set(m[1], { id: m[1], title, status: update.status || "running" });
+              renderTasks();
+            }
+          } else {
+            parts.push(JSON.stringify(c));
+          }
+        }
+      }
+      if (update.status && state.tasks.has(id)) {
+        state.tasks.get(id).status = update.status;
+        renderTasks();
+      }
+      const pre = card.querySelector("pre");
+      pre.textContent = parts.join("\n");
+      pre.innerHTML = pre.textContent.split("\n").map((line) => {
+        const esc = line.replace(/[&<>]/g, (ch) => ({"&":"&amp;","<":"&lt;",">":"&gt;"}[ch]));
+        if (line.startsWith("+")) return `<span class="diff-add">${esc}</span>`;
+        if (line.startsWith("-")) return `<span class="diff-del">${esc}</span>`;
+        return esc;
+      }).join("\n");
+      logEl.scrollTop = logEl.scrollHeight;
+    }
+    function updateUsage(update) {
+      const used = update.used || update;
+      el("uPrompt").textContent = used.inputTokens ?? used.promptTokens ?? "—";
+      el("uCompletion").textContent = used.outputTokens ?? used.completionTokens ?? "—";
+      const total = used.totalTokens ?? "—";
+      const size = update.size?.contextTokens ?? update.contextTokens;
+      el("uTotal").textContent = size != null ? `${total} / ${size}` : String(total);
+    }
+    function handlePermission(payload) {
+      finalizeStreams();
+      const params = payload.params || {};
+      const raw = (params.toolCall && params.toolCall.rawInput) || {};
+      if (raw.askUser) {
+        handleAskUser(payload);
+        return;
+      }
+      const box = document.createElement("div");
+      ensureConversationStarted();
+      box.className = "pending";
+      box.innerHTML = `<div><strong>Permission requested</strong></div>
+        <div style="margin-top:5px">${(params.toolCall && (params.toolCall.title || params.toolCall.toolCallId)) || "Tool access"}</div>`;
+      const row = document.createElement("div");
+      row.className = "row";
+      row.style.marginTop = "8px";
+      const options = params.options || [
+        { optionId: "allow-once", name: "Allow once" },
+        { optionId: "reject", name: "Reject" },
+      ];
+      for (const opt of options) {
+        const btn = document.createElement("button");
+        btn.textContent = opt.name || opt.optionId;
+        if (/reject|deny|no/i.test(opt.optionId || "") || (opt.kind || "").includes("reject")) {
+          btn.className = "danger";
+        }
+        btn.onclick = async () => {
+          row.querySelectorAll("button").forEach((b) => b.disabled = true);
+          await postMessages([{
+            jsonrpc: "2.0", id: payload.id,
+            result: { outcome: { outcome: "selected", optionId: opt.optionId } },
+          }]);
+          appendLog("system", `permission -> ${opt.optionId}`);
+        };
+        row.appendChild(btn);
+      }
+      box.appendChild(row);
+      logEl.appendChild(box);
+      logEl.scrollTop = logEl.scrollHeight;
+    }
+    function handleAskUser(payload) {
+      finalizeStreams();
+      const params = payload.params || {};
+      const raw = (params.toolCall && params.toolCall.rawInput) || {};
+      const question = raw.question || (params.toolCall && params.toolCall.title) || "Question";
+      const box = document.createElement("div");
+      ensureConversationStarted();
+      box.className = "pending";
+      box.innerHTML = `<div><strong>Ask user</strong></div><div style="margin-top:6px"></div>`;
+      box.querySelector("div:last-child").textContent = question;
+      const row = document.createElement("div");
+      row.className = "row";
+      row.style.marginTop = "8px";
+      const choiceOptions = (params.options || []).filter((o) => o.optionId !== "free-text");
+      const reply = async (optionId, answer) => {
+        row.querySelectorAll("button,input").forEach((b) => b.disabled = true);
+        const outcome = { outcome: "selected", optionId };
+        if (answer != null) outcome.answer = answer;
+        await postMessages([{
+          jsonrpc: "2.0", id: payload.id,
+          result: { outcome },
+        }]);
+        appendLog("system", `ask_user -> ${answer != null ? answer : optionId}`);
+      };
+      for (const opt of choiceOptions) {
+        const btn = document.createElement("button");
+        btn.textContent = opt.name || opt.optionId;
+        btn.onclick = () => reply(opt.optionId);
+        row.appendChild(btn);
+      }
+      const input = document.createElement("input");
+      input.placeholder = "Free-text answer";
+      input.style.flex = "1";
+      const send = document.createElement("button");
+      send.textContent = "Send answer";
+      send.onclick = () => reply("free-text", input.value.trim());
+      row.appendChild(input);
+      row.appendChild(send);
+      box.appendChild(row);
+      logEl.appendChild(box);
+      logEl.scrollTop = logEl.scrollHeight;
+    }
+    function handleTerminalEvent(payload) {
+      const id = payload.terminalId || "term";
+      let term = state.terminals.get(id) || {
+        terminalId: id, command: "", status: "running", output: "",
+      };
+      if (payload.kind === "created") {
+        term.command = payload.command || id;
+        term.status = "running";
+        appendLog("system", `[terminal] created ${id}: ${term.command}`);
+      } else if (payload.kind === "output") {
+        term.output = (term.output || "") + (payload.chunk || "");
+        if (term.output.length > 20000) term.output = term.output.slice(-12000);
+      } else if (payload.kind === "exited") {
+        term.status = "exited";
+        appendLog("system", `[terminal] exited ${id} code=${payload.exitCode}`);
+      } else if (payload.kind === "released") {
+        term.status = "released";
+      } else if (payload.kind === "killed") {
+        term.status = "exited";
+      }
+      state.terminals.set(id, term);
+      renderTerminals();
+    }
+    function handlePayload(payload) {
+      if (!payload || typeof payload !== "object") return;
+      if (payload.type === "gateway.system") {
+        appendLog("system", `[gateway:${payload.kind}] ${payload.message || ""}`);
+        return;
+      }
+      if (payload.type === "gateway.terminal") {
+        handleTerminalEvent(payload);
+        return;
+      }
+      if (payload.method === "session/update") {
+        const update = (payload.params && payload.params.update) || {};
+        const sid = payload.params && payload.params.sessionId;
+        if (sid) state.sessionId = sid;
+        switch (update.sessionUpdate) {
+          case "agent_message_chunk":
+            renderChunk("assistant", update.content && update.content.text); break;
+          case "agent_thought_chunk":
+            renderChunk("thought", update.content && update.content.text); break;
+          case "user_message_chunk":
+            appendLog("user", ((update.content && update.content.text) || "")); break;
+          case "tool_call":
+          case "tool_call_update":
+            finalizeStreams(); upsertToolCard(update); break;
+          case "usage_update":
+            updateUsage(update); break;
+          case "current_mode_update":
+            setMode(update.currentModeId || update.modeId); break;
+          case "plan":
+            state.planEntries = update.entries || [];
+            // TodoWrite maps onto plan updates; keep todos in sync when shapes match.
+            if (state.planEntries.length) {
+              state.todos = state.planEntries.map((e, i) => ({
+                id: String(i + 1), content: e.content, status: e.status || "pending",
+              }));
+              renderTodos();
+            }
+            renderPlan();
+            break;
+          case "available_commands_update":
+            break;
+          default:
+            appendLog("system", JSON.stringify(update));
+        }
+        return;
+      }
+      if (payload.method === "session/request_permission") {
+        handlePermission(payload); return;
+      }
+      if (payload.method && String(payload.method).startsWith("terminal/")) {
+        appendLog("system", `[acp] ${payload.method}`);
+        return;
+      }
+      if (Object.prototype.hasOwnProperty.call(payload, "result") || Object.prototype.hasOwnProperty.call(payload, "error")) {
+        if (payload.result && payload.result.sessionId) {
+          state.sessionId = payload.result.sessionId;
+          if (payload.result.modes && payload.result.modes.currentModeId) {
+            setMode(payload.result.modes.currentModeId);
+          }
+          appendLog("system", `session ready: ${state.sessionId}`);
+          renderSessions();
+        } else if (payload.result && payload.result.sessions) {
+          renderSessions(payload.result.sessions);
+        } else if (payload.error) {
+          appendLog("system", "rpc error: " + JSON.stringify(payload.error));
+        }
+        return;
+      }
+      appendLog("system", JSON.stringify(payload));
+    }
+    function stopEventPump() {
+      if (state.abortPoll) { state.abortPoll.abort(); state.abortPoll = null; }
+      if (state.eventSource) { state.eventSource.close(); state.eventSource = null; }
+    }
+    async function startLongPoll() {
+      stopEventPump();
+      setTransport("long-poll");
+      const ac = new AbortController();
+      state.abortPoll = ac;
+      while (state.agentId && state.abortPoll === ac) {
+        try {
+          const qs = new URLSearchParams({
+            cursor: String(state.cursor), waitMs: "25000", limit: "100", token: state.token,
+          });
+          const res = await fetch(`/api/v1/agents/${state.agentId}/events?${qs}`, {
+            headers: { "X-Zene-Token": state.token, "X-Zene-Client-Id": state.clientId },
+            signal: ac.signal,
+          });
+          const body = await res.json();
+          if (!res.ok) throw new Error(body.message || body.error || res.statusText);
+          for (const event of body.events || []) {
+            state.cursor = event.cursor;
+            handlePayload(event.payload);
+          }
+          if (body.hasMore) continue;
+        } catch (err) {
+          if (ac.signal.aborted) return;
+          setStatus("poll error: " + err.message, "err");
+          await new Promise((r) => setTimeout(r, 1200));
+        }
+      }
+    }
+    function startSse() {
+      stopEventPump();
+      setTransport("sse");
+      const qs = new URLSearchParams({ cursor: String(state.cursor), token: state.token });
+      const es = new EventSource(`/api/v1/agents/${state.agentId}/events/stream?${qs}`);
+      state.eventSource = es;
+      es.addEventListener("acp", (ev) => {
+        try {
+          const item = JSON.parse(ev.data);
+          state.cursor = item.cursor || state.cursor;
+          handlePayload(item.payload);
+        } catch (err) {
+          appendLog("system", "sse parse error: " + err.message);
+        }
+      });
+      es.addEventListener("cursor_expired", () => startLongPoll());
+      es.onerror = () => {
+        appendLog("system", "sse disconnected; falling back to long-poll");
+        startLongPoll();
+      };
+    }
+    async function startEventPump() {
+      if (state.preferSse) {
+        try {
+          const boot = await api("/api/v1/bootstrap");
+          if (boot.transports && boot.transports.sse) { startSse(); return; }
+        } catch (_) {}
+      }
+      startLongPoll();
+    }
+    async function acquireLease(force = false) {
+      const body = await api(`/api/v1/agents/${state.agentId}/lease`, {
+        method: "POST",
+        body: JSON.stringify({ clientId: state.clientId, force }),
+      });
+      setStatus(`control: ${body.lease.clientId}`, "ok");
+      if (state.heartbeat) clearInterval(state.heartbeat);
+      state.heartbeat = setInterval(() => {
+        api(`/api/v1/agents/${state.agentId}/lease/heartbeat`, {
+          method: "POST",
+          body: JSON.stringify({ clientId: state.clientId }),
+        }).catch(() => {});
+      }, 10000);
+    }
+    function renderSessions(list) {
+      const root = el("sessions");
+      if (list) {
+        root.innerHTML = "";
+        if (!list.length) {
+          root.innerHTML = `<p class="status">no saved sessions</p>`;
+          return;
+        }
+        for (const s of list) {
+          const wrap = document.createElement("div");
+          wrap.style.marginBottom = "6px";
+          const btn = document.createElement("button");
+          btn.className = "session-item" + (s.sessionId === state.sessionId ? " active" : "");
+          btn.textContent = `${s.title || s.sessionId}\n${s.updatedAt || ""}`;
+          btn.onclick = () => loadSession(s.sessionId);
+          const resume = document.createElement("button");
+          resume.className = "secondary";
+          resume.style.width = "100%";
+          resume.style.marginTop = "4px";
+          resume.textContent = "Resume (no replay)";
+          resume.onclick = () => resumeSession(s.sessionId);
+          wrap.appendChild(btn);
+          wrap.appendChild(resume);
+          root.appendChild(wrap);
+        }
+        return;
+      }
+      root.innerHTML = state.sessionId
+        ? `<p class="status">active: ${state.sessionId}</p>`
+        : `<p class="status">none</p>`;
+    }
+    async function refreshSessions() {
+      await postMessages([rpcRequest("session/list", { cwd: el("workspace").value.trim() })]);
+    }
+    async function createSession() {
+      finalizeStreams();
+      await postMessages([rpcRequest("session/new", {
+        cwd: el("workspace").value.trim(), mcpServers: [],
+      })]);
+      el("btnSend").disabled = false;
+      el("btnCancel").disabled = false;
+      el("btnClose").disabled = false;
+    }
+    async function loadSession(sessionId) {
+      finalizeStreams();
+      state.tools.clear();
+      logEl.innerHTML = "";
+      appendLog("system", "load " + sessionId);
+      await postMessages([rpcRequest("session/load", {
+        sessionId, cwd: el("workspace").value.trim(),
+      })]);
+      el("btnSend").disabled = false;
+      el("btnCancel").disabled = false;
+      el("btnClose").disabled = false;
+    }
+    async function resumeSession(sessionId) {
+      finalizeStreams();
+      state.tools.clear();
+      logEl.innerHTML = "";
+      appendLog("system", "resume " + sessionId);
+      await postMessages([rpcRequest("session/resume", {
+        sessionId, cwd: el("workspace").value.trim(),
+      })]);
+      el("btnSend").disabled = false;
+      el("btnCancel").disabled = false;
+      el("btnClose").disabled = false;
+    }
+    async function closeSession() {
+      if (!state.sessionId) return;
+      await postMessages([rpcRequest("session/close", { sessionId: state.sessionId })]);
+      appendLog("system", "session closed");
+      state.sessionId = null;
+      el("btnSend").disabled = true;
+      el("btnCancel").disabled = true;
+      renderSessions();
+    }
+    async function setSessionMode(modeId) {
+      if (!state.sessionId) return;
+      await postMessages([rpcRequest("session/set_mode", {
+        sessionId: state.sessionId, modeId,
+      })]);
+    }
+    async function refreshTerminals() {
+      if (!state.agentId) return;
+      const body = await api(`/api/v1/agents/${state.agentId}/terminals`);
+      for (const t of body.terminals || []) {
+        const prev = state.terminals.get(t.terminalId) || {};
+        state.terminals.set(t.terminalId, Object.assign({}, prev, {
+          terminalId: t.terminalId,
+          command: t.command,
+          status: t.status,
+        }));
+      }
+      renderTerminals();
+    }
+    async function killTerminal(terminalId) {
+      await api(`/api/v1/agents/${state.agentId}/terminals/${terminalId}/kill`, {
+        method: "POST",
+        body: "{}",
+      });
+      await refreshTerminals();
+    }
+    async function startAgent() {
+      state.token = el("token").value.trim() || tokenFromHash();
+      el("token").value = state.token;
+      const workspace = el("workspace").value.trim();
+      if (!state.token) return setStatus("token required", "err");
+      if (!workspace) return setStatus("workspace required", "err");
+      localStorage.setItem("zene.workspace", workspace);
+      setStatus("starting…");
+      const created = await api("/api/v1/agents", {
+        method: "POST",
+        body: JSON.stringify({ requestId: uuid(), workspace }),
+      });
+      state.agentId = created.agent.agentId;
+      state.cursor = 0;
+      appendLog("system", `agent ${state.agentId}`);
+      await acquireLease(false);
+      await startEventPump();
+      await postMessages([rpcRequest("initialize", {
+        protocolVersion: 1,
+        clientCapabilities: {
+          fs: { readTextFile: true, writeTextFile: true },
+          terminal: true,
+        },
+        clientInfo: { name: "zene-web-agent", version: "0.3.0" },
+      })]);
+      await createSession();
+      await refreshSessions();
+      ["btnNew","btnRefreshSessions","btnTakeover","btnModeDefault","btnModePlan","btnRefreshTerms"]
+        .forEach((id) => el(id).disabled = false);
+      setStatus("ready", "ok");
+      setDrawer(false);
+      el("prompt").focus();
+    }
+    async function sendPrompt() {
+      const text = el("prompt").value.trim();
+      if (!text || !state.sessionId) return;
+      finalizeStreams();
+      if (el("conversationTitle").textContent === "New conversation") {
+        el("conversationTitle").textContent = text.length > 52 ? text.slice(0, 52) + "…" : text;
+      }
+      appendLog("user", text);
+      el("prompt").value = "";
+      el("prompt").style.height = "";
+      await postMessages([rpcRequest("session/prompt", {
+        sessionId: state.sessionId,
+        prompt: [{ type: "text", text }],
+      })]);
+    }
+    async function cancelTurn() {
+      if (!state.sessionId) return;
+      await postMessages([{
+        jsonrpc: "2.0", method: "session/cancel",
+        params: { sessionId: state.sessionId },
+      }]);
+      appendLog("system", "cancel sent");
+    }
+
+    el("btnStart").onclick = () => startAgent().catch((e) => setStatus(e.message, "err"));
+    el("btnNew").onclick = () => createSession().catch((e) => setStatus(e.message, "err"));
+    el("btnClose").onclick = () => closeSession().catch((e) => setStatus(e.message, "err"));
+    el("btnRefreshSessions").onclick = () => refreshSessions().catch((e) => setStatus(e.message, "err"));
+    el("btnTakeover").onclick = () => acquireLease(true).catch((e) => setStatus(e.message, "err"));
+    el("btnModeDefault").onclick = () => setSessionMode("default").catch((e) => setStatus(e.message, "err"));
+    el("btnModePlan").onclick = () => setSessionMode("plan").catch((e) => setStatus(e.message, "err"));
+    el("btnRefreshTerms").onclick = () => refreshTerminals().catch((e) => setStatus(e.message, "err"));
+    el("btnSend").onclick = () => sendPrompt().catch((e) => setStatus(e.message, "err"));
+    el("btnCancel").onclick = () => cancelTurn().catch((e) => setStatus(e.message, "err"));
+    el("btnClear").onclick = () => { showEmptyState(); state.tools.clear(); };
+    el("btnSettingsTop").onclick = () => setDrawer(true);
+    el("btnSettingsRail").onclick = () => setDrawer(true);
+    el("btnSettingsClose").onclick = () => setDrawer(false);
+    el("drawerBackdrop").onclick = () => setDrawer(false);
+    el("btnSessionsRail").onclick = () => setDrawer(true, true);
+    el("btnInspectorTop").onclick = () => setInspector(el("inspector").classList.contains("hidden"));
+    el("btnInspectorRail").onclick = () => setInspector(el("inspector").classList.contains("hidden"));
+    el("btnInspectorClose").onclick = () => setInspector(false);
+    el("prompt").addEventListener("input", (event) => {
+      event.target.style.height = "auto";
+      event.target.style.height = Math.min(event.target.scrollHeight, 180) + "px";
+    });
+    el("prompt").addEventListener("keydown", (event) => {
+      if (event.key === "Enter" && !event.shiftKey && !event.isComposing) {
+        event.preventDefault();
+        if (!el("btnSend").disabled) el("btnSend").click();
+      }
+    });
+    document.addEventListener("keydown", (event) => {
+      if (event.key === "Escape") setDrawer(false);
+    });
+    el("token").value = tokenFromHash();
+    el("workspace").value = localStorage.getItem("zene.workspace") || "";
+    setInspector(window.innerWidth > 900);
+    setStatus(el("token").value ? "token loaded" : "waiting for token");
+    setDrawer(true);
+  </script>
+</body>
+</html>

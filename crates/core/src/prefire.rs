@@ -14,9 +14,6 @@ pub struct PrefireCache {
     pub note1: String,
     pub fingerprint: u64,
     pub split_idx: usize,
-    /// Absolute index into session.messages where the pass1 prefix ended
-    /// (including any leading system message offset handled by caller).
-    pub prefix_end: usize,
 }
 
 pub struct PrefireState {
@@ -65,10 +62,6 @@ impl PrefireState {
         let mut g = self.inner.lock();
         g.cache = Some(cache);
         g.handle = None;
-    }
-
-    pub fn take_cache(&self) -> Option<PrefireCache> {
-        self.inner.lock().cache.take()
     }
 
     pub fn peek_cache(&self) -> Option<PrefireCache> {

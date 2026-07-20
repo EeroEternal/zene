@@ -373,7 +373,6 @@ pub async fn summarize_prefix(
 
     if let Some(cache) = prefire {
         if cache.split_idx > 0 && cache.split_idx < body.len() {
-            let pass1_prefix = &body[..cache.split_idx];
             let tail = &body[cache.split_idx..];
             info!(
                 split_idx = cache.split_idx,

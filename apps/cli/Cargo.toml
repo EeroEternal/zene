@@ -14,15 +14,12 @@ async-trait.workspace = true
 clap.workspace = true
 parking_lot.workspace = true
 rustyline.workspace = true
-ratatui.workspace = true
-crossterm.workspace = true
 tokio.workspace = true
 tokio-util.workspace = true
 ctrlc.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 serde_json.workspace = true
-similar.workspace = true
 uuid.workspace = true
 zene-config = { workspace = true }
 zene-core = { workspace = true }

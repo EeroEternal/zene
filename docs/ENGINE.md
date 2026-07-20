@@ -7,7 +7,7 @@ Core agent loop lives in `crates/core`. This document tracks engine-level behavi
 - One **active turn** per `Agent` (`TurnState` in `turn.rs`).
 - `Agent::prompt()` starts a turn; concurrent `prompt()` calls fail with an error that suggests `steer()`.
 - **`Agent::steer(text)`** queues follow-up user guidance in `SteerBuffer` (kimi `steerBuffer` analogue). Messages are injected as `Message::user` **after the current step completes** (post-tool or post-assistant), not as a new turn.
-- CLI REPL: `/steer <message>` when a turn is active (typically from TUI/async callers; blocking REPL waits on `prompt()`).
+- CLI REPL: `/steer <message>` when a turn is active (typically from Web/async callers; blocking `--repl` waits on `prompt()`).
 - Event: `AgentEvent::SteerInput { text }` for UI/replay hooks.
 
 ## Token estimation
@@ -79,7 +79,7 @@ Avoids paying for LLM summarize when truncation alone fixes the overflow.
 
 ### Usage-driven water level
 
-`ContextWaterLevel` (`context_water.rs`) tracks the last provider `prompt_tokens` and the heuristic estimate. Auto-compact triggers on `max(usage, estimate)` vs `context_window * trigger_ratio` (default 85%). After tool results, a preflight pass also compacts when the estimate exceeds the hard window. Failed summarize sets sticky suppression until a successful `/compact`. Session persists `context_window_usage` / `context_tokens_used`; TUI shows `ctx N%`; `/context` (alias `/tokens`) prints the report.
+`ContextWaterLevel` (`context_water.rs`) tracks the last provider `prompt_tokens` and the heuristic estimate. Auto-compact triggers on `max(usage, estimate)` vs `context_window * trigger_ratio` (default 85%). After tool results, a preflight pass also compacts when the estimate exceeds the hard window. Failed summarize sets sticky suppression until a successful `/compact`. Session persists `context_window_usage` / `context_tokens_used`; Web UI shows usage/context; `/context` (alias `/tokens`) prints the report in `--repl`.
 
 ### Full-replace assemble + input ladder
 
@@ -170,6 +170,19 @@ Before/after compaction, checkpoints are saved under `~/.zene/sessions/<id>/comp
 - Prompt content accepts `text`, embedded `resource`, and `resource_link` blocks
 
 Stdout is reserved for protocol frames; logs go to stderr.
+
+## HTTP Gateway (Web Agent)
+
+`zene-gateway` is a thin local HTTP adapter in front of `zene acp` (see `docs/WEB_AGENT_GATEWAY.md`):
+
+- Default bind: `127.0.0.1` with a generated `X-Zene-Token`
+- `POST /api/v1/agents/{id}/messages` forwards raw ACP JSON-RPC frames to the child stdin
+- `GET /api/v1/agents/{id}/events?cursor=&waitMs=` long-polls a cursored event journal fed by child stdout
+- `GET /api/v1/agents/{id}/events/stream` is optional SSE; clients must fall back to long-polling
+- Controller lease (`/lease`, heartbeat, release) serializes multi-tab writes via `X-Zene-Client-Id`
+- When the Web client advertises `terminal`, the gateway hosts ACP `terminal/*` locally and mirrors output as `gateway.terminal` events
+- WebSocket is intentionally not required
+- The gateway does not own Agent loop / tools / sessions — those stay in Zene
 
 ## LLM layer
 

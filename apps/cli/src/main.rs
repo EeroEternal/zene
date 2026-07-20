@@ -14,7 +14,6 @@ mod acp;
 mod model_config;
 mod repl;
 mod sandbox_opts;
-mod tui;
 
 /// Shared cancel token for the in-flight REPL turn (Ctrl+C or `/cancel`).
 static ACTIVE_CANCEL: Mutex<Option<CancellationToken>> = Mutex::new(None);
@@ -55,11 +54,11 @@ pub struct Cli {
     #[arg(long)]
     yolo: bool,
 
-    /// Launch ratatui TUI instead of line REPL (now default)
-    #[arg(long)]
+    /// Removed: ratatui TUI. Use `zene` / `zene web` instead.
+    #[arg(long, hide = true)]
     tui: bool,
 
-    /// Launch line REPL instead of ratatui TUI
+    /// Launch the debug line REPL (not the default UI)
     #[arg(long)]
     repl: bool,
 
@@ -71,7 +70,7 @@ pub struct Cli {
     #[arg(long)]
     quiet_usage: bool,
 
-    /// Run a single prompt headlessly (no TUI/REPL) and exit
+    /// Run a single prompt headlessly and exit
     #[arg(short = 'p', long = "prompt")]
     prompt: Option<String>,
 
@@ -111,6 +110,12 @@ enum Commands {
     },
     /// Speak Agent Client Protocol (ACP) over stdio JSON-RPC
     Acp,
+    /// Launch the local Web Agent UI via `zene-gateway`
+    Web {
+        /// Extra arguments forwarded to `zene-gateway` (e.g. `--port 8787 --yolo`)
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        gateway_args: Vec<String>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -119,16 +124,7 @@ enum McpCommands {
     Doctor,
 }
 
-fn init_tracing(use_tui: bool) {
-    if use_tui {
-        // Ratatui uses the alternate screen on stdout; stderr writes also corrupt the UI.
-        tracing_subscriber::fmt()
-            .with_env_filter("off")
-            .with_target(false)
-            .with_writer(std::io::sink)
-            .init();
-        return;
-    }
+fn init_tracing() {
     tracing_subscriber::fmt()
         .with_env_filter("zene=info")
         .with_target(false)
@@ -151,7 +147,7 @@ async fn main() -> Result<()> {
             .with_writer(std::io::stderr)
             .init();
     } else {
-        init_tracing(!is_repl);
+        init_tracing();
     }
 
     if is_repl {
@@ -165,6 +161,12 @@ async fn main() -> Result<()> {
 
     ensure_home().map_err(|err| anyhow::anyhow!(err.to_string()))?;
     let cli = Cli::parse();
+    if cli.tui {
+        anyhow::bail!(
+            "the ratatui TUI was removed; run `zene` or `zene web` for the Web Agent UI, \
+             `zene --repl` for the debug REPL, or `zene -p` for headless prompts"
+        );
+    }
     let workdir = std::env::current_dir().context("resolve current directory")?;
     let workdir = if cli.workdir.as_os_str() == std::ffi::OsStr::new(".") {
         workdir
@@ -232,7 +234,24 @@ async fn main() -> Result<()> {
             acp::run_acp(workdir, cli.yolo).await?;
             return Ok(());
         }
+        Some(Commands::Web { gateway_args }) => {
+            run_web_gateway(gateway_args)?;
+            return Ok(());
+        }
         None => {}
+    }
+
+    // Default interactive entry is the Web Agent UI (phase E).
+    if cli.prompt.is_none() && !cli.repl {
+        let mut gateway_args = Vec::new();
+        if cli.yolo {
+            gateway_args.push("--yolo".to_string());
+        }
+        if cli.sandbox.as_deref() == Some("off") {
+            gateway_args.push("--sandbox-off".to_string());
+        }
+        run_web_gateway(gateway_args)?;
+        return Ok(());
     }
 
     let config = ZeneConfig::load(&workdir).map_err(|err| anyhow::anyhow!(err.to_string()))?;
@@ -277,10 +296,6 @@ async fn main() -> Result<()> {
         run_headless(&mut agent, prompt, &cli).await?;
         agent.shutdown().await?;
         return Ok(());
-    }
-
-    if !cli.repl {
-        return tui::run(agent, &config, &cli).await;
     }
 
     repl::run_repl(&mut agent, &cli).await?;
@@ -395,4 +410,45 @@ async fn run_mcp_doctor(workdir: &std::path::Path) -> Result<()> {
         println!("  - {}", def.name);
     }
     Ok(())
+}
+
+fn run_web_gateway(gateway_args: Vec<String>) -> Result<()> {
+    let gateway = resolve_gateway_bin();
+    let mut cmd = std::process::Command::new(&gateway);
+    if !gateway_args
+        .iter()
+        .any(|arg| arg == "--zene-bin" || arg.starts_with("--zene-bin="))
+    {
+        if let Ok(zene) = std::env::current_exe() {
+            cmd.arg("--zene-bin").arg(zene);
+        }
+    }
+    cmd.args(&gateway_args);
+    let status = cmd
+        .status()
+        .with_context(|| format!("failed to launch {}", gateway.display()))?;
+    if !status.success() {
+        std::process::exit(status.code().unwrap_or(1));
+    }
+    Ok(())
+}
+
+fn resolve_gateway_bin() -> PathBuf {
+    if let Ok(path) = std::env::var("ZENE_GATEWAY_BIN") {
+        return PathBuf::from(path);
+    }
+    if let Ok(exe) = std::env::current_exe() {
+        let sibling = exe.with_file_name("zene-gateway");
+        if sibling.exists() {
+            return sibling;
+        }
+        #[cfg(windows)]
+        {
+            let sibling = exe.with_file_name("zene-gateway.exe");
+            if sibling.exists() {
+                return sibling;
+            }
+        }
+    }
+    PathBuf::from("zene-gateway")
 }
