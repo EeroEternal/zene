@@ -8,8 +8,10 @@
 - Gateway phase B: optional SSE (`GET /events/stream`) with Web long-poll fallback, controller lease APIs, `apps/web-agent` UI (sessions/tool cards/usage/SSE), `--yolo`/`--sandbox-off`/`--acp-env`, and real `zene acp` + mock LLM smoke test.
 - Gateway phase C: local ACP `terminal/*` host with Web terminal panel, Plan/Todo/background-task panels, mode switch + session close UI, and terminal roundtrip tests.
 - Gateway phase D: on-disk event journal + agent meta, `restart`/`attach` recovery, poll backpressure and payload limits, `zene web` launcher, and `docs/GATEWAY_OPS.md`.
+- Gateway phase E: AskUser over standard `session/request_permission`, Web `session/resume`, default `zene` launches Web Agent, remove ratatui TUI (`docs/TUI_MIGRATION.md`).
 
 ### Changed
+- Default interactive entry is Web Agent (`zene` / `zene web`); `zene --tui` errors with a migration hint; debug line UI remains as `zene --repl`.
 - ACP: bridge `tool_call` / `tool_call_update` / `plan` / `usage_update` / `current_mode_update` / `available_commands_update` / `agent_thought_chunk`; replay history on `session/load`; implement `session/list`, `session/close`, `session/set_mode`, `session/resume`; optional client FS + terminal bridges; FIFO prompt queue with in-turn cancel; correlate permission `toolCallId`; accept embedded prompt context; tighten JSON-RPC error codes.
 
 ## v0.1.7 (2026-07-19)

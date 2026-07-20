@@ -10,7 +10,8 @@ use tokio_util::sync::CancellationToken;
 use tracing::{debug, warn};
 use zene_config::ZeneConfig;
 use zene_core::{
-    Agent, AgentEvent, EventHandler, PermissionGate, PermissionMode, PromptChoice, PromptOptions,
+    Agent, AgentEvent, AskUserOption, EventHandler, PermissionGate, PermissionMode, PromptChoice,
+    PromptOptions,
 };
 use zene_sandbox::LocalSandbox;
 use zene_session::{list_sessions_for_workdir, SessionRecord};
@@ -675,6 +676,14 @@ async fn run_prompt_job(
             );
             agent.set_permission_gate(gate);
         }
+
+        // AskUser always goes through the ACP client (even in yolo), using the
+        // standard session/request_permission reverse request — no private methods.
+        let writer_ask = writer.clone();
+        let session_ask = sid.clone();
+        agent.set_ask_user_prompter(Arc::new(move |question, options| {
+            acp_ask_user_prompt(&writer_ask, &session_ask, question, options)
+        }));
     }
 
     let prompt_id = uuid::Uuid::new_v4().to_string();
@@ -841,6 +850,117 @@ fn resolve_cwd(params: &Value, fallback: &Path) -> Result<PathBuf> {
         .unwrap_or_else(|| fallback.to_path_buf());
     cwd.canonicalize()
         .with_context(|| format!("invalid cwd: {}", cwd.display()))
+}
+
+fn acp_ask_user_prompt(
+    writer: &AcpWriter,
+    session_id: &str,
+    question: &str,
+    options: Option<&[AskUserOption]>,
+) -> io::Result<String> {
+    let (tx, rx) = std::sync::mpsc::channel::<Result<Value, String>>();
+    let writer = writer.clone();
+    let session_id = session_id.to_string();
+    let question = question.to_string();
+    let option_labels: Vec<(String, String, Option<String>)> = options
+        .unwrap_or(&[])
+        .iter()
+        .enumerate()
+        .map(|(idx, opt)| {
+            (
+                format!("ask-{idx}"),
+                opt.label.clone(),
+                opt.description.clone(),
+            )
+        })
+        .collect();
+    let option_labels_for_req = option_labels.clone();
+    let handle = tokio::runtime::Handle::current();
+    handle.spawn(async move {
+        let mut perm_options = Vec::new();
+        for (option_id, name, description) in &option_labels_for_req {
+            let mut entry = json!({
+                "optionId": option_id,
+                "name": name,
+                "kind": "allow_once",
+            });
+            if let Some(desc) = description {
+                entry
+                    .as_object_mut()
+                    .unwrap()
+                    .insert("description".into(), json!(desc));
+            }
+            perm_options.push(entry);
+        }
+        perm_options.push(json!({
+            "optionId": "free-text",
+            "name": "Type an answer",
+            "kind": "allow_once",
+        }));
+        let raw_options: Vec<Value> = option_labels_for_req
+            .iter()
+            .map(|(_, label, description)| {
+                json!({
+                    "label": label,
+                    "description": description,
+                })
+            })
+            .collect();
+        let result = writer
+            .request(
+                "session/request_permission",
+                json!({
+                    "sessionId": session_id,
+                    "toolCall": {
+                        "toolCallId": format!("ask_{}", uuid::Uuid::new_v4().simple()),
+                        "title": question.clone(),
+                        "kind": "other",
+                        "status": "pending",
+                        "rawInput": {
+                            "askUser": true,
+                            "question": question,
+                            "options": raw_options,
+                        },
+                    },
+                    "options": perm_options,
+                }),
+            )
+            .await
+            .map_err(|e| e.to_string());
+        let _ = tx.send(result);
+    });
+
+    let result = std::thread::spawn(move || rx.recv())
+        .join()
+        .map_err(|_| io::Error::new(io::ErrorKind::BrokenPipe, "ask-user thread panicked"))?
+        .map_err(|e| io::Error::new(io::ErrorKind::BrokenPipe, e))?
+        .map_err(|e| io::Error::new(io::ErrorKind::BrokenPipe, e))?;
+
+    let option_id = result
+        .pointer("/outcome/optionId")
+        .or_else(|| result.get("optionId"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("free-text");
+
+    if option_id == "free-text" {
+        let answer = result
+            .pointer("/outcome/answer")
+            .or_else(|| result.get("answer"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        return Ok(answer);
+    }
+
+    if let Some((_, label, _)) = option_labels
+        .iter()
+        .find(|(id, _, _)| id == option_id)
+    {
+        return Ok(label.clone());
+    }
+
+    // Client may echo the chosen label as optionId.
+    Ok(option_id.to_string())
 }
 
 fn acp_permission_prompt(

@@ -786,7 +786,9 @@ Gateway bootstrap 返回：
 - [x] 背压：并发 poll 上限、POST/message 大小限制、超大 payload 截断
 - [x] `zene web` 入口与 [GATEWAY_OPS.md](./GATEWAY_OPS.md) 运维文档
 
-### 下一刀（阶段 E）
+### 阶段 E（已落地）
 
-- [ ] 达到删除 TUI 硬性门槛后移除 ratatui
-- [ ] 默认交互入口切到 Web Agent
+- [x] AskUser 经标准 `session/request_permission`（`rawInput.askUser`）桥到 Web UI
+- [x] Web UI 暴露 `session/resume`
+- [x] 默认交互入口切到 `zene` / `zene web`
+- [x] 删除 ratatui TUI 代码与依赖；保留 `--repl` 调试入口与迁移说明（[TUI_MIGRATION.md](./TUI_MIGRATION.md)）

@@ -305,9 +305,9 @@ Zene 目标：Rust 实现的本地 code agent CLI（对标 kimi-code / flue 的�
 
 > 从开发者自用 CLI 到可分发产品。
 
-### P7.1 TUI
+### P7.1 TUI（已由 Web Agent 取代，见阶段 E / `docs/TUI_MIGRATION.md`）
 
-- [x] `zene --tui` 启动 ratatui 界面（默认仍为 rustyline REPL）
+- [x] ~~`zene --tui` ratatui 界面~~ → 已删除；默认 `zene` / `zene web`
 - [x] 布局 MVP：可滚动聊天历史、底部输入框、状态栏（model / session / usage）
 - [x] 通过 `AgentEvent` + `event_handler` 驱动 UI（TextDelta 流式、ToolCall/ToolResult 紧凑行）
 - [x] manual 模式权限 overlay（y/n/a，复用 `PermissionGate`）
@@ -416,6 +416,6 @@ TUI、record/replay、安装分发。
 | P5 MCP/扩展 | [x] | stdio + HTTP MCP、`zene mcp doctor` |
 | P6 集成/产品化 | [x] | `zene -p` headless + `--output-format json`；`zene acp`（resume/queue/thought/terminal + modes/FS/tool updates） |
 | P7 沙箱产品化 | [x] | 可配置 Keel profile、egress allowlist、凭据 deny、SpaceFs、auto_allow_bash |
-| P8 Web Agent | [~] | 阶段 A–D：gateway 长轮询/SSE/lease/terminal/persist/restart + `zene web`；见 `docs/WEB_AGENT_GATEWAY.md` |
+| P8 Web Agent | [x] | 阶段 A–E：Web 为默认 UI，TUI 已移除；见 `docs/WEB_AGENT_GATEWAY.md` / `docs/TUI_MIGRATION.md` |
 
-*最后更新：2026-07-20（Web Agent Gateway 阶段 D）*
+*最后更新：2026-07-20（Web Agent Gateway 阶段 E）*
