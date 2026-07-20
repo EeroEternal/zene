@@ -952,7 +952,6 @@ impl Agent {
                         note1,
                         fingerprint,
                         split_idx,
-                        prefix_end: prefix_start + split_idx,
                     })
                 }
                 Err(err) => {

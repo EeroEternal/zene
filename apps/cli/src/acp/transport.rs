@@ -5,7 +5,7 @@ use anyhow::{anyhow, Result};
 use serde_json::{json, Value};
 use tokio::sync::oneshot;
 
-struct PendingResponse {
+pub(crate) struct PendingResponse {
     tx: oneshot::Sender<Result<Value, Value>>,
 }
 

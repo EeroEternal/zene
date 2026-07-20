@@ -155,7 +155,7 @@ pub fn load_recent_memory(workdir: &Path) -> Option<String> {
     }
 
     let daily_dir = root.join("daily");
-    if let Ok(mut entries) = fs::read_dir(&daily_dir) {
+    if let Ok(entries) = fs::read_dir(&daily_dir) {
         let mut files: Vec<PathBuf> = entries
             .filter_map(|e| e.ok().map(|e| e.path()))
             .filter(|p| p.extension().and_then(|e| e.to_str()) == Some("md"))
