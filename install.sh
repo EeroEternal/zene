@@ -3,3 +3,4 @@ set -euo pipefail
 
 cd "$(dirname "$0")"
 cargo install --path apps/cli --locked
+cargo install --path apps/gateway --locked --bin zene-gateway
