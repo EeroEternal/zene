@@ -111,6 +111,12 @@ enum Commands {
     },
     /// Speak Agent Client Protocol (ACP) over stdio JSON-RPC
     Acp,
+    /// Launch the local Web Agent UI via `zene-gateway`
+    Web {
+        /// Extra arguments forwarded to `zene-gateway` (e.g. `--port 8787 --yolo`)
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        gateway_args: Vec<String>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -230,6 +236,10 @@ async fn main() -> Result<()> {
         }
         Some(Commands::Acp) => {
             acp::run_acp(workdir, cli.yolo).await?;
+            return Ok(());
+        }
+        Some(Commands::Web { gateway_args }) => {
+            run_web_gateway(gateway_args)?;
             return Ok(());
         }
         None => {}
@@ -395,4 +405,45 @@ async fn run_mcp_doctor(workdir: &std::path::Path) -> Result<()> {
         println!("  - {}", def.name);
     }
     Ok(())
+}
+
+fn run_web_gateway(gateway_args: Vec<String>) -> Result<()> {
+    let gateway = resolve_gateway_bin();
+    let mut cmd = std::process::Command::new(&gateway);
+    if !gateway_args
+        .iter()
+        .any(|arg| arg == "--zene-bin" || arg.starts_with("--zene-bin="))
+    {
+        if let Ok(zene) = std::env::current_exe() {
+            cmd.arg("--zene-bin").arg(zene);
+        }
+    }
+    cmd.args(&gateway_args);
+    let status = cmd
+        .status()
+        .with_context(|| format!("failed to launch {}", gateway.display()))?;
+    if !status.success() {
+        std::process::exit(status.code().unwrap_or(1));
+    }
+    Ok(())
+}
+
+fn resolve_gateway_bin() -> PathBuf {
+    if let Ok(path) = std::env::var("ZENE_GATEWAY_BIN") {
+        return PathBuf::from(path);
+    }
+    if let Ok(exe) = std::env::current_exe() {
+        let sibling = exe.with_file_name("zene-gateway");
+        if sibling.exists() {
+            return sibling;
+        }
+        #[cfg(windows)]
+        {
+            let sibling = exe.with_file_name("zene-gateway.exe");
+            if sibling.exists() {
+                return sibling;
+            }
+        }
+    }
+    PathBuf::from("zene-gateway")
 }

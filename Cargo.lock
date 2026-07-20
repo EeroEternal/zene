@@ -4542,6 +4542,7 @@ dependencies = [
  "axum",
  "chrono",
  "clap",
+ "dirs",
  "futures",
  "reqwest 0.12.28",
  "serde",

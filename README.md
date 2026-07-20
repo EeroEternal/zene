@@ -127,16 +127,18 @@ zene --yolo            # auto-approve Write / Edit / Bash
 zene --sandbox strict  # Keel profile: off | workspace | read-only | strict | custom
 zene --tui             # ratatui chat UI (PageUp/PageDown scroll)
 zene acp               # Agent Client Protocol over stdio (for editors / gateway)
+zene web --yolo --sandbox-off   # launch local Web Agent UI (zene-gateway)
 ```
 
-Headless Web UI (phase A vertical slice):
+Headless Web UI:
 
 ```bash
-cargo run -p zene-gateway -- --zene-bin ./target/debug/zene --yolo --sandbox-off
+cargo run -p zene-cli -- web --yolo --sandbox-off
+# or: cargo run -p zene-gateway -- --zene-bin ./target/debug/zene --yolo --sandbox-off
 # open the printed http://127.0.0.1:8787/#token=... URL
 ```
 
-`zene-gateway` is a thin local HTTP bridge: the Web UI prefers SSE and falls back to long-polling; the gateway speaks ACP NDJSON to a `zene acp` child process. UI sources live in `apps/web-agent/`. See [docs/WEB_AGENT_GATEWAY.md](docs/WEB_AGENT_GATEWAY.md).
+`zene-gateway` is a thin local HTTP bridge: the Web UI prefers SSE and falls back to long-polling; the gateway speaks ACP NDJSON to a `zene acp` child process. Journals persist under `~/.zene/gateway` for restart/attach recovery. UI sources live in `apps/web-agent/`. See [docs/WEB_AGENT_GATEWAY.md](docs/WEB_AGENT_GATEWAY.md) and [docs/GATEWAY_OPS.md](docs/GATEWAY_OPS.md).
 
 ## Architecture
 

@@ -254,6 +254,7 @@ async fn gateway_with_real_zene_acp_writes_file() {
         auth: AuthState::new(token.into(), "127.0.0.1".into(), addr.port()),
         agents,
         leases: LeaseManager::new(),
+        polls: zene_gateway::poll_guard::PollGuard::new(2),
         started_at: chrono::Utc::now(),
         version: "test",
     };

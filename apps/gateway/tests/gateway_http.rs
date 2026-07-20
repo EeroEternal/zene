@@ -8,29 +8,44 @@ use zene_gateway::agent::AgentManager;
 use zene_gateway::auth::AuthState;
 use zene_gateway::http::{self, AppState};
 use zene_gateway::lease::LeaseManager;
+use zene_gateway::poll_guard::PollGuard;
+use zene_gateway::store::DataStore;
 
 fn mock_acp_bin() -> PathBuf {
     PathBuf::from(env!("CARGO_BIN_EXE_zene-gateway-mock-acp"))
 }
 
-async fn start_server(token: &str) -> (SocketAddr, reqwest::Client) {
+async fn start_server_with(
+    token: &str,
+    store: Option<DataStore>,
+    max_polls: usize,
+) -> (SocketAddr, reqwest::Client, tokio::task::JoinHandle<()>) {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
         .expect("bind");
     let addr = listener.local_addr().expect("addr");
-    let agents = AgentManager::new(mock_acp_bin(), Vec::new());
+    let mut agents = AgentManager::new(mock_acp_bin(), Vec::new());
+    if let Some(store) = store {
+        agents = agents.with_store(store);
+    }
     let state = AppState {
         auth: AuthState::new(token.to_string(), "127.0.0.1".into(), addr.port()),
         agents,
         leases: LeaseManager::new(),
+        polls: PollGuard::new(max_polls),
         started_at: chrono::Utc::now(),
         version: "test",
     };
     let app = http::router(state);
-    tokio::spawn(async move {
+    let handle = tokio::spawn(async move {
         axum::serve(listener, app).await.expect("serve");
     });
     let client = reqwest::Client::new();
+    (addr, client, handle)
+}
+
+async fn start_server(token: &str) -> (SocketAddr, reqwest::Client) {
+    let (addr, client, _handle) = start_server_with(token, None, 2).await;
     (addr, client)
 }
 
@@ -98,6 +113,8 @@ async fn bootstrap_advertises_sse_and_lease() {
     assert_eq!(boot["features"]["controllerLease"], true);
     assert_eq!(boot["features"]["terminalHost"], true);
     assert_eq!(boot["features"]["planPanel"], true);
+    assert_eq!(boot["features"]["agentRestart"], true);
+    assert_eq!(boot["limits"]["maxConcurrentPollsPerAgent"], 2);
 }
 
 #[tokio::test]
@@ -618,4 +635,243 @@ async fn controller_lease_blocks_other_client_writes() {
         .await
         .unwrap();
     assert_eq!(stolen["lease"]["clientId"], "other");
+}
+
+#[tokio::test]
+async fn persists_journal_and_supports_attach_after_gateway_restart() {
+    let data = tempdir().unwrap();
+    let store = DataStore::new(data.path().to_path_buf()).unwrap();
+    let token = "secret";
+    let (addr, client, handle) = start_server_with(token, Some(store.clone()), 2).await;
+    let workspace = tempdir().unwrap();
+
+    let created: Value = client
+        .post(format!("http://{addr}/api/v1/agents"))
+        .headers(auth_json(token))
+        .json(&json!({
+            "requestId": "persist-1",
+            "workspace": workspace.path()
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let agent_id = created["agent"]["agentId"].as_str().unwrap().to_string();
+    assert!(created["agent"]["journalPath"].as_str().is_some());
+
+    let mut cursor = 0u64;
+    let _ = wait_for_payload(&client, addr, token, &agent_id, &mut cursor, |p| {
+        p["kind"] == "agent_started"
+    })
+    .await;
+
+    let listed: Value = client
+        .get(format!("http://{addr}/api/v1/agents"))
+        .header("X-Zene-Token", token)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(listed["persisted"].as_array().unwrap().len(), 1);
+    assert_eq!(listed["persisted"][0]["agentId"], agent_id);
+
+    // Simulate gateway process restart: stop first process, reopen same data dir.
+    handle.abort();
+    let (addr2, client2, _handle2) = start_server_with(token, Some(store), 2).await;
+    let attached: Value = client2
+        .post(format!("http://{addr2}/api/v1/agents/{agent_id}/attach"))
+        .headers(auth_json(token))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(attached["agent"]["agentId"], agent_id);
+
+    let events: Value = client2
+        .get(format!(
+            "http://{addr2}/api/v1/agents/{agent_id}/events?cursor=0&waitMs=0&limit=50"
+        ))
+        .header("X-Zene-Token", token)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let kinds: Vec<&str> = events["events"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|e| e["payload"]["kind"].as_str())
+        .collect();
+    assert!(kinds.contains(&"agent_started"));
+    assert!(kinds.iter().any(|k| *k == "agent_attach"));
+}
+
+#[tokio::test]
+async fn restart_keeps_journal_and_respawns_child() {
+    let token = "secret";
+    let (addr, client) = start_server(token).await;
+    let workspace = tempdir().unwrap();
+
+    let created: Value = client
+        .post(format!("http://{addr}/api/v1/agents"))
+        .headers(auth_json(token))
+        .json(&json!({
+            "requestId": "restart-1",
+            "workspace": workspace.path()
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let agent_id = created["agent"]["agentId"].as_str().unwrap().to_string();
+    let mut cursor = 0u64;
+    let _ = wait_for_payload(&client, addr, token, &agent_id, &mut cursor, |p| {
+        p["kind"] == "agent_started"
+    })
+    .await;
+
+    let restarted: Value = client
+        .post(format!("http://{addr}/api/v1/agents/{agent_id}/restart"))
+        .headers(auth_json(token))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(restarted["agent"]["agentId"], agent_id);
+    assert_eq!(restarted["agent"]["state"], "running");
+
+    let payload = wait_for_payload(&client, addr, token, &agent_id, &mut cursor, |p| {
+        p["kind"] == "agent_restarted" || p["kind"] == "agent_restarting"
+    })
+    .await;
+    assert!(
+        payload["kind"] == "agent_restarted" || payload["kind"] == "agent_restarting",
+        "{payload}"
+    );
+}
+
+#[tokio::test]
+async fn rejects_too_many_concurrent_polls() {
+    let token = "secret";
+    let (addr, client, _handle) = start_server_with(token, None, 1).await;
+    let workspace = tempdir().unwrap();
+
+    let created: Value = client
+        .post(format!("http://{addr}/api/v1/agents"))
+        .headers(auth_json(token))
+        .json(&json!({
+            "requestId": "poll-1",
+            "workspace": workspace.path()
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let agent_id = created["agent"]["agentId"].as_str().unwrap().to_string();
+
+    // Drain existing events so the next long-poll actually waits and holds a permit.
+    let mut cursor = 0u64;
+    let _ = wait_for_payload(&client, addr, token, &agent_id, &mut cursor, |p| {
+        p["kind"] == "agent_started"
+    })
+    .await;
+    let drain: Value = client
+        .get(format!(
+            "http://{addr}/api/v1/agents/{agent_id}/events?cursor={cursor}&waitMs=0&limit=50"
+        ))
+        .header("X-Zene-Token", token)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    cursor = drain["nextCursor"].as_u64().unwrap_or(cursor);
+
+    let url = format!(
+        "http://{addr}/api/v1/agents/{agent_id}/events?cursor={cursor}&waitMs=3000&limit=1"
+    );
+    let client_hang = client.clone();
+    let token_hang = token.to_string();
+    let hang = tokio::spawn(async move {
+        client_hang
+            .get(url)
+            .header("X-Zene-Token", token_hang)
+            .send()
+            .await
+    });
+    tokio::time::sleep(Duration::from_millis(150)).await;
+
+    let denied = client
+        .get(format!(
+            "http://{addr}/api/v1/agents/{agent_id}/events?cursor={cursor}&waitMs=0&limit=1"
+        ))
+        .header("X-Zene-Token", token)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(denied.status(), reqwest::StatusCode::TOO_MANY_REQUESTS);
+    let body: Value = denied.json().await.unwrap();
+    assert_eq!(body["error"], "too_many_polls");
+
+    let _ = hang.await;
+}
+
+#[tokio::test]
+async fn rejects_oversized_message_payload() {
+    let token = "secret";
+    let (addr, client) = start_server(token).await;
+    let workspace = tempdir().unwrap();
+
+    let created: Value = client
+        .post(format!("http://{addr}/api/v1/agents"))
+        .headers(auth_json(token))
+        .json(&json!({
+            "requestId": "big-1",
+            "workspace": workspace.path()
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let agent_id = created["agent"]["agentId"].as_str().unwrap().to_string();
+
+    let huge = "x".repeat(1_100_000);
+    let denied = client
+        .post(format!("http://{addr}/api/v1/agents/{agent_id}/messages"))
+        .headers(auth_json(token))
+        .json(&json!({
+            "requestId": "big-msg",
+            "messages": [{
+                "jsonrpc": "2.0",
+                "method": "session/prompt",
+                "params": { "text": huge }
+            }]
+        }))
+        .send()
+        .await
+        .unwrap();
+    // Body limit (1 MiB) or per-message size check both reject oversized posts.
+    assert!(
+        denied.status() == reqwest::StatusCode::PAYLOAD_TOO_LARGE
+            || denied.status() == reqwest::StatusCode::BAD_REQUEST,
+        "unexpected status {}",
+        denied.status()
+    );
 }

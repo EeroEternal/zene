@@ -7,6 +7,8 @@ use zene_gateway::agent::{resolve_zene_bin, AgentManager};
 use zene_gateway::auth::AuthState;
 use zene_gateway::http::{self, AppState};
 use zene_gateway::lease::LeaseManager;
+use zene_gateway::poll_guard::PollGuard;
+use zene_gateway::store::{default_data_dir, DataStore};
 
 #[derive(Debug, Parser)]
 #[command(
@@ -51,6 +53,14 @@ struct Cli {
     #[arg(long = "acp-env")]
     acp_env: Vec<String>,
 
+    /// Directory for persisted agent journals/meta (`$ZENE_GATEWAY_DATA` or `~/.zene/gateway`).
+    #[arg(long)]
+    data_dir: Option<PathBuf>,
+
+    /// Disable on-disk journal persistence.
+    #[arg(long, default_value_t = false)]
+    no_persist: bool,
+
     /// Allow non-loopback binds. Required for any bind outside 127.0.0.1/::1.
     #[arg(long, default_value_t = false)]
     allow_remote: bool,
@@ -69,7 +79,13 @@ async fn main() -> Result<()> {
     let token = cli.token.clone().unwrap_or_else(AuthState::generate_token);
     let (command, args) = resolve_acp_command(&cli)?;
     let env = parse_acp_env(&cli.acp_env)?;
-    let agents = AgentManager::new(command.clone(), args.clone()).with_env(env);
+    let mut agents = AgentManager::new(command.clone(), args.clone()).with_env(env);
+    if !cli.no_persist {
+        let data_dir = cli.data_dir.clone().unwrap_or_else(default_data_dir);
+        let store = DataStore::new(data_dir.clone())?;
+        eprintln!("gateway data dir: {}", store.root().display());
+        agents = agents.with_store(store);
+    }
 
     let listener = tokio::net::TcpListener::bind((cli.bind.as_str(), cli.port))
         .await
@@ -80,6 +96,7 @@ async fn main() -> Result<()> {
         auth,
         agents,
         leases: LeaseManager::new(),
+        polls: PollGuard::new(2),
         started_at: chrono::Utc::now(),
         version: env!("CARGO_PKG_VERSION"),
     };
