@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Added
+- Headless Web direction: `docs/WEB_AGENT_GATEWAY.md` design for HTTP Gateway + Web Agent UI (long-polling first; SSE optional; WebSocket not required).
+- New `zene-gateway` binary (`apps/gateway`): thin local HTTP bridge over `zene acp` with token/Origin checks, `POST /api/v1/agents/{id}/messages`, cursor-based `GET /api/v1/agents/{id}/events` long polling, bootstrap/health, embedded minimal Web page, and mock-ACP integration tests.
+
 ### Changed
 - ACP: bridge `tool_call` / `tool_call_update` / `plan` / `usage_update` / `current_mode_update` / `available_commands_update` / `agent_thought_chunk`; replay history on `session/load`; implement `session/list`, `session/close`, `session/set_mode`, `session/resume`; optional client FS + terminal bridges; FIFO prompt queue with in-turn cancel; correlate permission `toolCallId`; accept embedded prompt context; tighten JSON-RPC error codes.
 

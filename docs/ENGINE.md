@@ -171,6 +171,16 @@ Before/after compaction, checkpoints are saved under `~/.zene/sessions/<id>/comp
 
 Stdout is reserved for protocol frames; logs go to stderr.
 
+## HTTP Gateway (Web Agent)
+
+`zene-gateway` is a thin local HTTP adapter in front of `zene acp` (see `docs/WEB_AGENT_GATEWAY.md`):
+
+- Default bind: `127.0.0.1` with a generated `X-Zene-Token`
+- `POST /api/v1/agents/{id}/messages` forwards raw ACP JSON-RPC frames to the child stdin
+- `GET /api/v1/agents/{id}/events?cursor=&waitMs=` long-polls a cursored event journal fed by child stdout
+- WebSocket is intentionally not required; SSE is planned as an optional enhancement
+- The gateway does not own Agent loop / tools / sessions — those stay in Zene
+
 ## LLM layer
 
 - `OpenAiCompatibleProvider` (`crates/llm`) intentionally depends on [`unigateway-sdk`](https://crates.io/crates/unigateway-sdk) from **crates.io** (not a sibling path repo). It drives proxy chat via `UniGatewayEngine` (pools, retry, streaming).

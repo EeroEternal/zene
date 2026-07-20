@@ -126,13 +126,24 @@ zene --no-stream       # disable streaming output
 zene --yolo            # auto-approve Write / Edit / Bash
 zene --sandbox strict  # Keel profile: off | workspace | read-only | strict | custom
 zene --tui             # ratatui chat UI (PageUp/PageDown scroll)
+zene acp               # Agent Client Protocol over stdio (for editors / gateway)
 ```
+
+Headless Web UI (phase A vertical slice):
+
+```bash
+cargo run -p zene-gateway -- --zene-bin ./target/debug/zene
+# open the printed http://127.0.0.1:8787/#token=... URL
+```
+
+`zene-gateway` is a thin local HTTP bridge: Web UI talks HTTP long-polling; the gateway speaks ACP NDJSON to a `zene acp` child process. See [docs/WEB_AGENT_GATEWAY.md](docs/WEB_AGENT_GATEWAY.md).
 
 ## Architecture
 
 ```
 zene/
-├── apps/cli/          # REPL entrypoint
+├── apps/cli/          # REPL / TUI / headless / ACP entrypoint
+├── apps/gateway/      # local HTTP gateway for Web Agent UI
 └── crates/
     ├── core/          # agent turn loop, hooks
     ├── llm/           # OpenAI-compatible (unigateway-sdk from crates.io) + Anthropic clients

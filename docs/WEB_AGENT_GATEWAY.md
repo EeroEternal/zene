@@ -748,3 +748,26 @@ Gateway bootstrap 返回：
 5. 增加模拟 ACP 与真实 `zene acp` 的端到端测试。
 
 这个切片可以最早验证三个关键假设：标准 ACP 是否足够、无 WebSocket 的 HTTP 双向映射是否可靠、Gateway 是否能保持足够薄。验证通过后再建设完整 Web Agent UI，并按迁移门槛移除 TUI。
+
+## 21. 实施状态
+
+### 阶段 A（已落地骨架）
+
+- [x] 设计文档
+- [x] `apps/gateway` / 二进制 `zene-gateway`
+- [x] ACP 子进程管理与 NDJSON 转发
+- [x] `GET /api/v1/bootstrap`、`GET /api/v1/health`
+- [x] `POST /api/v1/agents`
+- [x] `POST /api/v1/agents/{id}/messages`（含 `requestId` 幂等）
+- [x] `GET /api/v1/agents/{id}/events` 长轮询 + cursor journal
+- [x] loopback 默认绑定、`X-Zene-Token`、Origin 校验
+- [x] 嵌入式最小 Web 页（session/new、prompt、stream、permission）
+- [x] `zene-gateway-mock-acp` + HTTP 集成测试
+
+### 下一刀（阶段 B）
+
+- [ ] 真实 `zene acp` 端到端 smoke（需 API key 或 mock LLM）
+- [ ] 独立 `apps/web-agent` 前端工程（替代嵌入 HTML）
+- [ ] session load/resume UI、tool/diff 卡片、usage/context
+- [ ] SSE 可选通道与自动降级
+- [ ] 多标签页 controller lease
