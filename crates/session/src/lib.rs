@@ -222,12 +222,113 @@ impl SessionRecord {
         let path = session_path(id);
         let raw = fs::read_to_string(&path)
             .with_context(|| format!("read session file: {}", path.display()))?;
-        serde_json::from_str(&raw).context("parse session file")
+        parse_session_raw(&raw, Some(id)).context("parse session file")
     }
 }
 
 pub fn session_path(id: &str) -> PathBuf {
     sessions_dir().join(format!("{id}.json"))
+}
+
+/// Parse a session JSON document, migrating older shapes that lack `meta`.
+pub fn parse_session_raw(raw: &str, fallback_id: Option<&str>) -> Result<SessionRecord> {
+    if let Ok(record) = serde_json::from_str::<SessionRecord>(raw) {
+        return Ok(record);
+    }
+
+    let value: serde_json::Value =
+        serde_json::from_str(raw).context("session file is not valid JSON")?;
+
+    // Legacy: top-level messages array (no wrapper object).
+    if let Some(messages) = value.as_array() {
+        let messages: Vec<Message> =
+            serde_json::from_value(serde_json::Value::Array(messages.clone()))
+                .context("parse legacy session message array")?;
+        return Ok(legacy_record(fallback_id, None, None, messages));
+    }
+
+    // Legacy: object with messages but no meta envelope.
+    if value.get("meta").is_none() && value.get("messages").is_some() {
+        let messages: Vec<Message> = serde_json::from_value(
+            value
+                .get("messages")
+                .cloned()
+                .unwrap_or_else(|| serde_json::json!([])),
+        )
+        .context("parse legacy session messages")?;
+        let id = value
+            .get("id")
+            .and_then(|v| v.as_str())
+            .or(fallback_id)
+            .map(str::to_string);
+        let title = value
+            .get("title")
+            .and_then(|v| v.as_str())
+            .map(str::to_string);
+        let workdir = value
+            .get("workdir")
+            .and_then(|v| v.as_str())
+            .map(str::to_string);
+        let mut record = legacy_record(id.as_deref(), title.as_deref(), workdir.as_deref(), messages);
+        if let Some(compactions) = value.get("compactions") {
+            if let Ok(parsed) = serde_json::from_value::<Vec<CompactionEntry>>(compactions.clone()) {
+                record.compactions = parsed;
+            }
+        }
+        if let Some(todos) = value.get("todos") {
+            if let Ok(parsed) = serde_json::from_value::<Vec<TodoItem>>(todos.clone()) {
+                record.todos = parsed;
+            }
+        }
+        return Ok(record);
+    }
+
+    Err(anyhow::anyhow!(
+        "unsupported session file shape (expected SessionRecord with meta)"
+    ))
+}
+
+fn legacy_record(
+    id: Option<&str>,
+    title: Option<&str>,
+    workdir: Option<&str>,
+    messages: Vec<Message>,
+) -> SessionRecord {
+    let now = Utc::now();
+    let inferred_title = messages
+        .iter()
+        .find(|m| m.role == zene_llm::Role::User)
+        .and_then(|m| m.content.as_deref())
+        .map(|prompt| {
+            prompt
+                .lines()
+                .next()
+                .unwrap_or(prompt)
+                .chars()
+                .take(60)
+                .collect::<String>()
+        });
+    SessionRecord {
+        meta: SessionMeta {
+            id: id
+                .filter(|s| !s.is_empty())
+                .map(str::to_string)
+                .unwrap_or_else(|| Uuid::new_v4().to_string()),
+            title: title
+                .filter(|s| !s.is_empty())
+                .map(str::to_string)
+                .or(inferred_title)
+                .unwrap_or_else(|| "Recovered session".to_string()),
+            workdir: workdir.unwrap_or(".").to_string(),
+            created_at: now,
+            updated_at: now,
+        },
+        messages,
+        compactions: Vec::new(),
+        todos: Vec::new(),
+        context_window_usage: None,
+        context_tokens_used: None,
+    }
 }
 
 pub fn list_sessions_for_workdir(workdir: &Path) -> Result<Vec<SessionMeta>> {
@@ -236,11 +337,32 @@ pub fn list_sessions_for_workdir(workdir: &Path) -> Result<Vec<SessionMeta>> {
     let mut sessions = Vec::new();
     for entry in fs::read_dir(sessions_dir()).context("read sessions dir")? {
         let entry = entry.context("read session entry")?;
-        if entry.path().extension().and_then(|ext| ext.to_str()) != Some("json") {
+        let path = entry.path();
+        if path.extension().and_then(|ext| ext.to_str()) != Some("json") {
             continue;
         }
-        let raw = fs::read_to_string(entry.path()).context("read session file")?;
-        let record: SessionRecord = serde_json::from_str(&raw).context("parse session file")?;
+        let raw = match fs::read_to_string(&path) {
+            Ok(raw) => raw,
+            Err(err) => {
+                eprintln!(
+                    "skipping unreadable session file {}: {err}",
+                    path.display()
+                );
+                continue;
+            }
+        };
+        let fallback_id = path.file_stem().and_then(|s| s.to_str());
+        let record = match parse_session_raw(&raw, fallback_id) {
+            Ok(record) => record,
+            Err(err) => {
+                // One corrupt/legacy file must not break Sessions UI / ACP session/list.
+                eprintln!(
+                    "skipping unreadable session file {}: {err:#}",
+                    path.display()
+                );
+                continue;
+            }
+        };
         if workdir_slug(Path::new(&record.meta.workdir)) == slug {
             sessions.push(record.meta);
         }
@@ -357,5 +479,46 @@ mod tests {
         }"#;
         let session: SessionRecord = serde_json::from_str(raw).expect("deserialize");
         assert!(session.todos.is_empty());
+    }
+
+    #[test]
+    fn parses_legacy_session_without_meta_envelope() {
+        let raw = r#"{
+            "id": "old-1",
+            "title": "Old chat",
+            "workdir": "/tmp/project",
+            "messages": [
+                {"role": "user", "content": "hello"}
+            ]
+        }"#;
+        let session = parse_session_raw(raw, Some("old-1")).expect("parse legacy");
+        assert_eq!(session.meta.id, "old-1");
+        assert_eq!(session.meta.title, "Old chat");
+        assert_eq!(session.meta.workdir, "/tmp/project");
+        assert_eq!(session.messages.len(), 1);
+    }
+
+    #[test]
+    fn list_sessions_skips_corrupt_files() {
+        let _guard = ZENE_HOME_TEST_LOCK.lock().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        std::env::set_var("ZENE_HOME", dir.path());
+        let sessions = sessions_dir();
+        fs::create_dir_all(&sessions).unwrap();
+
+        let good = SessionRecord::new(Path::new("/tmp/project"));
+        good.save().unwrap();
+
+        fs::write(sessions.join("broken.json"), "{\"messages\":").unwrap();
+        fs::write(
+            sessions.join("legacy.json"),
+            r#"{"id":"legacy","workdir":"/tmp/project","messages":[{"role":"user","content":"hi"}]}"#,
+        )
+        .unwrap();
+
+        let listed = list_sessions_for_workdir(Path::new("/tmp/project")).expect("list");
+        assert!(listed.iter().any(|m| m.id == good.meta.id));
+        assert!(listed.iter().any(|m| m.id == "legacy"));
+        std::env::remove_var("ZENE_HOME");
     }
 }
