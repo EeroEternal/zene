@@ -2,23 +2,17 @@
 
 ## Unreleased
 
+## v0.1.7 (2026-07-20)
+
+Headless **Web Agent** becomes the default UI: local `zene-gateway` serves the browser UI over HTTP (long-polling + optional SSE), with `zene` / `zene web` as the launch entry. Releases and `www/install.sh` now ship both `zene` and `zene-gateway` binaries.
+
 ### Added
 - Headless Web direction: `docs/WEB_AGENT_GATEWAY.md` design for HTTP Gateway + Web Agent UI (long-polling first; SSE optional; WebSocket not required).
-- New `zene-gateway` binary (`apps/gateway`): thin local HTTP bridge over `zene acp` with token/Origin checks, `POST /api/v1/agents/{id}/messages`, cursor-based `GET /api/v1/agents/{id}/events` long polling, bootstrap/health, embedded minimal Web page, and mock-ACP integration tests.
+- New `zene-gateway` binary (`apps/gateway`): thin local HTTP bridge over `zene acp` with token/Origin checks, `POST /api/v1/agents/{id}/messages`, cursor-based `GET /api/v1/agents/{id}/events` long polling, bootstrap/health, embedded Web Agent UI, and mock-ACP integration tests.
 - Gateway phase B: optional SSE (`GET /events/stream`) with Web long-poll fallback, controller lease APIs, `apps/web-agent` UI (sessions/tool cards/usage/SSE), `--yolo`/`--sandbox-off`/`--acp-env`, and real `zene acp` + mock LLM smoke test.
 - Gateway phase C: local ACP `terminal/*` host with Web terminal panel, Plan/Todo/background-task panels, mode switch + session close UI, and terminal roundtrip tests.
 - Gateway phase D: on-disk event journal + agent meta, `restart`/`attach` recovery, poll backpressure and payload limits, `zene web` launcher, and `docs/GATEWAY_OPS.md`.
 - Gateway phase E: AskUser over standard `session/request_permission`, Web `session/resume`, default `zene` launches Web Agent, remove ratatui TUI (`docs/TUI_MIGRATION.md`).
-
-### Changed
-- Default interactive entry is Web Agent (`zene` / `zene web`); `zene --tui` errors with a migration hint; debug line UI remains as `zene --repl`.
-- ACP: bridge `tool_call` / `tool_call_update` / `plan` / `usage_update` / `current_mode_update` / `available_commands_update` / `agent_thought_chunk`; replay history on `session/load`; implement `session/list`, `session/close`, `session/set_mode`, `session/resume`; optional client FS + terminal bridges; FIFO prompt queue with in-turn cancel; correlate permission `toolCallId`; accept embedded prompt context; tighten JSON-RPC error codes.
-
-## v0.1.7 (2026-07-19)
-
-This release finishes the **grok-build long-context / sampling alignment** pass after v0.1.6, adds Keel sandbox productization, and ships OpenAI-accurate BPE token counts.
-
-### Added
 - Prefire two-pass compaction with `compaction_segments` persistence (NOTE₁ cache + sync merge).
 - Memory flush / injection into context, with content-fingerprint dedup across turns.
 - Intra **steps-first** pass: truncate current-turn tool results before full summarize when that alone frees enough budget.
@@ -33,9 +27,12 @@ This release finishes the **grok-build long-context / sampling alignment** pass 
 - Docs: Cloudflare Pages pause guide; `deploy-web.sh` gated behind `ZENE_PAGES_DEPLOY=1`.
 
 ### Changed
+- Default interactive entry is Web Agent (`zene` / `zene web`); `zene --tui` errors with a migration hint; debug line UI remains as `zene --repl`.
+- ACP: bridge `tool_call` / `tool_call_update` / `plan` / `usage_update` / `current_mode_update` / `available_commands_update` / `agent_thought_chunk`; replay history on `session/load`; implement `session/list`, `session/close`, `session/set_mode`, `session/resume`; optional client FS + terminal bridges; FIFO prompt queue with in-turn cancel; correlate permission `toolCallId`; accept embedded prompt context; tighten JSON-RPC error codes.
 - Stronger compaction ladder (reject thin summaries, tool-pair snap, sticky suppress after failed summarize).
 - Compaction / water-level behavior tuned closer to grok-build Inter/Intra lite semantics.
 - Landing page (`www/`) refreshed for current Zene features.
+- GitHub Releases and `www/install.sh` publish/install both `zene` and `zene-gateway`; gateway serves UI with `Cache-Control: no-store`.
 
 ### Fixed
 - Flaky `PreToolUse` hook test: ignore stdin BrokenPipe when the hook exits before reading payload.
