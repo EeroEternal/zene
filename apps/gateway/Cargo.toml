@@ -31,4 +31,3 @@ uuid.workspace = true
 [dev-dependencies]
 reqwest = { workspace = true, features = ["json", "stream"] }
 tempfile = "3"
-bytes = "1"

@@ -4540,7 +4540,6 @@ version = "0.1.7"
 dependencies = [
  "anyhow",
  "axum",
- "bytes",
  "chrono",
  "clap",
  "futures",
