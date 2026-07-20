@@ -1,9 +1,11 @@
+mod options;
 mod path_policy;
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-pub use path_policy::check_write_allowed;
+pub use options::{url_host_port, SandboxOptions};
+pub use path_policy::{check_read_allowed, check_write_allowed};
 use path_policy::{canonical_workdir, resolve_existing, resolve_for_create, verify_resolved_path};
 use std::process::Stdio;
 use std::time::Duration;
@@ -16,7 +18,7 @@ use keel_core::backend_process_guard;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 use keel_core::{backend_local_process, LocalProcessOptions};
 use keel_core::{
-    profile_workspace, ManagedProcess, Space, SpaceHandle, SpawnRequest, StdioMode,
+    check_egress, ManagedProcess, NetworkPolicy, Space, SpaceHandle, SpawnRequest, StdioMode,
     TerminationReason,
 };
 use tokio::io::AsyncReadExt;
@@ -98,17 +100,21 @@ pub trait RemoteTextFs: Send + Sync {
 pub struct LocalSandbox {
     workdir: PathBuf,
     space: Option<SpaceHandle>,
+    network: NetworkPolicy,
+    profile: String,
     remote_fs: Option<Arc<dyn RemoteTextFs>>,
 }
 
 impl LocalSandbox {
     /// Construct a local-only sandbox, primarily for isolated unit tests.
     ///
-    /// Production agent entry points should use [`Self::with_keel`].
+    /// Production agent entry points should use [`Self::with_options`] / [`Self::with_keel`].
     pub fn new(workdir: impl Into<PathBuf>) -> Self {
         Self {
             workdir: workdir.into(),
             space: None,
+            network: NetworkPolicy::Unrestricted,
+            profile: "off".to_string(),
             remote_fs: None,
         }
     }
@@ -123,10 +129,29 @@ impl LocalSandbox {
         self.remote_fs = remote;
     }
 
-    /// Construct a sandbox backed by a Keel execution space.
+    /// Construct a sandbox with the default `workspace` Keel profile.
     pub async fn with_keel(workdir: impl Into<PathBuf>) -> Result<Self> {
+        Self::with_options(workdir, SandboxOptions::default()).await
+    }
+
+    /// Construct a sandbox from explicit profile / network options.
+    pub async fn with_options(workdir: impl Into<PathBuf>, opts: SandboxOptions) -> Result<Self> {
         let workdir = canonical_workdir(&workdir.into())?;
-        let policy = profile_workspace(&workdir).context("build Keel workspace policy")?;
+        let profile = opts.normalized_profile();
+
+        if opts.is_off() {
+            return Ok(Self {
+                workdir,
+                space: None,
+                network: NetworkPolicy::Unrestricted,
+                profile,
+                remote_fs: None,
+            });
+        }
+
+        let policy = options::resolve_policy(&workdir, &opts)?;
+        let network = policy.network.clone();
+
         #[cfg(any(target_os = "linux", target_os = "macos"))]
         let backend = backend_local_process(LocalProcessOptions::default());
         #[cfg(not(any(target_os = "linux", target_os = "macos")))]
@@ -138,12 +163,52 @@ impl LocalSandbox {
         Ok(Self {
             workdir,
             space: Some(space),
+            network,
+            profile,
             remote_fs: None,
         })
     }
 
     pub fn workdir(&self) -> &Path {
         &self.workdir
+    }
+
+    pub fn profile(&self) -> &str {
+        &self.profile
+    }
+
+    pub fn network_policy(&self) -> &NetworkPolicy {
+        &self.network
+    }
+
+    /// True when a Keel execution space is active (profile is not `off`).
+    pub fn is_enforced(&self) -> bool {
+        self.space.is_some()
+    }
+
+    /// Host-side egress gate for tools (FetchUrl / WebSearch / HTTP MCP).
+    pub async fn authorize_egress(&self, url: &str) -> Result<()> {
+        let (host, port) = url_host_port(url)?;
+        if let Some(space) = &self.space {
+            if !space
+                .check_egress(&host, port)
+                .await
+                .context("check Keel egress policy")?
+            {
+                anyhow::bail!("sandbox denied network access to {host}:{port}");
+            }
+            return Ok(());
+        }
+
+        let decision = check_egress(&self.network, &host, port);
+        if !decision.is_allowed() {
+            let reason = match decision {
+                keel_core::EgressDecision::Deny { reason } => reason,
+                keel_core::EgressDecision::Allow => "denied".to_string(),
+            };
+            anyhow::bail!("sandbox denied network access to {host}:{port}: {reason}");
+        }
+        Ok(())
     }
 
     /// Re-scope a child agent to a directory while retaining the same Keel policy.
@@ -156,6 +221,8 @@ impl LocalSandbox {
         Ok(Self {
             workdir: resolved,
             space: self.space.clone(),
+            network: self.network.clone(),
+            profile: self.profile.clone(),
             remote_fs: self.remote_fs.clone(),
         })
     }
@@ -220,8 +287,24 @@ impl LocalSandbox {
     }
 
     pub async fn read_file_bytes(&self, path: &str, _hint_max: usize) -> Result<Vec<u8>> {
+        if let Err(msg) = path_policy::check_read_allowed(path) {
+            anyhow::bail!(msg);
+        }
         let resolved = self.resolve(path)?;
         verify_resolved_path(&self.workdir, &resolved)?;
+        if let Err(msg) = path_policy::check_read_allowed_resolved(&resolved) {
+            anyhow::bail!(msg);
+        }
+
+        if let Some(space) = &self.space {
+            let bytes = space
+                .fs()
+                .read(&resolved)
+                .await
+                .with_context(|| format!("Keel SpaceFs read: {}", resolved.display()))?;
+            return Ok(bytes);
+        }
+
         self.authorize_fs(&resolved, false).await?;
         read_file_bytes_nofollow(&resolved)
             .await
@@ -229,14 +312,21 @@ impl LocalSandbox {
     }
 
     pub async fn read_text(&self, path: &str) -> Result<String> {
+        if let Err(msg) = path_policy::check_read_allowed(path) {
+            anyhow::bail!(msg);
+        }
         let resolved = self.resolve(path)?;
         verify_resolved_path(&self.workdir, &resolved)?;
+        if let Err(msg) = path_policy::check_read_allowed_resolved(&resolved) {
+            anyhow::bail!(msg);
+        }
         if let Some(remote) = &self.remote_fs {
             if remote.can_read() {
                 self.authorize_fs(&resolved, false).await?;
                 return remote.read_text(&resolved).await;
             }
         }
+
         let bytes = self.read_file_bytes(path, 0).await?;
         if is_binary_content(&bytes) {
             anyhow::bail!("cannot read binary file: {path}. Read supports text files only.");
@@ -249,12 +339,24 @@ impl LocalSandbox {
             anyhow::bail!(msg);
         }
         let resolved = self.resolve_parent(path)?;
-        self.authorize_fs(&resolved, true).await?;
+
         if let Some(remote) = &self.remote_fs {
             if remote.can_write() {
+                self.authorize_fs(&resolved, true).await?;
                 return remote.write_text(&resolved, content).await;
             }
         }
+
+        if let Some(space) = &self.space {
+            space
+                .fs()
+                .write(&resolved, content.as_bytes())
+                .await
+                .with_context(|| format!("Keel SpaceFs write: {}", resolved.display()))?;
+            return Ok(());
+        }
+
+        self.authorize_fs(&resolved, true).await?;
         if let Some(parent) = resolved.parent() {
             tokio::fs::create_dir_all(parent)
                 .await
@@ -846,6 +948,72 @@ mod tests {
         stdout.read_to_string(&mut response).await.unwrap();
         assert_eq!(response, "mcp-ping\n");
         process.cancel().await.unwrap();
+        sandbox.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn sandbox_off_skips_keel_space() {
+        let dir = tempfile::tempdir().unwrap();
+        let sandbox = LocalSandbox::with_options(
+            dir.path(),
+            SandboxOptions {
+                profile: "off".into(),
+                ..SandboxOptions::default()
+            },
+        )
+        .await
+        .unwrap();
+        assert!(!sandbox.is_enforced());
+        assert_eq!(sandbox.profile(), "off");
+        sandbox.write_text("a.txt", "ok").await.unwrap();
+        assert_eq!(sandbox.read_text("a.txt").await.unwrap(), "ok");
+    }
+
+    #[tokio::test]
+    async fn read_only_profile_denies_host_egress() {
+        let dir = tempfile::tempdir().unwrap();
+        let sandbox = LocalSandbox::with_options(
+            dir.path(),
+            SandboxOptions {
+                profile: "read-only".into(),
+                ..SandboxOptions::default()
+            },
+        )
+        .await
+        .unwrap();
+        let err = sandbox
+            .authorize_egress("https://example.com/")
+            .await
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("denied"),
+            "unexpected error: {err:#}"
+        );
+        sandbox.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn allow_hosts_permits_listed_egress() {
+        let dir = tempfile::tempdir().unwrap();
+        let sandbox = LocalSandbox::with_options(
+            dir.path(),
+            SandboxOptions {
+                profile: "strict".into(),
+                allow_hosts: vec!["example.com:443".into()],
+                ..SandboxOptions::default()
+            },
+        )
+        .await
+        .unwrap();
+        sandbox
+            .authorize_egress("https://example.com/path")
+            .await
+            .unwrap();
+        let err = sandbox
+            .authorize_egress("https://evil.com/")
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("denied"));
         sandbox.shutdown().await.unwrap();
     }
 }

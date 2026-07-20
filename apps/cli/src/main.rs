@@ -11,8 +11,9 @@ use zene_session::{export_session, list_sessions_for_workdir, SessionRecord};
 use std::sync::Arc;
 
 mod acp;
-mod repl;
 mod model_config;
+mod repl;
+mod sandbox_opts;
 mod tui;
 
 /// Shared cancel token for the in-flight REPL turn (Ctrl+C or `/cancel`).
@@ -81,6 +82,11 @@ pub struct Cli {
     /// Run the session inside a dedicated git worktree under `.zene/worktrees/`
     #[arg(long)]
     worktree: bool,
+
+    /// Keel sandbox profile: `off`, `workspace`, `read-only`, `strict`, or a custom
+    /// name from `~/.zene/sandbox.toml` / `.zene/sandbox.toml`
+    #[arg(long)]
+    sandbox: Option<String>,
 }
 
 #[derive(Subcommand)]
@@ -199,6 +205,14 @@ async fn main() -> Result<()> {
             println!("model: {}", config.model);
             println!("base_url: {}", config.base_url);
             println!("permission_mode: {}", config.permission_mode);
+            println!(
+                "sandbox.profile: {} (effective)",
+                config.sandbox.effective_profile(config.agent_profile)
+            );
+            if !config.sandbox.allow_hosts.is_empty() {
+                println!("sandbox.allow_hosts: {:?}", config.sandbox.allow_hosts);
+            }
+            println!("sandbox.auto_allow_bash: {}", config.sandbox.auto_allow_bash);
             return Ok(());
         }
         Some(Commands::Export { session, output }) => {
@@ -244,7 +258,17 @@ async fn main() -> Result<()> {
         PermissionMode::parse(&config.permission_mode)
     };
 
-    let sandbox = LocalSandbox::with_keel(&agent_workdir)
+    let sandbox_opts = sandbox_opts::build_sandbox_options(&config, cli.sandbox.as_deref());
+    eprintln!(
+        "Sandbox profile: {}{}",
+        sandbox_opts.profile,
+        if sandbox_opts.is_off() {
+            " (no Keel enforcement)"
+        } else {
+            ""
+        }
+    );
+    let sandbox = LocalSandbox::with_options(&agent_workdir, sandbox_opts)
         .await
         .context("initialize Keel execution layer")?;
     let mut agent = Agent::new(config.clone(), sandbox, session, permission_mode).await?;

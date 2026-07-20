@@ -10,26 +10,29 @@ Core agent loop lives in `crates/core`. This document tracks engine-level behavi
 - CLI REPL: `/steer <message>` when a turn is active (typically from TUI/async callers; blocking REPL waits on `prompt()`).
 - Event: `AgentEvent::SteerInput { text }` for UI/replay hooks.
 
-## Token estimation (v2 heuristic)
+## Token estimation
 
-Implemented in `tokens.rs` as `TokenEstimator` — no external tokenizer dependency (Option B). Default **script-aware** mode: Latin/code runs use configurable `chars_per_token` (default 4); CJK characters count ≈1 token each (closer to real BPE on mixed text). Uniform legacy mode remains available via `EstimateMode::Uniform`.
+Implemented in `tokens.rs` as `TokenEstimator`. Call sites use `Agent::token_estimator()` → `TokenEstimator::for_provider(provider, model, chars_per_token)`.
+
+**OpenAI path (Option A)**: when `provider` is OpenAI/openai-compatible **and** the model name maps in `tiktoken-rs` (`gpt-4o` → `o200k_base`, `gpt-4` / `gpt-3.5-turbo` → `cl100k_base`, etc.), text is counted with real BPE (`encode_ordinary`). Message framing follows the OpenAI cookbook (~3 tokens/message + 3 reply priming on the request). Unknown openai-compatible model names (e.g. DeepSeek) fall back to the heuristic below.
+
+**Heuristic path (Option B)**: default **script-aware** mode for Anthropic and unmapped models — Latin/code runs use configurable `chars_per_token` (default 4); CJK ≈1 token/char. Uniform legacy mode remains available via `EstimateMode::Uniform`.
 
 **Per-message estimate** (`estimate_message_tokens` / `TokenEstimator::estimate_message_tokens`):
 
-| Component | Heuristic |
-|-----------|-----------|
-| Role framing | system +8, user +4, assistant +4, tool +8 tokens |
-| Compaction summary kind | +4 tokens on top of assistant framing |
-| Text content | `ceil(char_count / chars_per_token)` |
-| Tool calls (assistant) | +12 framing per call + id/name/arguments length |
-| JSON tool arguments | string length **plus** structural punctuation (`{}[]:,"`) counted separately |
-| Tool result metadata | `tool_call_id`, `name`, error flag (+2) |
+| Component | Heuristic | Tiktoken (OpenAI) |
+|-----------|-----------|-------------------|
+| Role framing | system +8, user/assistant +4, tool +8 | +3 per message |
+| Compaction summary kind | +4 on top of framing | +4 on top of framing |
+| Text content | script-aware / uniform chars | BPE `encode_ordinary` length |
+| Tool calls (assistant) | +12 framing + id/name/args | +1 framing + BPE id/name/args |
+| JSON tool arguments | length + structural punctuation | BPE of full JSON string |
+| Tool result metadata | `tool_call_id`, `name`, error (+2) | same fields via BPE |
+| Request priming | — | +3 once (`estimate_request_tokens`) |
 
-**Request estimate**: `estimate_context(messages, tools, estimator)` = sum of message tokens + serialized tool-definition JSON (+4 framing). Used consistently before compaction triggers and inside `tail_start_index` / compaction planning.
+**Request estimate**: `estimate_context(messages, tools, estimator)` = sum of message tokens + serialized tool-definition JSON (+4 framing) [+ reply priming in tiktoken mode]. Used before compaction triggers and inside `tail_start_index` / compaction planning.
 
 Warn log when estimate ≥ 90% of `compaction.context_window_tokens`.
-
-Future: Option A (`tiktoken-rs` for OpenAI provider) can replace the char heuristic without changing call sites.
 
 ## Compaction (v2)
 
@@ -105,6 +108,20 @@ Non-MCP tool results over `ZENE_MAX_TOOL_OUTPUT_BYTES` (default 30_000) are trun
 ### Intra Steps-first
 
 When auto-compact is about to fire, zene first runs a Steps-first pass (`compaction.intra_steps_first`, default true): tool results after the last user message are truncated to ~200 chars. If that alone brings usage under the threshold, full summarize is skipped (grok Intra `StepsOnly` / HistoryThenSteps lite).
+
+## Sandbox profiles (Keel)
+
+Production entry points build `LocalSandbox::with_options` from config / CLI:
+
+| Profile | Filesystem | Child network | Notes |
+|---------|------------|---------------|-------|
+| `off` | path_policy only | unrestricted | No Keel space |
+| `workspace` (default) | broad read; write workspace + temps | unrestricted | Everyday coding |
+| `read-only` | broad read; write keel home + temps | deny-all | Explore default when unset |
+| `strict` | workspace + system paths only | deny-all | Untrusted repos |
+| custom | from `~/.zene/sandbox.toml` | per profile | Keel `SandboxConfig` loader |
+
+Overrides: CLI `--sandbox` > `ZENE_SANDBOX` > `[sandbox] profile` in config. `allow_hosts` (config / `ZENE_SANDBOX_ALLOW_HOSTS`) turns network into an allowlist and is enforced for Bash children (Keel egress proxy) plus host tools (`FetchUrl`, `WebSearch`, HTTP MCP) via `LocalSandbox::authorize_egress`. Default credential denies (`~/.ssh`, `~/.gnupg`, `~/.aws`, `**/.env*`, `**/*.pem`, …) are injected into every non-`off` policy; host Read also uses `check_read_allowed`. File I/O prefers Keel `SpaceFs` when a space is active. `[sandbox] auto_allow_bash = true` skips Bash permission prompts while enforcement is on.
 
 ## Permission modes (grok-aligned)
 

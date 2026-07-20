@@ -105,6 +105,17 @@ impl Tool for WebSearchTool {
             .unwrap_or(DEFAULT_NUM_RESULTS)
             .clamp(1, MAX_NUM_RESULTS);
 
+        let egress_url = match self.config.effective_provider() {
+            WebSearchProviderKind::Tavily => "https://api.tavily.com/search",
+            WebSearchProviderKind::DuckDuckGo => "https://html.duckduckgo.com/html/",
+        };
+        if let Err(err) = ctx.sandbox.authorize_egress(egress_url).await {
+            return Ok(ToolResult {
+                content: format!("WebSearch blocked by sandbox: {err}"),
+                is_error: true,
+            });
+        }
+
         match run_search(&self.config, &args.query, num_results).await {
             Ok(results) => Ok(ToolResult {
                 content: format_results(&results),

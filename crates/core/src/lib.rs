@@ -58,7 +58,7 @@ pub use permission::{
 };
 pub use plan_mode::PlanApprovalPrompter;
 pub use subagent::{run_subagent, ChatBackend, CoreSubagentRunner};
-pub use tokens::{estimate_context, TokenEstimator};
+pub use tokens::{estimate_context, EstimateMode, TiktokenEncoding, TokenEstimator};
 pub use turn::{SteerBuffer, StepId, TurnId, TurnState};
 use plan_mode::{
     build_effective_system_prompt, default_plan_approval_prompter, handle_enter_plan_mode,
@@ -148,9 +148,11 @@ impl Agent {
         let todos = shared_todo_store_from(session.todos.clone());
         let context_water =
             ContextWaterLevel::new(config.compaction.context_window_tokens);
+        let auto_allow_bash = config.sandbox.auto_allow_bash && sandbox.is_enforced();
         let permission = shared_permission_with_rules(
             permission_mode,
             permission_rules_from_config(&config),
+            auto_allow_bash,
         );
 
         Ok(Self {
@@ -513,7 +515,11 @@ impl Agent {
     }
 
     fn token_estimator(&self) -> TokenEstimator {
-        TokenEstimator::new(self.config.chars_per_token_for_model())
+        TokenEstimator::for_provider(
+            self.config.provider_kind(),
+            &self.config.model,
+            self.config.chars_per_token_for_model(),
+        )
     }
 
     fn estimated_context_tokens(&self, messages: &[Message], tools: &[zene_llm::ToolDefinition]) -> usize {
@@ -537,7 +543,12 @@ impl Agent {
     }
 
     /// Replace the permission gate (e.g. TUI custom prompter).
-    pub fn set_permission_gate(&mut self, gate: PermissionGate) {
+    ///
+    /// Re-applies sandbox `auto_allow_bash` and config permission rules so a TUI
+    /// prompter swap does not drop sandbox-linked policy.
+    pub fn set_permission_gate(&mut self, mut gate: PermissionGate) {
+        gate.set_auto_allow_bash(self.config.sandbox.auto_allow_bash && self.sandbox.is_enforced());
+        gate.set_rules(permission_rules_from_config(&self.config));
         self.permission = Arc::new(Mutex::new(gate));
     }
 
@@ -784,6 +795,7 @@ impl Agent {
             message_count = messages.len(),
             tool_count = tools.len(),
             chars_per_token = self.config.chars_per_token_for_model(),
+            estimate_mode = ?self.token_estimator().mode,
             "llm request context water level"
         );
         self.warn_if_near_context_limit(self.context_water.effective_tokens() as usize);
@@ -1509,8 +1521,13 @@ fn truncate(input: &str, max: usize) -> String {
 fn shared_permission_with_rules(
     mode: PermissionMode,
     rules: Vec<PermissionRule>,
+    auto_allow_bash: bool,
 ) -> SharedToolPermission {
-    Arc::new(Mutex::new(PermissionGate::new(mode).with_rules(rules)))
+    Arc::new(Mutex::new(
+        PermissionGate::new(mode)
+            .with_rules(rules)
+            .with_auto_allow_bash(auto_allow_bash),
+    ))
 }
 
 fn permission_rules_from_config(config: &ZeneConfig) -> Vec<PermissionRule> {

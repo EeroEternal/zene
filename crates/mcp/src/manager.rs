@@ -50,6 +50,16 @@ impl McpManager {
 
             let connected = if server_config.is_http() {
                 let url = server_config.url.as_deref().unwrap();
+                if let Some(sandbox) = sandbox {
+                    if let Err(err) = sandbox.authorize_egress(url).await {
+                        warn!(
+                            server = %server_name,
+                            error = %err,
+                            "mcp http egress denied by sandbox"
+                        );
+                        continue;
+                    }
+                }
                 McpHttpClient::connect(&server_name, url, &server_config.headers)
                     .await
                     .map(McpClientHandle::Http)

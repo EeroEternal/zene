@@ -55,7 +55,14 @@ command = "./scripts/pre-tool.sh"
 [web_search]
 provider = "tavily"   # or "duckduckgo" (no API key, limited HTML parsing)
 api_key = "tvly-..."  # or export ZENE_WEB_SEARCH_API_KEY
+
+[sandbox]
+profile = "workspace"          # off | workspace | read-only | strict | custom
+# allow_hosts = ["api.github.com:443"]
+# auto_allow_bash = false      # skip Bash prompts when sandbox is active
 ```
+
+Custom Keel profiles can also live in `~/.zene/sandbox.toml` / `.zene/sandbox.toml` (same shape as Keel `[profiles.*]`). CLI `--sandbox` and `ZENE_SANDBOX` override config. Explore agent profile defaults to `read-only` when sandbox profile is unset.
 
 Per-project overrides in `.zene/config.toml` (merged over global; project wins on key collision):
 
@@ -72,8 +79,10 @@ trigger_ratio = 0.9
 
 | Path | Purpose |
 |------|---------|
-| `~/.zene/config.toml` | Model, provider, API keys, compaction, permission mode, inline hooks |
+| `~/.zene/config.toml` | Model, provider, API keys, compaction, permission mode, sandbox, inline hooks |
 | `.zene/config.toml` | Project-level config overrides (merged over global) |
+| `~/.zene/sandbox.toml` | Custom Keel sandbox profiles (`[profiles.<name>]`) |
+| `.zene/sandbox.toml` | Project-level custom sandbox profiles (additive names only) |
 | `~/.zene/hooks.json` | Additional lifecycle hooks (`PreToolUse`, `PostToolUse`) |
 | `~/.zene/mcp.json` | Global MCP server definitions (merged with project config) |
 | `.zene/mcp.json` | Project-level MCP server overrides |
@@ -115,6 +124,7 @@ zene config            # show config paths
 zene --session <id>    # resume a session
 zene --no-stream       # disable streaming output
 zene --yolo            # auto-approve Write / Edit / Bash
+zene --sandbox strict  # Keel profile: off | workspace | read-only | strict | custom
 zene --tui             # ratatui chat UI (PageUp/PageDown scroll)
 ```
 
