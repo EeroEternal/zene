@@ -132,11 +132,11 @@ zene acp               # Agent Client Protocol over stdio (for editors / gateway
 Headless Web UI (phase A vertical slice):
 
 ```bash
-cargo run -p zene-gateway -- --zene-bin ./target/debug/zene
+cargo run -p zene-gateway -- --zene-bin ./target/debug/zene --yolo --sandbox-off
 # open the printed http://127.0.0.1:8787/#token=... URL
 ```
 
-`zene-gateway` is a thin local HTTP bridge: Web UI talks HTTP long-polling; the gateway speaks ACP NDJSON to a `zene acp` child process. See [docs/WEB_AGENT_GATEWAY.md](docs/WEB_AGENT_GATEWAY.md).
+`zene-gateway` is a thin local HTTP bridge: the Web UI prefers SSE and falls back to long-polling; the gateway speaks ACP NDJSON to a `zene acp` child process. UI sources live in `apps/web-agent/`. See [docs/WEB_AGENT_GATEWAY.md](docs/WEB_AGENT_GATEWAY.md).
 
 ## Architecture
 

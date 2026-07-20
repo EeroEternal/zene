@@ -178,7 +178,9 @@ Stdout is reserved for protocol frames; logs go to stderr.
 - Default bind: `127.0.0.1` with a generated `X-Zene-Token`
 - `POST /api/v1/agents/{id}/messages` forwards raw ACP JSON-RPC frames to the child stdin
 - `GET /api/v1/agents/{id}/events?cursor=&waitMs=` long-polls a cursored event journal fed by child stdout
-- WebSocket is intentionally not required; SSE is planned as an optional enhancement
+- `GET /api/v1/agents/{id}/events/stream` is optional SSE; clients must fall back to long-polling
+- Controller lease (`/lease`, heartbeat, release) serializes multi-tab writes via `X-Zene-Client-Id`
+- WebSocket is intentionally not required
 - The gateway does not own Agent loop / tools / sessions — those stay in Zene
 
 ## LLM layer
