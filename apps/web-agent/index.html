@@ -449,6 +449,11 @@
     function handlePermission(payload) {
       finalizeStreams();
       const params = payload.params || {};
+      const raw = (params.toolCall && params.toolCall.rawInput) || {};
+      if (raw.askUser) {
+        handleAskUser(payload);
+        return;
+      }
       const box = document.createElement("div");
       box.className = "pending";
       box.innerHTML = `<div>Permission: ${(params.toolCall && (params.toolCall.title || params.toolCall.toolCallId)) || "tool"}</div>`;
@@ -475,6 +480,47 @@
         };
         row.appendChild(btn);
       }
+      box.appendChild(row);
+      logEl.appendChild(box);
+      logEl.scrollTop = logEl.scrollHeight;
+    }
+    function handleAskUser(payload) {
+      finalizeStreams();
+      const params = payload.params || {};
+      const raw = (params.toolCall && params.toolCall.rawInput) || {};
+      const question = raw.question || (params.toolCall && params.toolCall.title) || "Question";
+      const box = document.createElement("div");
+      box.className = "pending";
+      box.innerHTML = `<div><strong>Ask user</strong></div><div style="margin-top:6px"></div>`;
+      box.querySelector("div:last-child").textContent = question;
+      const row = document.createElement("div");
+      row.className = "row";
+      row.style.marginTop = "8px";
+      const choiceOptions = (params.options || []).filter((o) => o.optionId !== "free-text");
+      const reply = async (optionId, answer) => {
+        row.querySelectorAll("button,input").forEach((b) => b.disabled = true);
+        const outcome = { outcome: "selected", optionId };
+        if (answer != null) outcome.answer = answer;
+        await postMessages([{
+          jsonrpc: "2.0", id: payload.id,
+          result: { outcome },
+        }]);
+        appendLog("system", `ask_user -> ${answer != null ? answer : optionId}`);
+      };
+      for (const opt of choiceOptions) {
+        const btn = document.createElement("button");
+        btn.textContent = opt.name || opt.optionId;
+        btn.onclick = () => reply(opt.optionId);
+        row.appendChild(btn);
+      }
+      const input = document.createElement("input");
+      input.placeholder = "Free-text answer";
+      input.style.flex = "1";
+      const send = document.createElement("button");
+      send.textContent = "Send answer";
+      send.onclick = () => reply("free-text", input.value.trim());
+      row.appendChild(input);
+      row.appendChild(send);
       box.appendChild(row);
       logEl.appendChild(box);
       logEl.scrollTop = logEl.scrollHeight;
@@ -657,11 +703,21 @@
           return;
         }
         for (const s of list) {
+          const wrap = document.createElement("div");
+          wrap.style.marginBottom = "6px";
           const btn = document.createElement("button");
           btn.className = "session-item" + (s.sessionId === state.sessionId ? " active" : "");
           btn.textContent = `${s.title || s.sessionId}\n${s.updatedAt || ""}`;
           btn.onclick = () => loadSession(s.sessionId);
-          root.appendChild(btn);
+          const resume = document.createElement("button");
+          resume.className = "secondary";
+          resume.style.width = "100%";
+          resume.style.marginTop = "4px";
+          resume.textContent = "Resume (no replay)";
+          resume.onclick = () => resumeSession(s.sessionId);
+          wrap.appendChild(btn);
+          wrap.appendChild(resume);
+          root.appendChild(wrap);
         }
         return;
       }
@@ -687,6 +743,18 @@
       logEl.innerHTML = "";
       appendLog("system", "load " + sessionId);
       await postMessages([rpcRequest("session/load", {
+        sessionId, cwd: el("workspace").value.trim(),
+      })]);
+      el("btnSend").disabled = false;
+      el("btnCancel").disabled = false;
+      el("btnClose").disabled = false;
+    }
+    async function resumeSession(sessionId) {
+      finalizeStreams();
+      state.tools.clear();
+      logEl.innerHTML = "";
+      appendLog("system", "resume " + sessionId);
+      await postMessages([rpcRequest("session/resume", {
         sessionId, cwd: el("workspace").value.trim(),
       })]);
       el("btnSend").disabled = false;

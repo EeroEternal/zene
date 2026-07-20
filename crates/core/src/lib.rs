@@ -20,6 +20,7 @@ use zene_tools::{
     SharedPlanMode, SharedToolPermission, SubagentEnv, ToolContext, ToolRegistry,
     DEFAULT_SUBAGENT_MAX_DEPTH,
 };
+pub use zene_tools::AskUserOption;
 use zene_mcp::McpManager;
 
 mod compaction;
