@@ -143,34 +143,11 @@ pub fn current_provider(config: &ZeneConfig) -> Option<&'static ProviderPreset> 
     provider_index_for_config(config).map(|i| &PROVIDER_PRESETS[i])
 }
 
-pub fn is_provider_configured(config: &ZeneConfig) -> bool {
-    provider_index_for_config(config).is_some()
-}
-
 pub fn is_provider_ready(config: &ZeneConfig) -> bool {
     let Some(index) = provider_index_for_config(config) else {
         return false;
     };
     has_api_key_for_provider(config, &PROVIDER_PRESETS[index])
-}
-
-pub fn model_index_for_provider(provider: &ProviderPreset, model_id: &str) -> usize {
-    preset_models(provider)
-        .iter()
-        .position(|v| v.model_id == model_id)
-        .unwrap_or(0)
-}
-
-pub fn default_model_for_provider(provider: &ProviderPreset, current_model: &str) -> String {
-    let models = preset_models(provider);
-    if models.iter().any(|v| v.model_id == current_model) {
-        current_model.to_string()
-    } else {
-        models
-            .first()
-            .map(|v| v.model_id.to_string())
-            .unwrap_or_default()
-    }
 }
 
 pub fn find_model_variant(model_id: &str) -> Option<(&'static ProviderPreset, ModelVariant)> {
@@ -182,45 +159,6 @@ pub fn find_model_variant(model_id: &str) -> Option<(&'static ProviderPreset, Mo
         }
     }
     None
-}
-
-pub fn is_known_model(model_id: &str) -> bool {
-    find_model_variant(model_id).is_some()
-}
-
-pub fn selection_for_model(model_id: &str) -> (usize, usize) {
-    for (provider_index, provider) in PROVIDER_PRESETS.iter().enumerate() {
-        for (model_index, variant) in preset_models(provider).into_iter().enumerate() {
-            if variant.model_id == model_id {
-                return (provider_index, model_index);
-            }
-        }
-    }
-    (0, 0)
-}
-
-pub fn selection_for_model_with_base_url(model_id: &str, base_url: &str) -> (usize, usize) {
-    let (provider_index, model_index) = selection_for_model(model_id);
-    if is_known_model(model_id) {
-        return (provider_index, model_index);
-    }
-    if base_url.contains("11434") {
-        if let Some(ollama_index) = PROVIDER_PRESETS
-            .iter()
-            .position(|p| p.endpoint_id.is_none())
-        {
-            return (ollama_index, 0);
-        }
-    }
-    if base_url.contains("deepseek") {
-        if let Some(i) = PROVIDER_PRESETS
-            .iter()
-            .position(|p| p.endpoint_id == Some("deepseek:cn"))
-        {
-            return (i, 0);
-        }
-    }
-    (provider_index, model_index)
 }
 
 pub fn resolve_model_args(raw_model: &str, parts: &[&str]) -> ResolvedModel {
@@ -326,12 +264,6 @@ pub fn has_api_key_for_openai_provider(config: &ZeneConfig, base_url: &str) -> b
         .any(|var| std::env::var(var).is_ok_and(|k| !k.is_empty()))
 }
 
-pub fn model_requires_key(model_id: &str) -> bool {
-    find_model_variant(model_id)
-        .map(|(provider, _)| provider.requires_key)
-        .unwrap_or(true)
-}
-
 pub fn lookup_registry_model(endpoint_id: &str, model_id: &str) -> Option<Model> {
     get_model_for_endpoint(endpoint_id, model_id)
 }
@@ -420,12 +352,10 @@ mod tests {
 
     #[test]
     fn selection_finds_deepseek_v4_flash() {
-        let (pi, mi) = selection_for_model("deepseek-v4-flash");
-        assert_eq!(PROVIDER_PRESETS[pi].display_name, "DeepSeek");
-        assert_eq!(
-            preset_models(&PROVIDER_PRESETS[pi])[mi].model_id,
-            "deepseek-v4-flash"
-        );
+        let (provider, variant) =
+            find_model_variant("deepseek-v4-flash").expect("deepseek-v4-flash preset");
+        assert_eq!(provider.display_name, "DeepSeek");
+        assert_eq!(variant.model_id, "deepseek-v4-flash");
     }
 
     #[test]
