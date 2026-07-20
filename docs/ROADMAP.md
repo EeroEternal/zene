@@ -416,6 +416,6 @@ TUI、record/replay、安装分发。
 | P5 MCP/扩展 | [x] | stdio + HTTP MCP、`zene mcp doctor` |
 | P6 集成/产品化 | [x] | `zene -p` headless + `--output-format json`；`zene acp`（resume/queue/thought/terminal + modes/FS/tool updates） |
 | P7 沙箱产品化 | [x] | 可配置 Keel profile、egress allowlist、凭据 deny、SpaceFs、auto_allow_bash |
-| P8 Web Agent | [~] | Headless + HTTP Gateway 阶段 A：`zene-gateway` 长轮询 / token / Origin / 最小 Web 页；见 `docs/WEB_AGENT_GATEWAY.md` |
+| P8 Web Agent | [~] | 阶段 A+B：`zene-gateway` 长轮询/SSE/lease + `apps/web-agent` + 真实 ACP smoke；见 `docs/WEB_AGENT_GATEWAY.md` |
 
-*最后更新：2026-07-20（Web Agent Gateway 阶段 A 垂直切片）*
+*最后更新：2026-07-20（Web Agent Gateway 阶段 B）*

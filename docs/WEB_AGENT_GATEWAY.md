@@ -764,10 +764,18 @@ Gateway bootstrap 返回：
 - [x] 嵌入式最小 Web 页（session/new、prompt、stream、permission）
 - [x] `zene-gateway-mock-acp` + HTTP 集成测试
 
-### 下一刀（阶段 B）
+### 阶段 B（已落地）
 
-- [ ] 真实 `zene acp` 端到端 smoke（需 API key 或 mock LLM）
-- [ ] 独立 `apps/web-agent` 前端工程（替代嵌入 HTML）
-- [ ] session load/resume UI、tool/diff 卡片、usage/context
-- [ ] SSE 可选通道与自动降级
-- [ ] 多标签页 controller lease
+- [x] 真实 `zene acp` 端到端 smoke（mock OpenAI-compatible LLM）
+- [x] 独立 `apps/web-agent` 静态前端（零构建，由 gateway `include_str!` 嵌入）
+- [x] session list/new/load UI、tool/diff 卡片、usage/context
+- [x] SSE 可选通道（`/events/stream`）与 Web 自动降级到长轮询
+- [x] 多标签页 controller lease（acquire/heartbeat/release + 写保护）
+
+### 下一刀（阶段 C）
+
+- [ ] Plan 审阅面板与模式切换 UI
+- [ ] Todo / 后台任务面板
+- [ ] terminal bridge 的 Web 视图
+- [ ] journal 持久化与 Gateway 重启恢复
+- [ ] 达到删除 TUI 硬性门槛后移除 ratatui

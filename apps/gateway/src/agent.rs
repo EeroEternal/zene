@@ -46,6 +46,7 @@ pub struct AgentManager {
     inner: Arc<RwLock<HashMap<String, Arc<Mutex<AgentRuntime>>>>>,
     command: PathBuf,
     command_args: Vec<String>,
+    env: Vec<(String, String)>,
 }
 
 impl AgentManager {
@@ -54,7 +55,13 @@ impl AgentManager {
             inner: Arc::new(RwLock::new(HashMap::new())),
             command,
             command_args,
+            env: Vec::new(),
         }
+    }
+
+    pub fn with_env(mut self, env: Vec<(String, String)>) -> Self {
+        self.env = env;
+        self
     }
 
     pub async fn create(&self, workspace: PathBuf) -> Result<AgentInfo> {
@@ -62,21 +69,24 @@ impl AgentManager {
         let agent_id = format!("agent_{}", Uuid::new_v4().simple());
         let journal = EventJournal::new();
 
-        let mut child = Command::new(&self.command)
+        let mut command = Command::new(&self.command);
+        command
             .args(&self.command_args)
             .current_dir(&workspace)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
-            .kill_on_drop(true)
-            .spawn()
-            .with_context(|| {
-                format!(
-                    "failed to spawn ACP process {} {:?}",
-                    self.command.display(),
-                    self.command_args
-                )
-            })?;
+            .kill_on_drop(true);
+        for (key, value) in &self.env {
+            command.env(key, value);
+        }
+        let mut child = command.spawn().with_context(|| {
+            format!(
+                "failed to spawn ACP process {} {:?}",
+                self.command.display(),
+                self.command_args
+            )
+        })?;
 
         let stdin = child
             .stdin

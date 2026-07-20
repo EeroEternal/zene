@@ -7,6 +7,7 @@ use tempfile::tempdir;
 use zene_gateway::agent::AgentManager;
 use zene_gateway::auth::AuthState;
 use zene_gateway::http::{self, AppState};
+use zene_gateway::lease::LeaseManager;
 
 fn mock_acp_bin() -> PathBuf {
     PathBuf::from(env!("CARGO_BIN_EXE_zene-gateway-mock-acp"))
@@ -21,6 +22,7 @@ async fn start_server(token: &str) -> (SocketAddr, reqwest::Client) {
     let state = AppState {
         auth: AuthState::new(token.to_string(), "127.0.0.1".into(), addr.port()),
         agents,
+        leases: LeaseManager::new(),
         started_at: chrono::Utc::now(),
         version: "test",
     };
@@ -77,7 +79,7 @@ where
 }
 
 #[tokio::test]
-async fn bootstrap_and_health_are_public() {
+async fn bootstrap_advertises_sse_and_lease() {
     let token = "test-token";
     let (addr, client) = start_server(token).await;
 
@@ -91,17 +93,9 @@ async fn bootstrap_and_health_are_public() {
         .unwrap();
     assert_eq!(boot["apiVersion"], "v1");
     assert_eq!(boot["transports"]["longPolling"], true);
+    assert_eq!(boot["transports"]["sse"], true);
     assert_eq!(boot["transports"]["websocket"], false);
-
-    let health: Value = client
-        .get(format!("http://{addr}/api/v1/health"))
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
-    assert_eq!(health["ok"], true);
+    assert_eq!(boot["features"]["controllerLease"], true);
 }
 
 #[tokio::test]
@@ -164,7 +158,6 @@ async fn prompt_stream_and_permission_roundtrip() {
     let agent_id = created["agent"]["agentId"].as_str().unwrap().to_string();
     let mut cursor = 0u64;
 
-    // idempotent recreate
     let created2: Value = client
         .post(format!("http://{addr}/api/v1/agents"))
         .headers(auth_json(token))
@@ -309,7 +302,6 @@ async fn long_poll_waits_then_returns_event() {
         .unwrap();
     let agent_id = created["agent"]["agentId"].as_str().unwrap().to_string();
 
-    // Drain the agent_started system event first.
     let mut cursor = 0u64;
     let _ = wait_for_payload(&client, addr, token, &agent_id, &mut cursor, |p| {
         p.get("type") == Some(&json!("gateway.system"))
@@ -362,4 +354,145 @@ async fn long_poll_waits_then_returns_event() {
     assert!(elapsed < Duration::from_secs(2));
     let events = body["events"].as_array().unwrap();
     assert!(events.iter().any(|e| e["payload"]["id"] == 42));
+}
+
+#[tokio::test]
+async fn sse_streams_acp_events() {
+    let token = "secret";
+    let (addr, client) = start_server(token).await;
+    let dir = tempdir().unwrap();
+
+    let created: Value = client
+        .post(format!("http://{addr}/api/v1/agents"))
+        .headers(auth_json(token))
+        .json(&json!({
+            "requestId": "sse-1",
+            "workspace": dir.path()
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let agent_id = created["agent"]["agentId"].as_str().unwrap().to_string();
+
+    let mut sse = client
+        .get(format!(
+            "http://{addr}/api/v1/agents/{agent_id}/events/stream?cursor=0&token={token}"
+        ))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        sse.headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or(""),
+        "text/event-stream"
+    );
+
+    client
+        .post(format!("http://{addr}/api/v1/agents/{agent_id}/messages"))
+        .headers(auth_json(token))
+        .json(&json!({
+            "requestId": "sse-init",
+            "messages": [{
+                "jsonrpc": "2.0",
+                "id": 7,
+                "method": "initialize",
+                "params": {
+                    "protocolVersion": 1,
+                    "clientCapabilities": {},
+                    "clientInfo": { "name": "sse", "version": "0" }
+                }
+            }]
+        }))
+        .send()
+        .await
+        .unwrap();
+
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    let mut buf = String::new();
+    while tokio::time::Instant::now() < deadline {
+        if let Some(chunk) = sse.chunk().await.unwrap() {
+            buf.push_str(&String::from_utf8_lossy(&chunk));
+            if buf.contains("\"id\":7") || buf.contains("\"id\": 7") {
+                return;
+            }
+        }
+    }
+    panic!("SSE did not deliver initialize result; buf={buf}");
+}
+
+#[tokio::test]
+async fn controller_lease_blocks_other_client_writes() {
+    let token = "secret";
+    let (addr, client) = start_server(token).await;
+    let dir = tempdir().unwrap();
+
+    let created: Value = client
+        .post(format!("http://{addr}/api/v1/agents"))
+        .headers(auth_json(token))
+        .json(&json!({
+            "requestId": "lease-1",
+            "workspace": dir.path()
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let agent_id = created["agent"]["agentId"].as_str().unwrap().to_string();
+
+    let lease: Value = client
+        .post(format!("http://{addr}/api/v1/agents/{agent_id}/lease"))
+        .headers(auth_json(token))
+        .json(&json!({ "clientId": "owner", "force": false }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(lease["lease"]["clientId"], "owner");
+
+    let denied = client
+        .post(format!("http://{addr}/api/v1/agents/{agent_id}/messages"))
+        .headers(auth_json(token))
+        .header("X-Zene-Client-Id", "other")
+        .json(&json!({
+            "requestId": "blocked",
+            "messages": [{ "jsonrpc": "2.0", "method": "session/cancel", "params": {} }]
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(denied.status(), reqwest::StatusCode::CONFLICT);
+
+    let allowed = client
+        .post(format!("http://{addr}/api/v1/agents/{agent_id}/messages"))
+        .headers(auth_json(token))
+        .header("X-Zene-Client-Id", "owner")
+        .json(&json!({
+            "requestId": "ok-write",
+            "messages": [{ "jsonrpc": "2.0", "method": "session/cancel", "params": {} }]
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(allowed.status(), reqwest::StatusCode::ACCEPTED);
+
+    let stolen: Value = client
+        .post(format!("http://{addr}/api/v1/agents/{agent_id}/lease"))
+        .headers(auth_json(token))
+        .json(&json!({ "clientId": "other", "force": true }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(stolen["lease"]["clientId"], "other");
 }
