@@ -31,14 +31,16 @@ jobs:
         with:
           targets: ${{ matrix.target }}
 
-      - name: Build release binary
-        run: cargo build --release -p zene-cli --target ${{ matrix.target }} --locked
+      - name: Build release binaries
+        run: |
+          cargo build --release -p zene-cli -p zene-gateway --target ${{ matrix.target }} --locked
 
-      - name: Stage artifact
+      - name: Stage artifacts
         run: |
           mkdir -p dist
           cp "target/${{ matrix.target }}/release/zene" "dist/zene-${{ matrix.target }}"
-          chmod +x "dist/zene-${{ matrix.target }}"
+          cp "target/${{ matrix.target }}/release/zene-gateway" "dist/zene-gateway-${{ matrix.target }}"
+          chmod +x dist/*
 
       - uses: actions/upload-artifact@v4
         with:

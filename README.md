@@ -16,7 +16,11 @@ Or manually:
 cargo install --path apps/cli --locked
 ```
 
-Pre-built binaries are published on [GitHub Releases](https://github.com/ParaTensor/zene/releases) when a version tag (`v*`) is pushed. The release workflow builds `zene-cli` for Linux and macOS (x86_64 + Apple Silicon).
+Pre-built binaries are published on [GitHub Releases](https://github.com/ParaTensor/zene/releases) when a version tag (`v*`) is pushed. Each release includes `zene` and `zene-gateway` for Linux and macOS (x86_64 + Apple Silicon). Download install (no compile):
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/ParaTensor/zene/main/www/install.sh | bash
+```
 
 Or run directly without installing:
 
