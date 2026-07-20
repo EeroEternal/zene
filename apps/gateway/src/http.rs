@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-use axum::extract::{Path, Query, State};
+use axum::extract::{DefaultBodyLimit, Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{Html, IntoResponse, Response};
@@ -20,13 +20,17 @@ use crate::agent::AgentManager;
 use crate::auth::{AuthState, ErrorBody};
 use crate::event_journal::CursorExpired;
 use crate::lease::{LeaseError, LeaseManager};
+use crate::poll_guard::PollGuard;
 use crate::static_page::INDEX_HTML;
+
+const MAX_BODY_BYTES: usize = 1_048_576;
 
 #[derive(Clone)]
 pub struct AppState {
     pub auth: AuthState,
     pub agents: AgentManager,
     pub leases: LeaseManager,
+    pub polls: PollGuard,
     pub started_at: chrono::DateTime<chrono::Utc>,
     pub version: &'static str,
 }
@@ -77,11 +81,13 @@ pub fn router(state: AppState) -> Router {
         .route("/", get(index))
         .route("/api/v1/bootstrap", get(bootstrap))
         .route("/api/v1/health", get(health))
-        .route("/api/v1/agents", post(create_agent))
+        .route("/api/v1/agents", get(list_agents).post(create_agent))
         .route("/api/v1/agents/{agent_id}/messages", post(post_messages))
         .route("/api/v1/agents/{agent_id}/events", get(get_events))
         .route("/api/v1/agents/{agent_id}/events/stream", get(stream_events))
         .route("/api/v1/agents/{agent_id}/health", get(agent_health))
+        .route("/api/v1/agents/{agent_id}/restart", post(restart_agent))
+        .route("/api/v1/agents/{agent_id}/attach", post(attach_agent))
         .route("/api/v1/agents/{agent_id}/lease", get(get_lease).post(acquire_lease))
         .route(
             "/api/v1/agents/{agent_id}/lease/heartbeat",
@@ -97,6 +103,7 @@ pub fn router(state: AppState) -> Router {
             "/api/v1/agents/{agent_id}/terminals/{terminal_id}/kill",
             post(kill_terminal),
         )
+        .layer(DefaultBodyLimit::max(MAX_BODY_BYTES))
         .layer(TraceLayer::new_for_http())
         .with_state(Arc::new(state))
 }
@@ -125,14 +132,18 @@ async fn bootstrap(State(state): State<Arc<AppState>>) -> impl IntoResponse {
             "controllerLease": true,
             "terminalHost": true,
             "planPanel": true,
-            "todoPanel": true
+            "todoPanel": true,
+            "journalPersist": state.agents.store().is_some(),
+            "agentRestart": true,
+            "agentAttach": state.agents.store().is_some()
         },
         "limits": {
-            "maxPostBodyBytes": 1_048_576,
+            "maxPostBodyBytes": MAX_BODY_BYTES,
             "maxMessagesPerPost": 100,
             "defaultWaitMs": 25_000,
             "maxWaitMs": 30_000,
             "maxEventsPerPoll": 200,
+            "maxConcurrentPollsPerAgent": 2,
             "leaseTtlMs": 30_000
         },
         "bind": {
@@ -151,6 +162,30 @@ async fn health(State(state): State<Arc<AppState>>) -> impl IntoResponse {
         "uptimeMs": (chrono::Utc::now() - state.started_at).num_milliseconds().max(0),
         "serverTime": chrono::Utc::now(),
     }))
+}
+
+async fn list_agents(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Response {
+    if let Err(status) = state.auth.authorize(&headers, None) {
+        return auth_error(status);
+    }
+    let live = state.agents.list_live().await;
+    match state.agents.list_persisted().await {
+        Ok(persisted) => Json(json!({
+            "agents": live,
+            "persisted": persisted,
+            "meta": meta(),
+        }))
+        .into_response(),
+        Err(err) => json_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "list_agents_failed",
+            err.to_string(),
+            true,
+        ),
+    }
 }
 
 async fn create_agent(
@@ -263,11 +298,20 @@ async fn post_messages(
             (StatusCode::ACCEPTED, Json(payload)).into_response()
         }
         Err(err) => {
-            let retryable = err.to_string().contains("not running");
+            let msg = err.to_string();
+            if msg.contains("exceeds max size") {
+                return json_error(
+                    StatusCode::PAYLOAD_TOO_LARGE,
+                    "message_too_large",
+                    msg,
+                    false,
+                );
+            }
+            let retryable = msg.contains("not running");
             json_error(
                 StatusCode::CONFLICT,
                 "agent_not_running",
-                err.to_string(),
+                msg,
                 retryable,
             )
         }
@@ -297,6 +341,14 @@ async fn get_events(
             "agent_not_found",
             "unknown agentId",
             false,
+        );
+    };
+    let Some(_permit) = state.polls.try_acquire(&agent_id).await else {
+        return json_error(
+            StatusCode::TOO_MANY_REQUESTS,
+            "too_many_polls",
+            "too many concurrent event consumers for this agent",
+            true,
         );
     };
 
@@ -348,10 +400,19 @@ async fn stream_events(
             false,
         );
     };
+    let Some(permit) = state.polls.try_acquire(&agent_id).await else {
+        return json_error(
+            StatusCode::TOO_MANY_REQUESTS,
+            "too_many_polls",
+            "too many concurrent event consumers for this agent",
+            true,
+        );
+    };
 
     let mut cursor = query.cursor.unwrap_or(0);
     let (tx, rx) = mpsc::channel::<Result<Event, Infallible>>(32);
     tokio::spawn(async move {
+        let _permit = permit;
         loop {
             match journal
                 .wait_for_events(cursor, 100, Duration::from_secs(20))
@@ -428,6 +489,60 @@ async fn agent_health(
             "agent_not_found",
             "unknown agentId",
             false,
+        ),
+    }
+}
+
+async fn restart_agent(
+    State(state): State<Arc<AppState>>,
+    Path(agent_id): Path<String>,
+    headers: HeaderMap,
+) -> Response {
+    if let Err(status) = state.auth.authorize(&headers, None) {
+        return auth_error(status);
+    }
+    let client_id = client_id_from_headers(&headers);
+    if let Err(err) = state
+        .leases
+        .authorize_write(&agent_id, client_id.as_deref())
+        .await
+    {
+        return lease_error(err);
+    }
+    match state.agents.restart(&agent_id).await {
+        Ok(agent) => Json(json!({
+            "agent": agent,
+            "meta": meta(),
+        }))
+        .into_response(),
+        Err(err) => json_error(
+            StatusCode::CONFLICT,
+            "agent_restart_failed",
+            err.to_string(),
+            true,
+        ),
+    }
+}
+
+async fn attach_agent(
+    State(state): State<Arc<AppState>>,
+    Path(agent_id): Path<String>,
+    headers: HeaderMap,
+) -> Response {
+    if let Err(status) = state.auth.authorize(&headers, None) {
+        return auth_error(status);
+    }
+    match state.agents.attach(&agent_id).await {
+        Ok(agent) => Json(json!({
+            "agent": agent,
+            "meta": meta(),
+        }))
+        .into_response(),
+        Err(err) => json_error(
+            StatusCode::BAD_REQUEST,
+            "agent_attach_failed",
+            err.to_string(),
+            true,
         ),
     }
 }

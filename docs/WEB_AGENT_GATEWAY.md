@@ -779,8 +779,14 @@ Gateway bootstrap 返回：
 - [x] Gateway 本地 `terminal/*` host + Web 终端面板 / HTTP 查询与 kill
 - [x] session close 与 sessions 列表刷新
 
-### 下一刀（阶段 D / E）
+### 阶段 D（已落地）
 
-- [ ] journal 持久化与 Gateway 重启恢复
-- [ ] 负载、背压、超大 tool/terminal output  hardening
+- [x] journal 落盘（`~/.zene/gateway` / `--data-dir` / `--no-persist`）
+- [x] Agent 崩溃 `restart` 与 Gateway 重启后 `attach`（不静默重放 prompt）
+- [x] 背压：并发 poll 上限、POST/message 大小限制、超大 payload 截断
+- [x] `zene web` 入口与 [GATEWAY_OPS.md](./GATEWAY_OPS.md) 运维文档
+
+### 下一刀（阶段 E）
+
 - [ ] 达到删除 TUI 硬性门槛后移除 ratatui
+- [ ] 默认交互入口切到 Web Agent

@@ -7,6 +7,7 @@
 - New `zene-gateway` binary (`apps/gateway`): thin local HTTP bridge over `zene acp` with token/Origin checks, `POST /api/v1/agents/{id}/messages`, cursor-based `GET /api/v1/agents/{id}/events` long polling, bootstrap/health, embedded minimal Web page, and mock-ACP integration tests.
 - Gateway phase B: optional SSE (`GET /events/stream`) with Web long-poll fallback, controller lease APIs, `apps/web-agent` UI (sessions/tool cards/usage/SSE), `--yolo`/`--sandbox-off`/`--acp-env`, and real `zene acp` + mock LLM smoke test.
 - Gateway phase C: local ACP `terminal/*` host with Web terminal panel, Plan/Todo/background-task panels, mode switch + session close UI, and terminal roundtrip tests.
+- Gateway phase D: on-disk event journal + agent meta, `restart`/`attach` recovery, poll backpressure and payload limits, `zene web` launcher, and `docs/GATEWAY_OPS.md`.
 
 ### Changed
 - ACP: bridge `tool_call` / `tool_call_update` / `plan` / `usage_update` / `current_mode_update` / `available_commands_update` / `agent_thought_chunk`; replay history on `session/load`; implement `session/list`, `session/close`, `session/set_mode`, `session/resume`; optional client FS + terminal bridges; FIFO prompt queue with in-turn cancel; correlate permission `toolCallId`; accept embedded prompt context; tighten JSON-RPC error codes.
