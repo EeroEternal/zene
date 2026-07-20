@@ -180,6 +180,7 @@ Stdout is reserved for protocol frames; logs go to stderr.
 - `GET /api/v1/agents/{id}/events?cursor=&waitMs=` long-polls a cursored event journal fed by child stdout
 - `GET /api/v1/agents/{id}/events/stream` is optional SSE; clients must fall back to long-polling
 - Controller lease (`/lease`, heartbeat, release) serializes multi-tab writes via `X-Zene-Client-Id`
+- When the Web client advertises `terminal`, the gateway hosts ACP `terminal/*` locally and mirrors output as `gateway.terminal` events
 - WebSocket is intentionally not required
 - The gateway does not own Agent loop / tools / sessions — those stay in Zene
 

@@ -772,10 +772,15 @@ Gateway bootstrap 返回：
 - [x] SSE 可选通道（`/events/stream`）与 Web 自动降级到长轮询
 - [x] 多标签页 controller lease（acquire/heartbeat/release + 写保护）
 
-### 下一刀（阶段 C）
+### 阶段 C（已落地）
 
-- [ ] Plan 审阅面板与模式切换 UI
-- [ ] Todo / 后台任务面板
-- [ ] terminal bridge 的 Web 视图
+- [x] Plan 审阅面板与模式切换 UI（`session/set_mode`）
+- [x] Todo / 后台任务面板（基于 `plan` / tool_call 更新）
+- [x] Gateway 本地 `terminal/*` host + Web 终端面板 / HTTP 查询与 kill
+- [x] session close 与 sessions 列表刷新
+
+### 下一刀（阶段 D / E）
+
 - [ ] journal 持久化与 Gateway 重启恢复
+- [ ] 负载、背压、超大 tool/terminal output  hardening
 - [ ] 达到删除 TUI 硬性门槛后移除 ratatui

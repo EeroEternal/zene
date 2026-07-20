@@ -96,6 +96,8 @@ async fn bootstrap_advertises_sse_and_lease() {
     assert_eq!(boot["transports"]["sse"], true);
     assert_eq!(boot["transports"]["websocket"], false);
     assert_eq!(boot["features"]["controllerLease"], true);
+    assert_eq!(boot["features"]["terminalHost"], true);
+    assert_eq!(boot["features"]["planPanel"], true);
 }
 
 #[tokio::test]
@@ -423,6 +425,127 @@ async fn sse_streams_acp_events() {
         }
     }
     panic!("SSE did not deliver initialize result; buf={buf}");
+}
+
+#[tokio::test]
+async fn terminal_host_handles_acp_terminal_roundtrip() {
+    let token = "secret";
+    let (addr, client) = start_server(token).await;
+    let dir = tempdir().unwrap();
+
+    let created: Value = client
+        .post(format!("http://{addr}/api/v1/agents"))
+        .headers(auth_json(token))
+        .json(&json!({
+            "requestId": "term-create",
+            "workspace": dir.path()
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let agent_id = created["agent"]["agentId"].as_str().unwrap().to_string();
+    let mut cursor = 0u64;
+
+    client
+        .post(format!("http://{addr}/api/v1/agents/{agent_id}/messages"))
+        .headers(auth_json(token))
+        .json(&json!({
+            "requestId": "term-init",
+            "messages": [{
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "initialize",
+                "params": {
+                    "protocolVersion": 1,
+                    "clientCapabilities": { "terminal": true },
+                    "clientInfo": { "name": "term-test", "version": "0" }
+                }
+            }]
+        }))
+        .send()
+        .await
+        .unwrap();
+    wait_for_payload(&client, addr, token, &agent_id, &mut cursor, |p| {
+        p.get("id") == Some(&json!(1))
+    })
+    .await;
+
+    client
+        .post(format!("http://{addr}/api/v1/agents/{agent_id}/messages"))
+        .headers(auth_json(token))
+        .json(&json!({
+            "requestId": "term-new",
+            "messages": [{
+                "jsonrpc": "2.0",
+                "id": 2,
+                "method": "session/new",
+                "params": { "cwd": dir.path(), "mcpServers": [] }
+            }]
+        }))
+        .send()
+        .await
+        .unwrap();
+    let session = wait_for_payload(&client, addr, token, &agent_id, &mut cursor, |p| {
+        p.get("id") == Some(&json!(2))
+    })
+    .await;
+    let session_id = session["result"]["sessionId"].as_str().unwrap().to_string();
+
+    client
+        .post(format!("http://{addr}/api/v1/agents/{agent_id}/messages"))
+        .headers(auth_json(token))
+        .json(&json!({
+            "requestId": "term-prompt",
+            "messages": [{
+                "jsonrpc": "2.0",
+                "id": 3,
+                "method": "session/prompt",
+                "params": {
+                    "sessionId": session_id,
+                    "prompt": [{ "type": "text", "text": "TERMINAL_PING" }]
+                }
+            }]
+        }))
+        .send()
+        .await
+        .unwrap();
+
+    let created_event = wait_for_payload(&client, addr, token, &agent_id, &mut cursor, |p| {
+        p.get("type") == Some(&json!("gateway.terminal")) && p.get("kind") == Some(&json!("created"))
+    })
+    .await;
+    let terminal_id = created_event["terminalId"].as_str().unwrap().to_string();
+
+    let assistant = wait_for_payload(&client, addr, token, &agent_id, &mut cursor, |p| {
+        p.get("method") == Some(&json!("session/update"))
+            && p["params"]["update"]["sessionUpdate"] == "agent_message_chunk"
+            && p["params"]["update"]["content"]["text"]
+                .as_str()
+                .is_some_and(|t| t.contains("gateway-terminal-ok"))
+    })
+    .await;
+    assert!(assistant["params"]["update"]["content"]["text"]
+        .as_str()
+        .unwrap()
+        .contains("gateway-terminal-ok"));
+
+    let listed: Value = client
+        .get(format!("http://{addr}/api/v1/agents/{agent_id}/terminals"))
+        .header("X-Zene-Token", token)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert!(listed["terminals"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|t| t["terminalId"] == terminal_id));
 }
 
 #[tokio::test]

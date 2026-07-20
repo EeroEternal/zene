@@ -13,6 +13,7 @@ use tokio::sync::{Mutex, RwLock};
 use uuid::Uuid;
 
 use crate::event_journal::EventJournal;
+use crate::terminal::{is_terminal_request, TerminalHost, TerminalInfo};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -39,6 +40,7 @@ struct AgentRuntime {
     stdin: Option<ChildStdin>,
     child: Child,
     journal: EventJournal,
+    terminals: TerminalHost,
 }
 
 #[derive(Clone)]
@@ -110,11 +112,13 @@ impl AgentManager {
             exit_code: None,
         };
 
+        let terminals = TerminalHost::new();
         let runtime = Arc::new(Mutex::new(AgentRuntime {
             info: info.clone(),
             stdin: Some(stdin),
             child,
             journal: journal.clone(),
+            terminals: terminals.clone(),
         }));
 
         {
@@ -131,13 +135,71 @@ impl AgentManager {
                 }
                 let payload = match serde_json::from_str::<Value>(&line) {
                     Ok(value) => value,
-                    Err(err) => serde_json::json!({
-                        "type": "gateway.system",
-                        "kind": "invalid_stdout",
-                        "message": format!("invalid ACP JSON: {err}"),
-                        "raw": line,
-                    }),
+                    Err(err) => {
+                        let journal = {
+                            let guard = stdout_runtime.lock().await;
+                            guard.journal.clone()
+                        };
+                        journal
+                            .append(serde_json::json!({
+                                "type": "gateway.system",
+                                "kind": "invalid_stdout",
+                                "message": format!("invalid ACP JSON: {err}"),
+                                "raw": line,
+                            }))
+                            .await;
+                        continue;
+                    }
                 };
+
+                if is_terminal_request(&payload) {
+                    // Handle terminal requests off the stdout read loop so
+                    // wait_for_exit cannot stall other ACP frames.
+                    let runtime = stdout_runtime.clone();
+                    tokio::spawn(async move {
+                        let (journal, terminals, workspace) = {
+                            let guard = runtime.lock().await;
+                            (
+                                guard.journal.clone(),
+                                guard.terminals.clone(),
+                                guard.info.workspace.clone(),
+                            )
+                        };
+                        journal.append(payload.clone()).await;
+                        match terminals
+                            .handle_request(&payload, &journal, &workspace)
+                            .await
+                        {
+                            Ok(response) => {
+                                if let Err(err) = write_stdin_locked(&runtime, &[response]).await {
+                                    journal
+                                        .append_system(
+                                            "terminal_reply_failed",
+                                            format!("failed writing terminal response: {err}"),
+                                        )
+                                        .await;
+                                }
+                            }
+                            Err(err) => {
+                                let id = payload.get("id").cloned();
+                                let response = serde_json::json!({
+                                    "jsonrpc": "2.0",
+                                    "id": id,
+                                    "error": {
+                                        "code": -32000,
+                                        "message": format!("terminal host error: {err}")
+                                    }
+                                });
+                                let _ = write_stdin_locked(&runtime, &[response]).await;
+                                journal
+                                    .append_system("terminal_error", err.to_string())
+                                    .await;
+                            }
+                        }
+                    });
+                    continue;
+                }
+
                 let journal = {
                     let guard = stdout_runtime.lock().await;
                     guard.journal.clone()
@@ -270,6 +332,62 @@ impl AgentManager {
                 as u64,
         })
     }
+
+    pub async fn list_terminals(&self, agent_id: &str) -> Option<Vec<TerminalInfo>> {
+        let map = self.inner.read().await;
+        let runtime = map.get(agent_id)?.clone();
+        let guard = runtime.lock().await;
+        Some(guard.terminals.list(None).await)
+    }
+
+    pub async fn terminal_output(
+        &self,
+        agent_id: &str,
+        terminal_id: &str,
+        offset: usize,
+    ) -> Result<(String, usize, Option<i32>)> {
+        let map = self.inner.read().await;
+        let runtime = map
+            .get(agent_id)
+            .cloned()
+            .ok_or_else(|| anyhow!("agent not found"))?;
+        let terminals = {
+            let guard = runtime.lock().await;
+            guard.terminals.clone()
+        };
+        let (chunk, len, code, _) = terminals.output_since(terminal_id, offset).await?;
+        Ok((chunk, len, code))
+    }
+
+    pub async fn kill_terminal(&self, agent_id: &str, terminal_id: &str) -> Result<()> {
+        let map = self.inner.read().await;
+        let runtime = map
+            .get(agent_id)
+            .cloned()
+            .ok_or_else(|| anyhow!("agent not found"))?;
+        let terminals = {
+            let guard = runtime.lock().await;
+            guard.terminals.clone()
+        };
+        terminals.kill(terminal_id).await
+    }
+}
+
+async fn write_stdin_locked(
+    runtime: &Arc<Mutex<AgentRuntime>>,
+    messages: &[Value],
+) -> Result<()> {
+    let mut guard = runtime.lock().await;
+    let Some(stdin) = guard.stdin.as_mut() else {
+        bail!("agent stdin closed");
+    };
+    for message in messages {
+        let mut line = serde_json::to_string(message)?;
+        line.push('\n');
+        stdin.write_all(line.as_bytes()).await?;
+    }
+    stdin.flush().await?;
+    Ok(())
 }
 
 #[derive(Debug, Clone, Serialize)]

@@ -88,6 +88,15 @@ pub fn router(state: AppState) -> Router {
             post(heartbeat_lease),
         )
         .route("/api/v1/agents/{agent_id}/lease/release", post(release_lease))
+        .route("/api/v1/agents/{agent_id}/terminals", get(list_terminals))
+        .route(
+            "/api/v1/agents/{agent_id}/terminals/{terminal_id}",
+            get(get_terminal_output),
+        )
+        .route(
+            "/api/v1/agents/{agent_id}/terminals/{terminal_id}/kill",
+            post(kill_terminal),
+        )
         .layer(TraceLayer::new_for_http())
         .with_state(Arc::new(state))
 }
@@ -113,7 +122,10 @@ async fn bootstrap(State(state): State<Arc<AppState>>) -> impl IntoResponse {
             "clientIdHeader": "X-Zene-Client-Id"
         },
         "features": {
-            "controllerLease": true
+            "controllerLease": true,
+            "terminalHost": true,
+            "planPanel": true,
+            "todoPanel": true
         },
         "limits": {
             "maxPostBodyBytes": 1_048_576,
@@ -581,6 +593,98 @@ fn cursor_expired(oldest_cursor: u64, latest_cursor: u64) -> Response {
     body.latest_cursor = Some(latest_cursor);
     body.recovery = Some("reload_session".into());
     (StatusCode::CONFLICT, Json(body)).into_response()
+}
+
+async fn list_terminals(
+    State(state): State<Arc<AppState>>,
+    Path(agent_id): Path<String>,
+    headers: HeaderMap,
+) -> Response {
+    if let Err(status) = state.auth.authorize(&headers, None) {
+        return auth_error(status);
+    }
+    match state.agents.list_terminals(&agent_id).await {
+        Some(terminals) => Json(json!({
+            "terminals": terminals,
+            "meta": meta(),
+        }))
+        .into_response(),
+        None => json_error(
+            StatusCode::NOT_FOUND,
+            "agent_not_found",
+            "unknown agentId",
+            false,
+        ),
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct TerminalOutputQuery {
+    offset: Option<usize>,
+    token: Option<String>,
+}
+
+async fn get_terminal_output(
+    State(state): State<Arc<AppState>>,
+    Path((agent_id, terminal_id)): Path<(String, String)>,
+    Query(query): Query<TerminalOutputQuery>,
+    headers: HeaderMap,
+) -> Response {
+    if let Err(status) = state.auth.authorize(&headers, query.token.as_deref()) {
+        return auth_error(status);
+    }
+    match state
+        .agents
+        .terminal_output(&agent_id, &terminal_id, query.offset.unwrap_or(0))
+        .await
+    {
+        Ok((chunk, next_offset, exit_code)) => Json(json!({
+            "terminalId": terminal_id,
+            "chunk": chunk,
+            "nextOffset": next_offset,
+            "exitCode": exit_code,
+            "meta": meta(),
+        }))
+        .into_response(),
+        Err(err) => json_error(
+            StatusCode::NOT_FOUND,
+            "terminal_not_found",
+            err.to_string(),
+            false,
+        ),
+    }
+}
+
+async fn kill_terminal(
+    State(state): State<Arc<AppState>>,
+    Path((agent_id, terminal_id)): Path<(String, String)>,
+    headers: HeaderMap,
+) -> Response {
+    if let Err(status) = state.auth.authorize(&headers, None) {
+        return auth_error(status);
+    }
+    let client_id = client_id_from_headers(&headers);
+    if let Err(err) = state
+        .leases
+        .authorize_write(&agent_id, client_id.as_deref())
+        .await
+    {
+        return lease_error(err);
+    }
+    match state.agents.kill_terminal(&agent_id, &terminal_id).await {
+        Ok(()) => Json(json!({
+            "killed": true,
+            "terminalId": terminal_id,
+            "meta": meta(),
+        }))
+        .into_response(),
+        Err(err) => json_error(
+            StatusCode::NOT_FOUND,
+            "terminal_not_found",
+            err.to_string(),
+            true,
+        ),
+    }
 }
 
 fn json_error(
