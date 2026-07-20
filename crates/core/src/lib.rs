@@ -1122,6 +1122,14 @@ impl Agent {
                     }
                     text.push_str(&delta);
                 }
+                StreamEvent::ThoughtDelta(delta) => {
+                    emit_event(
+                        &options.event_handler,
+                        AgentEvent::ThoughtDelta {
+                            delta: delta.clone(),
+                        },
+                    );
+                }
                 StreamEvent::ToolCallDelta {
                     index,
                     id,
@@ -1606,6 +1614,7 @@ fn record_entry_from_agent_event(event: &AgentEvent) -> Option<RecordEntry> {
         }),
         AgentEvent::TurnStart { .. }
         | AgentEvent::TextDelta { .. }
+        | AgentEvent::ThoughtDelta { .. }
         | AgentEvent::SteerInput { .. }
         | AgentEvent::ModeChanged { .. }
         | AgentEvent::UsageUpdate { .. } => None,

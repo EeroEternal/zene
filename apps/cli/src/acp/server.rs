@@ -1,11 +1,11 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::io::{self, BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use anyhow::{anyhow, bail, Context, Result};
 use serde_json::{json, Value};
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, oneshot, Mutex as AsyncMutex};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, warn};
 use zene_config::ZeneConfig;
@@ -20,10 +20,11 @@ use super::protocol::{
     err_response, error_codes, is_notification, is_request, is_response, ok_response,
     prompt_text_from_params, RpcId,
 };
+use super::terminal_bridge::AcpRemoteTerminal;
 use super::transport::{AcpWriter, SharedState};
 use super::updates::{
-    agent_message_chunk, available_commands_update, current_mode_update, modes_state,
-    plan_from_todo_arguments, replay_updates_from_messages, tool_call_result_update,
+    agent_message_chunk, agent_thought_chunk, available_commands_update, current_mode_update,
+    modes_state, plan_from_todo_arguments, replay_updates_from_messages, tool_call_result_update,
     tool_call_update, tool_kind, tool_title, usage_update,
 };
 
@@ -37,14 +38,28 @@ struct PendingToolCall {
 struct ClientCapabilities {
     fs_read: bool,
     fs_write: bool,
+    terminal: bool,
+}
+
+struct QueuedPrompt {
+    rpc_id: RpcId,
+    params: Value,
+}
+
+struct ActivePrompt {
+    session_id: String,
+    rpc_id: RpcId,
+    cancel: CancellationToken,
+    result_rx: oneshot::Receiver<Result<Value>>,
 }
 
 struct AcpSession {
-    agent: Agent,
+    agent: Arc<AsyncMutex<Agent>>,
     cancel: Option<CancellationToken>,
     permission_mode: PermissionMode,
     /// Last tool call id observed via AgentEvent (used by permission prompts).
     pending_tool: Arc<Mutex<PendingToolCall>>,
+    prompt_queue: VecDeque<QueuedPrompt>,
 }
 
 pub struct AcpServer {
@@ -128,42 +143,82 @@ impl AcpServer {
             writer,
             client_caps: ClientCapabilities::default(),
         };
+        let mut active: Option<ActivePrompt> = None;
+        let mut stdin_open = true;
 
-        while let Some(msg) = in_rx.recv().await {
-            if is_notification(&msg) {
-                let method = msg["method"].as_str().unwrap_or("");
-                if method == "session/cancel" {
-                    if let Some(sid) = msg["params"]["sessionId"].as_str() {
-                        if let Some(s) = server.sessions.get(sid) {
-                            if let Some(token) = &s.cancel {
-                                token.cancel();
+        while stdin_open || active.is_some() {
+            if let Some(mut current) = active.take() {
+                tokio::select! {
+                    msg = in_rx.recv(), if stdin_open => {
+                        match msg {
+                            Some(msg) => {
+                                if let Err(e) = server
+                                    .handle_incoming(msg, Some(&mut current), &mut active)
+                                    .await
+                                {
+                                    warn!("ACP incoming while prompting: {e:#}");
+                                }
+                                if active.is_none() {
+                                    active = Some(current);
+                                }
+                            }
+                            None => {
+                                stdin_open = false;
+                                current.cancel.cancel();
+                                active = Some(current);
                             }
                         }
                     }
+                    result = &mut current.result_rx => {
+                        let reply = match result {
+                            Ok(Ok(value)) => ok_response(current.rpc_id.clone(), value),
+                            Ok(Err(err)) => {
+                                warn!("ACP session/prompt: {err:#}");
+                                err_response(
+                                    current.rpc_id.clone(),
+                                    dispatch_error_code("session/prompt", &err),
+                                    &format!("{err:#}"),
+                                )
+                            }
+                            Err(_) => err_response(
+                                current.rpc_id.clone(),
+                                error_codes::APPLICATION_ERROR,
+                                "prompt worker dropped",
+                            ),
+                        };
+                        if let Err(e) = server.writer.send_raw(reply.to_string()) {
+                            warn!("ACP write failed: {e}");
+                            break;
+                        }
+                        if let Some(sess) = server.sessions.get_mut(&current.session_id) {
+                            sess.cancel = None;
+                            sess.pending_tool.lock().unwrap().id = None;
+                        }
+                        if let Err(e) = server.maybe_start_queued_prompt(&current.session_id, &mut active).await {
+                            warn!("ACP queued prompt: {e:#}");
+                        }
+                    }
                 }
-                continue;
-            }
-            if !is_request(&msg) {
-                continue;
-            }
-            let id = RpcId::from_value(&msg["id"]);
-            let method = msg["method"].as_str().unwrap_or("").to_string();
-            let params = msg.get("params").cloned().unwrap_or(Value::Null);
-            let reply = match server.dispatch(&method, params).await {
-                Ok(result) => ok_response(id, result),
-                Err(e) => {
-                    warn!("ACP {method}: {e:#}");
-                    err_response(id, dispatch_error_code(&method, &e), &format!("{e:#}"))
+            } else {
+                match in_rx.recv().await {
+                    Some(msg) => {
+                        if let Err(e) = server.handle_incoming(msg, None, &mut active).await {
+                            warn!("ACP incoming: {e:#}");
+                        }
+                    }
+                    None => {
+                        stdin_open = false;
+                    }
                 }
-            };
-            if let Err(e) = server.writer.send_raw(reply.to_string()) {
-                warn!("ACP write failed: {e}");
-                break;
             }
         }
 
-        for (_, mut sess) in server.sessions.drain() {
-            let _ = sess.agent.shutdown().await;
+        for (_, sess) in server.sessions.drain() {
+            if let Some(token) = &sess.cancel {
+                token.cancel();
+            }
+            let mut agent = sess.agent.lock().await;
+            let _ = agent.shutdown().await;
         }
         drop(server.writer);
         let _ = stdin_task.await;
@@ -171,16 +226,68 @@ impl AcpServer {
         Ok(())
     }
 
+    async fn handle_incoming(
+        &mut self,
+        msg: Value,
+        current: Option<&mut ActivePrompt>,
+        active: &mut Option<ActivePrompt>,
+    ) -> Result<()> {
+        if is_notification(&msg) {
+            let method = msg["method"].as_str().unwrap_or("");
+            if method == "session/cancel" {
+                if let Some(sid) = msg["params"]["sessionId"].as_str() {
+                    if let Some(s) = self.sessions.get(sid) {
+                        if let Some(token) = &s.cancel {
+                            token.cancel();
+                        }
+                    }
+                    if let Some(cur) = current {
+                        if cur.session_id == sid {
+                            cur.cancel.cancel();
+                        }
+                    }
+                }
+            }
+            return Ok(());
+        }
+        if !is_request(&msg) {
+            return Ok(());
+        }
+        let id = RpcId::from_value(&msg["id"]);
+        let method = msg["method"].as_str().unwrap_or("").to_string();
+        let params = msg.get("params").cloned().unwrap_or(Value::Null);
+
+        if method == "session/prompt" {
+            if let Err(e) = self.enqueue_or_start_prompt(id.clone(), params, active).await {
+                warn!("ACP {method}: {e:#}");
+                let reply = err_response(id, dispatch_error_code(&method, &e), &format!("{e:#}"));
+                self.writer.send_raw(reply.to_string())?;
+            }
+            Ok(())
+        } else {
+            let reply = match self.dispatch(&method, params).await {
+                Ok(result) => ok_response(id, result),
+                Err(e) => {
+                    warn!("ACP {method}: {e:#}");
+                    err_response(id, dispatch_error_code(&method, &e), &format!("{e:#}"))
+                }
+            };
+            self.writer.send_raw(reply.to_string())?;
+            Ok(())
+        }
+    }
+
     async fn dispatch(&mut self, method: &str, params: Value) -> Result<Value> {
         match method {
             "initialize" => self.handle_initialize(params),
             "session/new" => self.handle_session_new(params).await,
             "session/load" => self.handle_session_load(params).await,
-            "session/prompt" => self.handle_session_prompt(params).await,
+            "session/resume" => self.handle_session_resume(params).await,
             "session/list" => self.handle_session_list(params),
             "session/close" => self.handle_session_close(params).await,
             "session/set_mode" => self.handle_session_set_mode(params).await,
             "authenticate" => Ok(json!({})),
+            "session/prompt" => Err(anyhow!("session/prompt is handled by the async prompt queue")),
             other => Err(MethodNotFound(other.to_string()).into()),
         }
     }
@@ -204,12 +311,17 @@ impl AcpServer {
                 .and_then(|v| v.get("writeTextFile"))
                 .and_then(Value::as_bool)
                 .unwrap_or(false),
+            terminal: params
+                .pointer("/clientCapabilities/terminal")
+                .and_then(Value::as_bool)
+                .unwrap_or(false),
         };
-        if self.client_caps.fs_read || self.client_caps.fs_write {
+        if self.client_caps.fs_read || self.client_caps.fs_write || self.client_caps.terminal {
             debug!(
                 fs_read = self.client_caps.fs_read,
                 fs_write = self.client_caps.fs_write,
-                "ACP client advertised filesystem capabilities"
+                terminal = self.client_caps.terminal,
+                "ACP client advertised capabilities"
             );
         }
 
@@ -227,7 +339,8 @@ impl AcpServer {
                     "sse": false
                 },
                 "sessionCapabilities": {
-                    "list": {}
+                    "list": {},
+                    "resume": {}
                 }
             },
             "agentInfo": {
@@ -244,7 +357,10 @@ impl AcpServer {
         let session = SessionRecord::new(&cwd);
         let id = session.meta.id.clone();
         let acp_session = self.build_session(session, &cwd, &id).await?;
-        let mode = acp_session.agent.current_session_mode();
+        let mode = {
+            let agent = acp_session.agent.lock().await;
+            agent.current_session_mode()
+        };
         self.sessions.insert(id.clone(), acp_session);
         self.advertise_session(&id)?;
         Ok(json!({
@@ -263,7 +379,10 @@ impl AcpServer {
         let session = SessionRecord::load(&sid).context("load session")?;
         let updates = replay_updates_from_messages(&session.messages);
         let acp_session = self.build_session(session, &cwd, &sid).await?;
-        let mode = acp_session.agent.current_session_mode();
+        let mode = {
+            let agent = acp_session.agent.lock().await;
+            agent.current_session_mode()
+        };
         self.sessions.insert(sid.clone(), acp_session);
 
         // ACP requires replaying history via session/update before responding.
@@ -276,6 +395,28 @@ impl AcpServer {
         }
         self.advertise_session(&sid)?;
 
+        Ok(json!({
+            "sessionId": sid,
+            "modes": modes_state(mode),
+        }))
+    }
+
+    async fn handle_session_resume(&mut self, params: Value) -> Result<Value> {
+        let sid = params
+            .get("sessionId")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| anyhow!("sessionId required"))?
+            .to_string();
+        let cwd = resolve_cwd(&params, &self.workdir)?;
+        let session = SessionRecord::load(&sid).context("resume session")?;
+        // Resume restores context without replaying history.
+        let acp_session = self.build_session(session, &cwd, &sid).await?;
+        let mode = {
+            let agent = acp_session.agent.lock().await;
+            agent.current_session_mode()
+        };
+        self.sessions.insert(sid.clone(), acp_session);
+        self.advertise_session(&sid)?;
         Ok(json!({
             "sessionId": sid,
             "modes": modes_state(mode),
@@ -316,8 +457,9 @@ impl AcpServer {
         if let Some(token) = sess.cancel.take() {
             token.cancel();
         }
-        let _ = sess.agent.session().save();
-        let _ = sess.agent.shutdown().await;
+        let mut agent = sess.agent.lock().await;
+        let _ = agent.session().save();
+        let _ = agent.shutdown().await;
         Ok(json!({}))
     }
 
@@ -336,7 +478,10 @@ impl AcpServer {
             .sessions
             .get_mut(&sid)
             .ok_or_else(|| anyhow!("unknown sessionId: {sid}"))?;
-        let active = sess.agent.set_session_mode(&mode_id)?;
+        let active = {
+            let mut agent = sess.agent.lock().await;
+            agent.set_session_mode(&mode_id)?
+        };
         self.writer
             .session_update(&sid, current_mode_update(&active))?;
         Ok(json!({}))
@@ -371,16 +516,28 @@ impl AcpServer {
                 self.client_caps.fs_write,
             )));
         }
+        if self.client_caps.terminal {
+            sandbox = sandbox.with_remote_terminal(Arc::new(AcpRemoteTerminal::new(
+                self.writer.clone(),
+                session_id,
+            )));
+        }
         let agent = Agent::new(config, sandbox, session, permission_mode).await?;
         Ok(AcpSession {
-            agent,
+            agent: Arc::new(AsyncMutex::new(agent)),
             cancel: None,
             permission_mode,
             pending_tool: Arc::new(Mutex::new(PendingToolCall::default())),
+            prompt_queue: VecDeque::new(),
         })
     }
 
-    async fn handle_session_prompt(&mut self, params: Value) -> Result<Value> {
+    async fn enqueue_or_start_prompt(
+        &mut self,
+        rpc_id: RpcId,
+        params: Value,
+        active: &mut Option<ActivePrompt>,
+    ) -> Result<()> {
         let sid = params
             .get("sessionId")
             .and_then(|v| v.as_str())
@@ -390,7 +547,56 @@ impl AcpServer {
         if text.trim().is_empty() {
             bail!("empty prompt");
         }
+        let sess = self
+            .sessions
+            .get_mut(&sid)
+            .ok_or_else(|| anyhow!("unknown sessionId: {sid}"))?;
 
+        if sess.cancel.is_some() {
+            debug!(session = %sid, "ACP queueing prompt behind active turn");
+            sess.prompt_queue.push_back(QueuedPrompt { rpc_id, params });
+            return Ok(());
+        }
+
+        self.start_prompt(sid, rpc_id, text, active).await
+    }
+
+    async fn maybe_start_queued_prompt(
+        &mut self,
+        session_id: &str,
+        active: &mut Option<ActivePrompt>,
+    ) -> Result<()> {
+        loop {
+            let next = self
+                .sessions
+                .get_mut(session_id)
+                .and_then(|sess| sess.prompt_queue.pop_front());
+            let Some(next) = next else {
+                return Ok(());
+            };
+            let text = prompt_text_from_params(&next.params);
+            if text.trim().is_empty() {
+                let reply = err_response(
+                    next.rpc_id,
+                    error_codes::INVALID_PARAMS,
+                    "empty prompt",
+                );
+                self.writer.send_raw(reply.to_string())?;
+                continue;
+            }
+            return self
+                .start_prompt(session_id.to_string(), next.rpc_id, text, active)
+                .await;
+        }
+    }
+
+    async fn start_prompt(
+        &mut self,
+        sid: String,
+        rpc_id: RpcId,
+        text: String,
+        active: &mut Option<ActivePrompt>,
+    ) -> Result<()> {
         let writer = self.writer.clone();
         let yolo = self.yolo;
         let sess = self
@@ -398,15 +604,51 @@ impl AcpServer {
             .get_mut(&sid)
             .ok_or_else(|| anyhow!("unknown sessionId: {sid}"))?;
 
-        if sess.cancel.is_some() {
-            bail!("session already has an active prompt; cancel it first");
-        }
-
         let cancel = CancellationToken::new();
         sess.cancel = Some(cancel.clone());
         let pending_tool = Arc::clone(&sess.pending_tool);
-
+        let agent = Arc::clone(&sess.agent);
         let permission_mode = sess.permission_mode;
+
+        let (tx, rx) = oneshot::channel();
+        *active = Some(ActivePrompt {
+            session_id: sid.clone(),
+            rpc_id,
+            cancel: cancel.clone(),
+            result_rx: rx,
+        });
+
+        tokio::spawn(async move {
+            let result = run_prompt_job(
+                agent,
+                writer,
+                sid,
+                text,
+                yolo,
+                permission_mode,
+                pending_tool,
+                cancel,
+            )
+            .await;
+            let _ = tx.send(result);
+        });
+        Ok(())
+    }
+
+}
+
+async fn run_prompt_job(
+    agent: Arc<AsyncMutex<Agent>>,
+    writer: AcpWriter,
+    sid: String,
+    text: String,
+    yolo: bool,
+    permission_mode: PermissionMode,
+    pending_tool: Arc<Mutex<PendingToolCall>>,
+    cancel: CancellationToken,
+) -> Result<Value> {
+    {
+        let mut agent = agent.lock().await;
         if !yolo {
             let writer_perm = writer.clone();
             let session_id = sid.clone();
@@ -431,111 +673,118 @@ impl AcpServer {
                     )
                 }),
             );
-            sess.agent.set_permission_gate(gate);
+            agent.set_permission_gate(gate);
         }
+    }
 
-        let prompt_id = uuid::Uuid::new_v4().to_string();
-        let event_counter = Arc::new(Mutex::new(0u64));
-        let on_event: EventHandler = {
-            let writer = writer.clone();
-            let session_id = sid.clone();
-            let pending_tool = Arc::clone(&pending_tool);
-            let prompt_id = prompt_id.clone();
-            let event_counter = Arc::clone(&event_counter);
-            Arc::new(move |event: AgentEvent| {
-                let event_id = {
-                    let mut n = event_counter.lock().unwrap();
-                    *n += 1;
-                    format!("{prompt_id}-{}", *n)
-                };
-                let meta = json!({
-                    "promptId": prompt_id,
-                    "eventId": event_id,
-                    "isReplay": false,
-                });
-                match event {
-                    AgentEvent::TextDelta { delta } => {
-                        let mut update = agent_message_chunk(&delta);
-                        attach_meta(&mut update, meta);
-                        let _ = writer.session_update(&session_id, update);
-                    }
-                    AgentEvent::ToolCall {
-                        id,
-                        name,
-                        arguments,
-                    } => {
-                        pending_tool.lock().unwrap().id = Some(id.clone());
-                        let mut update = tool_call_update(&id, &name, &arguments, "pending");
-                        attach_meta(&mut update, meta);
-                        let _ = writer.session_update(&session_id, update);
-                        if name == "TodoWrite" {
-                            if let Some(mut plan) = plan_from_todo_arguments(&arguments) {
-                                attach_meta(
-                                    &mut plan,
-                                    json!({
-                                        "promptId": prompt_id,
-                                        "isReplay": false,
-                                    }),
-                                );
-                                let _ = writer.session_update(&session_id, plan);
-                            }
-                        }
-                    }
-                    AgentEvent::ToolResult {
-                        id,
-                        name: _,
-                        content,
-                        is_error,
-                        duration_ms,
-                    } => {
-                        let mut update = tool_call_result_update(&id, &content, is_error);
-                        let mut meta = json!({
-                            "promptId": prompt_id,
-                            "eventId": event_id,
-                            "isReplay": false,
-                        });
-                        if let Some(ms) = duration_ms {
-                            meta.as_object_mut()
-                                .unwrap()
-                                .insert("durationMs".into(), json!(ms));
-                        }
-                        attach_meta(&mut update, meta);
-                        let _ = writer.session_update(&session_id, update);
-                        pending_tool.lock().unwrap().id = None;
-                    }
-                    AgentEvent::ModeChanged { mode_id } => {
-                        let mut update = current_mode_update(&mode_id);
-                        attach_meta(&mut update, meta);
-                        let _ = writer.session_update(&session_id, update);
-                    }
-                    AgentEvent::UsageUpdate {
-                        usage,
-                        context_tokens,
-                        context_window,
-                        context_percent,
-                    } => {
-                        let mut update = usage_update(
-                            u64::from(context_tokens),
-                            u64::from(context_window.max(1)),
-                            usage.prompt_tokens,
-                            usage.completion_tokens,
-                            context_percent,
-                        );
-                        attach_meta(&mut update, meta);
-                        let _ = writer.session_update(&session_id, update);
-                    }
-                    AgentEvent::Error { message } => {
-                        let mut update = agent_message_chunk(&format!("\n[error] {message}\n"));
-                        attach_meta(&mut update, meta);
-                        let _ = writer.session_update(&session_id, update);
-                    }
-                    _ => {}
+    let prompt_id = uuid::Uuid::new_v4().to_string();
+    let event_counter = Arc::new(Mutex::new(0u64));
+    let on_event: EventHandler = {
+        let writer = writer.clone();
+        let session_id = sid.clone();
+        let pending_tool = Arc::clone(&pending_tool);
+        let prompt_id = prompt_id.clone();
+        let event_counter = Arc::clone(&event_counter);
+        Arc::new(move |event: AgentEvent| {
+            let event_id = {
+                let mut n = event_counter.lock().unwrap();
+                *n += 1;
+                format!("{prompt_id}-{}", *n)
+            };
+            let meta = json!({
+                "promptId": prompt_id,
+                "eventId": event_id,
+                "isReplay": false,
+            });
+            match event {
+                AgentEvent::TextDelta { delta } => {
+                    let mut update = agent_message_chunk(&delta);
+                    attach_meta(&mut update, meta);
+                    let _ = writer.session_update(&session_id, update);
                 }
-            })
-        };
+                AgentEvent::ThoughtDelta { delta } => {
+                    let mut update = agent_thought_chunk(&delta);
+                    attach_meta(&mut update, meta);
+                    let _ = writer.session_update(&session_id, update);
+                }
+                AgentEvent::ToolCall {
+                    id,
+                    name,
+                    arguments,
+                } => {
+                    pending_tool.lock().unwrap().id = Some(id.clone());
+                    let mut update = tool_call_update(&id, &name, &arguments, "pending");
+                    attach_meta(&mut update, meta);
+                    let _ = writer.session_update(&session_id, update);
+                    if name == "TodoWrite" {
+                        if let Some(mut plan) = plan_from_todo_arguments(&arguments) {
+                            attach_meta(
+                                &mut plan,
+                                json!({
+                                    "promptId": prompt_id,
+                                    "isReplay": false,
+                                }),
+                            );
+                            let _ = writer.session_update(&session_id, plan);
+                        }
+                    }
+                }
+                AgentEvent::ToolResult {
+                    id,
+                    name: _,
+                    content,
+                    is_error,
+                    duration_ms,
+                } => {
+                    let mut update = tool_call_result_update(&id, &content, is_error);
+                    let mut meta = json!({
+                        "promptId": prompt_id,
+                        "eventId": event_id,
+                        "isReplay": false,
+                    });
+                    if let Some(ms) = duration_ms {
+                        meta.as_object_mut()
+                            .unwrap()
+                            .insert("durationMs".into(), json!(ms));
+                    }
+                    attach_meta(&mut update, meta);
+                    let _ = writer.session_update(&session_id, update);
+                    pending_tool.lock().unwrap().id = None;
+                }
+                AgentEvent::ModeChanged { mode_id } => {
+                    let mut update = current_mode_update(&mode_id);
+                    attach_meta(&mut update, meta);
+                    let _ = writer.session_update(&session_id, update);
+                }
+                AgentEvent::UsageUpdate {
+                    usage,
+                    context_tokens,
+                    context_window,
+                    context_percent,
+                } => {
+                    let mut update = usage_update(
+                        u64::from(context_tokens),
+                        u64::from(context_window.max(1)),
+                        usage.prompt_tokens,
+                        usage.completion_tokens,
+                        context_percent,
+                    );
+                    attach_meta(&mut update, meta);
+                    let _ = writer.session_update(&session_id, update);
+                }
+                AgentEvent::Error { message } => {
+                    let mut update = agent_message_chunk(&format!("\n[error] {message}\n"));
+                    attach_meta(&mut update, meta);
+                    let _ = writer.session_update(&session_id, update);
+                }
+                _ => {}
+            }
+        })
+    };
 
-        let result = sess
-            .agent
+    let result = {
+        let mut agent = agent.lock().await;
+        let result = agent
             .prompt(
                 &text,
                 PromptOptions {
@@ -546,26 +795,24 @@ impl AcpServer {
                 },
             )
             .await;
+        let _ = agent.session().save();
+        result
+    };
 
-        sess.cancel = None;
-        sess.pending_tool.lock().unwrap().id = None;
-        let _ = sess.agent.session().save();
-
-        match result {
-            Ok(_) => {
-                debug!(session = %sid, "ACP prompt completed");
-                if cancel.is_cancelled() {
-                    Ok(json!({ "stopReason": "cancelled" }))
-                } else {
-                    Ok(json!({ "stopReason": "end_turn" }))
-                }
+    match result {
+        Ok(_) => {
+            debug!(session = %sid, "ACP prompt completed");
+            if cancel.is_cancelled() {
+                Ok(json!({ "stopReason": "cancelled" }))
+            } else {
+                Ok(json!({ "stopReason": "end_turn" }))
             }
-            Err(err) => {
-                if cancel.is_cancelled() || err.to_string().contains("aborted") {
-                    Ok(json!({ "stopReason": "cancelled" }))
-                } else {
-                    Err(err)
-                }
+        }
+        Err(err) => {
+            if cancel.is_cancelled() || err.to_string().contains("aborted") {
+                Ok(json!({ "stopReason": "cancelled" }))
+            } else {
+                Err(err)
             }
         }
     }

@@ -464,6 +464,7 @@ impl App {
                 }
             }
             AgentEvent::SteerInput { .. }
+            | AgentEvent::ThoughtDelta { .. }
             | AgentEvent::ModeChanged { .. }
             | AgentEvent::UsageUpdate { .. } => {}
         }

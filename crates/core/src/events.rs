@@ -19,6 +19,9 @@ pub enum AgentEvent {
     TextDelta {
         delta: String,
     },
+    ThoughtDelta {
+        delta: String,
+    },
     ToolCall {
         id: String,
         name: String,

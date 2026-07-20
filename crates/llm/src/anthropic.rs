@@ -379,6 +379,17 @@ impl AnthropicStreamState {
                                     events.push(StreamEvent::TextDelta(text.to_string()));
                                 }
                             }
+                            Some("thinking_delta") => {
+                                if let Some(text) = delta
+                                    .get("thinking")
+                                    .or_else(|| delta.get("text"))
+                                    .and_then(Value::as_str)
+                                {
+                                    if !text.is_empty() {
+                                        events.push(StreamEvent::ThoughtDelta(text.to_string()));
+                                    }
+                                }
+                            }
                             Some("input_json_delta") => {
                                 while self.tool_calls.len() <= index {
                                     self.tool_calls.push(ToolCallBuilder {
