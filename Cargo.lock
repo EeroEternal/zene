@@ -4374,6 +4374,7 @@ name = "zene-cli"
 version = "0.1.7"
 dependencies = [
  "anyhow",
+ "async-trait",
  "clap",
  "crossterm",
  "ctrlc",

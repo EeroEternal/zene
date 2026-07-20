@@ -2,6 +2,7 @@ mod options;
 mod path_policy;
 
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 pub use options::{url_host_port, SandboxOptions};
 pub use path_policy::{check_read_allowed, check_write_allowed};
@@ -79,12 +80,29 @@ impl InteractiveProcess {
     }
 }
 
+/// Optional remote text filesystem (e.g. ACP client `fs/read_text_file`).
+///
+/// When set on a [`LocalSandbox`], text read/write is delegated after local
+/// path policy checks. Glob/exec/resolve still use the local workspace.
+#[async_trait]
+pub trait RemoteTextFs: Send + Sync {
+    fn can_read(&self) -> bool {
+        true
+    }
+    fn can_write(&self) -> bool {
+        true
+    }
+    async fn read_text(&self, absolute_path: &Path) -> Result<String>;
+    async fn write_text(&self, absolute_path: &Path, content: &str) -> Result<()>;
+}
+
 #[derive(Clone)]
 pub struct LocalSandbox {
     workdir: PathBuf,
     space: Option<SpaceHandle>,
     network: NetworkPolicy,
     profile: String,
+    remote_fs: Option<Arc<dyn RemoteTextFs>>,
 }
 
 impl LocalSandbox {
@@ -97,7 +115,18 @@ impl LocalSandbox {
             space: None,
             network: NetworkPolicy::Unrestricted,
             profile: "off".to_string(),
+            remote_fs: None,
         }
+    }
+
+    /// Attach a remote text FS bridge (ACP client filesystem).
+    pub fn with_remote_fs(mut self, remote: Arc<dyn RemoteTextFs>) -> Self {
+        self.remote_fs = Some(remote);
+        self
+    }
+
+    pub fn set_remote_fs(&mut self, remote: Option<Arc<dyn RemoteTextFs>>) {
+        self.remote_fs = remote;
     }
 
     /// Construct a sandbox with the default `workspace` Keel profile.
@@ -116,6 +145,7 @@ impl LocalSandbox {
                 space: None,
                 network: NetworkPolicy::Unrestricted,
                 profile,
+                remote_fs: None,
             });
         }
 
@@ -135,6 +165,7 @@ impl LocalSandbox {
             space: Some(space),
             network,
             profile,
+            remote_fs: None,
         })
     }
 
@@ -192,6 +223,7 @@ impl LocalSandbox {
             space: self.space.clone(),
             network: self.network.clone(),
             profile: self.profile.clone(),
+            remote_fs: self.remote_fs.clone(),
         })
     }
 
@@ -280,6 +312,21 @@ impl LocalSandbox {
     }
 
     pub async fn read_text(&self, path: &str) -> Result<String> {
+        if let Err(msg) = path_policy::check_read_allowed(path) {
+            anyhow::bail!(msg);
+        }
+        let resolved = self.resolve(path)?;
+        verify_resolved_path(&self.workdir, &resolved)?;
+        if let Err(msg) = path_policy::check_read_allowed_resolved(&resolved) {
+            anyhow::bail!(msg);
+        }
+        if let Some(remote) = &self.remote_fs {
+            if remote.can_read() {
+                self.authorize_fs(&resolved, false).await?;
+                return remote.read_text(&resolved).await;
+            }
+        }
+
         let bytes = self.read_file_bytes(path, 0).await?;
         if is_binary_content(&bytes) {
             anyhow::bail!("cannot read binary file: {path}. Read supports text files only.");
@@ -292,6 +339,13 @@ impl LocalSandbox {
             anyhow::bail!(msg);
         }
         let resolved = self.resolve_parent(path)?;
+
+        if let Some(remote) = &self.remote_fs {
+            if remote.can_write() {
+                self.authorize_fs(&resolved, true).await?;
+                return remote.write_text(&resolved, content).await;
+            }
+        }
 
         if let Some(space) = &self.space {
             space

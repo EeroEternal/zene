@@ -463,7 +463,9 @@ impl App {
                     )));
                 }
             }
-            AgentEvent::SteerInput { .. } => {}
+            AgentEvent::SteerInput { .. }
+            | AgentEvent::ModeChanged { .. }
+            | AgentEvent::UsageUpdate { .. } => {}
         }
     }
 

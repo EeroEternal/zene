@@ -93,6 +93,74 @@ pub fn tool_call_result_update(
     })
 }
 
+pub fn current_mode_update(mode_id: &str) -> Value {
+    json!({
+        "sessionUpdate": "current_mode_update",
+        "modeId": mode_id,
+    })
+}
+
+pub fn usage_update(
+    used: u64,
+    size: u64,
+    prompt_tokens: u64,
+    completion_tokens: u64,
+    context_percent: u8,
+) -> Value {
+    json!({
+        "sessionUpdate": "usage_update",
+        "used": used,
+        "size": size,
+        "_meta": {
+            "promptTokens": prompt_tokens,
+            "completionTokens": completion_tokens,
+            "contextPercent": context_percent,
+        }
+    })
+}
+
+pub fn available_modes() -> Value {
+    json!([
+        {
+            "id": "default",
+            "name": "Default",
+            "description": "Full tool access with permission prompts for gated tools"
+        },
+        {
+            "id": "plan",
+            "name": "Plan",
+            "description": "Read-only exploration; ExitPlanMode required before edits"
+        }
+    ])
+}
+
+pub fn modes_state(current_mode_id: &str) -> Value {
+    json!({
+        "currentModeId": current_mode_id,
+        "availableModes": available_modes(),
+    })
+}
+
+pub fn available_commands_update() -> Value {
+    json!({
+        "sessionUpdate": "available_commands_update",
+        "availableCommands": [
+            {
+                "name": "plan",
+                "description": "Enter plan mode (read-only tools until ExitPlanMode)"
+            },
+            {
+                "name": "compact",
+                "description": "Compact conversation context"
+            },
+            {
+                "name": "rewind",
+                "description": "Rewind to a session checkpoint"
+            }
+        ]
+    })
+}
+
 /// Convert TodoWrite arguments into an ACP `plan` update, if parseable.
 pub fn plan_from_todo_arguments(arguments: &str) -> Option<Value> {
     let value: Value = serde_json::from_str(arguments).ok()?;
@@ -183,6 +251,18 @@ mod tests {
         assert_eq!(tool_kind("Bash"), "execute");
         assert_eq!(tool_kind("TodoWrite"), "think");
         assert_eq!(tool_kind("mcp__git__status"), "execute");
+    }
+
+    #[test]
+    fn modes_and_commands_shapes() {
+        let modes = modes_state("default");
+        assert_eq!(modes["currentModeId"], "default");
+        assert_eq!(modes["availableModes"].as_array().unwrap().len(), 2);
+        assert_eq!(
+            available_commands_update()["sessionUpdate"],
+            "available_commands_update"
+        );
+        assert_eq!(current_mode_update("plan")["modeId"], "plan");
     }
 
     #[test]

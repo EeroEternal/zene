@@ -5,7 +5,7 @@ use std::sync::{Arc, Mutex};
 
 use anyhow::{anyhow, bail, Context, Result};
 use serde_json::{json, Value};
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, warn};
 use zene_config::ZeneConfig;
@@ -15,24 +15,17 @@ use zene_core::{
 use zene_sandbox::LocalSandbox;
 use zene_session::{list_sessions_for_workdir, SessionRecord};
 
-use crate::sandbox_opts;
+use super::fs_bridge::AcpRemoteFs;
 use super::protocol::{
     err_response, error_codes, is_notification, is_request, is_response, ok_response,
     prompt_text_from_params, RpcId,
 };
+use super::transport::{AcpWriter, SharedState};
 use super::updates::{
-    agent_message_chunk, plan_from_todo_arguments, replay_updates_from_messages,
-    tool_call_result_update, tool_call_update, tool_kind, tool_title,
+    agent_message_chunk, available_commands_update, current_mode_update, modes_state,
+    plan_from_todo_arguments, replay_updates_from_messages, tool_call_result_update,
+    tool_call_update, tool_kind, tool_title, usage_update,
 };
-
-struct PendingResponse {
-    tx: oneshot::Sender<Result<Value, Value>>,
-}
-
-struct SharedState {
-    next_id: u64,
-    pending: HashMap<String, PendingResponse>,
-}
 
 /// Tracks the tool call currently awaiting permission so ACP can reuse its id.
 #[derive(Default)]
@@ -40,67 +33,10 @@ struct PendingToolCall {
     id: Option<String>,
 }
 
-#[derive(Clone)]
-struct AcpWriter {
-    tx: mpsc::UnboundedSender<String>,
-    shared: Arc<Mutex<SharedState>>,
-}
-
-impl AcpWriter {
-    fn send_raw(&self, line: String) -> Result<()> {
-        self.tx
-            .send(line)
-            .map_err(|_| anyhow!("ACP stdout writer closed"))
-    }
-
-    fn notify(&self, method: &str, params: Value) -> Result<()> {
-        self.send_raw(
-            json!({
-                "jsonrpc": "2.0",
-                "method": method,
-                "params": params,
-            })
-            .to_string(),
-        )
-    }
-
-    fn session_update(&self, session_id: &str, update: Value) -> Result<()> {
-        self.notify(
-            "session/update",
-            json!({
-                "sessionId": session_id,
-                "update": update,
-            }),
-        )
-    }
-
-    async fn request(&self, method: &str, params: Value) -> Result<Value> {
-        let id = {
-            let mut g = self.shared.lock().unwrap();
-            g.next_id += 1;
-            g.next_id
-        };
-        let id_key = id.to_string();
-        let (tx, rx) = oneshot::channel();
-        {
-            let mut g = self.shared.lock().unwrap();
-            g.pending.insert(id_key.clone(), PendingResponse { tx });
-        }
-        self.send_raw(
-            json!({
-                "jsonrpc": "2.0",
-                "id": id,
-                "method": method,
-                "params": params,
-            })
-            .to_string(),
-        )?;
-        match rx.await {
-            Ok(Ok(v)) => Ok(v),
-            Ok(Err(e)) => Err(anyhow!("ACP client error: {e}")),
-            Err(_) => Err(anyhow!("ACP client response channel closed")),
-        }
-    }
+#[derive(Debug, Clone, Default)]
+struct ClientCapabilities {
+    fs_read: bool,
+    fs_write: bool,
 }
 
 struct AcpSession {
@@ -116,6 +52,7 @@ pub struct AcpServer {
     yolo: bool,
     sessions: HashMap<String, AcpSession>,
     writer: AcpWriter,
+    client_caps: ClientCapabilities,
 }
 
 /// Run the ACP stdio agent until stdin closes.
@@ -125,10 +62,7 @@ pub async fn run_acp(workdir: PathBuf, yolo: bool) -> Result<()> {
 
 impl AcpServer {
     async fn run(workdir: PathBuf, yolo: bool) -> Result<()> {
-        let shared = Arc::new(Mutex::new(SharedState {
-            next_id: 1,
-            pending: HashMap::new(),
-        }));
+        let shared = Arc::new(Mutex::new(SharedState::new()));
         let (out_tx, mut out_rx) = mpsc::unbounded_channel::<String>();
         let writer = AcpWriter {
             tx: out_tx,
@@ -166,14 +100,13 @@ impl AcpServer {
                             };
                             let pending = {
                                 let mut g = shared_reader.lock().unwrap();
-                                g.pending.remove(&id)
+                                g.take_pending(&id)
                             };
-                            if let Some(p) = pending {
+                            if let Some(tx) = pending {
                                 if let Some(err) = msg.get("error") {
-                                    let _ = p.tx.send(Err(err.clone()));
+                                    let _ = tx.send(Err(err.clone()));
                                 } else {
-                                    let _ = p
-                                        .tx
+                                    let _ = tx
                                         .send(Ok(msg.get("result").cloned().unwrap_or(Value::Null)));
                                 }
                             }
@@ -193,6 +126,7 @@ impl AcpServer {
             yolo,
             sessions: HashMap::new(),
             writer,
+            client_caps: ClientCapabilities::default(),
         };
 
         while let Some(msg) = in_rx.recv().await {
@@ -244,12 +178,14 @@ impl AcpServer {
             "session/load" => self.handle_session_load(params).await,
             "session/prompt" => self.handle_session_prompt(params).await,
             "session/list" => self.handle_session_list(params),
+            "session/close" => self.handle_session_close(params).await,
+            "session/set_mode" => self.handle_session_set_mode(params).await,
             "authenticate" => Ok(json!({})),
             other => Err(MethodNotFound(other.to_string()).into()),
         }
     }
 
-    fn handle_initialize(&self, params: Value) -> Result<Value> {
+    fn handle_initialize(&mut self, params: Value) -> Result<Value> {
         let client_version = params
             .get("protocolVersion")
             .and_then(|v| v.as_u64())
@@ -257,6 +193,26 @@ impl AcpServer {
         if client_version != 1 {
             bail!("unsupported protocolVersion {client_version}; zene acp speaks 1");
         }
+
+        let fs = params.pointer("/clientCapabilities/fs");
+        self.client_caps = ClientCapabilities {
+            fs_read: fs
+                .and_then(|v| v.get("readTextFile"))
+                .and_then(Value::as_bool)
+                .unwrap_or(false),
+            fs_write: fs
+                .and_then(|v| v.get("writeTextFile"))
+                .and_then(Value::as_bool)
+                .unwrap_or(false),
+        };
+        if self.client_caps.fs_read || self.client_caps.fs_write {
+            debug!(
+                fs_read = self.client_caps.fs_read,
+                fs_write = self.client_caps.fs_write,
+                "ACP client advertised filesystem capabilities"
+            );
+        }
+
         Ok(json!({
             "protocolVersion": 1,
             "agentCapabilities": {
@@ -265,6 +221,10 @@ impl AcpServer {
                     "image": false,
                     "audio": false,
                     "embeddedContext": true
+                },
+                "mcpCapabilities": {
+                    "http": false,
+                    "sse": false
                 },
                 "sessionCapabilities": {
                     "list": {}
@@ -283,9 +243,14 @@ impl AcpServer {
         let cwd = resolve_cwd(&params, &self.workdir)?;
         let session = SessionRecord::new(&cwd);
         let id = session.meta.id.clone();
-        let acp_session = self.build_session(session, &cwd).await?;
+        let acp_session = self.build_session(session, &cwd, &id).await?;
+        let mode = acp_session.agent.current_session_mode();
         self.sessions.insert(id.clone(), acp_session);
-        Ok(json!({ "sessionId": id }))
+        self.advertise_session(&id)?;
+        Ok(json!({
+            "sessionId": id,
+            "modes": modes_state(mode),
+        }))
     }
 
     async fn handle_session_load(&mut self, params: Value) -> Result<Value> {
@@ -297,22 +262,24 @@ impl AcpServer {
         let cwd = resolve_cwd(&params, &self.workdir)?;
         let session = SessionRecord::load(&sid).context("load session")?;
         let updates = replay_updates_from_messages(&session.messages);
-        let acp_session = self.build_session(session, &cwd).await?;
+        let acp_session = self.build_session(session, &cwd, &sid).await?;
+        let mode = acp_session.agent.current_session_mode();
         self.sessions.insert(sid.clone(), acp_session);
 
         // ACP requires replaying history via session/update before responding.
         for update in updates {
             let mut update = update;
             if let Some(obj) = update.as_object_mut() {
-                obj.insert(
-                    "_meta".into(),
-                    json!({ "isReplay": true }),
-                );
+                obj.insert("_meta".into(), json!({ "isReplay": true }));
             }
             self.writer.session_update(&sid, update)?;
         }
+        self.advertise_session(&sid)?;
 
-        Ok(json!({ "sessionId": sid }))
+        Ok(json!({
+            "sessionId": sid,
+            "modes": modes_state(mode),
+        }))
     }
 
     fn handle_session_list(&self, params: Value) -> Result<Value> {
@@ -321,9 +288,7 @@ impl AcpServer {
             .and_then(|v| v.as_str())
             .map(PathBuf::from)
             .unwrap_or_else(|| self.workdir.clone());
-        let cwd = cwd
-            .canonicalize()
-            .unwrap_or(cwd);
+        let cwd = cwd.canonicalize().unwrap_or(cwd);
         let sessions = list_sessions_for_workdir(&cwd).context("list sessions")?;
         let sessions: Vec<Value> = sessions
             .into_iter()
@@ -339,17 +304,73 @@ impl AcpServer {
         Ok(json!({ "sessions": sessions }))
     }
 
-    async fn build_session(&self, session: SessionRecord, cwd: &Path) -> Result<AcpSession> {
+    async fn handle_session_close(&mut self, params: Value) -> Result<Value> {
+        let sid = params
+            .get("sessionId")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| anyhow!("sessionId required"))?
+            .to_string();
+        let Some(mut sess) = self.sessions.remove(&sid) else {
+            bail!("unknown sessionId: {sid}");
+        };
+        if let Some(token) = sess.cancel.take() {
+            token.cancel();
+        }
+        let _ = sess.agent.session().save();
+        let _ = sess.agent.shutdown().await;
+        Ok(json!({}))
+    }
+
+    async fn handle_session_set_mode(&mut self, params: Value) -> Result<Value> {
+        let sid = params
+            .get("sessionId")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| anyhow!("sessionId required"))?
+            .to_string();
+        let mode_id = params
+            .get("modeId")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| anyhow!("modeId required"))?
+            .to_string();
+        let sess = self
+            .sessions
+            .get_mut(&sid)
+            .ok_or_else(|| anyhow!("unknown sessionId: {sid}"))?;
+        let active = sess.agent.set_session_mode(&mode_id)?;
+        self.writer
+            .session_update(&sid, current_mode_update(&active))?;
+        Ok(json!({}))
+    }
+
+    fn advertise_session(&self, session_id: &str) -> Result<()> {
+        self.writer
+            .session_update(session_id, available_commands_update())?;
+        Ok(())
+    }
+
+    async fn build_session(
+        &self,
+        session: SessionRecord,
+        cwd: &Path,
+        session_id: &str,
+    ) -> Result<AcpSession> {
         let config = ZeneConfig::load(cwd).map_err(|err| anyhow!(err.to_string()))?;
         let permission_mode = if self.yolo {
             PermissionMode::BypassPermissions
         } else {
             PermissionMode::parse(&config.permission_mode)
         };
-        let sandbox_opts = sandbox_opts::build_sandbox_options(&config, None);
-        let sandbox = LocalSandbox::with_options(cwd, sandbox_opts)
+        let mut sandbox = LocalSandbox::with_keel(cwd)
             .await
             .context("initialize Keel execution layer")?;
+        if self.client_caps.fs_read || self.client_caps.fs_write {
+            sandbox = sandbox.with_remote_fs(Arc::new(AcpRemoteFs::new(
+                self.writer.clone(),
+                session_id,
+                self.client_caps.fs_read,
+                self.client_caps.fs_write,
+            )));
+        }
         let agent = Agent::new(config, sandbox, session, permission_mode).await?;
         Ok(AcpSession {
             agent,
@@ -482,6 +503,27 @@ impl AcpServer {
                         let _ = writer.session_update(&session_id, update);
                         pending_tool.lock().unwrap().id = None;
                     }
+                    AgentEvent::ModeChanged { mode_id } => {
+                        let mut update = current_mode_update(&mode_id);
+                        attach_meta(&mut update, meta);
+                        let _ = writer.session_update(&session_id, update);
+                    }
+                    AgentEvent::UsageUpdate {
+                        usage,
+                        context_tokens,
+                        context_window,
+                        context_percent,
+                    } => {
+                        let mut update = usage_update(
+                            u64::from(context_tokens),
+                            u64::from(context_window.max(1)),
+                            usage.prompt_tokens,
+                            usage.completion_tokens,
+                            context_percent,
+                        );
+                        attach_meta(&mut update, meta);
+                        let _ = writer.session_update(&session_id, update);
+                    }
                     AgentEvent::Error { message } => {
                         let mut update = agent_message_chunk(&format!("\n[error] {message}\n"));
                         attach_meta(&mut update, meta);
@@ -531,7 +573,16 @@ impl AcpServer {
 
 fn attach_meta(update: &mut Value, meta: Value) {
     if let Some(obj) = update.as_object_mut() {
-        obj.insert("_meta".into(), meta);
+        // usage_update already has _meta; merge prompt metadata into it.
+        if let Some(existing) = obj.get_mut("_meta").and_then(|v| v.as_object_mut()) {
+            if let Some(extra) = meta.as_object() {
+                for (k, v) in extra {
+                    existing.insert(k.clone(), v.clone());
+                }
+            }
+        } else {
+            obj.insert("_meta".into(), meta);
+        }
     }
 }
 
@@ -644,6 +695,7 @@ fn dispatch_error_code(method: &str, err: &anyhow::Error) -> i64 {
         || msg.contains("invalid cwd")
         || msg.contains("unsupported protocolVersion")
         || msg.contains("unknown sessionId")
+        || msg.contains("unknown session mode")
         || msg.contains("already has an active prompt")
     {
         return error_codes::INVALID_PARAMS;

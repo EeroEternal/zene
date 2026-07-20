@@ -3,7 +3,7 @@
 ## Unreleased
 
 ### Changed
-- ACP: bridge `tool_call` / `tool_call_update` / `plan` session updates; replay history on `session/load`; implement `session/list`; correlate permission `toolCallId` with live tool calls; accept embedded prompt context; tighten JSON-RPC error codes.
+- ACP: bridge `tool_call` / `tool_call_update` / `plan` / `usage_update` / `current_mode_update` / `available_commands_update`; replay history on `session/load`; implement `session/list`, `session/close`, `session/set_mode`; optional client FS bridge (`fs/read_text_file` / `fs/write_text_file`); correlate permission `toolCallId`; accept embedded prompt context; tighten JSON-RPC error codes.
 
 ## v0.1.7 (2026-07-19)
 
@@ -67,4 +67,3 @@ This release finishes the **grok-build long-context / sampling alignment** pass 
 
 ### Changed
 - Session records and ROADMAP/README updates for Batch 7 capabilities.
-

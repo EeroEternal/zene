@@ -414,7 +414,7 @@ TUI、record/replay、安装分发。
 | P3 会话恢复 | [x] | compaction checkpoints、`/rewind`、`/fork`、`/session-info` |
 | P4 运行时 | [x] | 后台 Bash/Task + TaskOutput、`--worktree`、subagent 报告包装 |
 | P5 MCP/扩展 | [x] | stdio + HTTP MCP、`zene mcp doctor` |
-| P6 集成/产品化 | [x] | `zene -p` headless + `--output-format json`；`zene acp`（tool/plan updates、load replay、session/list） |
+| P6 集成/产品化 | [x] | `zene -p` headless + `--output-format json`；`zene acp`（modes/close/usage/FS bridge、tool updates、load replay） |
 | P7 沙箱产品化 | [x] | 可配置 Keel profile、egress allowlist、凭据 deny、SpaceFs、auto_allow_bash |
 
 *最后更新：2026-07-19（ACP session updates + P7 沙箱 + P1 续5 tiktoken-rs）*
