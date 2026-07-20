@@ -96,6 +96,22 @@ pub trait RemoteTextFs: Send + Sync {
     async fn write_text(&self, absolute_path: &Path, content: &str) -> Result<()>;
 }
 
+/// Optional remote terminal (e.g. ACP client `terminal/*`).
+///
+/// When set, [`LocalSandbox::exec_with_timeout`] delegates shell execution to
+/// the client after resolving the working directory.
+#[async_trait]
+pub trait RemoteTerminal: Send + Sync {
+    async fn exec(
+        &self,
+        command: &str,
+        cwd: &Path,
+        timeout: Duration,
+        cancel: Option<&CancellationToken>,
+        output_byte_limit: usize,
+    ) -> Result<ExecResult>;
+}
+
 #[derive(Clone)]
 pub struct LocalSandbox {
     workdir: PathBuf,
@@ -103,6 +119,7 @@ pub struct LocalSandbox {
     network: NetworkPolicy,
     profile: String,
     remote_fs: Option<Arc<dyn RemoteTextFs>>,
+    remote_terminal: Option<Arc<dyn RemoteTerminal>>,
 }
 
 impl LocalSandbox {
@@ -116,6 +133,7 @@ impl LocalSandbox {
             network: NetworkPolicy::Unrestricted,
             profile: "off".to_string(),
             remote_fs: None,
+            remote_terminal: None,
         }
     }
 
@@ -127,6 +145,16 @@ impl LocalSandbox {
 
     pub fn set_remote_fs(&mut self, remote: Option<Arc<dyn RemoteTextFs>>) {
         self.remote_fs = remote;
+    }
+
+    /// Attach a remote terminal bridge (ACP client terminals).
+    pub fn with_remote_terminal(mut self, remote: Arc<dyn RemoteTerminal>) -> Self {
+        self.remote_terminal = Some(remote);
+        self
+    }
+
+    pub fn set_remote_terminal(&mut self, remote: Option<Arc<dyn RemoteTerminal>>) {
+        self.remote_terminal = remote;
     }
 
     /// Construct a sandbox with the default `workspace` Keel profile.
@@ -146,6 +174,7 @@ impl LocalSandbox {
                 network: NetworkPolicy::Unrestricted,
                 profile,
                 remote_fs: None,
+                remote_terminal: None,
             });
         }
 
@@ -166,6 +195,7 @@ impl LocalSandbox {
             network,
             profile,
             remote_fs: None,
+            remote_terminal: None,
         })
     }
 
@@ -224,6 +254,7 @@ impl LocalSandbox {
             network: self.network.clone(),
             profile: self.profile.clone(),
             remote_fs: self.remote_fs.clone(),
+            remote_terminal: self.remote_terminal.clone(),
         })
     }
 
@@ -390,6 +421,15 @@ impl LocalSandbox {
         }
 
         let timeout_secs = timeout.as_secs().max(1);
+        if let Some(remote) = &self.remote_terminal {
+            let cwd = match cwd {
+                Some(path) => self.resolve(path)?,
+                None => canonical_workdir(&self.workdir)?,
+            };
+            return remote
+                .exec(command, &cwd, timeout, cancel, BASH_OUTPUT_LIMIT)
+                .await;
+        }
         if self.space.is_some() {
             let cwd = match cwd {
                 Some(path) => self.resolve(path)?,

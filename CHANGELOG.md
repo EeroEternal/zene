@@ -3,7 +3,7 @@
 ## Unreleased
 
 ### Changed
-- ACP: bridge `tool_call` / `tool_call_update` / `plan` / `usage_update` / `current_mode_update` / `available_commands_update`; replay history on `session/load`; implement `session/list`, `session/close`, `session/set_mode`; optional client FS bridge (`fs/read_text_file` / `fs/write_text_file`); correlate permission `toolCallId`; accept embedded prompt context; tighten JSON-RPC error codes.
+- ACP: bridge `tool_call` / `tool_call_update` / `plan` / `usage_update` / `current_mode_update` / `available_commands_update` / `agent_thought_chunk`; replay history on `session/load`; implement `session/list`, `session/close`, `session/set_mode`, `session/resume`; optional client FS + terminal bridges; FIFO prompt queue with in-turn cancel; correlate permission `toolCallId`; accept embedded prompt context; tighten JSON-RPC error codes.
 
 ## v0.1.7 (2026-07-19)
 

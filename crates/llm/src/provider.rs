@@ -19,6 +19,8 @@ pub struct ChatRequest {
 #[derive(Debug, Clone)]
 pub enum StreamEvent {
     TextDelta(String),
+    /// Model reasoning / thinking tokens (when the provider streams them).
+    ThoughtDelta(String),
     ToolCallDelta {
         index: usize,
         id: Option<String>,

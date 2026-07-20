@@ -334,20 +334,32 @@ fn parse_message_from_raw(raw: &Value) -> Option<Message> {
 fn chunk_to_events(chunk: &ChatResponseChunk) -> Vec<StreamEvent> {
     let mut events = Vec::new();
 
+    let delta_obj = chunk
+        .raw
+        .get("choices")
+        .and_then(Value::as_array)
+        .and_then(|choices| choices.first())
+        .and_then(|choice| choice.get("delta"));
+
+    if let Some(delta) = delta_obj {
+        if let Some(reasoning) = delta
+            .get("reasoning_content")
+            .or_else(|| delta.get("reasoning"))
+            .and_then(Value::as_str)
+        {
+            if !reasoning.is_empty() {
+                events.push(StreamEvent::ThoughtDelta(reasoning.to_string()));
+            }
+        }
+    }
+
     if let Some(delta) = &chunk.delta {
         if !delta.is_empty() {
             events.push(StreamEvent::TextDelta(delta.clone()));
         }
     }
 
-    if let Some(tool_calls) = chunk
-        .raw
-        .get("choices")
-        .and_then(Value::as_array)
-        .and_then(|choices| choices.first())
-        .and_then(|choice| choice.get("delta"))
-        .and_then(|delta| delta.get("tool_calls"))
-        .and_then(Value::as_array)
+    if let Some(tool_calls) = delta_obj.and_then(|delta| delta.get("tool_calls")).and_then(Value::as_array)
     {
         for call in tool_calls {
             events.push(StreamEvent::ToolCallDelta {
@@ -415,5 +427,29 @@ mod tests {
         let message = Message::tool_result("call_1", "Read", "ok");
         let api = message_to_api(&message).expect("api message");
         assert!(api.get("is_error").is_none());
+    }
+
+    #[test]
+    fn chunk_emits_thought_delta_from_reasoning_content() {
+        let chunk = ChatResponseChunk {
+            delta: Some("answer".into()),
+            raw: json!({
+                "choices": [{
+                    "delta": {
+                        "reasoning_content": "thinking...",
+                        "content": "answer"
+                    }
+                }]
+            }),
+        };
+        let events = chunk_to_events(&chunk);
+        assert!(events.iter().any(|e| matches!(
+            e,
+            StreamEvent::ThoughtDelta(t) if t == "thinking..."
+        )));
+        assert!(events.iter().any(|e| matches!(
+            e,
+            StreamEvent::TextDelta(t) if t == "answer"
+        )));
     }
 }

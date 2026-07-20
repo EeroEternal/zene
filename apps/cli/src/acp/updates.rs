@@ -41,6 +41,13 @@ pub fn agent_message_chunk(text: &str) -> Value {
     })
 }
 
+pub fn agent_thought_chunk(text: &str) -> Value {
+    json!({
+        "sessionUpdate": "agent_thought_chunk",
+        "content": { "type": "text", "text": text }
+    })
+}
+
 pub fn user_message_chunk(text: &str) -> Value {
     json!({
         "sessionUpdate": "user_message_chunk",
@@ -263,6 +270,10 @@ mod tests {
             "available_commands_update"
         );
         assert_eq!(current_mode_update("plan")["modeId"], "plan");
+        assert_eq!(
+            agent_thought_chunk("hmm")["sessionUpdate"],
+            "agent_thought_chunk"
+        );
     }
 
     #[test]
