@@ -107,7 +107,8 @@ async fn main() -> Result<()> {
         addr.port(),
         token
     );
-    eprintln!("zene-gateway listening on {addr}");
+    eprintln!("zene-gateway {} listening on {addr}", env!("CARGO_PKG_VERSION"));
+    eprintln!("gateway binary: {}", std::env::current_exe().map(|p| p.display().to_string()).unwrap_or_else(|_| "?".into()));
     eprintln!("open {url}");
     eprintln!("acp command: {} {:?}", command.display(), args);
 

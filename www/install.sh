@@ -63,7 +63,7 @@ if [ -n "$TARGET" ]; then
   ZENE_URL="https://github.com/ParaTensor/zene/releases/download/${LATEST_TAG}/zene-${TARGET}"
   GATEWAY_URL="https://github.com/ParaTensor/zene/releases/download/${LATEST_TAG}/zene-gateway-${TARGET}"
   
-  if install_binary "$ZENE_URL" "$ZENE_PATH" "zene" \
+    if install_binary "$ZENE_URL" "$ZENE_PATH" "zene" \
     && install_binary "$GATEWAY_URL" "$GATEWAY_PATH" "zene-gateway"; then
     # Check macOS Quarantine attribute
     if [ "$OS" = "Darwin" ]; then
@@ -72,9 +72,32 @@ if [ -n "$TARGET" ]; then
         xattr -d com.apple.quarantine "$GATEWAY_PATH" 2>/dev/null || true
       fi
     fi
+
+    LEGACY_DIR="$HOME/.cargo/bin"
+    for legacy in "$LEGACY_DIR/zene" "$LEGACY_DIR/zene-gateway"; do
+      if [ -f "$legacy" ]; then
+        echo "⚠ Removing older Cargo install: $legacy"
+        rm -f "$legacy"
+      fi
+    done
+
+    SHELL_RC=""
+    case "${SHELL:-}" in
+      */zsh) SHELL_RC="$HOME/.zshrc" ;;
+      */bash) SHELL_RC="$HOME/.bashrc" ;;
+    esac
+    PATH_HINT='export PATH="$HOME/.local/bin:$PATH"'
+    if [ -n "$SHELL_RC" ] && ! grep -qF '.local/bin' "$SHELL_RC" 2>/dev/null; then
+      echo "" >> "$SHELL_RC"
+      echo "# Zene release binaries" >> "$SHELL_RC"
+      echo "$PATH_HINT" >> "$SHELL_RC"
+      echo "✓ Added $PATH_HINT to $SHELL_RC"
+    fi
     
     echo "=== Installation Completed ==="
-    echo "Make sure $INSTALL_DIR is in your shell PATH."
+    echo "Installed to $INSTALL_DIR"
+    echo "Run: $ZENE_PATH web --yolo --sandbox-off"
+    echo "If 'zene' still resolves to an old path, open a new terminal or run: hash -r"
     exit 0
   else
     echo "Could not download pre-built binaries. Falling back to source compilation..."
