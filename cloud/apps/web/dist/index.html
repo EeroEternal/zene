@@ -1,0 +1,536 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Zene Cloud</title>
+  <style>
+    :root {
+      --bg: #0f1115;
+      --panel: #171a21;
+      --panel-2: #1d222c;
+      --line: #2a3140;
+      --text: #e8edf7;
+      --muted: #93a0b8;
+      --accent: #6aa7ff;
+      --accent-2: #8b7cff;
+      --ok: #3ecf8e;
+      --warn: #f0b429;
+      --danger: #ff6b7a;
+      --shadow: 0 18px 50px rgba(0,0,0,.35);
+      --sans: "Segoe UI", "SF Pro Text", "PingFang SC", "Noto Sans SC", sans-serif;
+      --mono: "IBM Plex Mono", ui-monospace, Menlo, Consolas, monospace;
+    }
+    * { box-sizing: border-box; }
+    html, body { height: 100%; margin: 0; }
+    body {
+      font-family: var(--sans); color: var(--text); background:
+        radial-gradient(1200px 600px at 10% -10%, rgba(106,167,255,.16), transparent 55%),
+        radial-gradient(900px 500px at 90% 0%, rgba(139,124,255,.12), transparent 50%),
+        var(--bg);
+      overflow: hidden;
+    }
+    button, input, textarea, select { font: inherit; color: inherit; }
+    button { cursor: pointer; }
+    .hidden { display: none !important; }
+    .app { display: grid; grid-template-columns: 260px 1fr; height: 100%; }
+    .sidebar {
+      border-right: 1px solid var(--line); background: rgba(23,26,33,.92);
+      display: grid; grid-template-rows: auto 1fr auto; padding: 16px 12px;
+    }
+    .brand { display: flex; align-items: center; gap: 10px; padding: 8px 10px 18px; }
+    .mark {
+      width: 28px; height: 28px; border-radius: 9px; display: grid; place-items: center;
+      background: linear-gradient(135deg, var(--accent), var(--accent-2)); font-weight: 700;
+    }
+    .brand strong { font-size: 15px; letter-spacing: .02em; }
+    .nav-btn, .agent-item {
+      width: 100%; border: 0; background: transparent; color: var(--text);
+      text-align: left; border-radius: 10px; padding: 10px 12px; margin-bottom: 4px;
+    }
+    .nav-btn:hover, .agent-item:hover { background: var(--panel-2); }
+    .nav-btn.primary {
+      background: linear-gradient(135deg, rgba(106,167,255,.2), rgba(139,124,255,.18));
+      border: 1px solid rgba(106,167,255,.35); margin-bottom: 14px; font-weight: 600;
+    }
+    .section-label {
+      color: var(--muted); font-size: 11px; letter-spacing: .08em; text-transform: uppercase;
+      padding: 10px 12px 6px;
+    }
+    .agent-item.active { background: var(--panel-2); outline: 1px solid var(--line); }
+    .agent-item small { display: block; color: var(--muted); margin-top: 4px; }
+    .userbox {
+      border-top: 1px solid var(--line); padding-top: 12px; color: var(--muted); font-size: 13px;
+    }
+    .main { display: grid; grid-template-rows: 56px 1fr; min-width: 0; }
+    .topbar {
+      display: flex; align-items: center; justify-content: space-between; gap: 12px;
+      padding: 0 18px; border-bottom: 1px solid var(--line); background: rgba(15,17,21,.7);
+      backdrop-filter: blur(10px);
+    }
+    .status-pill {
+      font-size: 12px; color: var(--muted); border: 1px solid var(--line);
+      border-radius: 999px; padding: 4px 10px; background: var(--panel);
+    }
+    .status-pill.running { color: var(--ok); border-color: rgba(62,207,142,.35); }
+    .status-pill.failed { color: var(--danger); border-color: rgba(255,107,122,.35); }
+    .content { min-height: 0; overflow: auto; }
+    .auth, .new-agent, .run-view { height: 100%; }
+    .auth {
+      display: grid; place-items: center; padding: 24px;
+    }
+    .card {
+      width: min(440px, 100%); background: rgba(23,26,33,.95); border: 1px solid var(--line);
+      border-radius: 18px; padding: 24px; box-shadow: var(--shadow);
+    }
+    .card h1 { margin: 0 0 8px; font-size: 28px; }
+    .card p { margin: 0 0 18px; color: var(--muted); }
+    label { display: block; font-size: 12px; color: var(--muted); margin: 12px 0 6px; }
+    input, textarea, select {
+      width: 100%; background: var(--panel-2); border: 1px solid var(--line);
+      border-radius: 12px; padding: 11px 12px; outline: none;
+    }
+    input:focus, textarea:focus, select:focus { border-color: rgba(106,167,255,.55); }
+    .row { display: flex; gap: 10px; }
+    .row > * { flex: 1; }
+    .btn {
+      border: 0; border-radius: 12px; padding: 11px 14px; background: var(--panel-2);
+      border: 1px solid var(--line);
+    }
+    .btn.primary {
+      background: linear-gradient(135deg, var(--accent), var(--accent-2));
+      border: 0; color: #081018; font-weight: 700;
+    }
+    .btn.danger { color: var(--danger); }
+    .error { color: var(--danger); font-size: 13px; margin-top: 10px; min-height: 18px; }
+    .new-agent {
+      display: grid; place-items: center; padding: 32px 20px;
+    }
+    .composer-shell {
+      width: min(860px, 100%); background: rgba(23,26,33,.92); border: 1px solid var(--line);
+      border-radius: 22px; padding: 22px; box-shadow: var(--shadow);
+    }
+    .composer-shell h2 { margin: 0 0 6px; font-size: 34px; letter-spacing: -.03em; }
+    .composer-shell .hint { color: var(--muted); margin-bottom: 18px; }
+    textarea.prompt {
+      min-height: 140px; resize: vertical; font-size: 16px; line-height: 1.5;
+    }
+    .run-layout {
+      display: grid; grid-template-columns: minmax(0, 1fr) 340px; height: 100%;
+    }
+    .timeline {
+      display: grid; grid-template-rows: 1fr auto; min-width: 0; border-right: 1px solid var(--line);
+    }
+    .messages { overflow: auto; padding: 20px; display: flex; flex-direction: column; gap: 14px; }
+    .bubble {
+      max-width: 820px; border: 1px solid var(--line); background: var(--panel);
+      border-radius: 16px; padding: 12px 14px; white-space: pre-wrap; line-height: 1.5;
+    }
+    .bubble.user { align-self: flex-end; background: rgba(106,167,255,.12); }
+    .bubble.tool { font-family: var(--mono); font-size: 13px; color: #c7d4ea; }
+    .bubble .meta { color: var(--muted); font-size: 11px; margin-bottom: 6px; text-transform: uppercase; }
+    .composer {
+      border-top: 1px solid var(--line); padding: 14px; display: grid; grid-template-columns: 1fr auto; gap: 10px;
+      background: rgba(23,26,33,.8);
+    }
+    .inspector { overflow: auto; padding: 16px; background: rgba(23,26,33,.55); }
+    .inspector h3 { margin: 0 0 10px; font-size: 14px; color: var(--muted); text-transform: uppercase; letter-spacing: .08em; }
+    .kv { font-size: 13px; margin-bottom: 8px; }
+    .kv span { color: var(--muted); display: inline-block; min-width: 88px; }
+    .tabs { display: flex; gap: 8px; margin-bottom: 14px; }
+    .tab {
+      border: 1px solid var(--line); background: transparent; border-radius: 999px;
+      padding: 6px 10px; color: var(--muted); font-size: 12px;
+    }
+    .tab.active { color: var(--text); background: var(--panel-2); }
+    @media (max-width: 980px) {
+      .app { grid-template-columns: 1fr; }
+      .sidebar { display: none; }
+      .run-layout { grid-template-columns: 1fr; }
+      .inspector { display: none; }
+    }
+  </style>
+</head>
+<body>
+  <div id="authView" class="auth">
+    <div class="card">
+      <h1>Zene Cloud</h1>
+      <p>注册登录后创建 Agent，连接到仓库并在隔离 Worker 中运行。</p>
+      <div class="row">
+        <button class="btn" id="tabLogin">登录</button>
+        <button class="btn primary" id="tabRegister">注册</button>
+      </div>
+      <div id="registerFields">
+        <label>显示名</label>
+        <input id="displayName" placeholder="Ada" />
+      </div>
+      <label>邮箱</label>
+      <input id="email" type="email" placeholder="you@company.com" />
+      <label>密码</label>
+      <input id="password" type="password" placeholder="至少 8 位" />
+      <div style="margin-top:16px">
+        <button class="btn primary" id="authSubmit" style="width:100%">继续</button>
+      </div>
+      <div class="error" id="authError"></div>
+    </div>
+  </div>
+
+  <div id="appView" class="app hidden">
+    <aside class="sidebar">
+      <div>
+        <div class="brand"><div class="mark">Z</div><strong>Zene Cloud</strong></div>
+        <button class="nav-btn primary" id="btnNewAgent">＋ New Agent</button>
+        <div class="section-label">Agents</div>
+        <div id="agentList"></div>
+      </div>
+      <div></div>
+      <div class="userbox">
+        <div id="userLabel">—</div>
+        <button class="nav-btn" id="btnLogout" style="margin-top:8px">Log out</button>
+      </div>
+    </aside>
+    <section class="main">
+      <div class="topbar">
+        <div id="topTitle">New Agent</div>
+        <div id="topStatus" class="status-pill">idle</div>
+      </div>
+      <div class="content">
+        <div id="newAgentView" class="new-agent">
+          <div class="composer-shell">
+            <h2>New Agent</h2>
+            <div class="hint">选择仓库，描述任务。Worker 会在隔离工作区执行并回传事件。</div>
+            <label>Repository</label>
+            <div class="row">
+              <select id="repoSelect"></select>
+              <button class="btn" id="btnAddRepo">添加仓库</button>
+            </div>
+            <div id="addRepoBox" class="hidden" style="margin-top:10px">
+              <div class="row">
+                <input id="repoOwner" placeholder="owner" />
+                <input id="repoName" placeholder="repo" />
+              </div>
+              <button class="btn" id="btnSaveRepo" style="margin-top:10px">保存仓库</button>
+            </div>
+            <label>Task</label>
+            <textarea class="prompt" id="promptInput" placeholder="Ask Zene to build, fix bugs, explore..."></textarea>
+            <div class="row" style="margin-top:14px">
+              <select id="permissionMode">
+                <option value="default">permission: default</option>
+                <option value="accept_edits">permission: accept_edits</option>
+                <option value="yolo">permission: yolo</option>
+              </select>
+              <button class="btn primary" id="btnStartRun">Start Agent</button>
+            </div>
+            <div class="error" id="newError"></div>
+          </div>
+        </div>
+
+        <div id="runView" class="run-view hidden">
+          <div class="run-layout">
+            <div class="timeline">
+              <div class="messages" id="messages"></div>
+              <div class="composer">
+                <textarea id="followUp" rows="2" placeholder="追加指令..."></textarea>
+                <div style="display:flex; flex-direction:column; gap:8px">
+                  <button class="btn primary" id="btnSend">Send</button>
+                  <button class="btn danger" id="btnCancel">Stop</button>
+                </div>
+              </div>
+            </div>
+            <aside class="inspector">
+              <div class="tabs">
+                <button class="tab active">Overview</button>
+                <button class="tab">Changes</button>
+                <button class="tab">Files</button>
+              </div>
+              <h3>Run</h3>
+              <div class="kv"><span>ID</span><code id="infoId">—</code></div>
+              <div class="kv"><span>Branch</span><code id="infoBranch">—</code></div>
+              <div class="kv"><span>Model</span><code id="infoModel">—</code></div>
+              <div class="kv"><span>Status</span><code id="infoStatus">—</code></div>
+              <h3 style="margin-top:18px">Events</h3>
+              <div id="eventLog" style="font-family:var(--mono); font-size:12px; color:var(--muted); white-space:pre-wrap"></div>
+            </aside>
+          </div>
+        </div>
+      </div>
+    </section>
+  </div>
+
+  <script>
+    const state = {
+      token: localStorage.getItem("zc.token") || "",
+      user: null,
+      org: null,
+      repos: [],
+      runs: [],
+      currentRunId: null,
+      afterSeq: 0,
+      mode: "register",
+      es: null,
+    };
+
+    const $ = (id) => document.getElementById(id);
+
+    async function api(path, options = {}) {
+      const headers = Object.assign({ "content-type": "application/json" }, options.headers || {});
+      if (state.token) headers.Authorization = `Bearer ${state.token}`;
+      const res = await fetch(path, { ...options, headers });
+      const text = await res.text();
+      const data = text ? JSON.parse(text) : null;
+      if (!res.ok) throw new Error((data && (data.message || data.error)) || res.statusText);
+      return data;
+    }
+
+    function showAuth() {
+      $("authView").classList.remove("hidden");
+      $("appView").classList.add("hidden");
+    }
+    function showApp() {
+      $("authView").classList.add("hidden");
+      $("appView").classList.remove("hidden");
+      $("userLabel").textContent = `${state.user.displayName} · ${state.org.name}`;
+    }
+
+    function setAuthMode(mode) {
+      state.mode = mode;
+      $("registerFields").classList.toggle("hidden", mode === "login");
+      $("tabLogin").classList.toggle("primary", mode === "login");
+      $("tabRegister").classList.toggle("primary", mode === "register");
+    }
+
+    async function bootstrap() {
+      if (!state.token) return showAuth();
+      try {
+        const me = await api("/api/v1/me");
+        state.user = me.user;
+        state.org = me.organization;
+        showApp();
+        await refreshRepos();
+        await refreshRuns();
+        showNewAgent();
+      } catch {
+        state.token = "";
+        localStorage.removeItem("zc.token");
+        showAuth();
+      }
+    }
+
+    async function refreshRepos() {
+      state.repos = await api("/api/v1/repositories");
+      const select = $("repoSelect");
+      select.innerHTML = "";
+      if (!state.repos.length) {
+        const opt = document.createElement("option");
+        opt.value = "";
+        opt.textContent = "还没有仓库，先添加一个";
+        select.appendChild(opt);
+        return;
+      }
+      for (const repo of state.repos) {
+        const opt = document.createElement("option");
+        opt.value = repo.id;
+        opt.textContent = `${repo.owner}/${repo.name}`;
+        select.appendChild(opt);
+      }
+    }
+
+    async function refreshRuns() {
+      state.runs = await api("/api/v1/runs");
+      const list = $("agentList");
+      list.innerHTML = "";
+      for (const run of state.runs) {
+        const btn = document.createElement("button");
+        btn.className = "agent-item" + (run.id === state.currentRunId ? " active" : "");
+        btn.innerHTML = `<div>${escapeHtml(run.title)}</div><small>${run.status}</small>`;
+        btn.onclick = () => openRun(run.id);
+        list.appendChild(btn);
+      }
+    }
+
+    function showNewAgent() {
+      stopStream();
+      state.currentRunId = null;
+      $("newAgentView").classList.remove("hidden");
+      $("runView").classList.add("hidden");
+      $("topTitle").textContent = "New Agent";
+      $("topStatus").textContent = "idle";
+      $("topStatus").className = "status-pill";
+      refreshRuns();
+    }
+
+    async function openRun(runId) {
+      stopStream();
+      state.currentRunId = runId;
+      state.afterSeq = 0;
+      $("newAgentView").classList.add("hidden");
+      $("runView").classList.remove("hidden");
+      $("messages").innerHTML = "";
+      $("eventLog").textContent = "";
+      const run = await api(`/api/v1/runs/${runId}`);
+      renderRunMeta(run);
+      const msgs = await api(`/api/v1/runs/${runId}/messages`);
+      for (const m of msgs) appendBubble(m.role, m.content);
+      const hist = await api(`/api/v1/runs/${runId}/events?afterSeq=0`);
+      for (const e of hist.events || []) handleEvent(e, false);
+      state.afterSeq = hist.nextSeq || 0;
+      startStream(runId, state.afterSeq);
+      await refreshRuns();
+    }
+
+    function renderRunMeta(run) {
+      $("topTitle").textContent = run.title;
+      $("topStatus").textContent = run.status;
+      $("topStatus").className = "status-pill " + (run.status === "running" ? "running" : run.status === "failed" ? "failed" : "");
+      $("infoId").textContent = run.id;
+      $("infoBranch").textContent = run.headBranch;
+      $("infoModel").textContent = run.model;
+      $("infoStatus").textContent = run.status;
+    }
+
+    function appendBubble(role, text) {
+      const el = document.createElement("div");
+      el.className = "bubble " + (role === "user" ? "user" : role === "tool" ? "tool" : "assistant");
+      el.innerHTML = `<div class="meta">${escapeHtml(role)}</div>${escapeHtml(text)}`;
+      $("messages").appendChild(el);
+      $("messages").scrollTop = $("messages").scrollHeight;
+    }
+
+    function handleEvent(event, appendAssistant = true) {
+      $("eventLog").textContent += `#${event.seq} ${event.eventType}\n`;
+      const payload = event.payload || {};
+      if (payload.event === "run.status" && payload.status) {
+        $("topStatus").textContent = payload.status;
+        $("infoStatus").textContent = payload.status;
+        $("topStatus").className = "status-pill " + (payload.status === "running" ? "running" : payload.status === "failed" ? "failed" : "");
+        refreshRuns();
+      }
+      if (payload.event === "message.created" && payload.role === "user") {
+        // already rendered from messages endpoint / local send
+      }
+      const update = payload.params && payload.params.update;
+      if (update && update.sessionUpdate === "agent_message_chunk" && appendAssistant) {
+        const text = (update.content && update.content.text) || "";
+        if (text) appendBubble("assistant", text);
+      }
+      if (update && update.sessionUpdate === "tool_call") {
+        appendBubble("tool", `${update.title || "tool"} · ${update.status || ""}`);
+      }
+    }
+
+    function startStream(runId, afterSeq) {
+      stopStream();
+      // EventSource cannot set Authorization; use fetch stream polyfill via polling for Phase 0.
+      state.es = setInterval(async () => {
+        try {
+          const hist = await api(`/api/v1/runs/${runId}/events?afterSeq=${state.afterSeq}`);
+          for (const e of hist.events || []) {
+            handleEvent(e, true);
+            state.afterSeq = e.seq;
+          }
+        } catch (err) {
+          console.warn(err);
+        }
+      }, 1000);
+    }
+    function stopStream() {
+      if (state.es) clearInterval(state.es);
+      state.es = null;
+    }
+
+    function escapeHtml(s) {
+      return String(s)
+        .replaceAll("&", "&amp;")
+        .replaceAll("<", "&lt;")
+        .replaceAll(">", "&gt;");
+    }
+
+    $("tabLogin").onclick = () => setAuthMode("login");
+    $("tabRegister").onclick = () => setAuthMode("register");
+    $("authSubmit").onclick = async () => {
+      $("authError").textContent = "";
+      try {
+        const body = {
+          email: $("email").value.trim(),
+          password: $("password").value,
+          displayName: $("displayName").value.trim() || "User",
+        };
+        const path = state.mode === "login" ? "/api/v1/auth/login" : "/api/v1/auth/register";
+        const auth = await api(path, { method: "POST", body: JSON.stringify(body) });
+        state.token = auth.token;
+        state.user = auth.user;
+        state.org = auth.organization;
+        localStorage.setItem("zc.token", state.token);
+        showApp();
+        await refreshRepos();
+        await refreshRuns();
+        showNewAgent();
+      } catch (err) {
+        $("authError").textContent = err.message;
+      }
+    };
+    $("btnLogout").onclick = () => {
+      state.token = "";
+      localStorage.removeItem("zc.token");
+      stopStream();
+      showAuth();
+    };
+    $("btnNewAgent").onclick = showNewAgent;
+    $("btnAddRepo").onclick = () => $("addRepoBox").classList.toggle("hidden");
+    $("btnSaveRepo").onclick = async () => {
+      $("newError").textContent = "";
+      try {
+        await api("/api/v1/repositories", {
+          method: "POST",
+          body: JSON.stringify({
+            owner: $("repoOwner").value.trim(),
+            name: $("repoName").value.trim(),
+            defaultBranch: "main",
+          }),
+        });
+        $("addRepoBox").classList.add("hidden");
+        await refreshRepos();
+      } catch (err) {
+        $("newError").textContent = err.message;
+      }
+    };
+    $("btnStartRun").onclick = async () => {
+      $("newError").textContent = "";
+      try {
+        if (!$("repoSelect").value) throw new Error("请先添加并选择仓库");
+        const run = await api("/api/v1/runs", {
+          method: "POST",
+          body: JSON.stringify({
+            repositoryId: $("repoSelect").value,
+            prompt: $("promptInput").value.trim(),
+            permissionMode: $("permissionMode").value,
+          }),
+        });
+        $("promptInput").value = "";
+        await openRun(run.id);
+      } catch (err) {
+        $("newError").textContent = err.message;
+      }
+    };
+    $("btnSend").onclick = async () => {
+      const text = $("followUp").value.trim();
+      if (!text || !state.currentRunId) return;
+      appendBubble("user", text);
+      $("followUp").value = "";
+      await api(`/api/v1/runs/${state.currentRunId}/messages`, {
+        method: "POST",
+        body: JSON.stringify({ text, clientMessageId: crypto.randomUUID() }),
+      });
+    };
+    $("btnCancel").onclick = async () => {
+      if (!state.currentRunId) return;
+      const run = await api(`/api/v1/runs/${state.currentRunId}/cancel`, { method: "POST", body: "{}" });
+      renderRunMeta(run);
+      await refreshRuns();
+    };
+
+    setAuthMode("register");
+    bootstrap();
+  </script>
+</body>
+</html>

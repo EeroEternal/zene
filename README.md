@@ -135,6 +135,15 @@ cargo run -p zene-cli -- --yolo --sandbox-off
 
 `zene-gateway` is a thin local HTTP bridge: the Web UI prefers SSE and falls back to long-polling; the gateway speaks ACP NDJSON to a `zene acp` child process. Journals persist under `~/.zene/gateway` for restart/attach recovery. UI sources live in `apps/web-agent/`. See [docs/WEB_AGENT_GATEWAY.md](docs/WEB_AGENT_GATEWAY.md), [docs/GATEWAY_OPS.md](docs/GATEWAY_OPS.md), and [docs/TUI_MIGRATION.md](docs/TUI_MIGRATION.md).
 
+## Cloud Platform (experimental)
+
+Multi-user Cloud Agent control plane lives in [`cloud/`](cloud/). Phase 0 provides local auth, repositories, runs, worker claim, mock agent events, and a Cursor-style Web UI:
+
+```bash
+cd cloud && ./scripts/dev.sh
+# open http://127.0.0.1:8788/
+```
+
 ## Architecture
 
 ```
