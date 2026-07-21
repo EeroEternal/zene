@@ -137,12 +137,14 @@ cargo run -p zene-cli -- --yolo --sandbox-off
 
 ## Cloud Platform (experimental)
 
-Multi-user Cloud Agent control plane lives in [`cloud/`](cloud/). Phase 0 provides local auth, repositories, runs, worker claim, mock agent events, and a Cursor-style Web UI:
+Multi-user Cloud Agent control plane lives in [`cloud/`](cloud/). Current MVP includes auth, GitHub mock/live integration, worker + ACP/mock agent, approvals, files/diff, and draft PR via Git Broker:
 
 ```bash
 cd cloud && ./scripts/dev.sh
 # open http://127.0.0.1:8788/
+# Register → Connect GitHub (mock) → New Agent → Files / Changes / PR
 ```
+
 
 ## Architecture
 
