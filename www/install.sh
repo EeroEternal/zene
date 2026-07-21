@@ -80,11 +80,24 @@ if [ -n "$TARGET" ]; then
         rm -f "$legacy"
       fi
     done
+
+    SHELL_RC=""
+    case "${SHELL:-}" in
+      */zsh) SHELL_RC="$HOME/.zshrc" ;;
+      */bash) SHELL_RC="$HOME/.bashrc" ;;
+    esac
+    PATH_HINT='export PATH="$HOME/.local/bin:$PATH"'
+    if [ -n "$SHELL_RC" ] && ! grep -qF '.local/bin' "$SHELL_RC" 2>/dev/null; then
+      echo "" >> "$SHELL_RC"
+      echo "# Zene release binaries" >> "$SHELL_RC"
+      echo "$PATH_HINT" >> "$SHELL_RC"
+      echo "✓ Added $PATH_HINT to $SHELL_RC"
+    fi
     
     echo "=== Installation Completed ==="
     echo "Installed to $INSTALL_DIR"
     echo "Run: $ZENE_PATH web --yolo --sandbox-off"
-    echo "Ensure $INSTALL_DIR is before ~/.cargo/bin in your PATH."
+    echo "If 'zene' still resolves to an old path, open a new terminal or run: hash -r"
     exit 0
   else
     echo "Could not download pre-built binaries. Falling back to source compilation..."

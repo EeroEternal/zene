@@ -414,16 +414,16 @@ async fn run_mcp_doctor(workdir: &std::path::Path) -> Result<()> {
 
 fn run_web_gateway(gateway_args: Vec<String>) -> Result<()> {
     let gateway = resolve_gateway_bin();
+    let zene_bin = resolve_web_zene_bin(&gateway);
     eprintln!("zene launcher: {}", std::env::current_exe().map(|p| p.display().to_string()).unwrap_or_else(|_| "?".into()));
+    eprintln!("zene binary: {}", zene_bin.display());
     eprintln!("zene-gateway: {}", gateway.display());
     let mut cmd = std::process::Command::new(&gateway);
     if !gateway_args
         .iter()
         .any(|arg| arg == "--zene-bin" || arg.starts_with("--zene-bin="))
     {
-        if let Ok(zene) = std::env::current_exe() {
-            cmd.arg("--zene-bin").arg(zene);
-        }
+        cmd.arg("--zene-bin").arg(&zene_bin);
     }
     cmd.args(&gateway_args);
     let status = cmd
@@ -439,8 +439,8 @@ fn resolve_gateway_bin() -> PathBuf {
     if let Ok(path) = std::env::var("ZENE_GATEWAY_BIN") {
         return PathBuf::from(path);
     }
-    if let Some(local_gateway) = local_release_gateway() {
-        if local_gateway.exists() && cargo_shadowed_launcher() {
+    if let Some(local_gateway) = local_release_bin("zene-gateway") {
+        if local_gateway.exists() && should_prefer_local_release() {
             return local_gateway;
         }
     }
@@ -460,19 +460,41 @@ fn resolve_gateway_bin() -> PathBuf {
     PathBuf::from("zene-gateway")
 }
 
-fn local_release_gateway() -> Option<PathBuf> {
-    std::env::var_os("HOME").map(|home| {
-        PathBuf::from(home)
-            .join(".local")
-            .join("bin")
-            .join("zene-gateway")
-    })
+fn resolve_web_zene_bin(gateway: &std::path::Path) -> PathBuf {
+    if let Ok(path) = std::env::var("ZENE_BIN") {
+        return PathBuf::from(path);
+    }
+    if let Some(parent) = gateway.parent() {
+        let paired = parent.join("zene");
+        if paired.exists() {
+            return paired;
+        }
+        #[cfg(windows)]
+        {
+            let paired = parent.join("zene.exe");
+            if paired.exists() {
+                return paired;
+            }
+        }
+    }
+    if let Some(local_zene) = local_release_bin("zene") {
+        if local_zene.exists() && should_prefer_local_release() {
+            return local_zene;
+        }
+    }
+    std::env::current_exe().unwrap_or_else(|_| PathBuf::from("zene"))
 }
 
-fn cargo_shadowed_launcher() -> bool {
-    std::env::current_exe().ok().is_some_and(|exe| {
-        exe.parent()
-            .is_some_and(|dir| dir.file_name().is_some_and(|name| name == "bin")
-                && dir.parent().is_some_and(|parent| parent.file_name().is_some_and(|name| name == ".cargo")))
-    })
+fn local_release_bin(name: &str) -> Option<PathBuf> {
+    std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".local/bin").join(name))
+}
+
+fn should_prefer_local_release() -> bool {
+    let Ok(launcher) = std::env::current_exe() else {
+        return false;
+    };
+    let Some(local_zene) = local_release_bin("zene") else {
+        return false;
+    };
+    local_zene.exists() && launcher != local_zene
 }
