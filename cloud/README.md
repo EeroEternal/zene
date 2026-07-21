@@ -72,9 +72,40 @@ cargo run -p zene-cloud-worker
 
 Worker 会自动发现常见路径（`ZENE_BIN`、`/workspace/target/debug/zene`、`../target/debug/zene`、PATH 上的 `zene`）。找不到二进制时回退到增强版 MockAgent（permission / tool_call / 多文件变更）。
 
-## 下一步（Phase 1）
+## GitHub 集成（mock / live）
 
-- GitHub App + Git Broker
+默认 **mock** 模式，无需真实 GitHub 凭证：
+
+```bash
+export ZENE_CLOUD_GITHUB_MODE=mock   # 默认值，可省略
+```
+
+代码侧：
+
+```rust
+use zene_cloud_github::GithubClient;
+use zene_cloud_git_broker::GitBroker;
+
+let github = GithubClient::mock();           // 或 GithubClient::from_env()
+let broker = GitBroker::mock(db.clone());    // issue_read_clone_token / accept_bundle_and_push / create_draft_pr
+```
+
+切换 live：
+
+```bash
+export ZENE_CLOUD_GITHUB_MODE=live
+export GITHUB_CLIENT_ID=...
+export GITHUB_CLIENT_SECRET=...
+export GITHUB_APP_ID=...
+export GITHUB_APP_PRIVATE_KEY_PATH=/path/to/app.pem
+export GITHUB_APP_SLUG=your-app-slug
+```
+
+相关 crate：`zene-cloud-github`、`zene-cloud-git-broker`；DB migration `002_github_git.sql`。
+
+## 下一步
+
+- API 路由挂载 GitHub OAuth / installation sync / approvals
 - gVisor/Kata Worker
 - 真实 ACP stdout pump / permission 异步审批
 - Next.js 产品前端替换零构建页面
