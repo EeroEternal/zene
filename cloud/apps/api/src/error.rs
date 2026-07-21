@@ -12,6 +12,15 @@ pub struct AppError {
 }
 
 impl AppError {
+    pub fn bad_request(message: impl Into<String>) -> Self {
+        Self {
+            status: StatusCode::BAD_REQUEST,
+            error: "bad_request".into(),
+            message: message.into(),
+            retryable: false,
+        }
+    }
+
     pub fn unauthorized(message: impl Into<String>) -> Self {
         Self {
             status: StatusCode::UNAUTHORIZED,

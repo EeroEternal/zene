@@ -43,8 +43,8 @@ struct Cli {
     #[arg(long, default_value_t = 2)]
     poll_seconds: u64,
 
-    /// Also call Phase 0 stub push/PR endpoints after commit.
-    #[arg(long, env = "ZENE_CLOUD_PUSH_PR", default_value_t = false)]
+    /// Call push/PR endpoints after commit (mock Git Broker by default).
+    #[arg(long, env = "ZENE_CLOUD_PUSH_PR", default_value_t = true)]
     push_pr: bool,
 }
 
@@ -61,11 +61,19 @@ async fn main() -> Result<()> {
         .unwrap_or_else(|| format!("worker-{}", &Uuid::new_v4().to_string()[..8]));
     std::fs::create_dir_all(&cli.workspace_root)?;
     let client = reqwest::Client::new();
-    let zene_bin = resolve_zene_bin(cli.zene_bin.clone());
+    let mut zene_bin = resolve_zene_bin(cli.zene_bin.clone());
+    let has_llm = std::env::var("ZENE_API_KEY").is_ok()
+        || std::env::var("OPENAI_API_KEY").is_ok()
+        || std::env::var("ANTHROPIC_API_KEY").is_ok()
+        || std::env::var("ZENE_BASE_URL").is_ok();
+    if zene_bin.is_some() && !has_llm {
+        warn!("zene binary found but no LLM credentials/base URL; falling back to mock agent");
+        zene_bin = None;
+    }
     if let Some(path) = &zene_bin {
         info!(path = %path.display(), yolo = cli.acp_yolo, "using real zene acp");
     } else {
-        warn!("zene binary not found; using mock agent");
+        warn!("using mock agent");
     }
 
     info!(%worker_id, api = %cli.api_url, "zene-cloud-worker started");
@@ -842,16 +850,17 @@ async fn git_commit_all(workspace: &Path, title: &str) -> Result<Option<String>>
 }
 
 async fn run_git(workspace: &Path, args: &[&str]) -> Result<()> {
-    let status = Command::new("git")
+    let output = Command::new("git")
         .current_dir(workspace)
         .args(args)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
-        .status()
+        .output()
         .await
         .with_context(|| format!("git {}", args.join(" ")))?;
-    if !status.success() {
-        bail!("git {} failed: {status}", args.join(" "));
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        bail!("git {} failed: {stderr}", args.join(" "));
     }
     Ok(())
 }
