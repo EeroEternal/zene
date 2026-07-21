@@ -60,11 +60,17 @@ cargo run -p zene-cloud-worker
 如需真实 `zene acp`：
 
 ```bash
-export ZENE_BIN=/path/to/zene
+# 显式指定（推荐）
+export ZENE_BIN=/workspace/target/debug/zene
+# 可选：本地自动批准工具（等价于 zene acp --yolo）
+export ZENE_CLOUD_ACP_YOLO=1
+# 也需要 LLM key / mock base URL，例如：
+# export ZENE_BASE_URL=http://127.0.0.1:9xxx
+# export ZENE_API_KEY=sk-...
 cargo run -p zene-cloud-worker
 ```
 
-当前 Phase 0 worker 仍默认走 mock prompt 路径，保证本地演示稳定；ACP 桥接 crate 已预留。
+Worker 会自动发现常见路径（`ZENE_BIN`、`/workspace/target/debug/zene`、`../target/debug/zene`、PATH 上的 `zene`）。找不到二进制时回退到增强版 MockAgent（permission / tool_call / 多文件变更）。
 
 ## 下一步（Phase 1）
 

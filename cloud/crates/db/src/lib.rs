@@ -1,3 +1,5 @@
+mod github;
+
 use std::path::Path;
 
 use anyhow::{bail, Context, Result};
@@ -11,8 +13,9 @@ use sqlx::SqlitePool;
 use std::str::FromStr;
 use uuid::Uuid;
 use zene_cloud_domain::{
-    AuthResponse, CreateRepositoryRequest, CreateRunRequest, LoginRequest, Organization,
-    RegisterRequest, Repository, Run, RunEvent, RunMessage, RunStatus, User,
+    ApprovalRequest, ApprovalStatus, AuthResponse, CloneAuthResponse, CreateApprovalRequest,
+    CreateRepositoryRequest, CreateRunRequest, LoginRequest, Organization, RegisterRequest,
+    Repository, Run, RunEvent, RunMessage, RunStatus, User, WorkerCommand,
 };
 
 #[derive(Clone)]
@@ -39,14 +42,73 @@ impl Db {
         Ok(Self { pool })
     }
 
+    /// Apply SQL migrations in filename order, tracking applied versions in
+    /// `schema_migrations`. For migration `002`/`003`, `ALTER TABLE ... ADD COLUMN`
+    /// failures (column already exists) are ignored so re-runs stay idempotent.
     pub async fn migrate(&self) -> Result<()> {
-        let sql = include_str!("../../../migrations/001_init.sql");
-        for statement in sql.split(';') {
-            let statement = statement.trim();
-            if statement.is_empty() {
+        sqlx::query(
+            "CREATE TABLE IF NOT EXISTS schema_migrations (
+                version TEXT PRIMARY KEY NOT NULL,
+                applied_at TEXT NOT NULL
+            )",
+        )
+        .execute(&self.pool)
+        .await?;
+
+        let migrations: &[(&str, &str)] = &[
+            ("001_init", include_str!("../../../migrations/001_init.sql")),
+            (
+                "002_github_git",
+                include_str!("../../../migrations/002_github_git.sql"),
+            ),
+            (
+                "003_worker",
+                include_str!("../../../migrations/003_worker.sql"),
+            ),
+        ];
+
+        for (version, sql) in migrations {
+            let applied: Option<(String,)> =
+                sqlx::query_as("SELECT version FROM schema_migrations WHERE version = ?")
+                    .bind(version)
+                    .fetch_optional(&self.pool)
+                    .await?;
+            if applied.is_some() {
                 continue;
             }
-            sqlx::query(statement).execute(&self.pool).await?;
+
+            let ignore_alter_dupes =
+                version.starts_with("002") || version.starts_with("003");
+            for statement in split_sql_statements(sql) {
+                match sqlx::query(&statement).execute(&self.pool).await {
+                    Ok(_) => {}
+                    Err(err)
+                        if ignore_alter_dupes && is_ignorable_alter_error(&err, &statement) =>
+                    {
+                        tracing::debug!(
+                            version,
+                            statement = %truncate_sql(&statement),
+                            "ignoring alter failure (column likely exists)"
+                        );
+                    }
+                    Err(err) => {
+                        return Err(err).with_context(|| {
+                            format!(
+                                "migration {version} failed on: {}",
+                                truncate_sql(&statement)
+                            )
+                        });
+                    }
+                }
+            }
+
+            sqlx::query(
+                "INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)",
+            )
+            .bind(version)
+            .bind(Utc::now().to_rfc3339())
+            .execute(&self.pool)
+            .await?;
         }
         Ok(())
     }
@@ -247,53 +309,35 @@ impl Db {
             name: req.name,
             default_branch: req.default_branch,
             clone_url,
+            installation_id: None,
+            provider_repo_id: None,
+            private: false,
             created_at: now,
         })
     }
 
     pub async fn list_repositories(&self, org_id: Uuid) -> Result<Vec<Repository>> {
-        let rows: Vec<(String, String, String, String, String, String, String, String)> =
-            sqlx::query_as(
-                "SELECT id, organization_id, provider, owner, name, default_branch, clone_url, created_at
-                 FROM repositories WHERE organization_id = ? ORDER BY created_at DESC",
-            )
-            .bind(org_id.to_string())
-            .fetch_all(&self.pool)
-            .await?;
-        Ok(rows
-            .into_iter()
-            .map(|r| Repository {
-                id: Uuid::parse_str(&r.0).unwrap(),
-                organization_id: Uuid::parse_str(&r.1).unwrap(),
-                provider: r.2,
-                owner: r.3,
-                name: r.4,
-                default_branch: r.5,
-                clone_url: r.6,
-                created_at: parse_time(&r.7),
-            })
-            .collect())
+        let rows = sqlx::query_as::<_, RepoRow>(
+            "SELECT id, organization_id, provider, owner, name, default_branch, clone_url,
+                    installation_id, provider_repo_id, COALESCE(private, 0) as private, created_at
+             FROM repositories WHERE organization_id = ? ORDER BY created_at DESC",
+        )
+        .bind(org_id.to_string())
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows.into_iter().map(RepoRow::into_repo).collect())
     }
 
     pub async fn get_repository(&self, id: Uuid) -> Result<Option<Repository>> {
-        let row: Option<(String, String, String, String, String, String, String, String)> =
-            sqlx::query_as(
-                "SELECT id, organization_id, provider, owner, name, default_branch, clone_url, created_at
-                 FROM repositories WHERE id = ?",
-            )
-            .bind(id.to_string())
-            .fetch_optional(&self.pool)
-            .await?;
-        Ok(row.map(|r| Repository {
-            id: Uuid::parse_str(&r.0).unwrap(),
-            organization_id: Uuid::parse_str(&r.1).unwrap(),
-            provider: r.2,
-            owner: r.3,
-            name: r.4,
-            default_branch: r.5,
-            clone_url: r.6,
-            created_at: parse_time(&r.7),
-        }))
+        let row = sqlx::query_as::<_, RepoRow>(
+            "SELECT id, organization_id, provider, owner, name, default_branch, clone_url,
+                    installation_id, provider_repo_id, COALESCE(private, 0) as private, created_at
+             FROM repositories WHERE id = ?",
+        )
+        .bind(id.to_string())
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(row.map(RepoRow::into_repo))
     }
 
     pub async fn create_run(
@@ -371,9 +415,11 @@ impl Db {
         .await?;
 
         let msg_id = Uuid::new_v4();
+        // Initial prompt is delivered via ClaimedRun.prompt; mark it seen for the inbox.
         sqlx::query(
-            "INSERT INTO run_messages (id, run_id, author_id, role, content, created_at)
-             VALUES (?, ?, ?, ?, ?, ?)",
+            "INSERT INTO run_messages
+             (id, run_id, author_id, role, content, created_at, delivered_to_worker)
+             VALUES (?, ?, ?, ?, ?, ?, 1)",
         )
         .bind(msg_id.to_string())
         .bind(run.id.to_string())
@@ -400,17 +446,19 @@ impl Db {
     }
 
     pub async fn list_runs(&self, org_id: Uuid) -> Result<Vec<Run>> {
-        let rows = sqlx::query_as::<_, RunRow>(
-            "SELECT * FROM runs WHERE organization_id = ? ORDER BY created_at DESC LIMIT 100",
-        )
-        .bind(org_id.to_string())
-        .fetch_all(&self.pool)
-        .await?;
+        let sql = format!(
+            "SELECT {RUN_COLUMNS} FROM runs WHERE organization_id = ? ORDER BY created_at DESC LIMIT 100"
+        );
+        let rows = sqlx::query_as::<_, RunRow>(&sql)
+            .bind(org_id.to_string())
+            .fetch_all(&self.pool)
+            .await?;
         Ok(rows.into_iter().map(RunRow::into_run).collect())
     }
 
     pub async fn get_run(&self, run_id: Uuid) -> Result<Option<Run>> {
-        let row = sqlx::query_as::<_, RunRow>("SELECT * FROM runs WHERE id = ?")
+        let sql = format!("SELECT {RUN_COLUMNS} FROM runs WHERE id = ?");
+        let row = sqlx::query_as::<_, RunRow>(&sql)
             .bind(run_id.to_string())
             .fetch_optional(&self.pool)
             .await?;
@@ -423,9 +471,10 @@ impl Db {
         workspace_root: &Path,
     ) -> Result<Option<(Run, Uuid, i64, String)>> {
         let mut tx = self.pool.begin().await?;
-        let row = sqlx::query_as::<_, RunRow>(
-            "SELECT * FROM runs WHERE status = 'queued' ORDER BY created_at ASC LIMIT 1",
-        )
+        let sql = format!(
+            "SELECT {RUN_COLUMNS} FROM runs WHERE status = 'queued' ORDER BY created_at ASC LIMIT 1"
+        );
+        let row = sqlx::query_as::<_, RunRow>(&sql)
         .fetch_optional(&mut *tx)
         .await?;
         let Some(row) = row else {
@@ -437,7 +486,7 @@ impl Db {
         let now = Utc::now();
         let lease = now + Duration::seconds(60);
         sqlx::query(
-            "UPDATE runs SET status = ?, status_version = status_version + 1, started_at = ?
+            "UPDATE runs SET status = ?, status_version = status_version + 1, started_at = COALESCE(started_at, ?)
              WHERE id = ? AND status = 'queued'",
         )
         .bind(RunStatus::Provisioning.as_str())
@@ -656,6 +705,16 @@ impl Db {
             self.get_run(run_id).await?.map(|r| r.status),
             Some(RunStatus::Completed)
         ) {
+            // Re-queue with the follow-up as the next claim prompt.
+            sqlx::query("UPDATE runs SET prompt = ? WHERE id = ?")
+                .bind(content)
+                .bind(run_id.to_string())
+                .execute(&self.pool)
+                .await?;
+            sqlx::query("UPDATE run_messages SET delivered_to_worker = 1 WHERE id = ?")
+                .bind(id.to_string())
+                .execute(&self.pool)
+                .await?;
             self.update_run_status(run_id, RunStatus::Queued, None, None)
                 .await?;
         }
@@ -690,6 +749,368 @@ impl Db {
             .collect())
     }
 
+    pub async fn get_clone_auth(&self, run_id: Uuid) -> Result<CloneAuthResponse> {
+        let run = self
+            .get_run(run_id)
+            .await?
+            .context("run not found")?;
+        let repo = self
+            .get_repository(run.repository_id)
+            .await?
+            .context("repository not found")?;
+
+        // Prefer cached credentials when present.
+        let cached: Option<(String, Option<String>, Option<String>, i64)> = sqlx::query_as(
+            "SELECT clone_url, token_enc, username, mock FROM run_clone_credentials WHERE run_id = ?",
+        )
+        .bind(run_id.to_string())
+        .fetch_optional(&self.pool)
+        .await?;
+        if let Some((clone_url, token, username, mock)) = cached {
+            return Ok(CloneAuthResponse {
+                run_id,
+                repository_id: repo.id,
+                clone_url,
+                username,
+                token,
+                base_ref: run.base_ref,
+                head_branch: run.head_branch,
+                mock: mock != 0,
+            });
+        }
+
+        // Phase 0: no GitHub App tokens yet — treat as mock workspace unless a real
+        // clone URL looks locally usable (file:// or existing path).
+        let mock = !repo.clone_url.starts_with("file://")
+            && !Path::new(&repo.clone_url).exists();
+        let now = Utc::now();
+        sqlx::query(
+            "INSERT OR REPLACE INTO run_clone_credentials
+             (run_id, clone_url, token_enc, username, mock, created_at)
+             VALUES (?, ?, ?, ?, ?, ?)",
+        )
+        .bind(run_id.to_string())
+        .bind(&repo.clone_url)
+        .bind(Option::<String>::None)
+        .bind(Option::<String>::None)
+        .bind(if mock { 1 } else { 0 })
+        .bind(now.to_rfc3339())
+        .execute(&self.pool)
+        .await?;
+
+        Ok(CloneAuthResponse {
+            run_id,
+            repository_id: repo.id,
+            clone_url: repo.clone_url,
+            username: None,
+            token: None,
+            base_ref: run.base_ref,
+            head_branch: run.head_branch,
+            mock,
+        })
+    }
+
+    pub async fn poll_worker_commands(&self, run_id: Uuid) -> Result<Vec<WorkerCommand>> {
+        let run = self
+            .get_run(run_id)
+            .await?
+            .context("run not found")?;
+        let mut commands = Vec::new();
+
+        if matches!(
+            run.status,
+            RunStatus::Cancelled | RunStatus::Stopping | RunStatus::TimedOut
+        ) {
+            commands.push(WorkerCommand {
+                id: format!("cancel-{}", run.status.as_str()),
+                kind: "cancel".into(),
+                text: None,
+                message_id: None,
+            });
+        }
+
+        let rows: Vec<(String, String)> = sqlx::query_as(
+            "SELECT id, content FROM run_messages
+             WHERE run_id = ? AND role = 'user' AND COALESCE(delivered_to_worker, 0) = 0
+             ORDER BY created_at ASC LIMIT 20",
+        )
+        .bind(run_id.to_string())
+        .fetch_all(&self.pool)
+        .await?;
+
+        for (id, content) in rows {
+            let message_id = Uuid::parse_str(&id)?;
+            sqlx::query("UPDATE run_messages SET delivered_to_worker = 1 WHERE id = ?")
+                .bind(&id)
+                .execute(&self.pool)
+                .await?;
+            commands.push(WorkerCommand {
+                id: format!("msg-{id}"),
+                kind: "prompt".into(),
+                text: Some(content),
+                message_id: Some(message_id),
+            });
+        }
+
+        Ok(commands)
+    }
+
+    pub async fn create_approval(
+        &self,
+        run_id: Uuid,
+        req: CreateApprovalRequest,
+    ) -> Result<ApprovalRequest> {
+        let run = self
+            .get_run(run_id)
+            .await?
+            .context("run not found")?;
+
+        // Idempotent by (run_id, request_key).
+        if let Some(existing) = self
+            .get_approval_by_key(run_id, &req.request_key)
+            .await?
+        {
+            return Ok(existing);
+        }
+
+        let id = Uuid::new_v4();
+        let now = Utc::now();
+        let auto = matches!(
+            run.permission_mode.as_str(),
+            "yolo" | "auto" | "default"
+        );
+        let status = if auto {
+            ApprovalStatus::Resolved
+        } else {
+            ApprovalStatus::Pending
+        };
+        let decision = if auto {
+            Some("allow-once".to_string())
+        } else {
+            None
+        };
+        let resolved_at = if auto {
+            Some(now.to_rfc3339())
+        } else {
+            None
+        };
+        let allowed = serde_json::to_string(&req.allowed_decisions)?;
+        let payload = req.payload.to_string();
+
+        sqlx::query(
+            "INSERT INTO approval_requests
+             (id, run_id, request_key, jsonrpc_id, kind, risk, payload_json, status,
+              allowed_decisions, created_at, expires_at, resolved_by, resolved_at, decision)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        )
+        .bind(id.to_string())
+        .bind(run_id.to_string())
+        .bind(&req.request_key)
+        .bind(&req.jsonrpc_id)
+        .bind(&req.kind)
+        .bind(&req.risk)
+        .bind(&payload)
+        .bind(status.as_str())
+        .bind(&allowed)
+        .bind(now.to_rfc3339())
+        .bind(req.expires_at.map(|t| t.to_rfc3339()))
+        .bind(if auto { Some("system") } else { None })
+        .bind(resolved_at)
+        .bind(&decision)
+        .execute(&self.pool)
+        .await?;
+
+        if !auto {
+            self.update_run_status(run_id, RunStatus::WaitingForApproval, None, None)
+                .await?;
+        }
+
+        self.append_event(
+            run_id,
+            0,
+            Some(&format!("approval.{}", req.request_key)),
+            "platform",
+            serde_json::json!({
+                "event": "approval.created",
+                "approvalId": id,
+                "status": status.as_str(),
+                "decision": decision,
+                "kind": req.kind,
+            }),
+        )
+        .await?;
+
+        self.get_approval(id)
+            .await?
+            .context("approval missing after create")
+    }
+
+    pub async fn get_approval(&self, approval_id: Uuid) -> Result<Option<ApprovalRequest>> {
+        let row: Option<(
+            String,
+            String,
+            String,
+            Option<String>,
+            String,
+            String,
+            String,
+            String,
+            String,
+            Option<String>,
+            String,
+            Option<String>,
+            Option<String>,
+            Option<String>,
+        )> = sqlx::query_as(
+            "SELECT id, run_id, request_key, jsonrpc_id, kind, risk, payload_json, status,
+                    allowed_decisions, decision, created_at, expires_at, resolved_by, resolved_at
+             FROM approval_requests WHERE id = ?",
+        )
+        .bind(approval_id.to_string())
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(row.map(map_approval_full_row))
+    }
+
+    pub async fn get_approval_by_key(
+        &self,
+        run_id: Uuid,
+        request_key: &str,
+    ) -> Result<Option<ApprovalRequest>> {
+        let row: Option<(
+            String,
+            String,
+            String,
+            Option<String>,
+            String,
+            String,
+            String,
+            String,
+            String,
+            Option<String>,
+            String,
+            Option<String>,
+            Option<String>,
+            Option<String>,
+        )> = sqlx::query_as(
+            "SELECT id, run_id, request_key, jsonrpc_id, kind, risk, payload_json, status,
+                    allowed_decisions, decision, created_at, expires_at, resolved_by, resolved_at
+             FROM approval_requests WHERE run_id = ? AND request_key = ?",
+        )
+        .bind(run_id.to_string())
+        .bind(request_key)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(row.map(map_approval_full_row))
+    }
+
+    pub async fn decide_approval(
+        &self,
+        approval_id: Uuid,
+        decision: &str,
+        resolved_by: Option<&str>,
+    ) -> Result<ApprovalRequest> {
+        let existing = self
+            .get_approval(approval_id)
+            .await?
+            .context("approval not found")?;
+        if existing.status != ApprovalStatus::Pending {
+            return Ok(existing);
+        }
+        let now = Utc::now();
+        let status = if decision.starts_with("reject") || decision == "deny" {
+            ApprovalStatus::Denied
+        } else if decision.starts_with("allow") || decision == "allow" {
+            ApprovalStatus::Approved
+        } else {
+            ApprovalStatus::Resolved
+        };
+        sqlx::query(
+            "UPDATE approval_requests
+             SET status = ?, decision = ?, resolved_by = ?, resolved_at = ?
+             WHERE id = ? AND status = 'pending'",
+        )
+        .bind(status.as_str())
+        .bind(decision)
+        .bind(resolved_by)
+        .bind(now.to_rfc3339())
+        .bind(approval_id.to_string())
+        .execute(&self.pool)
+        .await?;
+
+        let run = self
+            .get_run(existing.run_id)
+            .await?
+            .context("run not found")?;
+        if matches!(run.status, RunStatus::WaitingForApproval) {
+            self.update_run_status(existing.run_id, RunStatus::Running, None, None)
+                .await?;
+        }
+
+        self.append_event(
+            existing.run_id,
+            0,
+            Some(&format!("approval.decided.{}", existing.request_key)),
+            "platform",
+            serde_json::json!({
+                "event": "approval.decided",
+                "approvalId": approval_id,
+                "decision": decision,
+            }),
+        )
+        .await?;
+
+        self.get_approval(approval_id)
+            .await?
+            .context("approval missing after decide")
+    }
+
+    pub async fn record_git_operation(
+        &self,
+        run_id: Uuid,
+        operation: &str,
+        status: &str,
+        idempotency_key: &str,
+        result: serde_json::Value,
+    ) -> Result<serde_json::Value> {
+        let run = self
+            .get_run(run_id)
+            .await?
+            .context("run not found")?;
+        let id = Uuid::new_v4();
+        let now = Utc::now();
+        sqlx::query(
+            "INSERT OR IGNORE INTO git_operations
+             (id, organization_id, repository_id, run_id, operation, expected_head_sha,
+              result_head_sha, approval_id, status, idempotency_key, provider_request_id,
+              result_json, created_at, finished_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        )
+        .bind(id.to_string())
+        .bind(run.organization_id.to_string())
+        .bind(run.repository_id.to_string())
+        .bind(run_id.to_string())
+        .bind(operation)
+        .bind(Option::<String>::None)
+        .bind(run.head_sha.clone())
+        .bind(Option::<String>::None)
+        .bind(status)
+        .bind(idempotency_key)
+        .bind(Option::<String>::None)
+        .bind(result.to_string())
+        .bind(now.to_rfc3339())
+        .bind(now.to_rfc3339())
+        .execute(&self.pool)
+        .await?;
+        Ok(serde_json::json!({
+            "ok": true,
+            "operation": operation,
+            "status": status,
+            "idempotencyKey": idempotency_key,
+            "result": result,
+        }))
+    }
+
     async fn create_session(&self, user_id: Uuid) -> Result<String> {
         let token = format!("zc_{}", Uuid::new_v4().simple());
         let hash = hash_token(&token);
@@ -707,6 +1128,39 @@ impl Db {
         .execute(&self.pool)
         .await?;
         Ok(token)
+    }
+}
+
+#[derive(sqlx::FromRow)]
+struct RepoRow {
+    id: String,
+    organization_id: String,
+    provider: String,
+    owner: String,
+    name: String,
+    default_branch: String,
+    clone_url: String,
+    installation_id: Option<String>,
+    provider_repo_id: Option<String>,
+    private: i64,
+    created_at: String,
+}
+
+impl RepoRow {
+    fn into_repo(self) -> Repository {
+        Repository {
+            id: Uuid::parse_str(&self.id).unwrap(),
+            organization_id: Uuid::parse_str(&self.organization_id).unwrap(),
+            provider: self.provider,
+            owner: self.owner,
+            name: self.name,
+            default_branch: self.default_branch,
+            clone_url: self.clone_url,
+            installation_id: self.installation_id,
+            provider_repo_id: self.provider_repo_id,
+            private: self.private != 0,
+            created_at: parse_time(&self.created_at),
+        }
     }
 }
 
@@ -778,7 +1232,7 @@ fn hash_token(token: &str) -> String {
     format!("{:x}", hasher.finalize())
 }
 
-fn parse_time(value: &str) -> chrono::DateTime<Utc> {
+pub(crate) fn parse_time(value: &str) -> chrono::DateTime<Utc> {
     chrono::DateTime::parse_from_rfc3339(value)
         .map(|v| v.with_timezone(&Utc))
         .unwrap_or_else(|_| Utc::now())
@@ -802,3 +1256,73 @@ fn slugify(input: &str) -> String {
         slug
     }
 }
+
+fn split_sql_statements(sql: &str) -> Vec<String> {
+    sql.split(';')
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_string())
+        .collect()
+}
+
+fn is_ignorable_alter_error(err: &sqlx::Error, statement: &str) -> bool {
+    let upper = statement.trim_start().to_ascii_uppercase();
+    if !upper.starts_with("ALTER TABLE") {
+        return false;
+    }
+    let msg = err.to_string().to_ascii_lowercase();
+    msg.contains("duplicate column")
+        || msg.contains("already exists")
+        || msg.contains("duplicate column name")
+}
+
+fn truncate_sql(statement: &str) -> String {
+    let one_line = statement.replace('\n', " ");
+    if one_line.len() > 120 {
+        format!("{}…", &one_line[..120])
+    } else {
+        one_line
+    }
+}
+
+#[allow(dead_code)]
+pub(crate) fn map_approval_full_row(
+    row: (
+        String,
+        String,
+        String,
+        Option<String>,
+        String,
+        String,
+        String,
+        String,
+        String,
+        Option<String>,
+        String,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+    ),
+) -> ApprovalRequest {
+    let allowed: Vec<String> = serde_json::from_str(&row.8).unwrap_or_default();
+    ApprovalRequest {
+        id: Uuid::parse_str(&row.0).unwrap(),
+        run_id: Uuid::parse_str(&row.1).unwrap(),
+        request_key: row.2,
+        jsonrpc_id: row.3,
+        kind: row.4,
+        risk: row.5,
+        payload: serde_json::from_str(&row.6).unwrap_or(serde_json::json!({})),
+        status: ApprovalStatus::parse(&row.7).unwrap_or(ApprovalStatus::Pending),
+        allowed_decisions: allowed,
+        decision: row.9,
+        created_at: parse_time(&row.10),
+        expires_at: row.11.as_deref().map(parse_time),
+        resolved_by: row.12,
+        resolved_at: row.13.as_deref().map(parse_time),
+    }
+}
+
+const RUN_COLUMNS: &str = "id, organization_id, repository_id, requested_by, status, status_version,
+    title, prompt, base_ref, base_sha, head_branch, head_sha, model, permission_mode,
+    created_at, started_at, finished_at";

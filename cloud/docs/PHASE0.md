@@ -13,12 +13,17 @@
 
 刻意延后：
 
-- GitHub OAuth / GitHub App
-- Git Broker 写路径
+- GitHub OAuth / GitHub App（脚手架进行中）
+- Git Broker 真实写路径
 - 强隔离 runtime（gVisor/Kata）
-- 真实 ACP stdout 多路复用
 - Next.js 重构
 - Postgres / Redis
+
+已补齐 Worker ↔ ACP：
+
+- `acp-bridge`：spawn `zene acp`、stdout NDJSON 泵、按 id 匹配 JSON-RPC response、转发 `session/update`、处理 `session/request_permission`
+- Worker：clone-auth → workspace clone/mock → 真实 ACP 或 MockAgent → events / approvals / commands / commit
+- Internal API：`/clone-auth`、`/commands`、`/approvals`、stub `/git/push|pull-request`
 
 ## 本地验证路径
 
@@ -41,3 +46,8 @@
 - `POST /api/v1/runs/{id}/cancel`
 - `POST /internal/v1/runs/claim`
 - `POST /internal/v1/runs/{id}/heartbeat|events|status`
+- `GET|POST /internal/v1/runs/{id}/clone-auth`
+- `GET /internal/v1/runs/{id}/commands`
+- `POST /internal/v1/runs/{id}/approvals` + `GET .../approvals/{approvalId}`
+- `POST /api/v1/runs/{id}/approvals/{approvalId}/decide`
+- `POST /internal/v1/runs/{id}/git/push|pull-request`（Phase 0 stub）

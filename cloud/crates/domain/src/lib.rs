@@ -32,6 +32,9 @@ pub struct Repository {
     pub name: String,
     pub default_branch: String,
     pub clone_url: String,
+    pub installation_id: Option<String>,
+    pub provider_repo_id: Option<String>,
+    pub private: bool,
     pub created_at: DateTime<Utc>,
 }
 
@@ -253,4 +256,426 @@ pub struct WorkerStatusRequest {
     pub status: RunStatus,
     pub head_sha: Option<String>,
     pub failure_code: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CloneAuthResponse {
+    pub run_id: Id,
+    pub repository_id: Id,
+    pub clone_url: String,
+    pub username: Option<String>,
+    pub token: Option<String>,
+    pub base_ref: String,
+    pub head_branch: String,
+    /// When true the worker should `git init` a local sample workspace instead of cloning.
+    pub mock: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkerCommand {
+    pub id: String,
+    /// `prompt` | `cancel`
+    pub kind: String,
+    pub text: Option<String>,
+    pub message_id: Option<Id>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkerCommandsResponse {
+    pub commands: Vec<WorkerCommand>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CreateApprovalRequest {
+    pub request_key: String,
+    pub jsonrpc_id: Option<String>,
+    pub kind: String,
+    #[serde(default = "default_risk")]
+    pub risk: String,
+    pub payload: serde_json::Value,
+    #[serde(default = "default_allowed_decisions")]
+    pub allowed_decisions: Vec<String>,
+    #[serde(default)]
+    pub expires_at: Option<DateTime<Utc>>,
+}
+
+fn default_risk() -> String {
+    "medium".into()
+}
+
+fn default_allowed_decisions() -> Vec<String> {
+    vec![
+        "allow-once".into(),
+        "allow-always".into(),
+        "reject-once".into(),
+        "allow".into(),
+        "deny".into(),
+    ]
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ApprovalStatus {
+    Pending,
+    Approved,
+    Denied,
+    Resolved,
+    Expired,
+    Cancelled,
+}
+
+impl ApprovalStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Pending => "pending",
+            Self::Approved => "approved",
+            Self::Denied => "denied",
+            Self::Resolved => "resolved",
+            Self::Expired => "expired",
+            Self::Cancelled => "cancelled",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        Some(match value {
+            "pending" => Self::Pending,
+            "approved" => Self::Approved,
+            "denied" => Self::Denied,
+            "resolved" => Self::Resolved,
+            "expired" => Self::Expired,
+            "cancelled" => Self::Cancelled,
+            _ => return None,
+        })
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ApprovalRequest {
+    pub id: Id,
+    pub run_id: Id,
+    pub request_key: String,
+    pub jsonrpc_id: Option<String>,
+    pub kind: String,
+    pub risk: String,
+    pub payload: serde_json::Value,
+    pub status: ApprovalStatus,
+    pub allowed_decisions: Vec<String>,
+    pub created_at: DateTime<Utc>,
+    pub expires_at: Option<DateTime<Utc>>,
+    pub resolved_by: Option<String>,
+    pub resolved_at: Option<DateTime<Utc>>,
+    pub decision: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DecideApprovalRequest {
+    pub decision: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ResolveApprovalRequest {
+    pub decision: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkerPushRequest {
+    #[serde(default)]
+    pub force: bool,
+    pub idempotency_key: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkerPullRequestRequest {
+    pub title: Option<String>,
+    pub body: Option<String>,
+    #[serde(default = "default_draft")]
+    pub draft: bool,
+    pub idempotency_key: Option<String>,
+}
+
+fn default_draft() -> bool {
+    true
+}
+
+// --- GitHub / Git Broker ---
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GithubMode {
+    Mock,
+    Live,
+}
+
+impl GithubMode {
+    pub fn from_env() -> Self {
+        match std::env::var("ZENE_CLOUD_GITHUB_MODE")
+            .unwrap_or_else(|_| "mock".into())
+            .to_ascii_lowercase()
+            .as_str()
+        {
+            "live" => Self::Live,
+            _ => Self::Mock,
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Mock => "mock",
+            Self::Live => "live",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GithubAccount {
+    pub id: Id,
+    pub user_id: Id,
+    pub github_user_id: String,
+    pub login: String,
+    pub access_token_enc: String,
+    pub token_type: String,
+    pub scope: Option<String>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GithubInstallation {
+    pub id: Id,
+    pub organization_id: Id,
+    pub installation_id: String,
+    pub account_login: String,
+    pub account_type: String,
+    pub status: String,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OauthState {
+    pub state: String,
+    pub user_id: Option<Id>,
+    pub redirect_to: Option<String>,
+    pub created_at: DateTime<Utc>,
+    pub expires_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GitOperationKind {
+    Clone,
+    PushBundle,
+    CreatePr,
+    SyncRepos,
+}
+
+impl GitOperationKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Clone => "clone",
+            Self::PushBundle => "push_bundle",
+            Self::CreatePr => "create_pr",
+            Self::SyncRepos => "sync_repos",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        Some(match value {
+            "clone" => Self::Clone,
+            "push_bundle" => Self::PushBundle,
+            "create_pr" => Self::CreatePr,
+            "sync_repos" => Self::SyncRepos,
+            _ => return None,
+        })
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GitOperationStatus {
+    Pending,
+    Running,
+    Succeeded,
+    Failed,
+    Cancelled,
+}
+
+impl GitOperationStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Pending => "pending",
+            Self::Running => "running",
+            Self::Succeeded => "succeeded",
+            Self::Failed => "failed",
+            Self::Cancelled => "cancelled",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        Some(match value {
+            "pending" => Self::Pending,
+            "running" => Self::Running,
+            "succeeded" => Self::Succeeded,
+            "failed" => Self::Failed,
+            "cancelled" => Self::Cancelled,
+            _ => return None,
+        })
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GitOperation {
+    pub id: Id,
+    pub organization_id: Id,
+    pub repository_id: Id,
+    pub run_id: Id,
+    pub operation: GitOperationKind,
+    pub expected_head_sha: Option<String>,
+    pub result_head_sha: Option<String>,
+    pub approval_id: Option<Id>,
+    pub status: GitOperationStatus,
+    pub idempotency_key: String,
+    pub provider_request_id: Option<String>,
+    pub result: Option<serde_json::Value>,
+    pub created_at: DateTime<Utc>,
+    pub finished_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PullRequest {
+    pub id: Id,
+    pub repository_id: Id,
+    pub run_id: Id,
+    pub provider_number: Option<i64>,
+    pub url: Option<String>,
+    pub title: String,
+    pub body: Option<String>,
+    pub base_sha: Option<String>,
+    pub head_sha: Option<String>,
+    pub state: String,
+    pub draft: bool,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AuditLog {
+    pub id: Id,
+    pub organization_id: Option<Id>,
+    pub actor_type: String,
+    pub actor_id: Option<String>,
+    pub action: String,
+    pub resource_type: Option<String>,
+    pub resource_id: Option<String>,
+    pub metadata: Option<serde_json::Value>,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GithubRepoSummary {
+    pub provider_repo_id: String,
+    pub owner: String,
+    pub name: String,
+    pub default_branch: String,
+    pub clone_url: String,
+    pub private: bool,
+    pub installation_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GithubUser {
+    pub id: String,
+    pub login: String,
+    pub name: Option<String>,
+    pub avatar_url: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StartGithubOauthRequest {
+    pub redirect_to: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StartGithubOauthResponse {
+    pub authorize_url: String,
+    pub state: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GithubOauthCallbackRequest {
+    pub code: String,
+    pub state: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpsertInstallationRequest {
+    pub installation_id: String,
+    pub account_login: String,
+    #[serde(default = "default_account_type")]
+    pub account_type: String,
+    #[serde(default = "default_installation_status")]
+    pub status: String,
+}
+
+fn default_account_type() -> String {
+    "Organization".into()
+}
+
+fn default_installation_status() -> String {
+    "active".into()
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CreatePullRequestBody {
+    pub title: String,
+    pub body: Option<String>,
+    #[serde(default = "default_draft")]
+    pub draft: bool,
+    pub base_ref: Option<String>,
+    pub head_ref: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AcceptBundleRequest {
+    pub expected_head_sha: Option<String>,
+    pub idempotency_key: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AcceptBundleResult {
+    pub head_sha: String,
+    pub push_url: String,
+    pub operation_id: Id,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CloneTokenResponse {
+    pub token: String,
+    pub clone_url: String,
+    pub expires_at: DateTime<Utc>,
+    pub mode: String,
 }

@@ -10,8 +10,9 @@ use serde::Deserialize;
 use tokio_stream::wrappers::ReceiverStream;
 use uuid::Uuid;
 use zene_cloud_domain::{
-    ClaimedRun, CreateRepositoryRequest, CreateRunRequest, LoginRequest, PostMessageRequest,
-    RegisterRequest, RunStatus, WorkerEventRequest, WorkerStatusRequest,
+    ClaimedRun, CreateApprovalRequest, CreateRepositoryRequest, CreateRunRequest, DecideApprovalRequest,
+    LoginRequest, PostMessageRequest, RegisterRequest, RunStatus, WorkerCommandsResponse,
+    WorkerEventRequest, WorkerPullRequestRequest, WorkerPushRequest, WorkerStatusRequest,
 };
 
 use crate::auth::{AuthUser, WorkerAuth};
@@ -31,10 +32,32 @@ pub fn router(state: AppState) -> Router {
         .route("/api/v1/runs/{run_id}/events", get(list_events))
         .route("/api/v1/runs/{run_id}/events/stream", get(stream_events))
         .route("/api/v1/runs/{run_id}/cancel", post(cancel_run))
+        .route(
+            "/api/v1/runs/{run_id}/approvals/{approval_id}/decide",
+            post(decide_approval),
+        )
         .route("/internal/v1/runs/claim", post(claim_run))
         .route("/internal/v1/runs/{run_id}/heartbeat", post(heartbeat))
         .route("/internal/v1/runs/{run_id}/events", post(worker_event))
         .route("/internal/v1/runs/{run_id}/status", post(worker_status))
+        .route(
+            "/internal/v1/runs/{run_id}/clone-auth",
+            get(clone_auth).post(clone_auth),
+        )
+        .route("/internal/v1/runs/{run_id}/commands", get(worker_commands))
+        .route(
+            "/internal/v1/runs/{run_id}/approvals",
+            post(create_approval),
+        )
+        .route(
+            "/internal/v1/runs/{run_id}/approvals/{approval_id}",
+            get(get_approval),
+        )
+        .route("/internal/v1/runs/{run_id}/git/push", post(worker_push))
+        .route(
+            "/internal/v1/runs/{run_id}/git/pull-request",
+            post(worker_pull_request),
+        )
         .with_state(state)
 }
 
@@ -304,6 +327,134 @@ async fn worker_status(
         .update_run_status(run_id, req.status, req.head_sha, req.failure_code)
         .await?;
     Ok(Json(run))
+}
+
+async fn clone_auth(
+    State(state): State<AppState>,
+    _worker: WorkerAuth,
+    Path(run_id): Path<Uuid>,
+) -> Result<impl IntoResponse, AppError> {
+    let auth = state.db.get_clone_auth(run_id).await?;
+    Ok(Json(auth))
+}
+
+async fn worker_commands(
+    State(state): State<AppState>,
+    _worker: WorkerAuth,
+    Path(run_id): Path<Uuid>,
+) -> Result<impl IntoResponse, AppError> {
+    let commands = state.db.poll_worker_commands(run_id).await?;
+    Ok(Json(WorkerCommandsResponse { commands }))
+}
+
+async fn create_approval(
+    State(state): State<AppState>,
+    _worker: WorkerAuth,
+    Path(run_id): Path<Uuid>,
+    Json(req): Json<CreateApprovalRequest>,
+) -> Result<impl IntoResponse, AppError> {
+    let approval = state.db.create_approval(run_id, req).await?;
+    Ok(Json(approval))
+}
+
+async fn get_approval(
+    State(state): State<AppState>,
+    _worker: WorkerAuth,
+    Path((run_id, approval_id)): Path<(Uuid, Uuid)>,
+) -> Result<impl IntoResponse, AppError> {
+    let approval = state
+        .db
+        .get_approval(approval_id)
+        .await?
+        .ok_or_else(|| AppError::not_found("approval not found"))?;
+    if approval.run_id != run_id {
+        return Err(AppError::not_found("approval not found"));
+    }
+    Ok(Json(approval))
+}
+
+async fn decide_approval(
+    State(state): State<AppState>,
+    AuthUser(user): AuthUser,
+    Path((run_id, approval_id)): Path<(Uuid, Uuid)>,
+    Json(req): Json<DecideApprovalRequest>,
+) -> Result<impl IntoResponse, AppError> {
+    let _ = authorize_run(&state, user.id, run_id).await?;
+    let approval = state
+        .db
+        .get_approval(approval_id)
+        .await?
+        .ok_or_else(|| AppError::not_found("approval not found"))?;
+    if approval.run_id != run_id {
+        return Err(AppError::not_found("approval not found"));
+    }
+    if !approval.allowed_decisions.is_empty()
+        && !approval.allowed_decisions.iter().any(|d| d == &req.decision)
+    {
+        return Err(AppError::conflict(format!(
+            "decision {} not allowed",
+            req.decision
+        )));
+    }
+    let approval = state
+        .db
+        .decide_approval(approval_id, &req.decision, Some(&user.id.to_string()))
+        .await?;
+    Ok(Json(approval))
+}
+
+async fn worker_push(
+    State(state): State<AppState>,
+    _worker: WorkerAuth,
+    Path(run_id): Path<Uuid>,
+    Json(req): Json<WorkerPushRequest>,
+) -> Result<impl IntoResponse, AppError> {
+    let key = req
+        .idempotency_key
+        .unwrap_or_else(|| format!("push-{}", Uuid::new_v4()));
+    let result = state
+        .db
+        .record_git_operation(
+            run_id,
+            "push",
+            "skipped",
+            &key,
+            serde_json::json!({
+                "skipped": true,
+                "reason": "Phase 0 stub: GitHub push not configured",
+                "force": req.force,
+            }),
+        )
+        .await?;
+    Ok(Json(result))
+}
+
+async fn worker_pull_request(
+    State(state): State<AppState>,
+    _worker: WorkerAuth,
+    Path(run_id): Path<Uuid>,
+    Json(req): Json<WorkerPullRequestRequest>,
+) -> Result<impl IntoResponse, AppError> {
+    let key = req
+        .idempotency_key
+        .unwrap_or_else(|| format!("pr-{}", Uuid::new_v4()));
+    let result = state
+        .db
+        .record_git_operation(
+            run_id,
+            "pull_request",
+            "skipped",
+            &key,
+            serde_json::json!({
+                "skipped": true,
+                "reason": "Phase 0 stub: GitHub PR not configured",
+                "title": req.title,
+                "body": req.body,
+                "draft": req.draft,
+            }),
+        )
+        .await?;
+    Ok(Json(result))
 }
 
 async fn authorize_run(
