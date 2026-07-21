@@ -414,6 +414,8 @@ async fn run_mcp_doctor(workdir: &std::path::Path) -> Result<()> {
 
 fn run_web_gateway(gateway_args: Vec<String>) -> Result<()> {
     let gateway = resolve_gateway_bin();
+    eprintln!("zene launcher: {}", std::env::current_exe().map(|p| p.display().to_string()).unwrap_or_else(|_| "?".into()));
+    eprintln!("zene-gateway: {}", gateway.display());
     let mut cmd = std::process::Command::new(&gateway);
     if !gateway_args
         .iter()
@@ -437,6 +439,11 @@ fn resolve_gateway_bin() -> PathBuf {
     if let Ok(path) = std::env::var("ZENE_GATEWAY_BIN") {
         return PathBuf::from(path);
     }
+    if let Some(local_gateway) = local_release_gateway() {
+        if local_gateway.exists() && cargo_shadowed_launcher() {
+            return local_gateway;
+        }
+    }
     if let Ok(exe) = std::env::current_exe() {
         let sibling = exe.with_file_name("zene-gateway");
         if sibling.exists() {
@@ -451,4 +458,21 @@ fn resolve_gateway_bin() -> PathBuf {
         }
     }
     PathBuf::from("zene-gateway")
+}
+
+fn local_release_gateway() -> Option<PathBuf> {
+    std::env::var_os("HOME").map(|home| {
+        PathBuf::from(home)
+            .join(".local")
+            .join("bin")
+            .join("zene-gateway")
+    })
+}
+
+fn cargo_shadowed_launcher() -> bool {
+    std::env::current_exe().ok().is_some_and(|exe| {
+        exe.parent()
+            .is_some_and(|dir| dir.file_name().is_some_and(|name| name == "bin")
+                && dir.parent().is_some_and(|parent| parent.file_name().is_some_and(|name| name == ".cargo")))
+    })
 }

@@ -63,7 +63,7 @@ if [ -n "$TARGET" ]; then
   ZENE_URL="https://github.com/ParaTensor/zene/releases/download/${LATEST_TAG}/zene-${TARGET}"
   GATEWAY_URL="https://github.com/ParaTensor/zene/releases/download/${LATEST_TAG}/zene-gateway-${TARGET}"
   
-  if install_binary "$ZENE_URL" "$ZENE_PATH" "zene" \
+    if install_binary "$ZENE_URL" "$ZENE_PATH" "zene" \
     && install_binary "$GATEWAY_URL" "$GATEWAY_PATH" "zene-gateway"; then
     # Check macOS Quarantine attribute
     if [ "$OS" = "Darwin" ]; then
@@ -72,9 +72,19 @@ if [ -n "$TARGET" ]; then
         xattr -d com.apple.quarantine "$GATEWAY_PATH" 2>/dev/null || true
       fi
     fi
+
+    LEGACY_DIR="$HOME/.cargo/bin"
+    for legacy in "$LEGACY_DIR/zene" "$LEGACY_DIR/zene-gateway"; do
+      if [ -f "$legacy" ]; then
+        echo "⚠ Removing older Cargo install: $legacy"
+        rm -f "$legacy"
+      fi
+    done
     
     echo "=== Installation Completed ==="
-    echo "Make sure $INSTALL_DIR is in your shell PATH."
+    echo "Installed to $INSTALL_DIR"
+    echo "Run: $ZENE_PATH web --yolo --sandbox-off"
+    echo "Ensure $INSTALL_DIR is before ~/.cargo/bin in your PATH."
     exit 0
   else
     echo "Could not download pre-built binaries. Falling back to source compilation..."
