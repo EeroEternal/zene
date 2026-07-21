@@ -1,0 +1,7 @@
+/target
+/data
+**/*.db
+**/*.db-*
+.DS_Store
+.env
+node_modules/
