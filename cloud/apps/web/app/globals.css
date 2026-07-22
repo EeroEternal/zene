@@ -1,0 +1,72 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  html,
+  body {
+    height: 100%;
+    margin: 0;
+  }
+  body {
+    @apply overflow-hidden bg-canvas font-sans text-sm text-ink antialiased;
+  }
+  button {
+    cursor: pointer;
+  }
+  button:disabled {
+    cursor: not-allowed;
+  }
+}
+
+@layer components {
+  .btn {
+    @apply rounded-md border border-line bg-canvas px-3 py-2 font-medium text-ink transition-colors hover:bg-secondary disabled:opacity-40 disabled:hover:bg-canvas;
+  }
+  .btn-primary {
+    @apply border-ink bg-ink text-white hover:border-ink-hover hover:bg-ink-hover disabled:hover:border-ink disabled:hover:bg-ink;
+  }
+  .btn-danger {
+    @apply border-danger-line text-danger hover:bg-danger-soft disabled:hover:bg-canvas;
+  }
+  .btn-sm {
+    @apply px-2.5 py-1.5 text-xs;
+  }
+  .field-input {
+    @apply w-full rounded-md border border-line-strong bg-canvas px-3 py-[9px] text-ink outline-none transition-colors focus:border-ink focus:shadow-[0_0_0_1px_#202124];
+  }
+  .field-label {
+    @apply mb-1.5 mt-3 block text-[11px] font-semibold uppercase tracking-[.04em] text-muted;
+  }
+  .menu-card {
+    @apply rounded-xl border border-line bg-canvas p-1.5 shadow-menu;
+  }
+  .menu-item {
+    @apply flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-left text-[13px] text-ink hover:bg-secondary;
+  }
+  .picker-item {
+    @apply flex w-full items-center gap-2.5 rounded-lg p-2 text-left text-[13px] font-normal text-ink hover:bg-secondary;
+  }
+  .picker-item-active {
+    @apply bg-secondary;
+  }
+  .menu-label {
+    @apply px-2.5 pb-1 pt-2 text-[11px] font-medium text-placeholder;
+  }
+  .menu-sep {
+    @apply mx-1.5 my-1 h-px bg-line;
+  }
+  .panel-title {
+    @apply mb-2.5 text-[11px] font-semibold uppercase tracking-[.04em] text-placeholder;
+  }
+  .ico-stroke {
+    stroke: currentColor;
+    fill: none;
+    stroke-width: 1.75;
+  }
+  .ico-stroke-2 {
+    stroke: currentColor;
+    fill: none;
+    stroke-width: 2;
+  }
+}

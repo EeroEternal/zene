@@ -20,6 +20,14 @@ cd cloud
 ./scripts/dev.sh
 ```
 
+Web UI 源码在 `apps/web/`（Next.js + Tailwind CSS，静态导出）。修改后重新构建并提交 `dist/`：
+
+```bash
+cd cloud/apps/web
+npm install
+npm run build   # next build && 导出到 dist/（API 直接静态托管）
+```
+
 打开 http://127.0.0.1:8788/
 
 推荐演示路径：
