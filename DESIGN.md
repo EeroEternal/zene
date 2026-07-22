@@ -18,10 +18,6 @@
 - **Shadow**：卡片 / 弹窗 `shadow-sm`；backdrop `bg-black/50`，**无** blur
 - **Shell**：侧栏固定 **272px**（`#F4F5F6`）+ 白主区；中央主内容装在 `rounded-xl border shadow-sm` 卡片内（XEnsemble Sessions 终端卡位；Zene 用对话区替代终端）
 
-### Marketing（公开落地页）
-
-`www/`（及同步的 `web/` / `apps/web/` 副本）。可保留独立信息架构，但**视觉语言仍跟 Console**：浅底、zinc 边框、黑主按钮；**禁止**紫 / 靛营销渐变与深色霓虹终端皮肤。
-
 ### 非 Console 例外
 
 Login / Register 等公开认证页可用居中卡片（`max-w-sm`），仍用 Console token，勿引入另一套品牌色。
@@ -34,7 +30,6 @@ Login / Register 等公开认证页可用居中卡片（`max-w-sm`），仍用 C
 | 完整细则 | `docs/Designs.md` |
 | Local Agent UI | `apps/web-agent/index.html`（零构建，经 gateway `include_str!` 嵌入） |
 | Cloud Console | `cloud/apps/web/dist/index.html` |
-| Marketing | `www/`（源）；部署副本 `web/`、`apps/web/` 须同步 |
 | Morandi token 参考 | XEnsemble `web/src/lib/consoleTheme.js` |
 
 ## 核心原则
@@ -54,7 +49,7 @@ Console 在连接、会话切换、面板开关时**不得出现可感知的布�
 - 列表：Status / Actions 列宽固定；行内 loading 用同尺寸 spinner 原位替换
 - 动画：过渡 ≤ `150ms`；禁止用动画掩盖布局跳动
 
-## 配色（Console / Marketing chrome）
+## 配色（Console chrome）
 
 | 角色 | Token |
 |------|-------|

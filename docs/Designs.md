@@ -1,6 +1,6 @@
 # Zene UI Design
 
-**Console UI 完整规范**（根目录 [`DESIGN.md`](../DESIGN.md) 为 Agent/规则入口；本文为细则正文）。视觉与布局对齐 [XEnsemble DESIGN.md](https://github.com/ParaTensor/XEnsemble/blob/main/DESIGN.md) 与 XEnsemble `docs/Designs.md` 的 Console 面；产品语义按 Zene（本地 Agent / Cloud / 营销站）裁剪。
+**Console UI 完整规范**（根目录 [`DESIGN.md`](../DESIGN.md) 为 Agent/规则入口；本文为细则正文）。视觉与布局对齐 [XEnsemble DESIGN.md](https://github.com/ParaTensor/XEnsemble/blob/main/DESIGN.md) 与 XEnsemble `docs/Designs.md` 的 Console 面；产品语义按 Zene（本地 Agent / Cloud）裁剪。
 
 ## Surface：Console
 
@@ -12,12 +12,6 @@
 - **圆角**：控件 `6–8px`；卡片 / 弹窗 `8–12px`。
 - **壳层**：`h-screen` 横向两栏；主区纵向顶栏 + 内容；中央内容装圆角边框卡片。
 
-## Surface：Marketing
-
-落地页（`www/`）用同一套 zinc / 黑主操作语言：浅底、细边框、黑按钮、Inter。可用居中窄栏（约 660–720px）承载文档型内容；**禁止**紫渐变、暗色霓虹 mock、大圆角营销卡片堆叠。
-
-中间「产品示意」区展示 **Zene 对话卡**（对齐 Console 主卡），不要复刻旧版紫色 TUI 截图皮肤。
-
 ## 实现对照
 
 | 能力 | 位置 |
@@ -25,7 +19,6 @@
 | 规范入口 | `DESIGN.md` |
 | Local Agent | `apps/web-agent/index.html` |
 | Cloud | `cloud/apps/web/dist/index.html` |
-| Marketing | `www/index.html` + `www/styles.css`（同步到 `web/`、`apps/web/`） |
 
 ## 按钮
 
@@ -85,7 +78,7 @@
 - Thought：左边线 + 次要斜体字。
 - Tool / system：等宽、浅底卡片或居中 meta，避免花哨色块。
 
-## 表格与列表（Marketing commands、Cloud 列表）
+## 表格与列表（Cloud 列表）
 
 - 一列一项；超出 `truncate` + `title`。
 - 边框 `#E8EAED`；表头次要色；行 hover `#FAFBFC`。
@@ -117,5 +110,4 @@
 
 - 紫色 / 靛色营销 accent（含 focus ring）
 - 深色渐变壳 + 霓虹描边作为 Console 默认主题
-- Marketing 大圆角英雄卡片、统计条、贴纸式 badge 堆叠进首屏（Console 更是禁止）
 - 每页面各自发明一套 CSS 变量主色

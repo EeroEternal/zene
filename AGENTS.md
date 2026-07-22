@@ -2,7 +2,7 @@
 
 ## Design
 
-UI 视觉与布局以根目录 [`DESIGN.md`](DESIGN.md) 为准；细则见 [`docs/Designs.md`](docs/Designs.md)（对齐 XEnsemble Console）。改 `apps/web-agent/`、`cloud/apps/web/`、`www/`（及 `web/` / `apps/web/` 副本）时必须遵守。
+UI 视觉与布局以根目录 [`DESIGN.md`](DESIGN.md) 为准；细则见 [`docs/Designs.md`](docs/Designs.md)（对齐 XEnsemble Console）。改 `apps/web-agent/`、`cloud/apps/web/` 时必须遵守。
 
 ### Icons
 
@@ -21,7 +21,7 @@ Zene is a local coding-agent product (workspace version in `Cargo.toml`). Primar
 - `zene-gateway` (`apps/gateway`): thin local HTTP gateway that spawns `zene acp` and serves the Web Agent UI via SSE + long-polling fallback (see `docs/WEB_AGENT_GATEWAY.md`)
 - Web Agent UI sources: `apps/web-agent/` (zero-build HTML embedded into the gateway)
 
-The `web/`, `www/`, and root `package.json` files are still mostly static-site copy stubs, not the Agent UI. At runtime the agent makes outbound HTTPS calls to an external LLM provider (OpenAI-compatible or Anthropic); nothing is self-hosted except the optional local gateway.
+Cloud Console UI is `cloud/apps/web/` (served by `zene-cloud-api`). Production deploy: GCP VM behind Cloudflare (`zene.run`); see `cloud/deploy/`. At runtime the agent makes outbound HTTPS calls to an external LLM provider (OpenAI-compatible or Anthropic); the optional local gateway (`zene-gateway`) is for single-machine Web Agent only.
 
 Gateway tests: `cargo test -p zene-gateway` (includes mock-ACP HTTP tests and a real `zene acp` smoke test that builds `zene` and uses an in-process mock LLM).
 

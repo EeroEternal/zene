@@ -62,7 +62,9 @@ export GITHUB_APP_PRIVATE_KEY_PATH=/path/to/key.pem
 export GITHUB_APP_SLUG=your-app-slug
 ```
 
-GitHub App 的 **Setup URL** 设为：`http://127.0.0.1:8788/api/v1/github/install/callback`
+GitHub App 的 **Setup URL** 设为：本地 `http://127.0.0.1:8788/api/v1/github/install/callback`；生产 `https://zene.run/api/v1/github/install/callback`。
+
+生产部署见 [`deploy/README.md`](deploy/README.md)。
 
 强制 mock：`export ZENE_CLOUD_GITHUB_MODE=mock`
 

@@ -19,7 +19,7 @@ cargo install --path apps/cli --locked
 Pre-built binaries are published on [GitHub Releases](https://github.com/ParaTensor/zene/releases) when a version tag (`v*`) is pushed. Each release includes `zene` and `zene-gateway` for Linux and macOS (x86_64 + Apple Silicon). Download install (no compile):
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/ParaTensor/zene/main/www/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/ParaTensor/zene/main/install-release.sh | bash
 ```
 
 Or run directly without installing:
@@ -135,9 +135,9 @@ cargo run -p zene-cli -- --yolo --sandbox-off
 
 `zene-gateway` is a thin local HTTP bridge: the Web UI prefers SSE and falls back to long-polling; the gateway speaks ACP NDJSON to a `zene acp` child process. Journals persist under `~/.zene/gateway` for restart/attach recovery. UI sources live in `apps/web-agent/`. See [docs/WEB_AGENT_GATEWAY.md](docs/WEB_AGENT_GATEWAY.md), [docs/GATEWAY_OPS.md](docs/GATEWAY_OPS.md), and [docs/TUI_MIGRATION.md](docs/TUI_MIGRATION.md).
 
-## Cloud Platform (experimental)
+## Cloud Platform
 
-Multi-user Cloud Agent control plane lives in [`cloud/`](cloud/). Current MVP includes auth, GitHub mock/live integration, worker + ACP/mock agent, approvals, files/diff, and draft PR via Git Broker:
+Multi-user Cloud Agent control plane lives in [`cloud/`](cloud/). Production: [https://zene.run](https://zene.run) (GCP + Cloudflare). Deploy notes: [`cloud/deploy/README.md`](cloud/deploy/README.md).
 
 ```bash
 cd cloud && ./scripts/dev.sh

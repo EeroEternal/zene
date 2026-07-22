@@ -1,0 +1,18 @@
+[Unit]
+Description=Zene Cloud Worker
+After=network.target zene-cloud-api.service
+Wants=zene-cloud-api.service
+
+[Service]
+Type=simple
+User=zene
+Group=zene
+EnvironmentFile=/etc/zene-cloud.env
+WorkingDirectory=/var/lib/zene-cloud
+ExecStart=/opt/zene-cloud/bin/zene-cloud-worker
+Restart=on-failure
+RestartSec=3
+LimitNOFILE=65535
+
+[Install]
+WantedBy=multi-user.target
