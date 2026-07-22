@@ -1,0 +1,57 @@
+let authToken = "";
+
+export function setToken(token: string) {
+  authToken = token;
+  if (typeof window !== "undefined") {
+    if (token) localStorage.setItem("zc.token", token);
+    else localStorage.removeItem("zc.token");
+  }
+}
+
+export function loadToken(): string {
+  if (typeof window !== "undefined") {
+    authToken = localStorage.getItem("zc.token") || "";
+  }
+  return authToken;
+}
+
+export async function api<T = unknown>(path: string, options: RequestInit = {}): Promise<T> {
+  const headers: Record<string, string> = {
+    "content-type": "application/json",
+    ...((options.headers as Record<string, string>) || {}),
+  };
+  if (authToken) headers.Authorization = `Bearer ${authToken}`;
+  const res = await fetch(path, { ...options, headers });
+  const text = await res.text();
+  let data: any = null;
+  if (text) {
+    try {
+      data = JSON.parse(text);
+    } catch {
+      data = { message: text };
+    }
+  }
+  if (!res.ok) {
+    const msg = (data && (data.message || data.error)) || res.statusText || "Request failed";
+    throw new Error(msg);
+  }
+  return data as T;
+}
+
+export function statusClass(status?: string): string {
+  return String(status || "")
+    .toLowerCase()
+    .replace(/\s+/g, "_");
+}
+
+const OK_STATUSES = ["running", "starting", "cloning", "provisioning", "queued", "completed"];
+const DANGER_STATUSES = ["failed", "timed_out"];
+const WARN_STATUSES = ["waiting_for_approval", "waiting_for_user"];
+
+export function statusTone(status?: string): "ok" | "warn" | "danger" | "idle" {
+  const s = statusClass(status);
+  if (OK_STATUSES.includes(s)) return "ok";
+  if (DANGER_STATUSES.includes(s)) return "danger";
+  if (WARN_STATUSES.includes(s)) return "warn";
+  return "idle";
+}
