@@ -16,7 +16,7 @@ use globset::GlobBuilder;
 #[cfg(not(any(target_os = "linux", target_os = "macos")))]
 use keel_core::backend_process_guard;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
-use keel_core::{backend_local_process, LocalProcessOptions};
+use keel_core::backend_local_process;
 use keel_core::{
     check_egress, ManagedProcess, NetworkPolicy, Space, SpaceHandle, SpawnRequest, StdioMode,
     TerminationReason,
@@ -178,11 +178,12 @@ impl LocalSandbox {
             });
         }
 
-        let policy = options::resolve_policy(&workdir, &opts)?;
+        let mut policy = options::resolve_policy(&workdir, &opts)?;
+        options::adapt_policy_for_keel_spawn(&mut policy);
         let network = policy.network.clone();
 
         #[cfg(any(target_os = "linux", target_os = "macos"))]
-        let backend = backend_local_process(LocalProcessOptions::default());
+        let backend = backend_local_process(options::local_process_options());
         #[cfg(not(any(target_os = "linux", target_os = "macos")))]
         let backend = backend_process_guard();
 

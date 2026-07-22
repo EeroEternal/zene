@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+### Changed
+- Bump Keel sandbox stack to `eero-keel-core` 0.0.15 (baseline credential denies, audit hash chain, Windows Job/AppContainer). On Linux, Zene strips Keel FS deny rules before `Space::create` to avoid Keel 0.0.15’s outer-`bwrap` + Landlock `pre_exec` userns failure; host `path_policy` still blocks credential reads.
+
 ## v0.1.7 (2026-07-20)
 
 Headless **Web Agent** becomes the default UI: local `zene-gateway` serves the browser UI over HTTP (long-polling + optional SSE), with `zene` / `zene web` as the launch entry. Releases and `www/install.sh` now ship both `zene` and `zene-gateway` binaries.
