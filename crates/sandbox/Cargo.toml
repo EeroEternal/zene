@@ -7,7 +7,7 @@ license.workspace = true
 [dependencies]
 anyhow.workspace = true
 async-trait.workspace = true
-eero-keel-core = "0.0.11"
+eero-keel-core = "0.0.15"
 globset = "0.4"
 regex.workspace = true
 serde.workspace = true

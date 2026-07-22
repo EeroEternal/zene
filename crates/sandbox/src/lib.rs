@@ -13,7 +13,6 @@ use std::time::Duration;
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use globset::GlobBuilder;
-#[cfg(not(any(target_os = "linux", target_os = "macos")))]
 use keel_core::backend_process_guard;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 use keel_core::{backend_local_process, LocalProcessOptions};
@@ -112,6 +111,25 @@ pub trait RemoteTerminal: Send + Sync {
     ) -> Result<ExecResult>;
 }
 
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn linux_or_macos_backend() -> std::sync::Arc<dyn keel_core::EnforceBackend> {
+    #[cfg(target_os = "linux")]
+    {
+        // Keel ≥0.0.12 always merges baseline credential denies. On Linux those
+        // need a working bubblewrap for kernel read-deny. `auto_bwrap=false` does
+        // not skip spawn-time wrapping when `bwrap` is on PATH, so fall back to
+        // the soft process-guard backend when Keel-style binds cannot run.
+        if !options::bubblewrap_usable_for_keel() {
+            tracing::warn!(
+                "bubblewrap unusable for Keel baseline denies; using process-guard backend \
+                 (host path_policy still enforced)"
+            );
+            return backend_process_guard();
+        }
+    }
+    backend_local_process(LocalProcessOptions::default())
+}
+
 #[derive(Clone)]
 pub struct LocalSandbox {
     workdir: PathBuf,
@@ -182,7 +200,7 @@ impl LocalSandbox {
         let network = policy.network.clone();
 
         #[cfg(any(target_os = "linux", target_os = "macos"))]
-        let backend = backend_local_process(LocalProcessOptions::default());
+        let backend = linux_or_macos_backend();
         #[cfg(not(any(target_os = "linux", target_os = "macos")))]
         let backend = backend_process_guard();
 
@@ -953,6 +971,22 @@ mod tests {
         fs::create_dir(&workspace).unwrap();
         let outside = root.path().join("outside.txt");
         let sandbox = LocalSandbox::with_keel(&workspace).await.unwrap();
+
+        // Soft process-guard fallback (no usable bwrap) cannot kernel-block shell
+        // redirects; host SpaceFs/policy still denies outside writes via check_fs.
+        if cfg!(target_os = "linux") && !options::bubblewrap_usable_for_keel() {
+            let denied = sandbox
+                .authorize_fs(&outside, true)
+                .await
+                .unwrap_err()
+                .to_string();
+            assert!(
+                denied.contains("denied") || denied.contains("Keel"),
+                "{denied}"
+            );
+            sandbox.shutdown().await.unwrap();
+            return;
+        }
 
         let command = format!("printf escaped > '{}'", outside.display());
         let result = sandbox.exec(&command, None, None).await.unwrap();

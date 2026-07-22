@@ -103,12 +103,13 @@ fn builtin_policy(profile: &str, workdir: &Path) -> Result<Policy> {
 }
 
 fn inject_default_secret_denies(policy: &mut Policy) {
-    // Linux Landlock read-deny for explicit deny paths requires bubblewrap. When it is
-    // missing, keep host-side `path_policy` protection and skip kernel deny injection so
-    // Space::create still succeeds.
-    if cfg!(target_os = "linux") && !bubblewrap_available() {
+    // Keel ≥0.0.12 already merges baseline credential/secret denies into built-in
+    // profiles. Keep a small Zene-specific deny (auth store) and any gaps, but skip
+    // extra kernel deny injection on Linux when bubblewrap is missing — host
+    // `path_policy` still protects agent Read/Write tools.
+    if cfg!(target_os = "linux") && !bubblewrap_usable_for_keel() {
         tracing::warn!(
-            "bubblewrap (bwrap) not found; credential denies are host path_policy only"
+            "bubblewrap unusable for Keel denies; extra credential denies are host path_policy only"
         );
         return;
     }
@@ -117,14 +118,8 @@ fn inject_default_secret_denies(policy: &mut Policy) {
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("/tmp"));
 
-    let absolute = [
-        home.join(".ssh"),
-        home.join(".gnupg"),
-        home.join(".aws"),
-        home.join(".azure"),
-        home.join(".config").join("gcloud"),
-        home.join(".zene").join("auth"),
-    ];
+    // Zene-specific path not covered by Keel baseline.
+    let absolute = [home.join(".zene").join("auth")];
     for path in absolute {
         if !policy
             .fs
@@ -134,20 +129,9 @@ fn inject_default_secret_denies(policy: &mut Policy) {
             policy.fs.push(FsRule::deny(path));
         }
     }
-
-    for pattern in ["**/.env", "**/.env.*", "**/*.pem", "**/*.key"] {
-        let path = PathBuf::from(pattern);
-        if !policy
-            .fs
-            .iter()
-            .any(|rule| rule.access == FsAccess::Deny && rule.glob && rule.path == path)
-        {
-            policy.fs.push(FsRule::deny_glob(path));
-        }
-    }
 }
 
-fn bubblewrap_available() -> bool {
+pub(crate) fn bubblewrap_available() -> bool {
     std::process::Command::new("bwrap")
         .arg("--version")
         .stdout(std::process::Stdio::null())
@@ -155,6 +139,56 @@ fn bubblewrap_available() -> bool {
         .status()
         .map(|status| status.success())
         .unwrap_or(false)
+}
+
+/// Whether Keel-style deny bind-overs can actually run on this host.
+///
+/// Keel baseline includes paths like `/etc/master.passwd` that may not exist;
+/// creating those mount points often fails in restricted CI/containers.
+pub(crate) fn bubblewrap_usable_for_keel() -> bool {
+    use std::os::unix::fs::PermissionsExt;
+
+    if !bubblewrap_available() {
+        return false;
+    }
+
+    let placeholder = std::env::temp_dir().join(format!(
+        "zene-bwrap-probe-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0)
+    ));
+    if std::fs::write(&placeholder, b"").is_err() {
+        return false;
+    }
+    let _ = std::fs::set_permissions(&placeholder, std::fs::Permissions::from_mode(0o000));
+
+    // Probe a missing absolute deny target similar to Keel baseline.
+    let ok = std::process::Command::new("bwrap")
+        .args([
+            "--bind",
+            "/",
+            "/",
+            "--dev-bind",
+            "/dev",
+            "/dev",
+            "--proc",
+            "/proc",
+            "--ro-bind",
+        ])
+        .arg(&placeholder)
+        .arg("/etc/master.passwd")
+        .args(["--", "true"])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map(|status| status.success())
+        .unwrap_or(false);
+    let _ = std::fs::set_permissions(&placeholder, std::fs::Permissions::from_mode(0o600));
+    let _ = std::fs::remove_file(&placeholder);
+    ok
 }
 
 fn apply_network_overrides(policy: &mut Policy, opts: &SandboxOptions) -> Result<()> {

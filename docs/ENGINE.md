@@ -121,7 +121,7 @@ Production entry points build `LocalSandbox::with_options` from config / CLI:
 | `strict` | workspace + system paths only | deny-all | Untrusted repos |
 | custom | from `~/.zene/sandbox.toml` | per profile | Keel `SandboxConfig` loader |
 
-Overrides: CLI `--sandbox` > `ZENE_SANDBOX` > `[sandbox] profile` in config. `allow_hosts` (config / `ZENE_SANDBOX_ALLOW_HOSTS`) turns network into an allowlist and is enforced for Bash children (Keel egress proxy) plus host tools (`FetchUrl`, `WebSearch`, HTTP MCP) via `LocalSandbox::authorize_egress`. Default credential denies (`~/.ssh`, `~/.gnupg`, `~/.aws`, `**/.env*`, `**/*.pem`, …) are injected into every non-`off` policy; host Read also uses `check_read_allowed`. File I/O prefers Keel `SpaceFs` when a space is active. `[sandbox] auto_allow_bash = true` skips Bash permission prompts while enforcement is on.
+Overrides: CLI `--sandbox` > `ZENE_SANDBOX` > `[sandbox] profile` in config. `allow_hosts` (config / `ZENE_SANDBOX_ALLOW_HOSTS`) turns network into an allowlist and is enforced for Bash children (Keel egress proxy) plus host tools (`FetchUrl`, `WebSearch`, HTTP MCP) via `LocalSandbox::authorize_egress`. Keel ≥0.0.12 merges baseline credential/secret denies into built-in profiles; Zene still denies `~/.zene/auth` and keeps host `path_policy` / `check_read_allowed`. On Linux, when Keel-style bubblewrap deny binds cannot run, Zene falls back to the soft process-guard backend. File I/O prefers Keel `SpaceFs` when a space is active. `[sandbox] auto_allow_bash = true` skips Bash permission prompts while enforcement is on.
 
 ## Permission modes (grok-aligned)
 

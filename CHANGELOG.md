@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+### Changed
+- Bump Keel (`eero-keel-core`) from `0.0.11` to `0.0.15` (baseline credential denies, audit hash chain, Windows Job/AppContainer). On Linux hosts where Keel-style bubblewrap deny binds cannot run, Zene soft-falls back to the process-guard backend while keeping host `path_policy`.
+
 ## v0.1.7 (2026-07-20)
 
 Headless **Web Agent** becomes the default UI: local `zene-gateway` serves the browser UI over HTTP (long-polling + optional SSE), with `zene` / `zene web` as the launch entry. Releases and `www/install.sh` now ship both `zene` and `zene-gateway` binaries.
