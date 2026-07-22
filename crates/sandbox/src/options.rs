@@ -1,6 +1,8 @@
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+use keel_core::LocalProcessOptions;
 use keel_core::{
     profile_read_only, profile_strict, profile_workspace, FsAccess, FsRule, NetworkPolicy,
     NetworkRule, Policy, SandboxConfig,
@@ -102,17 +104,39 @@ fn builtin_policy(profile: &str, workdir: &Path) -> Result<Policy> {
     }
 }
 
-fn inject_default_secret_denies(policy: &mut Policy) {
-    // Linux Landlock read-deny for explicit deny paths requires bubblewrap. When it is
-    // missing, keep host-side `path_policy` protection and skip kernel deny injection so
-    // Space::create still succeeds.
-    if cfg!(target_os = "linux") && !bubblewrap_available() {
-        tracing::warn!(
-            "bubblewrap (bwrap) not found; credential denies are host path_policy only"
-        );
-        return;
-    }
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+pub(crate) fn local_process_options() -> LocalProcessOptions {
+    LocalProcessOptions::default()
+}
 
+/// Keel 0.0.12–0.0.15 always outer-wraps with `bwrap` when FS deny rules exist
+/// (even if `auto_bwrap` is false), then applies Landlock in `pre_exec` on that
+/// bwrap process — which fails with `setting up uid map: Permission denied`.
+///
+/// On Linux, drop FS denies from the Keel policy so children use Landlock-only
+/// isolation. Credential gating stays on host [`crate::path_policy`]. Re-enable
+/// Keel denies once Keel applies isolation *inside* the bwrap jail.
+#[cfg(target_os = "linux")]
+pub(crate) fn adapt_policy_for_keel_spawn(policy: &mut Policy) {
+    let before = policy.fs.len();
+    policy.fs.retain(|rule| rule.access != FsAccess::Deny);
+    if policy.fs.len() != before {
+        tracing::warn!(
+            removed = before - policy.fs.len(),
+            "stripped Keel FS deny rules on Linux (bwrap+Landlock pre_exec userns bug in eero-keel 0.0.15); host path_policy still denies credentials"
+        );
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+pub(crate) fn adapt_policy_for_keel_spawn(policy: &mut Policy) {
+    let _ = policy;
+}
+
+fn inject_default_secret_denies(policy: &mut Policy) {
+    // Keel ≥0.0.12 baseline already covers ~/.ssh, ~/.aws, **/.env*, **/*.pem, etc.
+    // Keep Zene-specific + overlapping denies for macOS Seatbelt / soft SpaceFs.
+    // Linux strips denies in [`adapt_policy_for_keel_spawn`] before Space::create.
     let home = std::env::var_os("HOME")
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("/tmp"));
@@ -145,16 +169,6 @@ fn inject_default_secret_denies(policy: &mut Policy) {
             policy.fs.push(FsRule::deny_glob(path));
         }
     }
-}
-
-fn bubblewrap_available() -> bool {
-    std::process::Command::new("bwrap")
-        .arg("--version")
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-        .map(|status| status.success())
-        .unwrap_or(false)
 }
 
 fn apply_network_overrides(policy: &mut Policy, opts: &SandboxOptions) -> Result<()> {
