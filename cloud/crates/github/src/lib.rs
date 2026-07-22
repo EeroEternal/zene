@@ -1,8 +1,8 @@
 //! GitHub OAuth + GitHub App helpers for Zene Cloud.
 //!
 //! Modes:
-//! - `mock` (default via `ZENE_CLOUD_GITHUB_MODE`): no real credentials required
-//! - `live`: uses env credentials against api.github.com
+//! - `live` (default via `ZENE_CLOUD_GITHUB_MODE`): OAuth + GitHub App; credentials from env or Settings UI (DB)
+//! - `mock`: no real credentials required
 
 mod app;
 mod client;
@@ -10,8 +10,8 @@ mod oauth;
 mod types;
 
 pub use app::{GithubAppAuth, InstallationToken};
-pub use client::GithubClient;
-pub use oauth::{OauthConfig, OauthTokens};
+pub use client::{AppInstallation, GithubClient};
+pub use oauth::{new_oauth_state, OauthConfig, OauthTokens};
 pub use types::{CreatePullRequestParams, GithubApiError, GithubConfig, ListedRepo};
 
 use anyhow::Result;

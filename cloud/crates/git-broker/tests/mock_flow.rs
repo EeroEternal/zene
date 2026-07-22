@@ -43,7 +43,7 @@ async fn mock_clone_push_and_draft_pr() {
             CreateRunRequest {
                 repository_id: repo.id,
                 prompt: "add feature".into(),
-                base_ref: "main".into(),
+                base_ref: Some("main".into()),
                 model: "default".into(),
                 permission_mode: "default".into(),
             },

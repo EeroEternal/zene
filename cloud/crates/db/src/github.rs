@@ -740,5 +740,240 @@ impl Db {
             created_at: now,
         })
     }
+
+    pub async fn get_github_provider_config(
+        &self,
+        organization_id: Uuid,
+    ) -> Result<Option<zene_cloud_domain::GithubProviderConfig>> {
+        use zene_cloud_domain::GithubMode;
+        let row: Option<(String, String, Option<String>, Option<String>, Option<String>, Option<String>, Option<String>, String)> =
+            sqlx::query_as(
+                "SELECT organization_id, mode, client_id, client_secret, app_id, app_private_key, app_slug, updated_at
+                 FROM github_provider_config WHERE organization_id = ?",
+            )
+            .bind(organization_id.to_string())
+            .fetch_optional(&self.pool)
+            .await?;
+        Ok(row.map(
+            |(organization_id, mode, client_id, client_secret, app_id, app_private_key, app_slug, updated_at)| {
+                zene_cloud_domain::GithubProviderConfig {
+                    organization_id: Uuid::parse_str(&organization_id).unwrap_or_else(|_| Uuid::nil()),
+                    mode: match mode.to_ascii_lowercase().as_str() {
+                        "mock" => GithubMode::Mock,
+                        _ => GithubMode::Live,
+                    },
+                    client_id,
+                    client_secret,
+                    app_id,
+                    app_private_key,
+                    app_slug,
+                    updated_at: parse_time(&updated_at),
+                }
+            },
+        ))
+    }
+
+    pub async fn upsert_github_provider_config(
+        &self,
+        organization_id: Uuid,
+        req: zene_cloud_domain::UpdateGithubProviderConfigRequest,
+    ) -> Result<zene_cloud_domain::GithubProviderConfig> {
+        use zene_cloud_domain::GithubMode;
+        let now = Utc::now();
+        let existing = self.get_github_provider_config(organization_id).await?;
+        let mode = req
+            .mode
+            .or_else(|| existing.as_ref().map(|c| c.mode))
+            .unwrap_or(GithubMode::Live);
+        let client_id = req
+            .client_id
+            .filter(|s| !s.trim().is_empty())
+            .or_else(|| existing.as_ref().and_then(|c| c.client_id.clone()));
+        let client_secret = req
+            .client_secret
+            .filter(|s| !s.trim().is_empty())
+            .or_else(|| existing.as_ref().and_then(|c| c.client_secret.clone()));
+        let app_id = req
+            .app_id
+            .filter(|s| !s.trim().is_empty())
+            .or_else(|| existing.as_ref().and_then(|c| c.app_id.clone()));
+        let app_private_key = req
+            .app_private_key
+            .filter(|s| !s.trim().is_empty())
+            .or_else(|| existing.as_ref().and_then(|c| c.app_private_key.clone()));
+        let app_slug = req
+            .app_slug
+            .filter(|s| !s.trim().is_empty())
+            .or_else(|| existing.as_ref().and_then(|c| c.app_slug.clone()));
+
+        if existing.is_some() {
+            sqlx::query(
+                "UPDATE github_provider_config
+                 SET mode = ?, client_id = ?, client_secret = ?, app_id = ?,
+                     app_private_key = ?, app_slug = ?, updated_at = ?
+                 WHERE organization_id = ?",
+            )
+            .bind(mode.as_str())
+            .bind(&client_id)
+            .bind(&client_secret)
+            .bind(&app_id)
+            .bind(&app_private_key)
+            .bind(&app_slug)
+            .bind(now.to_rfc3339())
+            .bind(organization_id.to_string())
+            .execute(&self.pool)
+            .await?;
+        } else {
+            sqlx::query(
+                "INSERT INTO github_provider_config
+                 (organization_id, mode, client_id, client_secret, app_id, app_private_key, app_slug, created_at, updated_at)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            )
+            .bind(organization_id.to_string())
+            .bind(mode.as_str())
+            .bind(&client_id)
+            .bind(&client_secret)
+            .bind(&app_id)
+            .bind(&app_private_key)
+            .bind(&app_slug)
+            .bind(now.to_rfc3339())
+            .bind(now.to_rfc3339())
+            .execute(&self.pool)
+            .await?;
+        }
+
+        Ok(zene_cloud_domain::GithubProviderConfig {
+            organization_id,
+            mode,
+            client_id,
+            client_secret,
+            app_id,
+            app_private_key,
+            app_slug,
+            updated_at: now,
+        })
+    }
+
+    /// Remove all mock GitHub data for an organization (live mode).
+    pub async fn purge_mock_github_data(&self, organization_id: Uuid) -> Result<()> {
+        sqlx::query(
+            "DELETE FROM pull_requests
+             WHERE repository_id IN (
+                 SELECT id FROM repositories
+                 WHERE organization_id = ? AND provider = 'github'
+                   AND (owner = 'mock-org' OR provider_repo_id IN ('9001', '9002'))
+             )",
+        )
+        .bind(organization_id.to_string())
+        .execute(&self.pool)
+        .await?;
+        sqlx::query(
+            "DELETE FROM git_operations
+             WHERE repository_id IN (
+                 SELECT id FROM repositories
+                 WHERE organization_id = ? AND provider = 'github'
+                   AND (owner = 'mock-org' OR provider_repo_id IN ('9001', '9002'))
+             )",
+        )
+        .bind(organization_id.to_string())
+        .execute(&self.pool)
+        .await?;
+        sqlx::query(
+            "DELETE FROM runs
+             WHERE repository_id IN (
+                 SELECT id FROM repositories
+                 WHERE organization_id = ? AND provider = 'github'
+                   AND (owner = 'mock-org' OR provider_repo_id IN ('9001', '9002'))
+             )",
+        )
+        .bind(organization_id.to_string())
+        .execute(&self.pool)
+        .await?;
+        sqlx::query(
+            "DELETE FROM repositories
+             WHERE organization_id = ? AND provider = 'github'
+               AND (owner = 'mock-org' OR provider_repo_id IN ('9001', '9002'))",
+        )
+        .bind(organization_id.to_string())
+        .execute(&self.pool)
+        .await?;
+        sqlx::query(
+            "DELETE FROM github_installations
+             WHERE organization_id = ? AND (installation_id = '10001' OR account_login = 'mock-org')",
+        )
+        .bind(organization_id.to_string())
+        .execute(&self.pool)
+        .await?;
+        sqlx::query(
+            "DELETE FROM github_accounts
+             WHERE user_id IN (
+                 SELECT user_id FROM organization_members WHERE organization_id = ?
+             )
+               AND (login = 'mock-user' OR github_user_id = '1001'
+                    OR access_token_enc LIKE 'mock_oauth%')",
+        )
+        .bind(organization_id.to_string())
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// Remove all mock GitHub artifacts across the database (live mode startup / migration).
+    pub async fn purge_all_mock_github_data(&self) -> Result<()> {
+        sqlx::query(
+            "DELETE FROM pull_requests
+             WHERE repository_id IN (
+                 SELECT id FROM repositories
+                 WHERE provider = 'github'
+                   AND (owner = 'mock-org' OR provider_repo_id IN ('9001', '9002'))
+             )",
+        )
+        .execute(&self.pool)
+        .await?;
+        sqlx::query(
+            "DELETE FROM git_operations
+             WHERE repository_id IN (
+                 SELECT id FROM repositories
+                 WHERE provider = 'github'
+                   AND (owner = 'mock-org' OR provider_repo_id IN ('9001', '9002'))
+             )",
+        )
+        .execute(&self.pool)
+        .await?;
+        sqlx::query(
+            "DELETE FROM runs
+             WHERE repository_id IN (
+                 SELECT id FROM repositories
+                 WHERE provider = 'github'
+                   AND (owner = 'mock-org' OR provider_repo_id IN ('9001', '9002'))
+             )",
+        )
+        .execute(&self.pool)
+        .await?;
+        sqlx::query(
+            "DELETE FROM repositories
+             WHERE provider = 'github'
+               AND (owner = 'mock-org' OR provider_repo_id IN ('9001', '9002'))",
+        )
+        .execute(&self.pool)
+        .await?;
+        sqlx::query(
+            "DELETE FROM github_installations
+             WHERE installation_id = '10001' OR account_login = 'mock-org'",
+        )
+        .execute(&self.pool)
+        .await?;
+        sqlx::query(
+            "DELETE FROM github_accounts
+             WHERE login = 'mock-user' OR github_user_id = '1001'
+               OR access_token_enc LIKE 'mock_oauth%'",
+        )
+        .execute(&self.pool)
+        .await?;
+        sqlx::query("DELETE FROM run_clone_credentials WHERE mock = 1")
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
 }
 

@@ -1,6 +1,6 @@
 //! Git Broker: short-lived clone credentials, bundle accept/push, draft PRs.
 //!
-//! Mock mode (`ZENE_CLOUD_GITHUB_MODE=mock`, default) never talks to GitHub and
+//! Mock mode (`ZENE_CLOUD_GITHUB_MODE=mock`) never talks to GitHub and
 //! records operations in SQLite with fake SHAs/URLs. Live mode uses installation
 //! tokens and a temporary git workdir for push.
 

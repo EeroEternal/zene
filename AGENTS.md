@@ -1,5 +1,9 @@
 # AGENTS.md
 
+## Design
+
+UI 视觉与布局以根目录 [`DESIGN.md`](DESIGN.md) 为准；细则见 [`docs/Designs.md`](docs/Designs.md)（对齐 XEnsemble Console）。改 `apps/web-agent/`、`cloud/apps/web/`、`www/`（及 `web/` / `apps/web/` 副本）时必须遵守。
+
 ## Cursor Cloud specific instructions
 
 Zene is a local coding-agent product (workspace version in `Cargo.toml`). Primary binaries:

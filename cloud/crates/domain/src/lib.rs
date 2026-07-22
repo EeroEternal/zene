@@ -164,15 +164,15 @@ pub struct RunMessage {
 pub struct CreateRunRequest {
     pub repository_id: Id,
     pub prompt: String,
-    #[serde(default = "default_base_ref")]
-    pub base_ref: String,
+    #[serde(default)]
+    pub base_ref: Option<String>,
     #[serde(default = "default_model")]
     pub model: String,
     #[serde(default = "default_permission_mode")]
     pub permission_mode: String,
 }
 
-fn default_base_ref() -> String {
+fn default_branch_name() -> String {
     "main".into()
 }
 
@@ -219,7 +219,7 @@ pub struct AuthResponse {
 pub struct CreateRepositoryRequest {
     pub owner: String,
     pub name: String,
-    #[serde(default = "default_base_ref")]
+    #[serde(default = "default_branch_name")]
     pub default_branch: String,
     pub clone_url: Option<String>,
 }
@@ -418,12 +418,12 @@ pub enum GithubMode {
 impl GithubMode {
     pub fn from_env() -> Self {
         match std::env::var("ZENE_CLOUD_GITHUB_MODE")
-            .unwrap_or_else(|_| "mock".into())
+            .unwrap_or_else(|_| "live".into())
             .to_ascii_lowercase()
             .as_str()
         {
-            "live" => Self::Live,
-            _ => Self::Mock,
+            "mock" => Self::Mock,
+            _ => Self::Live,
         }
     }
 
@@ -599,6 +599,14 @@ pub struct GithubRepoSummary {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct GithubBranchSummary {
+    pub name: String,
+    #[serde(default)]
+    pub default: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct GithubUser {
     pub id: String,
     pub login: String,
@@ -643,6 +651,43 @@ fn default_account_type() -> String {
 
 fn default_installation_status() -> String {
     "active".into()
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GithubProviderConfig {
+    pub organization_id: Id,
+    pub mode: GithubMode,
+    pub client_id: Option<String>,
+    pub client_secret: Option<String>,
+    pub app_id: Option<String>,
+    pub app_private_key: Option<String>,
+    pub app_slug: Option<String>,
+    pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GithubProviderConfigView {
+    pub mode: GithubMode,
+    pub configured: bool,
+    pub client_id: Option<String>,
+    pub has_client_secret: bool,
+    pub app_id: Option<String>,
+    pub has_app_private_key: bool,
+    pub app_slug: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateGithubProviderConfigRequest {
+    #[serde(default)]
+    pub mode: Option<GithubMode>,
+    pub client_id: Option<String>,
+    pub client_secret: Option<String>,
+    pub app_id: Option<String>,
+    pub app_private_key: Option<String>,
+    pub app_slug: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

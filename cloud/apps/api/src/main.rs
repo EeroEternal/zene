@@ -14,7 +14,7 @@ use tower_http::services::ServeDir;
 use tower_http::trace::TraceLayer;
 use tracing_subscriber::EnvFilter;
 use zene_cloud_db::Db;
-use zene_cloud_git_broker::GitBroker;
+use zene_cloud_domain::GithubMode;
 use zene_cloud_github::GithubClient;
 
 use crate::state::AppState;
@@ -56,19 +56,21 @@ async fn main() -> Result<()> {
 
     let db = Db::connect(&cli.database_url).await?;
     db.migrate().await?;
+    if GithubMode::from_env() == GithubMode::Live {
+        db.purge_all_mock_github_data().await?;
+        tracing::info!("purged legacy mock GitHub data");
+    }
     db.ensure_dev_worker_token(&cli.worker_token).await?;
 
-    let github = zene_cloud_github::from_env().unwrap_or_else(|_| GithubClient::mock());
-    let git_broker = GitBroker::new(db.clone(), github.clone());
-
-    let state = AppState {
+    let github = zene_cloud_github::from_env()
+        .unwrap_or_else(|_| GithubClient::new(zene_cloud_github::GithubConfig::live_default()));
+    let state = AppState::new(
         db,
-        worker_token: cli.worker_token.clone(),
+        cli.worker_token.clone(),
         github,
-        git_broker,
-        workspace_root: cli.workspace_root.clone(),
-        public_base_url: cli.public_base_url.clone(),
-    };
+        cli.workspace_root.clone(),
+        cli.public_base_url.clone(),
+    );
 
     let api = routes::router(state);
     let app = api
@@ -84,7 +86,7 @@ async fn main() -> Result<()> {
     let listener = tokio::net::TcpListener::bind(cli.bind).await?;
     tracing::info!("zene-cloud-api listening on http://{}", cli.bind);
     tracing::info!(
-        github_mode = ?std::env::var("ZENE_CLOUD_GITHUB_MODE").unwrap_or_else(|_| "mock".into()),
+        github_mode = ?std::env::var("ZENE_CLOUD_GITHUB_MODE").unwrap_or_else(|_| "live".into()),
         "github + git broker ready"
     );
     axum::serve(listener, app).await?;

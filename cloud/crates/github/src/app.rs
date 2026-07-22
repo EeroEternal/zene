@@ -121,4 +121,26 @@ impl GithubAppAuth {
             .as_ref()
             .map(|slug| format!("https://github.com/apps/{slug}/installations/new"))
     }
+
+    pub fn install_url_with_state(&self, state: &str) -> Option<String> {
+        self.app_slug.as_ref().map(|slug| {
+            format!(
+                "https://github.com/apps/{slug}/installations/new?state={}",
+                urlencoding(state)
+            )
+        })
+    }
+}
+
+fn urlencoding(value: &str) -> String {
+    let mut out = String::with_capacity(value.len());
+    for b in value.bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(b as char);
+            }
+            _ => out.push_str(&format!("%{b:02X}")),
+        }
+    }
+    out
 }

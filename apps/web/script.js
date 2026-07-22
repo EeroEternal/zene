@@ -1,8 +1,6 @@
-/* ═══════════════════════════════════════════════════════════════
-   zene.sh — Minimal interactive logic
-   ═══════════════════════════════════════════════════════════════ */
+/* zene.sh — Console design system interactions */
 
-(function() {
+(function () {
   'use strict';
 
   if (document.readyState === 'loading') {
@@ -12,37 +10,17 @@
   }
 
   function init() {
-    initTheme();
     initCopy();
   }
 
-  /* ── Theme ────────────────────────────────────────────────── */
-  function initTheme() {
-    var btn = document.getElementById('themeToggle');
-    var html = document.documentElement;
-    var saved = localStorage.getItem('zene-theme') || 'dark';
-    html.setAttribute('data-theme', saved);
-    btn.textContent = saved === 'dark' ? '◐' : '◑';
-
-    btn.addEventListener('click', function() {
-      var current = html.getAttribute('data-theme');
-      var next = current === 'dark' ? 'light' : 'dark';
-      html.setAttribute('data-theme', next);
-      localStorage.setItem('zene-theme', next);
-      btn.textContent = next === 'dark' ? '◐' : '◑';
-    });
-  }
-
-  /* ── Copy Button ──────────────────────────────────────────── */
   function initCopy() {
     var buttons = document.querySelectorAll('.copy-btn');
     for (var i = 0; i < buttons.length; i++) {
-      (function(btn) {
-        btn.addEventListener('click', function() {
+      (function (btn) {
+        btn.addEventListener('click', function () {
           var text = btn.getAttribute('data-copy');
-
           if (navigator.clipboard && navigator.clipboard.writeText) {
-            navigator.clipboard.writeText(text).then(function() {
+            navigator.clipboard.writeText(text).then(function () {
               showCopied(btn);
             });
           } else {
@@ -63,12 +41,9 @@
 
   function showCopied(btn) {
     var original = btn.textContent;
-    btn.textContent = 'Copied!';
-    btn.style.color = 'var(--accent)';
-    setTimeout(function() {
+    btn.textContent = 'Copied';
+    setTimeout(function () {
       btn.textContent = original;
-      btn.style.color = '';
     }, 1500);
   }
-
 })();

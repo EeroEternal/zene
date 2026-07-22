@@ -36,7 +36,7 @@ async fn register_create_run_and_claim() {
             CreateRunRequest {
                 repository_id: repo.id,
                 prompt: "hello cloud".into(),
-                base_ref: "main".into(),
+                base_ref: Some("main".into()),
                 model: "default".into(),
                 permission_mode: "default".into(),
             },

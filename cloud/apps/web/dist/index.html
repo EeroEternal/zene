@@ -4,48 +4,58 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Zene Cloud</title>
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=Sora:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
   <style>
     :root {
-      --bg: #0b0f14;
-      --bg-elev: #10161e;
-      --panel: #141b24;
-      --panel-2: #1a2330;
-      --panel-3: #212c3a;
-      --line: #2a3648;
-      --line-soft: #1f2a38;
-      --text: #e7eef8;
-      --muted: #8b9bb0;
-      --faint: #5e6e84;
-      --accent: #3ec6c9;
-      --accent-2: #4f8cff;
-      --accent-dim: rgba(62, 198, 201, 0.14);
-      --accent-border: rgba(62, 198, 201, 0.35);
-      --ok: #3ecf8e;
-      --warn: #e6b84d;
-      --danger: #f07178;
-      --user-bg: rgba(79, 140, 255, 0.12);
-      --shadow: 0 20px 60px rgba(0, 0, 0, 0.45);
-      --sans: "Sora", "Segoe UI", "PingFang SC", "Noto Sans SC", sans-serif;
-      --mono: "IBM Plex Mono", ui-monospace, Menlo, Consolas, monospace;
-      --radius: 12px;
-      --sidebar-w: 248px;
-      --inspector-w: 360px;
+      --canvas: #FFFFFF;
+      --secondary: #F4F5F6;
+      --tertiary: #FAFBFC;
+      --active: #E8EAED;
+      --ink: #202124;
+      --muted: #5F6368;
+      --placeholder: #9AA0A6;
+      --line: #E8EAED;
+      --line-strong: #DADCE0;
+      --ok: #4A7C59;
+      --ok-soft: #E8F5E9;
+      --warn: #E8B339;
+      --warn-soft: #FFF8E8;
+      --danger: #C06C5D;
+      --danger-soft: #FDECEA;
+      --bg: var(--canvas);
+      --bg-elev: var(--tertiary);
+      --panel: var(--canvas);
+      --panel-2: var(--secondary);
+      --panel-3: var(--active);
+      --line-soft: var(--line);
+      --text: var(--ink);
+      --faint: var(--placeholder);
+      --accent: var(--ink);
+      --accent-2: var(--ink);
+      --accent-dim: var(--active);
+      --accent-border: var(--line-strong);
+      --user-bg: var(--ink);
+      --shadow: 0 1px 2px rgba(32, 33, 36, .06);
+      --sans: Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      --mono: Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+      --radius: 8px;
+      --sidebar-w: 272px;
+      --inspector-w: 320px;
+      --transition: color .15s ease, background-color .15s ease, border-color .15s ease;
     }
 
     * { box-sizing: border-box; }
     html, body { height: 100%; margin: 0; }
     body {
       font-family: var(--sans);
-      color: var(--text);
-      background:
-        radial-gradient(900px 480px at 8% -8%, rgba(62, 198, 201, 0.12), transparent 55%),
-        radial-gradient(700px 420px at 92% 0%, rgba(79, 140, 255, 0.10), transparent 50%),
-        linear-gradient(180deg, #0d1218 0%, var(--bg) 40%);
+      color: var(--ink);
+      background: var(--canvas);
       overflow: hidden;
       -webkit-font-smoothing: antialiased;
+      font-size: 14px;
     }
     button, input, textarea, select { font: inherit; color: inherit; }
     button { cursor: pointer; }
@@ -56,84 +66,92 @@
       overflow: hidden; clip: rect(0,0,0,0); border: 0;
     }
 
-    /* —— Auth —— */
+    /* —— Auth (Login) —— */
     .auth {
       min-height: 100%;
       display: grid;
       place-items: center;
       padding: 28px 18px;
       overflow: auto;
+      background: var(--secondary);
     }
     .auth-card {
-      width: min(420px, 100%);
-      background: rgba(20, 27, 36, 0.92);
+      width: min(384px, 100%);
+      background: var(--canvas);
       border: 1px solid var(--line);
-      border-radius: 18px;
-      padding: 28px 26px 24px;
+      border-radius: 8px;
+      padding: 32px 28px 24px;
       box-shadow: var(--shadow);
-      backdrop-filter: blur(12px);
+      display: flex;
+      flex-direction: column;
+      gap: 0;
     }
     .auth-brand {
       display: flex; align-items: center; gap: 12px; margin-bottom: 18px;
+      justify-content: center; flex-direction: column; text-align: center;
     }
     .mark {
-      width: 34px; height: 34px; border-radius: 10px;
+      width: 40px; height: 40px; border-radius: 10px;
       display: grid; place-items: center;
-      background: linear-gradient(145deg, var(--accent), var(--accent-2));
-      color: #061018; font-weight: 700; font-size: 15px; letter-spacing: -0.02em;
-      box-shadow: 0 0 0 1px rgba(255,255,255,0.08), 0 8px 24px rgba(62,198,201,0.22);
+      background: var(--ink);
+      color: #fff; font-weight: 700; font-size: 16px;
     }
-    .auth-brand strong { font-size: 18px; letter-spacing: -0.02em; }
+    .auth-brand strong { font-size: 15px; font-weight: 600; }
     .auth-card h1 {
-      margin: 0 0 8px; font-size: 26px; letter-spacing: -0.03em; font-weight: 600;
+      margin: 0 0 6px; font-size: 20px; letter-spacing: -0.02em; font-weight: 700;
+      text-align: center; color: var(--ink);
     }
-    .auth-card .sub { margin: 0 0 20px; color: var(--muted); font-size: 14px; line-height: 1.5; }
+    .auth-card .sub {
+      margin: 0 0 20px; color: var(--muted); font-size: 13px; line-height: 1.5;
+      text-align: center;
+    }
     .auth-tabs { display: flex; gap: 8px; margin-bottom: 8px; }
     label.field-label {
-      display: block; font-size: 12px; color: var(--muted); margin: 12px 0 6px; font-weight: 500;
+      display: block; font-size: 11px; color: var(--muted); margin: 12px 0 6px;
+      font-weight: 600; letter-spacing: .04em; text-transform: uppercase;
     }
     input, textarea, select {
       width: 100%;
-      background: var(--panel-2);
-      border: 1px solid var(--line);
-      border-radius: 10px;
-      padding: 11px 12px;
+      background: var(--canvas);
+      border: 1px solid var(--line-strong);
+      border-radius: 6px;
+      padding: 9px 12px;
       outline: none;
-      transition: border-color .15s ease, background .15s ease;
+      transition: var(--transition);
+      color: var(--ink);
     }
     input:focus, textarea:focus, select:focus {
-      border-color: var(--accent-border);
-      background: var(--panel-3);
+      border-color: var(--ink);
+      box-shadow: 0 0 0 1px var(--ink);
     }
     textarea { resize: vertical; line-height: 1.5; }
-    .row { display: flex; gap: 10px; }
+    .row { display: flex; gap: 8px; }
     .row > * { flex: 1; min-width: 0; }
     .btn {
       border: 1px solid var(--line);
-      border-radius: 10px;
-      padding: 10px 14px;
-      background: var(--panel-2);
-      color: var(--text);
+      border-radius: 6px;
+      padding: 8px 12px;
+      background: var(--canvas);
+      color: var(--ink);
       font-weight: 500;
-      transition: background .12s ease, border-color .12s ease, transform .08s ease;
+      transition: var(--transition);
     }
-    .btn:hover { background: var(--panel-3); }
-    .btn:active { transform: translateY(1px); }
-    .btn:disabled { opacity: .5; cursor: not-allowed; transform: none; }
+    .btn:hover { background: var(--secondary); }
+    .btn:disabled { opacity: .4; cursor: not-allowed; }
     .btn.primary {
-      background: linear-gradient(145deg, #3ec6c9, #3a9ef0);
-      border: 0;
-      color: #061018;
-      font-weight: 650;
+      background: var(--ink);
+      border-color: var(--ink);
+      color: #fff;
     }
-    .btn.primary:hover { filter: brightness(1.05); background: linear-gradient(145deg, #45d0d3, #4aa8f5); }
+    .btn.primary:hover { background: #3c4043; border-color: #3c4043; }
     .btn.ghost { background: transparent; }
     .btn.danger {
       color: var(--danger);
-      border-color: rgba(240, 113, 120, 0.35);
-      background: rgba(240, 113, 120, 0.08);
+      border-color: #f0c9c4;
+      background: var(--canvas);
     }
-    .btn.sm { padding: 7px 10px; font-size: 12px; border-radius: 8px; }
+    .btn.danger:hover { background: var(--danger-soft); }
+    .btn.sm { padding: 6px 10px; font-size: 12px; }
     .btn.block { width: 100%; }
     .error {
       color: var(--danger); font-size: 13px; margin-top: 10px; min-height: 18px; line-height: 1.4;
@@ -145,121 +163,230 @@
       display: grid;
       grid-template-columns: var(--sidebar-w) minmax(0, 1fr);
       height: 100%;
+      background: var(--canvas);
     }
     .sidebar {
-      border-right: 1px solid var(--line-soft);
-      background: rgba(16, 22, 30, 0.96);
+      border-right: 1px solid var(--line);
+      background: var(--secondary);
       display: flex;
       flex-direction: column;
       min-height: 0;
+      user-select: none;
     }
-    .sidebar-top { padding: 14px 12px 8px; }
+    .sidebar-top { padding: 8px; border-bottom: 1px solid var(--line); }
     .brand {
       display: flex; align-items: center; gap: 10px;
-      padding: 6px 8px 14px;
+      padding: 8px 10px 12px;
     }
-    .brand strong { font-size: 14px; letter-spacing: -0.01em; }
-    .brand span { display: block; color: var(--faint); font-size: 11px; margin-top: 2px; font-weight: 400; }
+    .brand .mark { width: 28px; height: 28px; border-radius: 8px; font-size: 13px; }
+    .brand strong { font-size: 14px; letter-spacing: -0.01em; color: var(--ink); }
+    .brand span { display: block; color: var(--placeholder); font-size: 11px; margin-top: 2px; font-weight: 400; }
     .nav-btn {
       width: 100%;
       border: 0;
       background: transparent;
-      color: var(--text);
+      color: #3C4043;
       text-align: left;
-      border-radius: 10px;
-      padding: 10px 12px;
+      border-radius: 8px;
+      padding: 8px 10px;
+      margin-bottom: 2px;
+      font-weight: 500;
+      font-size: 13px;
+      transition: var(--transition);
+    }
+    .nav-btn:hover { background: var(--tertiary); color: var(--ink); }
+    .nav-btn.primary {
+      background: transparent;
+      border: 0;
       margin-bottom: 4px;
       font-weight: 500;
     }
-    .nav-btn:hover { background: var(--panel-2); }
-    .nav-btn.primary {
-      background: var(--accent-dim);
-      border: 1px solid var(--accent-border);
-      margin-bottom: 12px;
-      font-weight: 600;
-    }
+    .nav-btn.primary:hover { background: var(--tertiary); }
     .section-label {
-      color: var(--faint);
-      font-size: 11px;
-      letter-spacing: 0.08em;
-      text-transform: uppercase;
-      padding: 10px 12px 6px;
+      color: var(--placeholder);
+      font-size: 12px;
+      letter-spacing: 0;
+      text-transform: none;
+      padding: 10px 10px 4px;
       font-weight: 500;
     }
     .agent-scroll {
       flex: 1;
       overflow: auto;
-      padding: 0 12px 8px;
+      padding: 4px 8px 8px;
       min-height: 0;
     }
     .agent-item {
       width: 100%;
       border: 0;
       background: transparent;
-      color: var(--text);
+      color: var(--ink);
       text-align: left;
-      border-radius: 10px;
-      padding: 10px 12px;
+      border-radius: 8px;
+      padding: 8px 10px;
       margin-bottom: 2px;
+      font-size: 13px;
+      transition: var(--transition);
     }
-    .agent-item:hover { background: var(--panel-2); }
-    .agent-item.active {
-      background: var(--panel-2);
-      outline: 1px solid var(--line);
-    }
+    .agent-item:hover { background: var(--tertiary); }
+    .agent-item.active { background: var(--active); font-weight: 500; }
     .agent-item .title {
-      font-size: 13px; font-weight: 500;
+      font-size: 13px; font-weight: inherit;
       white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
     }
     .agent-item small {
-      display: block; color: var(--muted); margin-top: 4px; font-size: 11px;
+      display: block; color: var(--placeholder); margin-top: 2px; font-size: 10px;
     }
     .dot {
       display: inline-block; width: 6px; height: 6px; border-radius: 50%;
-      margin-right: 6px; background: var(--faint); vertical-align: middle;
+      margin-right: 6px; background: var(--placeholder); vertical-align: middle;
     }
-    .dot.running, .dot.starting, .dot.cloning, .dot.provisioning, .dot.queued { background: var(--ok); box-shadow: 0 0 8px rgba(62,207,142,.45); }
+    .dot.running, .dot.starting, .dot.cloning, .dot.provisioning, .dot.queued { background: var(--ok); }
     .dot.failed, .dot.timed_out { background: var(--danger); }
     .dot.waiting_for_approval, .dot.waiting_for_user { background: var(--warn); }
-    .dot.completed { background: var(--accent); }
-    .dot.cancelled { background: var(--faint); }
+    .dot.completed { background: var(--ok); }
+    .dot.cancelled { background: var(--placeholder); }
 
     .sidebar-foot {
-      border-top: 1px solid var(--line-soft);
-      padding: 12px;
-      font-size: 12px;
-      color: var(--muted);
+      position: relative;
+      border-top: 1px solid var(--line);
+      padding: 8px;
     }
-    .gh-box {
-      background: var(--panel);
-      border: 1px solid var(--line-soft);
-      border-radius: 10px;
-      padding: 10px 12px;
-      margin-bottom: 10px;
+    .userbox {
+      display: flex; align-items: center; gap: 8px;
+      width: 100%; padding: 6px 4px; border: 0; border-radius: 10px;
+      background: transparent; text-align: left; color: inherit;
     }
-    .gh-box .gh-title {
-      display: flex; align-items: center; justify-content: space-between; gap: 8px;
-      margin-bottom: 6px; color: var(--text); font-weight: 500; font-size: 12px;
+    .userbox:hover { background: var(--tertiary); }
+    .user-avatar {
+      width: 28px; height: 28px; border-radius: 999px; flex-shrink: 0;
+      display: grid; place-items: center;
+      background: var(--active); color: var(--ink);
+      font-size: 11px; font-weight: 600;
     }
-    .gh-box .gh-meta { color: var(--muted); font-size: 11px; line-height: 1.45; }
-    .userbox { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
-    .userbox .who { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .user-meta { flex: 1; min-width: 0; }
+    .user-meta .who {
+      color: var(--ink); font-weight: 600; font-size: 13px; line-height: 1.2;
+      overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    }
+    .user-meta .plan {
+      color: var(--placeholder); font-size: 11px; line-height: 1.2; margin-top: 1px;
+      overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    }
+    .foot-actions { display: flex; align-items: center; gap: 2px; flex-shrink: 0; }
+    .foot-icon {
+      display: inline-flex; align-items: center; justify-content: center;
+      width: 28px; height: 28px; padding: 0; border: 0; border-radius: 8px;
+      background: transparent; color: var(--muted);
+    }
+    .foot-icon:hover, .foot-icon.open { background: var(--active); color: var(--ink); }
+    .foot-icon svg { width: 16px; height: 16px; stroke: currentColor; fill: none; stroke-width: 1.75; }
+    .foot-icon svg.dots { fill: currentColor; stroke: none; }
+    .foot-menu {
+      position: absolute; left: 8px; right: 8px; bottom: calc(100% + 6px); z-index: 50;
+      background: var(--canvas); border: 1px solid var(--line);
+      border-radius: 12px; box-shadow: 0 8px 28px rgba(32, 33, 36, .12);
+      padding: 6px; overflow: hidden;
+    }
+    .foot-menu.hidden { display: none; }
+    .foot-menu .menu-head {
+      padding: 10px 10px 8px;
+    }
+    .foot-menu .menu-head .name {
+      font-size: 14px; font-weight: 600; color: var(--ink); line-height: 1.2;
+    }
+    .foot-menu .menu-head .email {
+      margin-top: 2px; font-size: 12px; color: var(--muted);
+      overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    }
+    .foot-menu .menu-label {
+      padding: 8px 10px 4px; font-size: 11px; font-weight: 500; color: var(--placeholder);
+    }
+    .foot-menu .menu-item {
+      display: flex; align-items: center; gap: 10px; width: 100%;
+      padding: 8px 10px; border: 0; border-radius: 8px; background: transparent;
+      color: var(--ink); font-size: 13px; text-align: left;
+    }
+    .foot-menu .menu-item:hover { background: var(--secondary); }
+    .foot-menu .menu-item svg.ico {
+      width: 16px; height: 16px; flex-shrink: 0; color: var(--muted);
+      stroke: currentColor; fill: none; stroke-width: 1.75;
+    }
+    .foot-menu .menu-item .text { flex: 1; min-width: 0; }
+    .foot-menu .menu-item .meta { color: var(--muted); font-size: 12px; }
+    .foot-menu .menu-item .check, .foot-menu .menu-item .chev-r {
+      width: 14px; height: 14px; flex-shrink: 0; color: var(--ink);
+      stroke: currentColor; fill: none; stroke-width: 2;
+    }
+    .foot-menu .menu-item .chev-r { color: var(--muted); }
+    .foot-menu .menu-sep { height: 1px; margin: 4px 6px; background: var(--line); }
+
+    /* —— Settings —— */
+    .settings-view {
+      max-width: 640px; margin: 0 auto; padding: 24px 20px 40px;
+    }
+    .settings-view h2 {
+      margin: 0 0 4px; font-size: 20px; font-weight: 700; letter-spacing: -0.02em;
+    }
+    .settings-view .settings-sub {
+      margin: 0 0 24px; color: var(--muted); font-size: 13px;
+    }
+    .settings-card {
+      background: var(--canvas); border: 1px solid var(--line);
+      border-radius: 12px; padding: 16px 18px; margin-bottom: 16px;
+    }
+    .settings-card h3 {
+      margin: 0 0 12px; font-size: 13px; font-weight: 600;
+      text-transform: uppercase; letter-spacing: .04em; color: var(--muted);
+    }
+    .settings-row {
+      display: flex; align-items: center; justify-content: space-between; gap: 12px;
+      padding: 10px 0; border-top: 1px solid var(--line);
+    }
+    .settings-row:first-of-type { border-top: 0; padding-top: 0; }
+    .settings-row:last-of-type { padding-bottom: 0; }
+    .settings-row .label { font-size: 13px; color: var(--ink); }
+    .settings-row .hint { font-size: 12px; color: var(--muted); margin-top: 2px; }
+    .settings-row .value { font-size: 13px; color: var(--muted); text-align: right; }
+    .settings-actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 12px; }
+    .settings-form { display: grid; gap: 10px; margin-top: 4px; }
+    .settings-form .field-label { margin: 0 0 4px; }
+    .settings-form textarea { min-height: 88px; font-family: var(--mono); font-size: 12px; }
+    .settings-form .hint-inline {
+      margin: 0; font-size: 12px; color: var(--muted); line-height: 1.45;
+    }
+    .settings-form code { font-size: 12px; }
+    .filter-submenu {
+      position: absolute; left: calc(100% + 6px); bottom: 0; z-index: 55;
+      min-width: 180px; max-width: 240px;
+      background: var(--canvas); border: 1px solid var(--line);
+      border-radius: 12px; box-shadow: 0 8px 28px rgba(32, 33, 36, .12);
+      padding: 6px; max-height: 280px; overflow: auto;
+    }
+    .filter-submenu.hidden { display: none; }
+    .sidebar-foot .foot-menu { overflow: visible; }
+    .agent-scroll.compact .agent-item { padding: 6px 8px; }
+    .agent-scroll.compact .agent-item small { display: none; }
+    .group-label {
+      padding: 10px 10px 4px; font-size: 11px; font-weight: 500; color: var(--placeholder);
+    }
 
     .main {
       display: grid;
-      grid-template-rows: 52px minmax(0, 1fr);
+      grid-template-rows: 48px minmax(0, 1fr);
       min-width: 0;
       min-height: 0;
+      background: var(--canvas);
     }
     .topbar {
       display: flex;
       align-items: center;
       justify-content: space-between;
       gap: 12px;
-      padding: 0 18px;
-      border-bottom: 1px solid var(--line-soft);
-      background: rgba(11, 15, 20, 0.72);
-      backdrop-filter: blur(12px);
+      padding: 0 20px;
+      border-bottom: 1px solid var(--line);
+      background: var(--canvas);
+      height: 48px;
     }
     .topbar-left {
       display: flex; align-items: center; gap: 10px; min-width: 0;
@@ -267,90 +394,261 @@
     .menu-toggle {
       display: none;
       border: 1px solid var(--line);
-      background: var(--panel);
-      border-radius: 8px;
-      width: 34px; height: 34px;
+      background: var(--canvas);
+      border-radius: 6px;
+      width: 32px; height: 32px;
       align-items: center; justify-content: center;
+      color: var(--muted);
     }
     #topTitle {
-      font-size: 14px; font-weight: 600; letter-spacing: -0.01em;
+      font-size: 15px; font-weight: 600;
       white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+      color: var(--ink);
     }
     .status-pill {
       font-size: 11px;
       color: var(--muted);
-      border: 1px solid var(--line);
-      border-radius: 999px;
-      padding: 4px 10px;
-      background: var(--panel);
-      font-family: var(--mono);
-      text-transform: lowercase;
+      border: 0;
+      border-radius: 6px;
+      padding: 2px 8px;
+      background: var(--secondary);
+      font-family: var(--sans);
+      text-transform: none;
       white-space: nowrap;
+      font-weight: 500;
     }
     .status-pill.running,
     .status-pill.starting,
     .status-pill.cloning,
     .status-pill.provisioning,
-    .status-pill.queued { color: var(--ok); border-color: rgba(62,207,142,.35); }
+    .status-pill.queued { color: var(--ok); background: var(--ok-soft); }
     .status-pill.failed,
-    .status-pill.timed_out { color: var(--danger); border-color: rgba(240,113,120,.35); }
+    .status-pill.timed_out { color: var(--danger); background: var(--danger-soft); }
     .status-pill.waiting_for_approval,
-    .status-pill.waiting_for_user { color: var(--warn); border-color: rgba(230,184,77,.35); }
-    .status-pill.completed { color: var(--accent); border-color: var(--accent-border); }
-    .content { min-height: 0; overflow: hidden; }
+    .status-pill.waiting_for_user { color: #8A6D1B; background: var(--warn-soft); }
+    .status-pill.completed { color: var(--ok); background: var(--ok-soft); }
+    .content { min-height: 0; overflow: hidden; background: var(--canvas); }
 
-    /* —— New Agent —— */
+    /* —— New Agent (Cursor-style) —— */
     .new-agent {
       height: 100%;
       overflow: auto;
       display: grid;
       place-items: center;
-      padding: 36px 20px;
+      padding: 32px 20px 48px;
+      background: var(--canvas);
     }
     .composer-shell {
+      position: relative;
       width: min(720px, 100%);
-      background: rgba(20, 27, 36, 0.88);
-      border: 1px solid var(--line);
-      border-radius: 18px;
-      padding: 28px 26px;
+      background: transparent;
+      border: 0;
+      border-radius: 0;
+      padding: 0;
+      box-shadow: none;
+    }
+    .project-bar {
+      display: flex; align-items: center; gap: 2px; flex-wrap: wrap;
+      margin-bottom: 8px; padding: 0 2px;
+    }
+    .branch-wrap { position: relative; }
+    .branch-wrap .picker-menu { left: 0; top: 32px; }
+    .chip {
+      display: inline-flex; align-items: center; gap: 5px; height: 28px;
+      padding: 0 8px; border: 0; border-radius: 6px; background: transparent;
+      color: var(--muted); font-size: 13px; font-weight: 500;
+    }
+    .chip:hover, .chip.open { background: var(--secondary); color: var(--ink); }
+    .chip:disabled { opacity: .45; cursor: not-allowed; }
+    .chip svg.chev {
+      width: 12px; height: 12px; stroke: currentColor; fill: none; stroke-width: 2; opacity: .7;
+    }
+    .chip svg.lead {
+      width: 14px; height: 14px; stroke: currentColor; fill: none; stroke-width: 1.75;
+    }
+    .chip .chip-label {
+      max-width: 180px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    }
+    .na-composer {
+      border: 1px solid var(--line-strong); border-radius: 14px;
+      background: var(--canvas); padding: 12px 12px 10px;
       box-shadow: var(--shadow);
     }
-    .composer-shell h2 {
-      margin: 0 0 6px;
-      font-size: 28px;
-      letter-spacing: -0.035em;
-      font-weight: 600;
-    }
-    .composer-shell .hint {
-      color: var(--muted);
-      margin: 0 0 20px;
-      font-size: 14px;
-      line-height: 1.5;
+    .na-composer:focus-within {
+      border-color: var(--line-strong); box-shadow: 0 0 0 1px var(--line-strong);
     }
     textarea.prompt {
-      min-height: 140px;
-      font-size: 15px;
-      line-height: 1.55;
+      display: block; width: 100%; min-height: 72px; max-height: 200px; resize: none;
+      padding: 2px 4px 10px; border: 0; outline: 0; background: transparent;
+      box-shadow: none; font-size: 14px; line-height: 1.5; color: var(--ink);
     }
-    .gh-panel {
-      margin-bottom: 16px;
-      padding: 12px 14px;
-      border: 1px solid var(--line-soft);
-      border-radius: 12px;
-      background: var(--bg-elev);
+    textarea.prompt:focus { outline: 0; box-shadow: none; border: 0; }
+    .na-actions {
+      display: flex; justify-content: space-between; align-items: center; gap: 8px;
     }
-    .gh-panel .row-top {
-      display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap;
+    .na-actions .left { display: flex; align-items: center; gap: 6px; min-width: 0; }
+    .icon-round {
+      display: inline-flex; align-items: center; justify-content: center;
+      width: 28px; height: 28px; padding: 0; border: 0; border-radius: 999px;
+      background: var(--secondary); color: var(--muted);
     }
-    .repo-list-mini {
-      margin-top: 10px;
-      max-height: 120px;
-      overflow: auto;
-      font-size: 12px;
-      color: var(--muted);
-      font-family: var(--mono);
+    .icon-round:hover, .icon-round.open { background: var(--active); color: var(--ink); }
+    .icon-round svg { width: 14px; height: 14px; stroke: currentColor; fill: none; stroke-width: 2; }
+    .attach-wrap { position: relative; }
+    .attach-menu {
+      position: absolute; left: 0; bottom: calc(100% + 8px); z-index: 45;
+      width: 200px; padding: 6px;
+      background: var(--canvas); border: 1px solid var(--line);
+      border-radius: 12px; box-shadow: 0 8px 28px rgba(32, 33, 36, .12);
     }
-    .repo-list-mini div { padding: 3px 0; }
+    .attach-menu.hidden { display: none; }
+    .attach-item {
+      display: flex; align-items: center; gap: 10px; width: 100%;
+      padding: 8px 10px; border: 0; border-radius: 8px; background: transparent;
+      color: var(--ink); font-size: 13px; text-align: left;
+    }
+    .attach-item:hover, .attach-item.active { background: var(--secondary); }
+    .attach-item svg.ico {
+      width: 16px; height: 16px; flex-shrink: 0; color: var(--muted);
+      stroke: currentColor; fill: none; stroke-width: 1.75;
+    }
+    .attach-item .text { flex: 1; min-width: 0; }
+    .attach-item .chev-r {
+      width: 14px; height: 14px; flex-shrink: 0; color: var(--muted);
+      stroke: currentColor; fill: none; stroke-width: 2;
+    }
+    .attach-flyout {
+      position: absolute; left: calc(100% + 6px); bottom: 0; z-index: 46;
+      width: 280px; padding: 0;
+      background: var(--canvas); border: 1px solid var(--line);
+      border-radius: 12px; box-shadow: 0 8px 28px rgba(32, 33, 36, .12);
+      overflow: hidden;
+    }
+    .attach-flyout.hidden { display: none; }
+    .attach-flyout .picker-search { border-bottom: 1px solid var(--line); }
+    .attach-flyout-body { max-height: 260px; overflow: auto; padding: 6px; }
+    .attach-flyout-foot {
+      border-top: 1px solid var(--line); padding: 6px;
+    }
+    .mcp-row {
+      display: flex; align-items: center; gap: 8px; width: 100%;
+      padding: 8px; border: 0; border-radius: 8px; background: transparent;
+      color: var(--ink); font-size: 13px; text-align: left;
+    }
+    .mcp-row:hover { background: var(--secondary); }
+    .mcp-ico {
+      position: relative; width: 22px; height: 22px; flex-shrink: 0;
+      border-radius: 6px; background: var(--secondary);
+      display: grid; place-items: center;
+    }
+    .mcp-ico svg {
+      width: 14px; height: 14px; stroke: currentColor; fill: none; stroke-width: 1.75; color: var(--muted);
+    }
+    .mcp-ico .dot {
+      position: absolute; right: -1px; bottom: -1px; width: 7px; height: 7px;
+      border-radius: 999px; border: 1.5px solid var(--canvas); background: #C4C7C5;
+    }
+    .mcp-ico .dot.on { background: var(--ok); }
+    .mcp-row .name {
+      flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    }
+    .mcp-login {
+      height: 22px; padding: 0 8px; border: 1px solid var(--line-strong);
+      border-radius: 6px; background: var(--canvas); color: var(--ink);
+      font-size: 11px; font-weight: 500;
+    }
+    .mcp-login:hover { background: var(--secondary); }
+    .toggle {
+      position: relative; width: 32px; height: 18px; flex-shrink: 0;
+      border: 0; border-radius: 999px; background: #DADCE0; padding: 0; cursor: pointer;
+    }
+    .toggle.on { background: var(--ok); }
+    .toggle::after {
+      content: ""; position: absolute; top: 2px; left: 2px;
+      width: 14px; height: 14px; border-radius: 999px; background: #fff;
+      transition: transform 120ms ease;
+    }
+    .toggle.on::after { transform: translateX(14px); }
+    @media (max-width: 720px) {
+      .attach-flyout {
+        left: 0; right: auto; bottom: calc(100% + 6px); width: min(280px, calc(100vw - 48px));
+      }
+    }
+    .model-chip {
+      display: inline-flex; align-items: center; gap: 4px; height: 28px;
+      padding: 0 8px; border: 0; border-radius: 6px; background: transparent;
+      color: var(--muted); font-size: 12.5px; font-weight: 500;
+    }
+    .model-chip:hover { background: var(--secondary); color: var(--ink); }
+    .model-chip svg { width: 12px; height: 12px; stroke: currentColor; fill: none; stroke-width: 2; }
+    .send-round {
+      display: inline-flex; align-items: center; justify-content: center;
+      width: 32px; height: 32px; padding: 0; border: 0; border-radius: 999px;
+      background: var(--ink); color: #fff;
+    }
+    .send-round:hover { background: #3c4043; }
+    .send-round:disabled { opacity: .35; cursor: not-allowed; }
+    .send-round svg { width: 16px; height: 16px; stroke: currentColor; fill: none; stroke-width: 2; }
+    .na-error {
+      margin-top: 10px; min-height: 18px; font-size: 12px; color: var(--danger);
+    }
+
+    .picker-menu {
+      position: absolute; left: 0; top: 36px; z-index: 40;
+      width: min(320px, calc(100vw - 48px));
+      background: var(--canvas); border: 1px solid var(--line);
+      border-radius: 12px; box-shadow: 0 8px 28px rgba(32, 33, 36, .12);
+      overflow: visible;
+    }
+    .picker-menu.hidden { display: none; }
+    .picker-search {
+      display: flex; align-items: center; gap: 8px; padding: 10px 12px;
+      border-bottom: 1px solid var(--line);
+    }
+    .picker-search svg {
+      width: 14px; height: 14px; flex-shrink: 0; color: var(--placeholder);
+      stroke: currentColor; fill: none; stroke-width: 1.75;
+    }
+    .picker-search input {
+      flex: 1; min-width: 0; padding: 0; border: 0; outline: 0; box-shadow: none;
+      font-size: 13px; background: transparent;
+    }
+    .picker-scroll { max-height: 340px; overflow: auto; padding: 6px; }
+    .picker-label {
+      padding: 8px 8px 4px; font-size: 11px; font-weight: 500; color: var(--placeholder);
+    }
+    .picker-item {
+      display: flex; align-items: center; gap: 10px; width: 100%;
+      padding: 8px; border: 0; border-radius: 8px; background: transparent;
+      color: var(--ink); font-size: 13px; font-weight: 400; text-align: left;
+    }
+    .picker-item:hover, .picker-item.active { background: var(--secondary); }
+    .picker-item svg.ico {
+      width: 16px; height: 16px; flex-shrink: 0; color: var(--muted);
+      stroke: currentColor; fill: none; stroke-width: 1.75;
+    }
+    .picker-item svg.ico-fill {
+      stroke: none; fill: currentColor;
+    }
+    .picker-item .text {
+      flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    }
+    .picker-item .check, .picker-item .chev-r {
+      width: 14px; height: 14px; flex-shrink: 0; color: var(--muted);
+      stroke: currentColor; fill: none; stroke-width: 2;
+    }
+    .picker-item .check { color: var(--ink); }
+    .picker-sep { height: 1px; margin: 4px 6px; background: var(--line); }
+    .picker-flyout {
+      position: absolute; left: calc(100% + 4px); bottom: 0; z-index: 41;
+      width: 220px; padding: 6px;
+      background: var(--canvas); border: 1px solid var(--line);
+      border-radius: 12px; box-shadow: 0 8px 28px rgba(32, 33, 36, .12);
+    }
+    .picker-flyout.hidden { display: none; }
+    @media (max-width: 720px) {
+      .picker-flyout { left: 8px; right: 8px; bottom: calc(100% + 4px); width: auto; }
+    }
 
     /* —— Run view —— */
     .run-view { height: 100%; }
@@ -358,12 +656,19 @@
       display: grid;
       grid-template-columns: minmax(0, 1fr) var(--inspector-w);
       height: 100%;
+      padding: 16px;
+      gap: 0;
+      background: var(--canvas);
     }
     .timeline {
       display: grid;
       grid-template-rows: minmax(0, 1fr) auto;
       min-width: 0;
-      border-right: 1px solid var(--line-soft);
+      border: 1px solid var(--line);
+      border-radius: 12px 0 0 12px;
+      box-shadow: var(--shadow);
+      background: var(--canvas);
+      overflow: hidden;
     }
     .messages {
       overflow: auto;
@@ -371,73 +676,92 @@
       display: flex;
       flex-direction: column;
       gap: 12px;
+      background: var(--canvas);
     }
     .bubble {
       max-width: min(780px, 92%);
-      border: 1px solid var(--line-soft);
-      background: var(--panel);
-      border-radius: 14px;
-      padding: 12px 14px;
+      border: 0;
+      background: transparent;
+      border-radius: 0;
+      padding: 0;
       white-space: pre-wrap;
       word-break: break-word;
       line-height: 1.55;
-      font-size: 14px;
-      animation: fadeUp .18s ease;
-    }
-    @keyframes fadeUp {
-      from { opacity: 0; transform: translateY(4px); }
-      to { opacity: 1; transform: none; }
+      font-size: 13.5px;
+      color: var(--ink);
     }
     .bubble.user {
       align-self: flex-end;
-      background: var(--user-bg);
-      border-color: rgba(79, 140, 255, 0.28);
+      background: var(--ink);
+      color: #fff;
+      border-radius: 12px 12px 4px 12px;
+      padding: 10px 14px;
+      max-width: 78%;
     }
-    .bubble.assistant { align-self: flex-start; }
+    .bubble.assistant {
+      align-self: flex-start;
+      padding-left: 36px;
+      position: relative;
+    }
+    .bubble.assistant::before {
+      content: "Z";
+      position: absolute;
+      left: 0; top: 0;
+      width: 26px; height: 26px;
+      border-radius: 7px;
+      background: var(--secondary);
+      color: var(--ink);
+      display: grid; place-items: center;
+      font-size: 12px; font-weight: 700;
+    }
     .bubble.tool, .bubble.system, .bubble.event {
       align-self: stretch;
       max-width: 100%;
+      margin-left: 36px;
       font-family: var(--mono);
-      font-size: 12px;
-      color: #c5d2e4;
-      background: rgba(16, 22, 30, 0.8);
+      font-size: 11px;
+      color: var(--muted);
+      background: var(--tertiary);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 10px 12px;
     }
     .bubble .meta {
-      color: var(--faint);
+      color: var(--placeholder);
       font-size: 10px;
       margin-bottom: 6px;
       text-transform: uppercase;
-      letter-spacing: 0.06em;
+      letter-spacing: 0.04em;
       font-family: var(--sans);
       font-weight: 600;
     }
     .approval-card {
       align-self: stretch;
       max-width: 100%;
-      border: 1px solid rgba(230, 184, 77, 0.4);
-      background: rgba(230, 184, 77, 0.08);
-      border-radius: 14px;
+      margin-left: 36px;
+      border: 1px solid #E8D5A8;
+      background: var(--warn-soft);
+      border-radius: 8px;
       padding: 14px;
-      animation: fadeUp .18s ease;
     }
     .approval-card h4 {
-      margin: 0 0 6px; font-size: 13px; font-weight: 600; color: var(--warn);
+      margin: 0 0 6px; font-size: 13px; font-weight: 600; color: #8A6D1B;
     }
     .approval-card .ap-body {
       font-size: 12px; color: var(--muted); font-family: var(--mono);
       white-space: pre-wrap; word-break: break-word;
       max-height: 160px; overflow: auto; margin-bottom: 12px;
-      background: rgba(0,0,0,.2); border-radius: 8px; padding: 10px;
+      background: var(--canvas); border: 1px solid var(--line); border-radius: 6px; padding: 10px;
     }
     .approval-card .ap-actions { display: flex; gap: 8px; flex-wrap: wrap; }
 
     .composer {
-      border-top: 1px solid var(--line-soft);
+      border-top: 1px solid var(--line);
       padding: 12px 14px;
       display: grid;
       grid-template-columns: 1fr auto;
       gap: 10px;
-      background: rgba(16, 22, 30, 0.9);
+      background: var(--canvas);
     }
     .composer textarea {
       min-height: 52px;
@@ -450,32 +774,39 @@
 
     .inspector {
       display: grid;
-      grid-template-rows: auto minmax(0, 1fr);
+      grid-template-rows: 48px minmax(0, 1fr);
       min-height: 0;
-      background: rgba(16, 22, 30, 0.55);
+      background: var(--canvas);
+      border: 1px solid var(--line);
+      border-left: 0;
+      border-radius: 0 12px 12px 0;
+      overflow: hidden;
     }
     .tabs {
       display: flex;
       gap: 4px;
-      padding: 12px 12px 0;
-      border-bottom: 1px solid var(--line-soft);
+      padding: 0 12px;
+      border-bottom: 1px solid var(--line);
       overflow-x: auto;
+      align-items: stretch;
+      height: 48px;
     }
     .tab {
       border: 0;
       background: transparent;
       color: var(--muted);
-      font-size: 12px;
+      font-size: 13px;
       font-weight: 500;
-      padding: 8px 12px 10px;
+      padding: 0 10px;
       border-bottom: 2px solid transparent;
       border-radius: 0;
       white-space: nowrap;
+      height: 100%;
     }
-    .tab:hover { color: var(--text); }
+    .tab:hover { color: var(--ink); }
     .tab.active {
-      color: var(--text);
-      border-bottom-color: var(--accent);
+      color: var(--ink);
+      border-bottom-color: var(--ink);
     }
     .tab-panels {
       overflow: auto;
@@ -485,9 +816,9 @@
     .panel-title {
       margin: 0 0 10px;
       font-size: 11px;
-      color: var(--faint);
+      color: var(--placeholder);
       text-transform: uppercase;
-      letter-spacing: 0.08em;
+      letter-spacing: 0.04em;
       font-weight: 600;
     }
     .kv {
@@ -502,7 +833,7 @@
     .kv code {
       font-size: 11px;
       word-break: break-all;
-      color: var(--text);
+      color: var(--ink);
     }
     .event-log {
       font-family: var(--mono);
@@ -512,9 +843,9 @@
       line-height: 1.45;
       max-height: 220px;
       overflow: auto;
-      background: var(--bg-elev);
-      border: 1px solid var(--line-soft);
-      border-radius: 10px;
+      background: var(--tertiary);
+      border: 1px solid var(--line);
+      border-radius: 8px;
       padding: 10px;
     }
     .file-list {
@@ -534,22 +865,22 @@
       text-overflow: ellipsis;
     }
     .file-item:hover, .file-item.active {
-      background: var(--panel-2);
-      color: var(--text);
+      background: var(--secondary);
+      color: var(--ink);
     }
-    .file-item.dir { color: var(--faint); cursor: default; }
+    .file-item.dir { color: var(--placeholder); cursor: default; }
     .file-view {
       margin-top: 12px;
-      background: var(--bg-elev);
-      border: 1px solid var(--line-soft);
-      border-radius: 10px;
+      background: var(--tertiary);
+      border: 1px solid var(--line);
+      border-radius: 8px;
       overflow: hidden;
     }
     .file-view .path {
       padding: 8px 10px;
       font-size: 11px;
       color: var(--muted);
-      border-bottom: 1px solid var(--line-soft);
+      border-bottom: 1px solid var(--line);
       font-family: var(--mono);
     }
     .file-view pre {
@@ -561,7 +892,7 @@
       max-height: 420px;
       white-space: pre-wrap;
       word-break: break-word;
-      color: #d5e0ef;
+      color: var(--ink);
     }
     .diff-view {
       font-family: var(--mono);
@@ -569,29 +900,29 @@
       line-height: 1.45;
       white-space: pre-wrap;
       word-break: break-word;
-      background: var(--bg-elev);
-      border: 1px solid var(--line-soft);
-      border-radius: 10px;
+      background: var(--tertiary);
+      border: 1px solid var(--line);
+      border-radius: 8px;
       padding: 10px;
-      color: #c8d4e6;
+      color: var(--ink);
       min-height: 80px;
     }
-    .diff-view .add { color: #6fdc9c; }
-    .diff-view .del { color: #f07178; }
-    .diff-view .hunk { color: var(--accent); }
+    .diff-view .add { color: var(--ok); }
+    .diff-view .del { color: var(--danger); }
+    .diff-view .hunk { color: var(--muted); }
     .pr-item {
-      border: 1px solid var(--line-soft);
-      border-radius: 10px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
       padding: 12px;
       margin-bottom: 10px;
-      background: var(--panel);
+      background: var(--canvas);
     }
-    .pr-item a { color: var(--accent-2); text-decoration: none; }
-    .pr-item a:hover { text-decoration: underline; }
+    .pr-item a { color: var(--ink); text-decoration: underline; text-underline-offset: 2px; }
+    .pr-item a:hover { color: var(--muted); }
     .pr-item .pr-title { font-size: 13px; font-weight: 600; margin-bottom: 4px; }
     .pr-item .pr-meta { font-size: 11px; color: var(--muted); font-family: var(--mono); }
     .empty {
-      color: var(--faint);
+      color: var(--placeholder);
       font-size: 13px;
       padding: 12px 0;
       line-height: 1.5;
@@ -601,25 +932,37 @@
     }
     .toast {
       position: fixed;
-      bottom: 20px;
-      right: 20px;
+      top: 16px;
+      left: 50%;
+      transform: translateX(-50%) translateY(-6px);
       z-index: 50;
-      background: var(--panel);
+      background: var(--canvas);
       border: 1px solid var(--line);
-      border-radius: 10px;
+      border-radius: 8px;
       padding: 10px 14px;
       font-size: 13px;
       box-shadow: var(--shadow);
       max-width: min(360px, calc(100vw - 40px));
-      animation: fadeUp .2s ease;
+      color: var(--ink);
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity .22s ease, transform .22s ease;
     }
-    .toast.error { border-color: rgba(240,113,120,.45); color: var(--danger); }
-    .toast.ok { border-color: rgba(62,207,142,.4); color: var(--ok); }
+    .toast.show {
+      opacity: 1;
+      transform: translateX(-50%) translateY(0);
+    }
+    .toast.hide {
+      opacity: 0;
+      transform: translateX(-50%) translateY(-6px);
+    }
+    .toast.error { border-color: #f0c9c4; color: var(--danger); background: var(--danger-soft); }
+    .toast.ok { border-color: #c8e6c9; color: var(--ok); background: var(--ok-soft); }
 
     .drawer-backdrop {
       display: none;
       position: fixed; inset: 0;
-      background: rgba(0,0,0,.45);
+      background: rgba(0,0,0,.5);
       z-index: 30;
     }
     .drawer-backdrop.show { display: block; }
@@ -629,20 +972,23 @@
       .sidebar {
         position: fixed;
         left: 0; top: 0; bottom: 0;
-        width: min(280px, 86vw);
+        width: min(272px, 86vw);
         z-index: 40;
         transform: translateX(-105%);
-        transition: transform .2s ease;
+        transition: transform .15s ease;
         box-shadow: var(--shadow);
       }
       .sidebar.open { transform: translateX(0); }
       .menu-toggle { display: inline-flex; }
-      .run-layout { grid-template-columns: 1fr; }
+      .run-layout { grid-template-columns: 1fr; padding: 8px; }
+      .timeline { border-radius: 12px 12px 0 0; }
       .inspector {
-        border-top: 1px solid var(--line-soft);
+        border-left: 1px solid var(--line);
+        border-top: 0;
+        border-radius: 0 0 12px 12px;
         max-height: 42vh;
       }
-      .composer-shell h2 { font-size: 22px; }
+      .composer-shell { width: 100%; }
     }
   </style>
 </head>
@@ -652,12 +998,10 @@
     <div class="auth-card">
       <div class="auth-brand">
         <div class="mark">Z</div>
-        <div>
-          <strong>Zene Cloud</strong>
-        </div>
+        <strong>Zene Cloud</strong>
       </div>
-      <h1 id="authHeading">Create account</h1>
-      <p class="sub">Cloud Agents that clone your repo, run in an isolated worker, and stream every step back.</p>
+      <h1 id="authHeading">Create an Account</h1>
+      <p class="sub">Sign in to manage cloud agents that clone your repo and stream every step back.</p>
       <div class="auth-tabs">
         <button class="btn" type="button" id="tabLogin">Log in</button>
         <button class="btn primary" type="button" id="tabRegister">Register</button>
@@ -690,21 +1034,64 @@
             <span>Cloud Agents</span>
           </div>
         </div>
-        <button class="nav-btn primary" type="button" id="btnNewAgent">＋ New Agent</button>
+        <button class="nav-btn primary" type="button" id="btnNewAgent">New Agent</button>
         <div class="section-label">Agents</div>
       </div>
       <div class="agent-scroll" id="agentList"></div>
-      <div class="sidebar-foot">
-        <div class="gh-box" id="ghSidebarBox">
-          <div class="gh-title">
-            <span>GitHub</span>
-            <span id="ghSidebarBadge" style="color:var(--faint)">—</span>
+      <div class="sidebar-foot" id="sidebarFoot">
+        <div class="userbox" id="userBox">
+          <div class="user-avatar" id="userAvatar">Z</div>
+          <div class="user-meta">
+            <div class="who" id="userLabel">—</div>
+            <div class="plan" id="userPlan">Cloud</div>
           </div>
-          <div class="gh-meta" id="ghSidebarMeta">Not connected</div>
+          <div class="foot-actions">
+            <button type="button" class="foot-icon" id="btnAccountMenu" title="Account" aria-label="Account" aria-haspopup="menu" aria-expanded="false">
+              <svg class="dots" viewBox="0 0 24 24" aria-hidden="true"><circle cx="5" cy="12" r="2"/><circle cx="12" cy="12" r="2"/><circle cx="19" cy="12" r="2"/></svg>
+            </button>
+            <button type="button" class="foot-icon" id="btnListMenu" title="Group & filter" aria-label="Group and filter" aria-haspopup="menu" aria-expanded="false">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M4 12h10M4 17h7"/></svg>
+            </button>
+          </div>
         </div>
-        <div class="userbox">
-          <div class="who" id="userLabel">—</div>
-          <button class="btn sm ghost" type="button" id="btnLogout">Log out</button>
+        <div id="accountMenu" class="foot-menu hidden" role="menu" aria-label="Account">
+          <div class="menu-head">
+            <div class="name" id="accountName">—</div>
+            <div class="email" id="accountEmail">—</div>
+          </div>
+          <div class="menu-sep"></div>
+          <button type="button" class="menu-item" data-account="settings">
+            <svg class="ico" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>
+            <span class="text">Settings</span>
+          </button>
+          <button type="button" class="menu-item" data-account="help">
+            <svg class="ico" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M9.5 9a2.5 2.5 0 1 1 3.8 2.1c-.8.5-1.3 1-1.3 2v.4"/><circle cx="12" cy="17" r=".8" fill="currentColor" stroke="none"/></svg>
+            <span class="text">Help</span>
+            <svg class="chev-r" viewBox="0 0 24 24"><path d="m9 6 6 6-6 6"/></svg>
+          </button>
+          <div class="menu-sep"></div>
+          <button type="button" class="menu-item" data-account="logout" id="btnLogout">
+            <svg class="ico" viewBox="0 0 24 24"><path d="M10 7V5a2 2 0 0 1 2-2h7v18h-7a2 2 0 0 1-2-2v-2"/><path d="M3 12h11M10 8l4 4-4 4"/></svg>
+            <span class="text">Log Out</span>
+          </button>
+        </div>
+        <div id="listMenu" class="foot-menu hidden" role="menu" aria-label="Group and filter">
+          <div class="menu-label">Group</div>
+          <button type="button" class="menu-item" data-group="project"><span class="text">Project</span></button>
+          <button type="button" class="menu-item" data-group="date"><span class="text">Date</span></button>
+          <button type="button" class="menu-item" data-group="status"><span class="text">Status</span></button>
+          <button type="button" class="menu-item" data-group="none"><span class="text">None</span></button>
+          <div class="menu-sep"></div>
+          <button type="button" class="menu-item" data-list="filter">
+            <span class="text">Filter</span>
+            <span class="meta" id="listFilterMeta">None</span>
+            <svg class="chev-r" viewBox="0 0 24 24"><path d="m9 6 6 6-6 6"/></svg>
+          </button>
+          <div id="filterSubmenu" class="filter-submenu hidden" role="menu" aria-label="Filter by project"></div>
+          <div class="menu-sep"></div>
+          <button type="button" class="menu-item" data-list="compact">
+            <span class="text">Compact</span>
+          </button>
         </div>
       </div>
     </aside>
@@ -721,39 +1108,180 @@
       <div class="content">
         <!-- New Agent -->
         <div id="newAgentView" class="new-agent">
-          <div class="composer-shell">
-            <h2>New Agent</h2>
-            <p class="hint">Connect GitHub, pick a repository, describe the task. A worker clones the repo and streams progress.</p>
-
-            <div class="gh-panel">
-              <div class="row-top">
-                <div>
-                  <div style="font-size:13px;font-weight:600" id="ghStatusTitle">GitHub</div>
-                  <div style="font-size:12px;color:var(--muted);margin-top:4px" id="ghStatusDetail">Checking…</div>
+          <div class="composer-shell" id="composerShell">
+            <div class="project-bar">
+              <button type="button" id="btnProject" class="chip" aria-haspopup="menu" aria-expanded="false" title="Select project">
+                <span class="chip-label" id="chipProject">Project</span>
+                <svg class="chev" viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg>
+              </button>
+              <div class="branch-wrap">
+                <button type="button" id="btnBranch" class="chip" aria-haspopup="menu" aria-expanded="false" title="Select branch" disabled>
+                  <span class="chip-label" id="chipBranch">—</span>
+                  <svg class="chev" viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg>
+                </button>
+                <div id="branchMenu" class="picker-menu hidden" role="menu">
+                  <div class="picker-search">
+                    <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
+                    <input id="branchSearch" type="search" placeholder="Find a branch…" autocomplete="off" />
+                  </div>
+                  <div class="picker-scroll" id="branchMenuBody"></div>
                 </div>
-                <button class="btn sm" type="button" id="btnConnectGithub">Connect GitHub (mock)</button>
               </div>
-              <div class="repo-list-mini" id="repoMiniList"></div>
             </div>
 
-            <label class="field-label" for="repoSelect">Repository</label>
-            <div class="row">
-              <select id="repoSelect"></select>
-              <button class="btn" type="button" id="btnRefreshRepos" title="Refresh repositories">↻</button>
+            <div id="projectMenu" class="picker-menu hidden" role="menu">
+              <div class="picker-search">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
+                <input id="projectSearch" type="search" placeholder="Search repos…" autocomplete="off" />
+              </div>
+              <div class="picker-scroll" id="projectMenuBody"></div>
             </div>
 
-            <label class="field-label" for="promptInput">Task</label>
-            <textarea class="prompt" id="promptInput" placeholder="Ask Zene to build, fix bugs, explore…"></textarea>
-
-            <div class="row" style="margin-top:14px">
-              <select id="permissionMode">
-                <option value="default">permission: default</option>
-                <option value="accept_edits">permission: accept_edits</option>
-                <option value="yolo">permission: yolo</option>
-              </select>
-              <button class="btn primary" type="button" id="btnStartRun">Start Agent</button>
+            <div class="na-composer">
+              <textarea class="prompt" id="promptInput" placeholder="Plan, Build, / for skills, @ for context" aria-label="Task prompt"></textarea>
+              <div class="na-actions">
+                <div class="left">
+                  <div class="attach-wrap" id="attachWrap">
+                    <button type="button" id="btnAttach" class="icon-round" title="Add" aria-label="Add" aria-haspopup="menu" aria-expanded="false">
+                      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
+                    </button>
+                    <div id="attachMenu" class="attach-menu hidden" role="menu" aria-label="Add">
+                      <button type="button" class="attach-item" data-attach="files">
+                        <svg class="ico" viewBox="0 0 24 24"><path d="m21.4 11.6-8.8 8.8a5 5 0 0 1-7.1-7.1l8.8-8.8a3.2 3.2 0 0 1 4.5 4.5l-8.5 8.5a1.4 1.4 0 0 1-2-2l7.8-7.8"/></svg>
+                        <span class="text">Files</span>
+                      </button>
+                      <button type="button" class="attach-item" data-attach="skills" data-flyout="skills">
+                        <svg class="ico" viewBox="0 0 24 24"><path d="M4 5h7v14l-3.5-2L4 19V5zM13 5h7v14l-3.5-2L13 19V5z"/></svg>
+                        <span class="text">Skills</span>
+                        <svg class="chev-r" viewBox="0 0 24 24"><path d="m9 6 6 6-6 6"/></svg>
+                      </button>
+                      <button type="button" class="attach-item" data-attach="mcp" data-flyout="mcp">
+                        <svg class="ico" viewBox="0 0 24 24"><path d="M9 7v4H7a2 2 0 0 0 0 4h2v2a2 2 0 0 0 4 0v-2h2a2 2 0 0 0 0-4h-2V7a2 2 0 0 0-4 0z"/><path d="M15 9h3M6 15H3"/></svg>
+                        <span class="text">MCP Servers</span>
+                        <svg class="chev-r" viewBox="0 0 24 24"><path d="m9 6 6 6-6 6"/></svg>
+                      </button>
+                      <div id="skillsFlyout" class="attach-flyout hidden" role="menu">
+                        <div class="attach-flyout-body" id="skillsFlyoutBody"></div>
+                      </div>
+                      <div id="mcpFlyout" class="attach-flyout hidden" role="menu">
+                        <div class="picker-search">
+                          <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
+                          <input id="mcpSearch" type="search" placeholder="Search MCP servers…" autocomplete="off" />
+                        </div>
+                        <div class="attach-flyout-body" id="mcpFlyoutBody"></div>
+                        <div class="attach-flyout-foot">
+                          <button type="button" class="attach-item" data-attach="add-mcp">
+                            <svg class="ico" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>
+                            <span class="text">Add MCP</span>
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                    <input id="attachFileInput" class="sr-only" type="file" multiple tabindex="-1" aria-hidden="true" />
+                  </div>
+                  <button type="button" id="btnModel" class="model-chip" title="Permission mode">
+                    <span id="modelLabel">default</span>
+                    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg>
+                  </button>
+                </div>
+                <button type="button" id="btnStartRun" class="send-round" title="Start agent" aria-label="Start agent">
+                  <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 19V5M5 12l7-7 7 7"/></svg>
+                </button>
+              </div>
             </div>
-            <div class="error" id="newError"></div>
+            <div class="na-error" id="newError"></div>
+
+            <!-- Legacy hooks kept for JS / API wiring -->
+            <select id="repoSelect" class="sr-only" tabindex="-1" aria-hidden="true"></select>
+            <select id="permissionMode" class="sr-only" tabindex="-1" aria-hidden="true">
+              <option value="default" selected>default</option>
+              <option value="accept_edits">accept_edits</option>
+              <option value="yolo">yolo</option>
+            </select>
+            <button type="button" id="btnConnectGithub" class="sr-only" tabindex="-1" aria-hidden="true">Connect</button>
+            <button type="button" id="btnRefreshRepos" class="sr-only" tabindex="-1" aria-hidden="true">Refresh</button>
+            <div id="ghStatusTitle" class="sr-only" aria-hidden="true"></div>
+            <div id="ghStatusDetail" class="sr-only" aria-hidden="true"></div>
+            <div id="repoMiniList" class="sr-only" aria-hidden="true"></div>
+          </div>
+        </div>
+
+        <!-- Settings -->
+        <div id="settingsView" class="settings-view hidden">
+          <h2>Settings</h2>
+          <p class="settings-sub">Account, integrations, and agent list preferences.</p>
+
+          <div class="settings-card">
+            <h3>Account</h3>
+            <div class="settings-row">
+              <div>
+                <div class="label">Name</div>
+                <div class="hint" id="settingsName">—</div>
+              </div>
+            </div>
+            <div class="settings-row">
+              <div>
+                <div class="label">Email</div>
+                <div class="hint" id="settingsEmail">—</div>
+              </div>
+            </div>
+            <div class="settings-row">
+              <div>
+                <div class="label">Organization</div>
+                <div class="hint" id="settingsOrg">—</div>
+              </div>
+            </div>
+          </div>
+
+          <div class="settings-card">
+            <h3>GitHub</h3>
+            <div class="settings-row">
+              <div>
+                <div class="label">Connection</div>
+                <div class="hint" id="settingsGhStatus">Not connected</div>
+              </div>
+            </div>
+            <div class="settings-row">
+              <div>
+                <div class="label">Account</div>
+                <div class="hint" id="settingsGhAccount">—</div>
+              </div>
+            </div>
+            <p class="hint-inline" id="settingsGhHint">Connect with your GitHub login.</p>
+            <div class="settings-actions">
+              <button type="button" class="btn primary sm" id="btnSettingsConnectGh">Connect GitHub</button>
+              <button type="button" class="btn sm hidden" id="btnSettingsSyncRepos">Sync repositories</button>
+            </div>
+            <div class="error" id="settingsGhError"></div>
+          </div>
+
+          <div class="settings-card">
+            <h3>Agent list</h3>
+            <div class="settings-row">
+              <div>
+                <div class="label">Group by</div>
+                <div class="hint" id="settingsGroupBy">Date</div>
+              </div>
+              <button type="button" class="btn sm" id="btnSettingsGroup">Change</button>
+            </div>
+            <div class="settings-row">
+              <div>
+                <div class="label">Filter</div>
+                <div class="hint" id="settingsFilter">None</div>
+              </div>
+              <button type="button" class="btn sm" id="btnSettingsFilter">Change</button>
+            </div>
+            <div class="settings-row">
+              <div>
+                <div class="label">Compact mode</div>
+                <div class="hint">Denser agent list in sidebar</div>
+              </div>
+              <button type="button" class="btn sm" id="btnSettingsCompact">Off</button>
+            </div>
+          </div>
+
+          <div class="settings-actions">
+            <button type="button" class="btn danger sm" id="btnSettingsLogout">Log out</button>
           </div>
         </div>
 
@@ -837,8 +1365,17 @@
       user: null,
       org: null,
       github: null,
-      githubMode: "mock",
+      githubMode: "live",
+      githubConnected: false,
+      githubConfigured: false,
+      githubInstallUrl: null,
+      githubInstallations: [],
+      githubDisplayLogin: null,
+      listRepoFilter: localStorage.getItem("zc.listRepoFilter") || "",
       repos: [],
+      selectedRepoId: localStorage.getItem("zc.repoId") || "",
+      branchesByRepoId: {},
+      branchLoading: false,
       runs: [],
       currentRun: null,
       currentRunId: null,
@@ -850,6 +1387,43 @@
       assistantBubble: null,
       activeTab: "overview",
       selectedFile: null,
+      attachPanel: null,
+      listGroup: localStorage.getItem("zc.listGroup") || "date",
+      listFilter: localStorage.getItem("zc.listFilter") || "none",
+      listCompact: localStorage.getItem("zc.listCompact") === "1",
+      skills: [
+        { id: "review", label: "Code review", insert: "/review " },
+        { id: "fix", label: "Fix bugs", insert: "/fix " },
+        { id: "test", label: "Add tests", insert: "/test " },
+        { id: "docs", label: "Write docs", insert: "/docs " },
+      ],
+      mcpServers: loadMcpServers(),
+    };
+
+    function loadMcpServers() {
+      try {
+        const raw = JSON.parse(localStorage.getItem("zc.mcpServers") || "null");
+        if (Array.isArray(raw) && raw.length) return raw;
+      } catch {}
+      return [
+        { id: "docs", name: "Docs", enabled: true, needsLogin: false },
+        { id: "github", name: "GitHub", enabled: true, needsLogin: false },
+        { id: "browser", name: "Browser", enabled: false, needsLogin: true },
+      ];
+    }
+    function saveMcpServers() {
+      localStorage.setItem("zc.mcpServers", JSON.stringify(state.mcpServers));
+    }
+
+    const ICO = {
+      repo: `<svg class="ico" viewBox="0 0 24 24"><path d="M4 4h12a2 2 0 0 1 2 2v14l-4-2-4 2-4-2-4 2V6a2 2 0 0 1 2-2z"/><path d="M8 8h6M8 12h6"/></svg>`,
+      branch: `<svg class="ico" viewBox="0 0 24 24"><circle cx="6" cy="6" r="2"/><circle cx="6" cy="18" r="2"/><circle cx="18" cy="12" r="2"/><path d="M6 8v8M8 18h8a2 2 0 0 0 2-2v-4"/></svg>`,
+      refresh: `<svg class="ico" viewBox="0 0 24 24"><path d="M20 12a8 8 0 1 1-2.3-5.7M20 4v5h-5"/></svg>`,
+      github: `<svg class="ico ico-fill" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.53-.49-.45-1.16-1.11-1.48-1.11-1.48-.91-.62-.07-.6.07-.6 1 .07 1.53 1.03 1.53 1.03.87 1.52 2.34 1.07 2.91.83.09-.65.35-1.09.63-1.34-2.22-.25-4.55-1.11-4.55-4.92 0-1.11.38-2 1.03-2.71-.1-.25-.45-1.29.1-2.64 0 0 .84-.27 2.75 1.02.79-.22 1.65-.33 2.5-.33.85 0 1.71.11 2.5.33 1.91-1.29 2.75-1.02 2.75-1.02.55 1.35.2 2.39.1 2.64.65.71 1.03 1.6 1.03 2.71 0 3.82-2.34 4.66-4.57 4.91.36.31.69.92.69 1.85V16c0 .27.18.58.67.49C13.71 14.53 16 11.54 16 8 16 3.58 12.42 0 8 0z"/></svg>`,
+      gitlab: `<svg class="ico" viewBox="0 0 24 24"><path d="M12 21 2.5 14.5l2-6.5L7 14h10l2.5-6 2 6.5L12 21zM7 14 9.5 3l2.5 7h0l2.5-7L17 14"/></svg>`,
+      check: `<svg class="check" viewBox="0 0 24 24"><path d="m5 12 5 5L20 7"/></svg>`,
+      ext: `<svg class="chev-r" viewBox="0 0 24 24"><path d="M7 17 17 7M9 7h8v8"/></svg>`,
+      plug: `<svg viewBox="0 0 24 24"><path d="M9 7v4H7a2 2 0 0 0 0 4h2v2a2 2 0 0 0 4 0v-2h2a2 2 0 0 0 0-4h-2V7a2 2 0 0 0-4 0z"/></svg>`,
     };
 
     const $ = (id) => document.getElementById(id);
@@ -862,12 +1436,27 @@
         .replaceAll('"', "&quot;");
     }
 
+    const TOAST_LIFE_MS = 4000;
+
+    function dismissToast(el) {
+      if (!el || el.dataset.dismissed) return;
+      el.dataset.dismissed = "1";
+      if (el._toastTimer) clearTimeout(el._toastTimer);
+      el.classList.remove("show");
+      el.classList.add("hide");
+      setTimeout(() => el.remove(), 240);
+    }
+
     function toast(message, kind = "") {
+      const host = $("toastHost");
+      host.querySelectorAll(".toast:not([data-dismissed])").forEach(dismissToast);
       const el = document.createElement("div");
       el.className = "toast " + kind;
       el.textContent = message;
-      $("toastHost").appendChild(el);
-      setTimeout(() => el.remove(), 3200);
+      el.setAttribute("role", "status");
+      host.appendChild(el);
+      requestAnimationFrame(() => el.classList.add("show"));
+      el._toastTimer = setTimeout(() => dismissToast(el), TOAST_LIFE_MS);
     }
 
     async function api(path, options = {}) {
@@ -921,9 +1510,195 @@
     function showApp() {
       $("authView").classList.add("hidden");
       $("appView").classList.remove("hidden");
-      const name = state.user?.displayName || state.user?.email || "User";
-      const org = state.org?.name || "";
-      $("userLabel").textContent = org ? `${name} · ${org}` : name;
+      updateUserChrome();
+      applyListChrome();
+    }
+
+    function userDisplayName() {
+      return state.user?.displayName || state.user?.email?.split("@")[0] || "User";
+    }
+
+    function userInitials(name) {
+      const parts = String(name || "U").trim().split(/\s+/).filter(Boolean);
+      if (parts.length >= 2) return (parts[0][0] + parts[1][0]).toUpperCase();
+      return String(parts[0] || "U").slice(0, 2).toUpperCase();
+    }
+
+    function updateUserChrome() {
+      const name = userDisplayName();
+      const email = state.user?.email || "";
+      const plan = state.org?.name || "Cloud";
+      $("userLabel").textContent = name;
+      $("userPlan").textContent = plan;
+      $("userAvatar").textContent = userInitials(name);
+      $("accountName").textContent = name;
+      $("accountEmail").textContent = email || "—";
+    }
+
+    function closeFootMenus() {
+      $("accountMenu").classList.add("hidden");
+      $("listMenu").classList.add("hidden");
+      $("filterSubmenu").classList.add("hidden");
+      $("btnAccountMenu").classList.remove("open");
+      $("btnListMenu").classList.remove("open");
+      $("btnAccountMenu").setAttribute("aria-expanded", "false");
+      $("btnListMenu").setAttribute("aria-expanded", "false");
+    }
+
+    function openAccountMenu() {
+      closeAttachMenu();
+      closeProjectMenu();
+      $("listMenu").classList.add("hidden");
+      $("btnListMenu").classList.remove("open");
+      $("btnListMenu").setAttribute("aria-expanded", "false");
+      $("accountMenu").classList.remove("hidden");
+      $("btnAccountMenu").classList.add("open");
+      $("btnAccountMenu").setAttribute("aria-expanded", "true");
+    }
+
+    function openListMenu() {
+      closeAttachMenu();
+      closeProjectMenu();
+      $("accountMenu").classList.add("hidden");
+      $("btnAccountMenu").classList.remove("open");
+      $("btnAccountMenu").setAttribute("aria-expanded", "false");
+      renderListMenu();
+      $("listMenu").classList.remove("hidden");
+      $("btnListMenu").classList.add("open");
+      $("btnListMenu").setAttribute("aria-expanded", "true");
+    }
+
+    function filterLabelText() {
+      if (state.listFilter === "project") {
+        if (state.listRepoFilter) {
+          const repo = state.repos.find((r) => r.id === state.listRepoFilter);
+          return repo ? `${repo.owner}/${repo.name}` : "Project";
+        }
+        const cur = selectedRepo();
+        return cur ? `${cur.owner}/${cur.name}` : "Current project";
+      }
+      return {
+        none: "None",
+        running: "Running",
+        completed: "Completed",
+        failed: "Failed",
+      }[state.listFilter] || "None";
+    }
+
+    function renderFilterSubmenu() {
+      const menu = $("filterSubmenu");
+      const statusOptions = [
+        { id: "none", label: "None" },
+        { id: "running", label: "Running" },
+        { id: "completed", label: "Completed" },
+        { id: "failed", label: "Failed" },
+      ];
+      let html = `<div class="menu-label">Status</div>`;
+      for (const opt of statusOptions) {
+        const on = state.listFilter === opt.id;
+        html += `<button type="button" class="menu-item" data-status-filter="${opt.id}">
+          <span class="text">${opt.label}</span>${on ? ICO.check : ""}
+        </button>`;
+      }
+      html += `<div class="menu-sep"></div><div class="menu-label">Project</div>`;
+      html += `<button type="button" class="menu-item" data-repo-filter="">
+        <span class="text">Current project</span>${state.listFilter === "project" && !state.listRepoFilter ? ICO.check : ""}
+      </button>`;
+      for (const repo of state.repos || []) {
+        const on = state.listFilter === "project" && state.listRepoFilter === repo.id;
+        html += `<button type="button" class="menu-item" data-repo-filter="${escapeHtml(repo.id)}">
+          <span class="text">${escapeHtml(`${repo.owner}/${repo.name}`)}</span>${on ? ICO.check : ""}
+        </button>`;
+      }
+      menu.innerHTML = html;
+    }
+
+    function setStatusFilter(filter) {
+      state.listFilter = filter;
+      state.listRepoFilter = "";
+      localStorage.setItem("zc.listFilter", state.listFilter);
+      localStorage.removeItem("zc.listRepoFilter");
+      renderListMenu();
+      renderSettingsChrome();
+      refreshRuns();
+    }
+
+    function renderListMenu() {
+      const check = ICO.check;
+      $("listMenu").querySelectorAll("[data-group]").forEach((el) => {
+        const on = el.dataset.group === state.listGroup;
+        el.querySelector(".check")?.remove();
+        if (on) el.insertAdjacentHTML("beforeend", check);
+      });
+      const compact = $("listMenu").querySelector('[data-list="compact"]');
+      compact.querySelector(".check")?.remove();
+      if (state.listCompact) compact.insertAdjacentHTML("beforeend", check);
+      $("listFilterMeta").textContent = filterLabelText();
+      renderFilterSubmenu();
+    }
+
+    function applyListChrome() {
+      $("agentList").classList.toggle("compact", state.listCompact);
+    }
+
+    function runTimestamp(run) {
+      const raw = run.updatedAt || run.createdAt || run.startedAt || "";
+      const t = Date.parse(raw);
+      return Number.isFinite(t) ? t : 0;
+    }
+
+    function groupKeyForRun(run) {
+      if (state.listGroup === "project") return repoLabel(run.repositoryId);
+      if (state.listGroup === "status") return run.status || "unknown";
+      if (state.listGroup === "date") {
+        const t = runTimestamp(run);
+        if (!t) return "Earlier";
+        const d = new Date(t);
+        const today = new Date();
+        const startToday = new Date(today.getFullYear(), today.getMonth(), today.getDate()).getTime();
+        const startYesterday = startToday - 86400000;
+        if (t >= startToday) return "Today";
+        if (t >= startYesterday) return "Yesterday";
+        return d.toLocaleDateString(undefined, { month: "short", day: "numeric" });
+      }
+      return "";
+    }
+
+    function filteredRuns() {
+      let runs = [...(state.runs || [])];
+      if (state.listFilter === "running") {
+        runs = runs.filter((r) => /running|starting|queued|cloning|provisioning|waiting/i.test(r.status || ""));
+      } else if (state.listFilter === "completed") {
+        runs = runs.filter((r) => /completed|success/i.test(r.status || ""));
+      } else if (state.listFilter === "failed") {
+        runs = runs.filter((r) => /failed|timed_out|cancelled/i.test(r.status || ""));
+      } else if (state.listFilter === "project") {
+        const repoId = state.listRepoFilter || state.selectedRepoId;
+        if (repoId) runs = runs.filter((r) => r.repositoryId === repoId);
+      }
+      runs.sort((a, b) => runTimestamp(b) - runTimestamp(a));
+      return runs;
+    }
+
+    function cycleListFilter() {
+      const order = ["none", "running", "completed", "failed", "project"];
+      const i = order.indexOf(state.listFilter);
+      state.listFilter = order[(i + 1) % order.length];
+      localStorage.setItem("zc.listFilter", state.listFilter);
+      renderListMenu();
+      renderSettingsChrome();
+      refreshRuns();
+    }
+
+    function setProjectFilter(repoId) {
+      state.listFilter = "project";
+      state.listRepoFilter = repoId || "";
+      localStorage.setItem("zc.listFilter", state.listFilter);
+      if (state.listRepoFilter) localStorage.setItem("zc.listRepoFilter", state.listRepoFilter);
+      else localStorage.removeItem("zc.listRepoFilter");
+      renderListMenu();
+      renderSettingsChrome();
+      refreshRuns();
     }
 
     function setAuthMode(mode) {
@@ -943,9 +1718,10 @@
         state.user = me.user;
         state.org = me.organization;
         state.github = me.github || null;
-        state.githubMode = me.githubMode || "mock";
+        state.githubMode = me.githubMode || "live";
+        state.githubConfigured = !!me.githubConfigured;
         showApp();
-        await Promise.all([refreshGithub(), refreshRepos(), refreshRuns()]);
+        await Promise.all([refreshGithubSettingsQuiet(), refreshGithub(), refreshRepos(), refreshRuns()]);
         showNewAgent();
       } catch {
         state.token = "";
@@ -954,45 +1730,523 @@
       }
     }
 
+    function selectedRepo() {
+      return state.repos.find((r) => r.id === state.selectedRepoId) || null;
+    }
+
+    function branchStorageKey(repoId) {
+      return `zc.branch.${repoId}`;
+    }
+
+    function selectedBranch() {
+      const repo = selectedRepo();
+      if (!repo) return "";
+      return localStorage.getItem(branchStorageKey(repo.id)) || repo.defaultBranch || "main";
+    }
+
+    function setSelectedBranch(branch) {
+      const repo = selectedRepo();
+      if (!repo || !branch) return;
+      localStorage.setItem(branchStorageKey(repo.id), branch);
+      updateProjectChrome();
+    }
+
+    function updateProjectChrome() {
+      const repo = selectedRepo();
+      $("chipProject").textContent = repo ? `${repo.owner}/${repo.name}` : "Project";
+      $("chipProject").title = repo ? `${repo.owner}/${repo.name}` : "Select project";
+      const branch = selectedBranch();
+      $("chipBranch").textContent = repo ? branch : "—";
+      $("chipBranch").title = repo ? `Base branch: ${branch}` : "Select branch";
+      $("btnBranch").disabled = !repo || state.branchLoading;
+      $("modelLabel").textContent = $("permissionMode").value || "default";
+      $("repoSelect").value = state.selectedRepoId || "";
+      syncStartEnabled();
+    }
+
+    function syncStartEnabled() {
+      const hasRepo = Boolean(state.selectedRepoId);
+      const hasPrompt = Boolean($("promptInput").value.trim());
+      $("btnStartRun").disabled = !(hasRepo && hasPrompt);
+    }
+
+    function selectRepo(repoId, { close = true } = {}) {
+      state.selectedRepoId = repoId || "";
+      if (state.selectedRepoId) localStorage.setItem("zc.repoId", state.selectedRepoId);
+      else localStorage.removeItem("zc.repoId");
+      closeBranchMenu();
+      updateProjectChrome();
+      if (close) closeProjectMenu();
+    }
+
+    function closeBranchMenu() {
+      branchPickerIndex = -1;
+      $("branchMenu").classList.add("hidden");
+      $("btnBranch").classList.remove("open");
+      $("btnBranch").setAttribute("aria-expanded", "false");
+    }
+
+    async function ensureBranches(force = false) {
+      const repo = selectedRepo();
+      if (!repo) return [];
+      if (!force && state.branchesByRepoId[repo.id]) {
+        return state.branchesByRepoId[repo.id];
+      }
+      state.branchLoading = true;
+      updateProjectChrome();
+      try {
+        const branches = (await api(`/api/v1/repositories/${repo.id}/branches`)) || [];
+        state.branchesByRepoId[repo.id] = branches;
+        const names = branches.map((b) => b.name);
+        const current = selectedBranch();
+        if (current && !names.includes(current)) {
+          const fallback = branches.find((b) => b.default)?.name || repo.defaultBranch || names[0] || "main";
+          setSelectedBranch(fallback);
+        }
+        return branches;
+      } finally {
+        state.branchLoading = false;
+        updateProjectChrome();
+      }
+    }
+
+    let branchPickerIndex = -1;
+
+    function filteredBranches() {
+      const repo = selectedRepo();
+      const branches = (repo && state.branchesByRepoId[repo.id]) || [];
+      const q = ($("branchSearch").value || "").trim().toLowerCase();
+      return branches.filter((b) => !q || b.name.toLowerCase().includes(q));
+    }
+
+    function getBranchItems() {
+      return Array.from($("branchMenuBody").querySelectorAll(".picker-item[data-branch]"));
+    }
+
+    function syncBranchPickerHighlight() {
+      const items = getBranchItems();
+      items.forEach((el, i) => el.classList.toggle("active", i === branchPickerIndex));
+      const active = items[branchPickerIndex];
+      if (active) active.scrollIntoView({ block: "nearest" });
+    }
+
+    function moveBranchPicker(step) {
+      const items = getBranchItems();
+      if (!items.length) return;
+      if (branchPickerIndex < 0) {
+        branchPickerIndex = step > 0 ? 0 : items.length - 1;
+      } else {
+        branchPickerIndex = (branchPickerIndex + step + items.length) % items.length;
+      }
+      syncBranchPickerHighlight();
+    }
+
+    function renderBranchMenu() {
+      const branches = filteredBranches();
+      const current = selectedBranch();
+      let html = `<div class="picker-label">Branches</div>`;
+      if (state.branchLoading) {
+        html += `<p style="padding:6px 8px;margin:0;font-size:12px;color:var(--muted)">Loading branches…</p>`;
+      } else if (!branches.length) {
+        html += `<p style="padding:6px 8px;margin:0;font-size:12px;color:var(--muted)">No branches found</p>`;
+      } else {
+        for (const b of branches) {
+          const selected = b.name === current;
+          const suffix = b.default ? `<span style="font-size:11px;color:var(--placeholder);margin-left:6px">default</span>` : "";
+          html += `<button type="button" class="picker-item" data-branch="${escapeHtml(b.name)}">
+            ${ICO.branch}<span class="text">${escapeHtml(b.name)}${suffix}</span>${selected ? ICO.check : ""}
+          </button>`;
+        }
+      }
+      $("branchMenuBody").innerHTML = html;
+      const items = getBranchItems();
+      if (!items.length) {
+        branchPickerIndex = -1;
+      } else {
+        if (branchPickerIndex >= items.length) branchPickerIndex = items.length - 1;
+        syncBranchPickerHighlight();
+      }
+    }
+
+    async function openBranchMenu() {
+      closeProjectMenu();
+      closeAttachMenu();
+      closeFootMenus();
+      branchPickerIndex = -1;
+      $("branchSearch").value = "";
+      $("branchMenu").classList.remove("hidden");
+      $("btnBranch").classList.add("open");
+      $("btnBranch").setAttribute("aria-expanded", "true");
+      renderBranchMenu();
+      try {
+        await ensureBranches();
+        renderBranchMenu();
+      } catch (err) {
+        toast(err.message, "error");
+        closeBranchMenu();
+        return;
+      }
+      setTimeout(() => $("branchSearch").focus(), 40);
+    }
+
+    function selectBranch(name, { close = true } = {}) {
+      if (!name) return;
+      setSelectedBranch(name);
+      if (close) closeBranchMenu();
+      else renderBranchMenu();
+    }
+
+    function closeProjectMenu() {
+      projectPickerIndex = -1;
+      $("projectMenu").classList.add("hidden");
+      $("btnProject").classList.remove("open");
+      $("btnProject").setAttribute("aria-expanded", "false");
+    }
+
+    function closeAttachMenu() {
+      $("attachMenu").classList.add("hidden");
+      $("skillsFlyout").classList.add("hidden");
+      $("mcpFlyout").classList.add("hidden");
+      $("btnAttach").classList.remove("open");
+      $("btnAttach").setAttribute("aria-expanded", "false");
+      state.attachPanel = null;
+      $("attachMenu").querySelectorAll(".attach-item.active").forEach((el) => el.classList.remove("active"));
+    }
+
+    function openAttachMenu() {
+      closeProjectMenu();
+      closeBranchMenu();
+      closeFootMenus();
+      $("attachMenu").classList.remove("hidden");
+      $("btnAttach").classList.add("open");
+      $("btnAttach").setAttribute("aria-expanded", "true");
+      showAttachPanel(null);
+    }
+
+    function showAttachPanel(panel) {
+      state.attachPanel = panel;
+      $("skillsFlyout").classList.toggle("hidden", panel !== "skills");
+      $("mcpFlyout").classList.toggle("hidden", panel !== "mcp");
+      $("attachMenu").querySelectorAll("[data-flyout]").forEach((el) => {
+        el.classList.toggle("active", el.dataset.flyout === panel);
+      });
+      if (panel === "skills") renderSkillsFlyout();
+      if (panel === "mcp") {
+        $("mcpSearch").value = "";
+        renderMcpFlyout();
+        setTimeout(() => $("mcpSearch").focus(), 40);
+      }
+    }
+
+    function renderSkillsFlyout() {
+      const body = $("skillsFlyoutBody");
+      body.innerHTML = state.skills.map((s) => `
+        <button type="button" class="attach-item" data-skill="${escapeHtml(s.id)}">
+          <span class="text">${escapeHtml(s.label)}</span>
+        </button>
+      `).join("");
+    }
+
+    function renderMcpFlyout() {
+      const q = ($("mcpSearch").value || "").trim().toLowerCase();
+      const list = state.mcpServers.filter((s) => !q || s.name.toLowerCase().includes(q));
+      const body = $("mcpFlyoutBody");
+      if (!list.length) {
+        body.innerHTML = `<p style="padding:8px;margin:0;font-size:12px;color:var(--muted)">No MCP servers</p>`;
+        return;
+      }
+      body.innerHTML = list.map((s) => `
+        <div class="mcp-row" data-mcp="${escapeHtml(s.id)}">
+          <span class="mcp-ico">${ICO.plug}<span class="dot ${s.enabled ? "on" : ""}"></span></span>
+          <span class="name">${escapeHtml(s.name)}</span>
+          ${s.needsLogin && !s.enabled ? `<button type="button" class="mcp-login" data-mcp-login="${escapeHtml(s.id)}">Login</button>` : ""}
+          <button type="button" class="toggle ${s.enabled ? "on" : ""}" data-mcp-toggle="${escapeHtml(s.id)}" aria-label="Toggle ${escapeHtml(s.name)}"></button>
+        </div>
+      `).join("");
+    }
+
+    function insertPromptText(text) {
+      const t = $("promptInput");
+      const start = t.selectionStart ?? t.value.length;
+      const end = t.selectionEnd ?? t.value.length;
+      const next = t.value.slice(0, start) + text + t.value.slice(end);
+      t.value = next;
+      const pos = start + text.length;
+      t.focus();
+      t.setSelectionRange(pos, pos);
+      t.dispatchEvent(new Event("input"));
+    }
+
+    let projectPickerIndex = -1;
+
+    function filteredProjectRepos() {
+      const q = ($("projectSearch").value || "").trim().toLowerCase();
+      return state.repos.filter((r) => {
+        if (!q) return true;
+        return `${r.owner}/${r.name}`.toLowerCase().includes(q);
+      }).slice(0, 20);
+    }
+
+    function getProjectRepoItems() {
+      return Array.from($("projectMenuBody").querySelectorAll(".picker-item[data-repo]"));
+    }
+
+    function syncProjectPickerHighlight() {
+      const items = getProjectRepoItems();
+      items.forEach((el, i) => el.classList.toggle("active", i === projectPickerIndex));
+      const active = items[projectPickerIndex];
+      if (active) active.scrollIntoView({ block: "nearest" });
+    }
+
+    function moveProjectPicker(step) {
+      const items = getProjectRepoItems();
+      if (!items.length) return;
+      if (projectPickerIndex < 0) {
+        projectPickerIndex = step > 0 ? 0 : items.length - 1;
+      } else {
+        projectPickerIndex = (projectPickerIndex + step + items.length) % items.length;
+      }
+      syncProjectPickerHighlight();
+    }
+
+    function openProjectMenu() {
+      closeAttachMenu();
+      closeFootMenus();
+      closeBranchMenu();
+      projectPickerIndex = -1;
+      $("projectSearch").value = "";
+      renderProjectMenu();
+      $("projectMenu").classList.remove("hidden");
+      $("btnProject").classList.add("open");
+      $("btnProject").setAttribute("aria-expanded", "true");
+      setTimeout(() => $("projectSearch").focus(), 40);
+    }
+
+    function renderProjectMenu() {
+      const q = ($("projectSearch").value || "").trim();
+      const repos = filteredProjectRepos();
+      let html = `<div class="picker-label">Repositories</div>`;
+      if (!repos.length) {
+        html += `<p style="padding:6px 8px;margin:0;font-size:12px;color:var(--muted)">${
+          state.githubConnected ? "No matching repositories" : "Connect GitHub to see repos"
+        }</p>`;
+      } else {
+        for (const r of repos) {
+          const label = `${r.owner}/${r.name}`;
+          const selected = r.id === state.selectedRepoId;
+          html += `<button type="button" class="picker-item" data-repo="${escapeHtml(r.id)}">
+            ${ICO.repo}<span class="text">${escapeHtml(label)}</span>${selected ? ICO.check : ""}
+          </button>`;
+        }
+      }
+      html += `<div class="picker-sep"></div>
+        <button type="button" class="picker-item" data-action="connect-github">${ICO.github}<span class="text">Connect GitHub</span>${ICO.ext}</button>
+        <button type="button" class="picker-item" data-action="connect-gitlab">${ICO.gitlab}<span class="text">Connect GitLab</span>${ICO.ext}</button>
+        <button type="button" class="picker-item" data-action="refresh-repos">${ICO.refresh}<span class="text">Refresh repos</span></button>`;
+      $("projectMenuBody").innerHTML = html;
+      const items = getProjectRepoItems();
+      if (!items.length) {
+        projectPickerIndex = -1;
+      } else {
+        if (projectPickerIndex >= items.length) projectPickerIndex = items.length - 1;
+        if (q && projectPickerIndex < 0) projectPickerIndex = 0;
+        syncProjectPickerHighlight();
+      }
+    }
+
+    async function loadGithubSettings() {
+      const data = await api("/api/v1/github/status");
+      applyGithubSettings(data);
+      return data;
+    }
+
+    function githubDisplayLogin() {
+      return (
+        state.githubDisplayLogin ||
+        state.github?.login ||
+        (state.githubInstallations || []).find((i) => i.accountLogin && i.accountLogin !== "mock-org")
+          ?.accountLogin ||
+        (state.githubInstallations || [])[0]?.accountLogin ||
+        null
+      );
+    }
+
+    function isGithubConnected() {
+      if (state.githubConnected) return true;
+      if (state.githubMode === "mock") {
+        return !!(state.githubInstallations || []).length || !!state.github;
+      }
+      return (state.githubInstallations || []).some(
+        (i) => i.accountLogin && i.accountLogin !== "mock-org"
+      );
+    }
+
+    function applyGithubSettings(data) {
+      state.githubMode = data.mode || "live";
+      state.githubConfigured = !!data.configured;
+      state.githubConnected = !!data.connected;
+      state.github = data.account || null;
+      state.githubInstallations = data.installations || [];
+      state.githubDisplayLogin = data.displayLogin || null;
+      if (data.connected) state.githubConnected = true;
+      renderSettingsChrome();
+    }
+
+    function openGithubConnectPopup(url, onComplete) {
+      const w = 960;
+      const h = 720;
+      const left = Math.max(0, Math.round((screen.width - w) / 2));
+      const top = Math.max(0, Math.round((screen.height - h) / 2));
+      const popup = window.open(
+        url,
+        "zene-github-connect",
+        `popup=yes,width=${w},height=${h},left=${left},top=${top}`
+      );
+      if (!popup) {
+        window.location.href = url;
+        return;
+      }
+      let done = false;
+      const finish = async () => {
+        if (done) return;
+        done = true;
+        clearInterval(timer);
+        window.removeEventListener("message", onMessage);
+        await onComplete?.();
+      };
+      const onMessage = (event) => {
+        if (event.origin !== location.origin) return;
+        if (event.data?.type !== "github-connected") return;
+        try {
+          popup.close();
+        } catch {}
+        finish();
+      };
+      window.addEventListener("message", onMessage);
+      const timer = setInterval(() => {
+        if (popup.closed) finish();
+      }, 500);
+    }
+
+    async function finishGithubConnect() {
+      await refreshGithub();
+      await refreshRepos();
+      renderSettingsChrome();
+      toast(`GitHub connected${githubDisplayLogin() ? ` · @${githubDisplayLogin()}` : ""}`, "ok");
+      if (!$("settingsView").classList.contains("hidden")) return;
+      openProjectMenu();
+    }
+
+    async function connectGithub() {
+      $("newError").textContent = "";
+      $("settingsGhError").textContent = "";
+      try {
+        if (state.githubMode === "mock") {
+          const res = await api("/api/v1/github/mock/connect", {
+            method: "POST",
+            body: "{}",
+          });
+          state.github = res.account || null;
+          state.githubConnected = true;
+          if (res.repositories) state.repos = res.repositories;
+          toast(`Connected as @${res.account?.login || "github"} (mock)`, "ok");
+          await refreshGithub();
+          await refreshRepos();
+          renderSettingsChrome();
+          if (!$("settingsView").classList.contains("hidden")) return;
+          openProjectMenu();
+          return;
+        }
+        const start = await api("/api/v1/github/connect/start");
+        if (start.installUrl) {
+          openGithubConnectPopup(start.installUrl, finishGithubConnect);
+          return;
+        }
+        throw new Error(start.hint || "GitHub connect is not available");
+      } catch (err) {
+        $("newError").textContent = err.message;
+        $("settingsGhError").textContent = err.message;
+        toast(err.message, "error");
+      }
+    }
+
+    async function syncGithubRepos({ silent = false } = {}) {
+      if (!silent) $("settingsGhError").textContent = "";
+      try {
+        const res = await api("/api/v1/github/sync", { method: "POST", body: "{}" });
+        if (res.repositories) state.repos = res.repositories;
+        await refreshRepos();
+        await refreshGithub();
+        renderSettingsChrome();
+        if (!silent) toast(`Synced ${state.repos.length} repositories`, "ok");
+      } catch (err) {
+        if (!silent || !$("settingsView").classList.contains("hidden")) {
+          $("settingsGhError").textContent = err.message;
+        }
+        if (!silent) toast(err.message, "error");
+      }
+    }
+
+    async function connectGithubFlow() {
+      closeProjectMenu();
+      await connectGithub();
+    }
+
     async function refreshGithub() {
       try {
         const st = await api("/api/v1/github/status");
         state.githubMode = st.mode || state.githubMode;
         state.github = st.account || null;
-        const connected = !!st.connected && !!st.account;
-        const login = st.account?.login;
-        $("ghSidebarBadge").textContent = connected ? "connected" : "offline";
-        $("ghSidebarBadge").style.color = connected ? "var(--ok)" : "var(--faint)";
-        $("ghSidebarMeta").textContent = connected
-          ? `@${login} · ${state.githubMode}`
-          : `Not connected · ${state.githubMode}`;
-        $("ghStatusTitle").textContent = connected
-          ? `GitHub · @${login}`
-          : "GitHub";
-        $("ghStatusDetail").textContent = connected
-          ? `Connected (${state.githubMode}). Repositories synced from installation.`
-          : state.githubMode === "mock"
-            ? "Mock mode: use Connect GitHub (mock) to attach a sample account and repos."
-            : "Connect your GitHub account to list repositories.";
-        $("btnConnectGithub").disabled = connected && state.githubMode === "mock";
-        $("btnConnectGithub").textContent = connected
-          ? "Connected"
-          : "Connect GitHub (mock)";
+        state.githubInstallations = st.installations || [];
+        state.githubInstallUrl = st.installUrl || null;
+        state.githubConfigured = !!st.configured;
+        state.githubDisplayLogin = st.displayLogin || null;
+        state.githubConnected =
+          !!st.connected ||
+          (state.githubMode === "live"
+            ? (st.installations || []).some((i) => i.accountLogin && i.accountLogin !== "mock-org")
+            : !!(st.installations || []).length);
+        const login = githubDisplayLogin();
+        $("ghStatusTitle").textContent = state.githubConnected ? `GitHub · @${login || "github"}` : "GitHub";
+        $("ghStatusDetail").textContent = state.githubConnected
+          ? `Connected (${state.githubMode})`
+          : "Not connected";
+        $("btnConnectGithub").disabled = state.githubConnected && state.githubMode === "mock";
+        $("btnConnectGithub").textContent = state.githubConnected ? "Connected" : "Connect GitHub";
+        updateProjectChrome();
+        if (
+          state.githubMode === "live" &&
+          st.account &&
+          !(state.repos || []).some((r) => r.owner && r.owner !== "mock-org") &&
+          (st.installations || []).some((i) => i.accountLogin && i.accountLogin !== "mock-org")
+        ) {
+          await syncGithubRepos({ silent: true });
+        }
+        renderSettingsChrome();
       } catch (err) {
-        $("ghStatusDetail").textContent = err.message;
+        if ($("ghStatusDetail")) $("ghStatusDetail").textContent = err.message;
+        if (!$("settingsView").classList.contains("hidden")) {
+          $("settingsGhError").textContent = err.message;
+        }
       }
+    }
+
+    async function refreshGithubSettingsQuiet() {
+      try {
+        await loadGithubSettings();
+      } catch {}
     }
 
     async function refreshRepos() {
       state.repos = (await api("/api/v1/repositories")) || [];
       const select = $("repoSelect");
-      const prev = select.value;
       select.innerHTML = "";
       if (!state.repos.length) {
         const opt = document.createElement("option");
         opt.value = "";
-        opt.textContent = "No repositories — connect GitHub first";
+        opt.textContent = "No repositories";
         select.appendChild(opt);
+        if (state.selectedRepoId) selectRepo("", { close: false });
       } else {
         for (const repo of state.repos) {
           const opt = document.createElement("option");
@@ -1000,38 +2254,41 @@
           opt.textContent = `${repo.owner}/${repo.name}`;
           select.appendChild(opt);
         }
-        if (prev && state.repos.some((r) => r.id === prev)) select.value = prev;
-      }
-      const mini = $("repoMiniList");
-      if (!state.repos.length) {
-        mini.innerHTML = `<div style="color:var(--faint)">No repositories yet</div>`;
-      } else {
-        mini.innerHTML = state.repos
-          .slice(0, 12)
-          .map(
-            (r) =>
-              `<div>${escapeHtml(r.owner)}/${escapeHtml(r.name)} <span style="color:var(--faint)">· ${escapeHtml(r.defaultBranch || "main")}</span></div>`
-          )
-          .join("");
-        if (state.repos.length > 12) {
-          mini.innerHTML += `<div style="color:var(--faint)">+${state.repos.length - 12} more</div>`;
+        if (!state.selectedRepoId || !state.repos.some((r) => r.id === state.selectedRepoId)) {
+          state.selectedRepoId = state.repos[0].id;
+          localStorage.setItem("zc.repoId", state.selectedRepoId);
         }
+        select.value = state.selectedRepoId;
       }
+      $("repoMiniList").innerHTML = "";
+      updateProjectChrome();
+      if (!$("projectMenu").classList.contains("hidden")) renderProjectMenu();
     }
 
     async function refreshRuns() {
       state.runs = (await api("/api/v1/runs")) || [];
       const list = $("agentList");
       list.innerHTML = "";
-      if (!state.runs.length) {
+      applyListChrome();
+      const runs = filteredRuns();
+      if (!runs.length) {
         const empty = document.createElement("div");
         empty.className = "empty";
         empty.style.padding = "8px 12px";
-        empty.textContent = "No agents yet";
+        empty.textContent = state.runs.length ? "No matching agents" : "No agents yet";
         list.appendChild(empty);
         return;
       }
-      for (const run of state.runs) {
+      let lastGroup = null;
+      for (const run of runs) {
+        const group = groupKeyForRun(run);
+        if (state.listGroup !== "none" && group && group !== lastGroup) {
+          const label = document.createElement("div");
+          label.className = "group-label";
+          label.textContent = group;
+          list.appendChild(label);
+          lastGroup = group;
+        }
         const btn = document.createElement("button");
         btn.type = "button";
         btn.className =
@@ -1053,12 +2310,61 @@
       state.assistantBubble = null;
       state.seenApprovals = new Set();
       $("newAgentView").classList.remove("hidden");
+      $("settingsView").classList.add("hidden");
       $("runView").classList.add("hidden");
       $("topTitle").textContent = "New Agent";
       setStatusPill($("topStatus"), "idle");
       refreshRuns();
       refreshGithub();
       refreshRepos();
+    }
+
+    async function showSettings() {
+      stopPolling();
+      closeDrawer();
+      closeFootMenus();
+      closeProjectMenu();
+      closeAttachMenu();
+      $("newAgentView").classList.add("hidden");
+      $("runView").classList.add("hidden");
+      $("settingsView").classList.remove("hidden");
+      $("topTitle").textContent = "Settings";
+      setStatusPill($("topStatus"), "idle");
+      $("settingsGhError").textContent = "";
+      try {
+        await refreshGithub();
+        await refreshRepos();
+      } catch (err) {
+        $("settingsGhError").textContent = err.message;
+      }
+      renderSettingsChrome();
+    }
+
+    function renderSettingsChrome() {
+      $("settingsName").textContent = userDisplayName();
+      $("settingsEmail").textContent = state.user?.email || "—";
+      $("settingsOrg").textContent = state.org?.name || "—";
+      const groupLabels = {
+        project: "Project",
+        date: "Date",
+        status: "Status",
+        none: "None",
+      };
+      $("settingsGroupBy").textContent = groupLabels[state.listGroup] || "Date";
+      $("settingsFilter").textContent = filterLabelText();
+      $("btnSettingsCompact").textContent = state.listCompact ? "On" : "Off";
+      const connected = isGithubConnected();
+      const displayLogin = githubDisplayLogin();
+      $("settingsGhStatus").textContent = connected
+        ? `Connected${displayLogin ? ` · @${displayLogin}` : ""}`
+        : "Not connected";
+      $("settingsGhAccount").textContent = displayLogin ? `@${displayLogin}` : "—";
+      $("settingsGhHint").textContent = connected
+        ? "Repositories sync from your GitHub App installation."
+        : "Opens github.com to authorize with your current GitHub session.";
+      $("btnSettingsConnectGh").textContent = connected ? "Manage on GitHub" : "Connect GitHub";
+      $("btnSettingsConnectGh").disabled = false;
+      $("btnSettingsSyncRepos").classList.toggle("hidden", !connected);
     }
 
     async function openRun(runId) {
@@ -1069,6 +2375,7 @@
       state.seenApprovals = new Set();
       state.selectedFile = null;
       $("newAgentView").classList.add("hidden");
+      $("settingsView").classList.add("hidden");
       $("runView").classList.remove("hidden");
       $("messages").innerHTML = "";
       $("eventLog").textContent = "";
@@ -1477,12 +2784,106 @@
       if (e.key === "Enter") $("authSubmit").click();
     });
 
-    $("btnLogout").onclick = () => {
+    function doLogout() {
+      closeFootMenus();
       state.token = "";
       localStorage.removeItem("zc.token");
       stopPolling();
       showAuth();
+    }
+    $("btnLogout").onclick = doLogout;
+
+    $("userBox").onclick = (e) => {
+      if (e.target.closest("#btnListMenu")) return;
+      e.stopPropagation();
+      if ($("accountMenu").classList.contains("hidden")) openAccountMenu();
+      else closeFootMenus();
     };
+    $("btnAccountMenu").onclick = (e) => {
+      e.stopPropagation();
+      if ($("accountMenu").classList.contains("hidden")) openAccountMenu();
+      else closeFootMenus();
+    };
+    $("btnListMenu").onclick = (e) => {
+      e.stopPropagation();
+      if ($("listMenu").classList.contains("hidden")) openListMenu();
+      else closeFootMenus();
+    };
+    $("accountMenu").addEventListener("click", (e) => {
+      e.stopPropagation();
+      const item = e.target.closest("[data-account]");
+      if (!item) return;
+      const action = item.dataset.account;
+      if (action === "logout") doLogout();
+      else if (action === "settings") {
+        closeFootMenus();
+        showSettings();
+      } else if (action === "help") {
+        closeFootMenus();
+        window.open("https://github.com/ParaTensor/zene", "_blank", "noopener");
+      }
+    });
+    $("listMenu").addEventListener("click", (e) => {
+      e.stopPropagation();
+      const group = e.target.closest("[data-group]");
+      if (group) {
+        state.listGroup = group.dataset.group;
+        localStorage.setItem("zc.listGroup", state.listGroup);
+        renderListMenu();
+        refreshRuns();
+        return;
+      }
+      const item = e.target.closest("[data-list]");
+      if (!item) return;
+      if (item.dataset.list === "filter") {
+        const submenu = $("filterSubmenu");
+        submenu.classList.toggle("hidden");
+        if (!submenu.classList.contains("hidden")) renderFilterSubmenu();
+        return;
+      }
+      if (item.dataset.list === "compact") {
+        state.listCompact = !state.listCompact;
+        localStorage.setItem("zc.listCompact", state.listCompact ? "1" : "0");
+        applyListChrome();
+        renderListMenu();
+      }
+    });
+    $("filterSubmenu").addEventListener("click", (e) => {
+      e.stopPropagation();
+      const status = e.target.closest("[data-status-filter]");
+      if (status) {
+        setStatusFilter(status.dataset.statusFilter);
+        $("filterSubmenu").classList.add("hidden");
+        return;
+      }
+      const item = e.target.closest("[data-repo-filter]");
+      if (!item) return;
+      setProjectFilter(item.dataset.repoFilter || "");
+      $("filterSubmenu").classList.add("hidden");
+    });
+
+    $("btnSettingsConnectGh").onclick = connectGithub;
+    $("btnSettingsSyncRepos").onclick = syncGithubRepos;
+    $("btnSettingsLogout").onclick = doLogout;
+    $("btnSettingsGroup").onclick = () => {
+      const order = ["date", "project", "status", "none"];
+      const i = order.indexOf(state.listGroup);
+      state.listGroup = order[(i + 1) % order.length];
+      localStorage.setItem("zc.listGroup", state.listGroup);
+      renderListMenu();
+      renderSettingsChrome();
+      refreshRuns();
+    };
+    $("btnSettingsFilter").onclick = cycleListFilter;
+    $("btnSettingsCompact").onclick = () => {
+      state.listCompact = !state.listCompact;
+      localStorage.setItem("zc.listCompact", state.listCompact ? "1" : "0");
+      applyListChrome();
+      renderListMenu();
+      renderSettingsChrome();
+    };
+
+    $("sidebarFoot").addEventListener("click", (e) => e.stopPropagation());
 
     $("btnNewAgent").onclick = () => {
       closeDrawer();
@@ -1491,25 +2892,7 @@
     $("btnMenu").onclick = openDrawer;
     $("drawerBackdrop").onclick = closeDrawer;
 
-    $("btnConnectGithub").onclick = async () => {
-      $("newError").textContent = "";
-      $("btnConnectGithub").disabled = true;
-      try {
-        const res = await api("/api/v1/github/mock/connect", {
-          method: "POST",
-          body: "{}",
-        });
-        state.github = res.account || null;
-        if (res.repositories) state.repos = res.repositories;
-        toast(`Connected as @${res.account?.login || "github"}`, "ok");
-        await refreshGithub();
-        await refreshRepos();
-      } catch (err) {
-        $("newError").textContent = err.message;
-        toast(err.message, "error");
-        $("btnConnectGithub").disabled = false;
-      }
-    };
+    $("btnConnectGithub").onclick = connectGithub;
 
     $("btnRefreshRepos").onclick = async () => {
       try {
@@ -1520,29 +2903,237 @@
       }
     };
 
+    $("btnProject").onclick = (e) => {
+      e.stopPropagation();
+      closeAttachMenu();
+      closeBranchMenu();
+      if ($("projectMenu").classList.contains("hidden")) openProjectMenu();
+      else closeProjectMenu();
+    };
+    $("btnBranch").onclick = async (e) => {
+      e.stopPropagation();
+      closeAttachMenu();
+      if (!selectedRepo()) return;
+      if ($("branchMenu").classList.contains("hidden")) await openBranchMenu();
+      else closeBranchMenu();
+    };
+    $("btnAttach").onclick = (e) => {
+      e.stopPropagation();
+      if ($("attachMenu").classList.contains("hidden")) openAttachMenu();
+      else closeAttachMenu();
+    };
+    $("btnModel").onclick = () => {
+      const modes = ["default", "accept_edits", "yolo"];
+      const cur = $("permissionMode").value;
+      const next = modes[(modes.indexOf(cur) + 1) % modes.length];
+      $("permissionMode").value = next;
+      $("modelLabel").textContent = next;
+    };
+    $("projectSearch").addEventListener("input", () => {
+      projectPickerIndex = -1;
+      renderProjectMenu();
+    });
+    $("projectSearch").addEventListener("keydown", (e) => {
+      if ($("projectMenu").classList.contains("hidden")) return;
+      if (e.key === "ArrowDown") {
+        e.preventDefault();
+        moveProjectPicker(1);
+        return;
+      }
+      if (e.key === "ArrowUp") {
+        e.preventDefault();
+        moveProjectPicker(-1);
+        return;
+      }
+      if (e.key === "Enter" && !e.isComposing) {
+        const item = getProjectRepoItems()[projectPickerIndex];
+        if (item?.dataset.repo) {
+          e.preventDefault();
+          selectRepo(item.dataset.repo);
+        }
+      }
+    });
+    $("branchSearch").addEventListener("input", () => {
+      branchPickerIndex = -1;
+      renderBranchMenu();
+    });
+    $("branchSearch").addEventListener("keydown", (e) => {
+      if ($("branchMenu").classList.contains("hidden")) return;
+      if (e.key === "ArrowDown") {
+        e.preventDefault();
+        moveBranchPicker(1);
+        return;
+      }
+      if (e.key === "ArrowUp") {
+        e.preventDefault();
+        moveBranchPicker(-1);
+        return;
+      }
+      if (e.key === "Enter" && !e.isComposing) {
+        const item = getBranchItems()[branchPickerIndex];
+        if (item?.dataset.branch) {
+          e.preventDefault();
+          selectBranch(item.dataset.branch);
+        }
+      }
+    });
+    $("branchMenuBody").addEventListener("click", (e) => {
+      const item = e.target.closest(".picker-item[data-branch]");
+      if (!item) return;
+      e.preventDefault();
+      e.stopPropagation();
+      selectBranch(item.dataset.branch);
+    });
+    $("projectMenuBody").addEventListener("click", async (e) => {
+      const item = e.target.closest(".picker-item");
+      if (!item) return;
+      e.preventDefault();
+      e.stopPropagation();
+      if (item.dataset.repo) {
+        selectRepo(item.dataset.repo);
+        return;
+      }
+      const action = item.dataset.action;
+      if (action === "connect-github") {
+        await connectGithubFlow();
+        return;
+      }
+      if (action === "connect-gitlab") {
+        toast("GitLab 关联即将支持，当前请用 GitHub", "ok");
+        return;
+      }
+      if (action === "refresh-repos") {
+        try {
+          await refreshRepos();
+          toast("Repositories refreshed", "ok");
+          renderProjectMenu();
+        } catch (err) {
+          toast(err.message, "error");
+        }
+      }
+    });
+    $("attachMenu").addEventListener("click", (e) => {
+      e.stopPropagation();
+      const login = e.target.closest("[data-mcp-login]");
+      if (login) {
+        toast("MCP login coming soon", "ok");
+        return;
+      }
+      const toggle = e.target.closest("[data-mcp-toggle]");
+      if (toggle) {
+        const id = toggle.dataset.mcpToggle;
+        const server = state.mcpServers.find((s) => s.id === id);
+        if (!server) return;
+        server.enabled = !server.enabled;
+        if (server.enabled) server.needsLogin = false;
+        saveMcpServers();
+        renderMcpFlyout();
+        return;
+      }
+      const skill = e.target.closest("[data-skill]");
+      if (skill) {
+        const item = state.skills.find((s) => s.id === skill.dataset.skill);
+        if (item) insertPromptText(item.insert);
+        closeAttachMenu();
+        return;
+      }
+      const item = e.target.closest("[data-attach]");
+      if (!item) return;
+      const action = item.dataset.attach;
+      if (action === "files") {
+        $("attachFileInput").click();
+        return;
+      }
+      if (action === "skills" || action === "mcp") {
+        showAttachPanel(state.attachPanel === action ? null : action);
+        return;
+      }
+      if (action === "add-mcp") {
+        const name = prompt("MCP server name");
+        if (!name || !name.trim()) return;
+        const id = "mcp-" + Date.now();
+        state.mcpServers.push({ id, name: name.trim(), enabled: true, needsLogin: false });
+        saveMcpServers();
+        showAttachPanel("mcp");
+        toast("MCP added", "ok");
+      }
+    });
+    $("mcpSearch").addEventListener("input", renderMcpFlyout);
+    $("attachFileInput").addEventListener("change", () => {
+      const files = Array.from($("attachFileInput").files || []);
+      if (!files.length) return;
+      const names = files.map((f) => f.name);
+      const prefix = $("promptInput").value && !$("promptInput").value.endsWith(" ") ? " " : "";
+      insertPromptText(prefix + names.map((n) => `@${n}`).join(" "));
+      toast(names.length === 1 ? `Attached ${names[0]}` : `Attached ${names.length} files`, "ok");
+      $("attachFileInput").value = "";
+      closeAttachMenu();
+    });
+    document.addEventListener("click", (e) => {
+      if (!e.target.closest("#sidebarFoot")) closeFootMenus();
+      if (!e.target.closest("#listMenu") && !e.target.closest("#filterSubmenu")) {
+        $("filterSubmenu").classList.add("hidden");
+      }
+      if (!e.target.closest("#composerShell")) {
+        closeProjectMenu();
+        closeBranchMenu();
+        closeAttachMenu();
+      } else if (!e.target.closest("#attachWrap")) {
+        closeAttachMenu();
+      } else if (!e.target.closest("#projectMenu") && !e.target.closest("#btnProject")) {
+        closeProjectMenu();
+      } else if (!e.target.closest("#branchMenu") && !e.target.closest("#btnBranch")) {
+        closeBranchMenu();
+      }
+    });
+    document.addEventListener("keydown", (e) => {
+      if (e.key === "Escape") {
+        closeProjectMenu();
+        closeBranchMenu();
+        closeAttachMenu();
+        $("filterSubmenu").classList.add("hidden");
+        closeFootMenus();
+      }
+    });
+    $("promptInput").addEventListener("input", () => {
+      const t = $("promptInput");
+      t.style.height = "auto";
+      t.style.height = Math.min(t.scrollHeight, 200) + "px";
+      syncStartEnabled();
+    });
+    $("promptInput").addEventListener("keydown", (e) => {
+      if (e.key === "Enter" && !e.shiftKey && !e.isComposing) {
+        e.preventDefault();
+        if (!$("btnStartRun").disabled) $("btnStartRun").click();
+      }
+    });
+
     $("btnStartRun").onclick = async () => {
       $("newError").textContent = "";
       $("btnStartRun").disabled = true;
       try {
-        if (!$("repoSelect").value) {
-          throw new Error("Connect GitHub and select a repository first");
+        if (!state.selectedRepoId) {
+          openProjectMenu();
+          throw new Error("Select a project first");
         }
         const prompt = $("promptInput").value.trim();
         if (!prompt) throw new Error("Enter a task prompt");
         const run = await api("/api/v1/runs", {
           method: "POST",
           body: JSON.stringify({
-            repositoryId: $("repoSelect").value,
+            repositoryId: state.selectedRepoId,
             prompt,
+            baseRef: selectedBranch(),
             permissionMode: $("permissionMode").value,
           }),
         });
         $("promptInput").value = "";
+        syncStartEnabled();
         await openRun(run.id);
       } catch (err) {
         $("newError").textContent = err.message;
       } finally {
-        $("btnStartRun").disabled = false;
+        syncStartEnabled();
       }
     };
 
@@ -1652,12 +3243,24 @@
     };
 
     // Deep-link after OAuth redirect
-    if (new URLSearchParams(location.search).get("github") === "connected") {
+    async function handleGithubOAuthReturn() {
+      if (new URLSearchParams(location.search).get("github") !== "connected") return;
       history.replaceState({}, "", location.pathname);
+      if (window.opener && !window.opener.closed) {
+        window.opener.postMessage({ type: "github-connected" }, location.origin);
+        window.close();
+        return;
+      }
+      if (!state.token) return;
+      try {
+        await finishGithubConnect();
+      } catch (err) {
+        toast(err.message || "GitHub connected", "ok");
+      }
     }
 
     setAuthMode("register");
-    bootstrap();
+    bootstrap().then(handleGithubOAuthReturn);
   </script>
 </body>
 </html>

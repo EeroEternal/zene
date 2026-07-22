@@ -65,6 +65,14 @@ impl Db {
                 "003_worker",
                 include_str!("../../../migrations/003_worker.sql"),
             ),
+            (
+                "004_github_settings",
+                include_str!("../../../migrations/004_github_settings.sql"),
+            ),
+            (
+                "005_purge_mock_github",
+                include_str!("../../../migrations/005_purge_mock_github.sql"),
+            ),
         ];
 
         for (version, sql) in migrations {
@@ -368,6 +376,10 @@ impl Db {
             slugify(&title).chars().take(24).collect::<String>(),
             &id.to_string()[..8]
         );
+        let base_ref = req
+            .base_ref
+            .filter(|s| !s.trim().is_empty())
+            .unwrap_or_else(|| repo.default_branch.clone());
         let run = Run {
             id,
             organization_id: org_id,
@@ -377,7 +389,7 @@ impl Db {
             status_version: 1,
             title,
             prompt: req.prompt.clone(),
-            base_ref: req.base_ref,
+            base_ref,
             base_sha: None,
             head_branch,
             head_sha: None,

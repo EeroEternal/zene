@@ -73,7 +73,7 @@ async fn github_crud_and_migrations() {
             CreateRunRequest {
                 repository_id: synced[0].id,
                 prompt: "ship it".into(),
-                base_ref: "main".into(),
+                base_ref: Some("main".into()),
                 model: "default".into(),
                 permission_mode: "default".into(),
             },

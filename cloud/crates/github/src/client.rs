@@ -6,6 +6,13 @@ use crate::app::{GithubAppAuth, InstallationToken};
 use crate::oauth::{self, OauthConfig, OauthTokens};
 use crate::types::{CreatePullRequestParams, GithubConfig, ListedRepo};
 
+#[derive(Debug, Clone)]
+pub struct AppInstallation {
+    pub id: String,
+    pub account_login: String,
+    pub account_type: String,
+}
+
 #[derive(Clone)]
 pub struct GithubClient {
     config: GithubConfig,
@@ -107,6 +114,126 @@ impl GithubClient {
 
     pub async fn create_app_jwt(&self) -> Result<String> {
         self.app.create_app_jwt()
+    }
+
+    pub fn install_url(&self) -> Option<String> {
+        self.app.install_url()
+    }
+
+    pub fn install_url_with_state(&self, state: &str) -> Option<String> {
+        self.app.install_url_with_state(state)
+    }
+
+    pub async fn get_installation(&self, installation_id: &str) -> Result<AppInstallation> {
+        if self.is_mock() {
+            return Ok(AppInstallation {
+                id: installation_id.into(),
+                account_login: "mock-org".into(),
+                account_type: "Organization".into(),
+            });
+        }
+
+        let jwt = self.create_app_jwt().await?;
+        let url = format!(
+            "{}/app/installations/{installation_id}",
+            self.config.api_base
+        );
+        #[derive(Deserialize)]
+        struct Resp {
+            id: i64,
+            account: RawAccount,
+        }
+        #[derive(Deserialize)]
+        struct RawAccount {
+            login: String,
+            #[serde(rename = "type")]
+            account_type: String,
+        }
+
+        let resp = self
+            .http
+            .get(&url)
+            .header("Accept", "application/vnd.github+json")
+            .header("Authorization", format!("Bearer {jwt}"))
+            .header("X-GitHub-Api-Version", "2022-11-28")
+            .send()
+            .await
+            .context("get installation")?;
+        let status = resp.status();
+        let text = resp.text().await.unwrap_or_default();
+        if !status.is_success() {
+            bail!("get installation failed ({status}): {text}");
+        }
+        let body: Resp = serde_json::from_str(&text).context("parse installation")?;
+        Ok(AppInstallation {
+            id: body.id.to_string(),
+            account_login: body.account.login,
+            account_type: body.account.account_type,
+        })
+    }
+
+    pub async fn list_app_installations(&self) -> Result<Vec<AppInstallation>> {
+        if self.is_mock() {
+            return Ok(vec![AppInstallation {
+                id: "10001".into(),
+                account_login: "mock-org".into(),
+                account_type: "Organization".into(),
+            }]);
+        }
+
+        let jwt = self.create_app_jwt().await?;
+        let mut page = 1u32;
+        let mut out = Vec::new();
+        loop {
+            let url = format!(
+                "{}/app/installations?per_page=100&page={page}",
+                self.config.api_base
+            );
+            #[derive(Deserialize)]
+            struct Page {
+                id: i64,
+                account: RawAccount,
+            }
+            #[derive(Deserialize)]
+            struct RawAccount {
+                login: String,
+                #[serde(rename = "type")]
+                account_type: String,
+            }
+
+            let resp = self
+                .http
+                .get(&url)
+                .header("Accept", "application/vnd.github+json")
+                .header("Authorization", format!("Bearer {jwt}"))
+                .header("X-GitHub-Api-Version", "2022-11-28")
+                .send()
+                .await
+                .context("list app installations")?;
+            let status = resp.status();
+            let text = resp.text().await.unwrap_or_default();
+            if !status.is_success() {
+                bail!("list app installations failed ({status}): {text}");
+            }
+            let page_body: Vec<Page> =
+                serde_json::from_str(&text).context("parse app installations")?;
+            let count = page_body.len();
+            for inst in page_body {
+                out.push(AppInstallation {
+                    id: inst.id.to_string(),
+                    account_login: inst.account.login,
+                    account_type: inst.account.account_type,
+                });
+            }
+            if count < 100 {
+                break;
+            }
+            page += 1;
+            if page > 50 {
+                break;
+            }
+        }
+        Ok(out)
     }
 
     pub async fn installation_token(&self, installation_id: &str) -> Result<InstallationToken> {
@@ -232,6 +359,65 @@ impl GithubClient {
                 private: r.private,
             })
             .collect())
+    }
+
+    pub async fn list_repo_branches(
+        &self,
+        installation_id: &str,
+        owner: &str,
+        repo: &str,
+    ) -> Result<Vec<String>> {
+        if self.is_mock() {
+            return Ok(vec![
+                "main".into(),
+                "dev".into(),
+                "deploy".into(),
+                "feature-deploy-codebase-optimizations".into(),
+            ]);
+        }
+
+        let token = self.installation_token(installation_id).await?;
+        let mut page = 1u32;
+        let mut out = Vec::new();
+        loop {
+            let url = format!(
+                "{}/repos/{owner}/{repo}/branches?per_page=100&page={page}",
+                self.config.api_base
+            );
+            #[derive(Deserialize)]
+            struct Branch {
+                name: String,
+            }
+
+            let resp = self
+                .http
+                .get(&url)
+                .header("Accept", "application/vnd.github+json")
+                .header("Authorization", format!("Bearer {}", token.token))
+                .header("X-GitHub-Api-Version", "2022-11-28")
+                .send()
+                .await
+                .with_context(|| format!("list branches for {owner}/{repo}"))?;
+            let status = resp.status();
+            let text = resp.text().await.unwrap_or_default();
+            if !status.is_success() {
+                bail!("list branches failed ({status}): {text}");
+            }
+            let page_body: Vec<Branch> =
+                serde_json::from_str(&text).context("parse branches page")?;
+            let count = page_body.len();
+            for branch in page_body {
+                out.push(branch.name);
+            }
+            if count < 100 {
+                break;
+            }
+            page += 1;
+            if page > 50 {
+                break;
+            }
+        }
+        Ok(out)
     }
 
     pub async fn create_pull_request(
