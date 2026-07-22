@@ -277,7 +277,7 @@ export function Sidebar(props: SidebarProps) {
                 setFilterOpen(false);
               }}
             >
-              <IconFilter className="ico-stroke h-4 w-4" />
+              <IconFilter className="h-4 w-4" />
             </button>
           </div>
         </div>

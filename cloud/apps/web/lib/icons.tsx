@@ -1,135 +1,82 @@
+import {
+  ArrowUp,
+  Check,
+  ChevronDown,
+  ChevronRight,
+  Ellipsis,
+  ExternalLink,
+  FolderGit2,
+  GitBranch,
+  HelpCircle,
+  ListFilter,
+  LogOut,
+  Paperclip,
+  Plug,
+  Plus,
+  RefreshCw,
+  Search,
+  Settings,
+  Sparkles,
+  type LucideIcon,
+  type LucideProps,
+} from "lucide-react";
 import type { SVGProps } from "react";
 
-type P = SVGProps<SVGSVGElement>;
+/** Lucide defaults tuned for crisp rendering at 14–16px in Console UI. */
+const ICON_DEFAULTS = {
+  strokeWidth: 2,
+  absoluteStrokeWidth: true,
+} satisfies Pick<LucideProps, "strokeWidth" | "absoluteStrokeWidth">;
 
-export const IconRepo = (p: P) => (
-  <svg viewBox="0 0 24 24" className="ico-stroke" {...p}>
-    <path d="M4 4h12a2 2 0 0 1 2 2v14l-4-2-4 2-4-2-4 2V6a2 2 0 0 1 2-2z" />
-    <path d="M8 8h6M8 12h6" />
+function lucideIcon(Icon: LucideIcon) {
+  const Wrapped = ({ strokeWidth, absoluteStrokeWidth, ...props }: LucideProps) => (
+    <Icon
+      strokeWidth={strokeWidth ?? ICON_DEFAULTS.strokeWidth}
+      absoluteStrokeWidth={absoluteStrokeWidth ?? ICON_DEFAULTS.absoluteStrokeWidth}
+      aria-hidden={props["aria-hidden"] ?? true}
+      {...props}
+    />
+  );
+  Wrapped.displayName = Icon.displayName ?? Icon.name;
+  return Wrapped;
+}
+
+/** Lucide omits brand marks — use official SVG paths (see public/icons/* and AGENTS.md). */
+export const IconGithub = (props: SVGProps<SVGSVGElement>) => (
+  <svg viewBox="0 0 32 32" fill="currentColor" aria-hidden="true" {...props}>
+    <path
+      fillRule="evenodd"
+      clipRule="evenodd"
+      d="M16 0C7.16 0 0 7.16 0 16C0 23.08 4.58 29.06 10.94 31.18C11.74 31.32 12.04 30.84 12.04 30.42C12.04 30.04 12.02 28.78 12.02 27.44C8 28.18 6.96 26.46 6.64 25.56C6.46 25.1 5.68 23.68 5 23.3C4.44 23 3.64 22.26 4.98 22.24C6.24 22.22 7.14 23.4 7.44 23.88C8.88 26.3 11.18 25.62 12.1 25.2C12.24 24.16 12.66 23.46 13.12 23.06C9.56 22.66 5.84 21.28 5.84 15.16C5.84 13.42 6.46 11.98 7.48 10.86C7.32 10.46 6.76 8.82 7.64 6.62C7.64 6.62 8.98 6.2 12.04 8.26C13.32 7.9 14.68 7.72 16.04 7.72C17.4 7.72 18.76 7.9 20.04 8.26C23.1 6.18 24.44 6.62 24.44 6.62C25.32 8.82 24.76 10.46 24.6 10.86C25.62 11.98 26.24 13.4 26.24 15.16C26.24 21.3 22.5 22.66 18.94 23.06C19.52 23.56 20.02 24.52 20.02 26.02C20.02 28.16 20 29.88 20 30.42C20 30.84 20.3 31.34 21.1 31.18C27.42 29.06 32 23.06 32 16C32 7.16 24.84 0 16 0Z"
+    />
   </svg>
 );
 
-export const IconBranch = (p: P) => (
-  <svg viewBox="0 0 24 24" className="ico-stroke" {...p}>
-    <circle cx="6" cy="6" r="2" />
-    <circle cx="6" cy="18" r="2" />
-    <circle cx="18" cy="12" r="2" />
-    <path d="M6 8v8M8 18h8a2 2 0 0 0 2-2v-4" />
+export const IconGitlab = (props: SVGProps<SVGSVGElement>) => (
+  <svg viewBox="0 0 500 500" fill="currentColor" aria-hidden="true" {...props}>
+    <path d="M249.9,476.8 249.9,476.8 340.6,197.7 159.2,197.7 249.9,476.8z" />
+    <path d="M32.1,197.7 32.1,197.7 4.5,282.5c-2.5,7.7.2,16.2 6.8,21l238.5,173.3L32.1,197.7z" />
+    <path d="M32.1,197.7h127.1L104.6,29.6c-2.8-8.6-15-8.6-17.9,0L32.1,197.7z" />
+    <path d="M467.6,197.7 467.6,197.7 495.2,282.5c2.5,7.7-.2,16.2-6.8,21L249.9,476.8 467.6,197.7z" />
+    <path d="M467.6,197.7H340.5l54.6-168.1c2.8-8.6,15-8.6,17.9,0L467.6,197.7z" />
   </svg>
 );
 
-export const IconRefresh = (p: P) => (
-  <svg viewBox="0 0 24 24" className="ico-stroke" {...p}>
-    <path d="M20 12a8 8 0 1 1-2.3-5.7M20 4v5h-5" />
-  </svg>
-);
-
-export const IconGithub = (p: P) => (
-  <svg viewBox="0 0 16 16" fill="currentColor" {...p}>
-    <path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.53-.49-.45-1.16-1.11-1.48-1.11-1.48-.91-.62-.07-.6.07-.6 1 .07 1.53 1.03 1.53 1.03.87 1.52 2.34 1.07 2.91.83.09-.65.35-1.09.63-1.34-2.22-.25-4.55-1.11-4.55-4.92 0-1.11.38-2 1.03-2.71-.1-.25-.45-1.29.1-2.64 0 0 .84-.27 2.75 1.02.79-.22 1.65-.33 2.5-.33.85 0 1.71.11 2.5.33 1.91-1.29 2.75-1.02 2.75-1.02.55 1.35.2 2.39.1 2.64.65.71 1.03 1.6 1.03 2.71 0 3.82-2.34 4.66-4.57 4.91.36.31.69.92.69 1.85V16c0 .27.18.58.67.49C13.71 14.53 16 11.54 16 8 16 3.58 12.42 0 8 0z" />
-  </svg>
-);
-
-export const IconGitlab = (p: P) => (
-  <svg viewBox="0 0 24 24" className="ico-stroke" {...p}>
-    <path d="M12 21 2.5 14.5l2-6.5L7 14h10l2.5-6 2 6.5L12 21zM7 14 9.5 3l2.5 7h0l2.5-7L17 14" />
-  </svg>
-);
-
-export const IconCheck = (p: P) => (
-  <svg viewBox="0 0 24 24" className="ico-stroke-2" {...p}>
-    <path d="m5 12 5 5L20 7" />
-  </svg>
-);
-
-export const IconExternal = (p: P) => (
-  <svg viewBox="0 0 24 24" className="ico-stroke-2" {...p}>
-    <path d="M7 17 17 7M9 7h8v8" />
-  </svg>
-);
-
-export const IconPlug = (p: P) => (
-  <svg viewBox="0 0 24 24" className="ico-stroke" {...p}>
-    <path d="M9 7v4H7a2 2 0 0 0 0 4h2v2a2 2 0 0 0 4 0v-2h2a2 2 0 0 0 0-4h-2V7a2 2 0 0 0-4 0z" />
-    <path d="M15 9h3M6 15H3" />
-  </svg>
-);
-
-export const IconChevronDown = (p: P) => (
-  <svg viewBox="0 0 24 24" className="ico-stroke-2" {...p}>
-    <path d="m6 9 6 6 6-6" />
-  </svg>
-);
-
-export const IconChevronRight = (p: P) => (
-  <svg viewBox="0 0 24 24" className="ico-stroke-2" {...p}>
-    <path d="m9 6 6 6-6 6" />
-  </svg>
-);
-
-export const IconSearch = (p: P) => (
-  <svg viewBox="0 0 24 24" className="ico-stroke" {...p}>
-    <circle cx="11" cy="11" r="7" />
-    <path d="m20 20-3.5-3.5" />
-  </svg>
-);
-
-export const IconPlus = (p: P) => (
-  <svg viewBox="0 0 24 24" className="ico-stroke-2" {...p}>
-    <path d="M12 5v14M5 12h14" />
-  </svg>
-);
-
-export const IconDots = (p: P) => (
-  <svg viewBox="0 0 24 24" fill="currentColor" {...p}>
-    <circle cx="5" cy="12" r="2" />
-    <circle cx="12" cy="12" r="2" />
-    <circle cx="19" cy="12" r="2" />
-  </svg>
-);
-
-export const IconFilter = (p: P) => (
-  <svg viewBox="0 0 24 24" className="ico-stroke" {...p}>
-    <path d="M4 7h16M4 12h10M4 17h7" />
-  </svg>
-);
-
-export const IconSettings = (p: P) => (
-  <svg viewBox="0 0 24 24" className="ico-stroke" {...p}>
-    <circle cx="12" cy="12" r="3" />
-    <path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4" />
-  </svg>
-);
-
-export const IconHelp = (p: P) => (
-  <svg viewBox="0 0 24 24" className="ico-stroke" {...p}>
-    <circle cx="12" cy="12" r="9" />
-    <path d="M9.5 9a2.5 2.5 0 1 1 3.8 2.1c-.8.5-1.3 1-1.3 2v.4" />
-    <circle cx="12" cy="17" r=".8" fill="currentColor" stroke="none" />
-  </svg>
-);
-
-export const IconLogout = (p: P) => (
-  <svg viewBox="0 0 24 24" className="ico-stroke" {...p}>
-    <path d="M10 7V5a2 2 0 0 1 2-2h7v18h-7a2 2 0 0 1-2-2v-2" />
-    <path d="M3 12h11M10 8l4 4-4 4" />
-  </svg>
-);
-
-export const IconPaperclip = (p: P) => (
-  <svg viewBox="0 0 24 24" className="ico-stroke" {...p}>
-    <path d="m21.4 11.6-8.8 8.8a5 5 0 0 1-7.1-7.1l8.8-8.8a3.2 3.2 0 0 1 4.5 4.5l-8.5 8.5a1.4 1.4 0 0 1-2-2l7.8-7.8" />
-  </svg>
-);
-
-export const IconSkills = (p: P) => (
-  <svg viewBox="0 0 24 24" className="ico-stroke" {...p}>
-    <path d="M4 5h7v14l-3.5-2L4 19V5zM13 5h7v14l-3.5-2L13 19V5z" />
-  </svg>
-);
-
-export const IconArrowUp = (p: P) => (
-  <svg viewBox="0 0 24 24" className="ico-stroke-2" {...p}>
-    <path d="M12 19V5M5 12l7-7 7 7" />
-  </svg>
-);
+export const IconArrowUp = lucideIcon(ArrowUp);
+export const IconBranch = lucideIcon(GitBranch);
+export const IconCheck = lucideIcon(Check);
+export const IconChevronDown = lucideIcon(ChevronDown);
+export const IconChevronRight = lucideIcon(ChevronRight);
+export const IconDots = lucideIcon(Ellipsis);
+export const IconExternal = lucideIcon(ExternalLink);
+export const IconFilter = lucideIcon(ListFilter);
+export const IconHelp = lucideIcon(HelpCircle);
+export const IconLogout = lucideIcon(LogOut);
+export const IconPaperclip = lucideIcon(Paperclip);
+export const IconPlug = lucideIcon(Plug);
+export const IconPlus = lucideIcon(Plus);
+export const IconRefresh = lucideIcon(RefreshCw);
+export const IconRepo = lucideIcon(FolderGit2);
+export const IconSearch = lucideIcon(Search);
+export const IconSettings = lucideIcon(Settings);
+export const IconSkills = lucideIcon(Sparkles);

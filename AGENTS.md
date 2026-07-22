@@ -4,6 +4,16 @@
 
 UI 视觉与布局以根目录 [`DESIGN.md`](DESIGN.md) 为准；细则见 [`docs/Designs.md`](docs/Designs.md)（对齐 XEnsemble Console）。改 `apps/web-agent/`、`cloud/apps/web/`、`www/`（及 `web/` / `apps/web/` 副本）时必须遵守。
 
+### Icons
+
+Console / Web UI 图标统一使用 [Lucide](https://lucide.dev/icons)：
+
+- **React / Next**（`cloud/apps/web/`）：安装 `lucide-react`，在 `lib/icons.tsx` 集中 re-export（保持 `Icon*` 命名），禁止在各组件内手写 SVG。
+- **零构建 HTML**（`apps/web-agent/` 等）：引用 Lucide 静态 SVG（或内联同源 path），不要再用细描边自绘图标。
+- **小尺寸**（≤16px）：`strokeWidth={2}` + `absoluteStrokeWidth`，保证选中勾、分支节点等在列表里清晰可辨。
+- **Lucide 无对应图标时**：优先选语义最接近的 Lucide 图标；仍无法满足再手写 SVG（24×24 viewBox、2px stroke、`strokeLinecap="round"`），并同样保证小尺寸可读。
+- **品牌图标**（GitHub / GitLab 等）：从官方资源获取，不得手写近似图形。源文件放在 `cloud/apps/web/public/icons/`，并在 `lib/icons.tsx` 内联同源 path；GitHub 用 [Brand Toolkit / Mark](https://brand.github.com/foundations/logo)，GitLab 用 [gitlab-artwork](https://gitlab.com/gitlab-com/gitlab-artwork) 的 logomark（菜单内用 `currentColor` 单色，不改形）。
+
 ## Cursor Cloud specific instructions
 
 Zene is a local coding-agent product (workspace version in `Cargo.toml`). Primary binaries:
