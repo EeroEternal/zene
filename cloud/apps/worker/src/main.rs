@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::Duration;
@@ -15,7 +16,8 @@ use zene_cloud_acp_bridge::{
 };
 use zene_cloud_domain::{
     ApprovalRequest, ApprovalStatus, ClaimedRun, CloneAuthResponse, CreateApprovalRequest,
-    RunStatus, WorkerCommand, WorkerCommandsResponse, WorkerEventRequest, WorkerStatusRequest,
+    LlmAuthResponse, RunStatus, WorkerCommand, WorkerCommandsResponse, WorkerEventRequest,
+    WorkerStatusRequest,
 };
 
 #[derive(Debug, Parser)]
@@ -61,14 +63,13 @@ async fn main() -> Result<()> {
         .unwrap_or_else(|| format!("worker-{}", &Uuid::new_v4().to_string()[..8]));
     std::fs::create_dir_all(&cli.workspace_root)?;
     let client = reqwest::Client::new();
-    let mut zene_bin = resolve_zene_bin(cli.zene_bin.clone());
-    let has_llm = std::env::var("ZENE_API_KEY").is_ok()
+    let zene_bin = resolve_zene_bin(cli.zene_bin.clone());
+    let has_process_llm = std::env::var("ZENE_API_KEY").is_ok()
         || std::env::var("OPENAI_API_KEY").is_ok()
         || std::env::var("ANTHROPIC_API_KEY").is_ok()
         || std::env::var("ZENE_BASE_URL").is_ok();
-    if zene_bin.is_some() && !has_llm {
-        warn!("zene binary found but no LLM credentials/base URL; falling back to mock agent");
-        zene_bin = None;
+    if zene_bin.is_some() && !has_process_llm {
+        info!("no process-level LLM credentials; runs will use per-user BYOK when configured");
     }
     if let Some(path) = &zene_bin {
         info!(path = %path.display(), yolo = cli.acp_yolo, "using real zene acp");
@@ -430,6 +431,39 @@ async fn run_with_mock(
     Ok(())
 }
 
+async fn fetch_llm_auth(
+    client: &reqwest::Client,
+    cli: &Cli,
+    run_id: Uuid,
+) -> Result<Option<LlmAuthResponse>> {
+    let response = client
+        .get(format!(
+            "{}/internal/v1/runs/{run_id}/llm-auth",
+            cli.api_url
+        ))
+        .bearer_auth(&cli.worker_token)
+        .send()
+        .await
+        .context("llm-auth request")?;
+    if response.status() == reqwest::StatusCode::NOT_FOUND {
+        return Ok(None);
+    }
+    let response = response.error_for_status().context("llm-auth")?;
+    Ok(Some(response.json().await?))
+}
+
+fn llm_env_from_auth(auth: &LlmAuthResponse) -> HashMap<String, String> {
+    let mut env = HashMap::new();
+    env.insert("ZENE_PROVIDER".into(), auth.provider.clone());
+    env.insert("ZENE_API_KEY".into(), auth.api_key.clone());
+    env.insert("ZENE_BASE_URL".into(), auth.base_url.clone());
+    let model = auth.model.trim();
+    if !model.is_empty() && model != "default" {
+        env.insert("ZENE_MODEL".into(), model.to_string());
+    }
+    env
+}
+
 async fn run_with_real_acp(
     client: &reqwest::Client,
     cli: &Cli,
@@ -442,7 +476,27 @@ async fn run_with_real_acp(
         || claimed.run.permission_mode == "yolo"
         || std::env::var("ZENE_YOLO").ok().as_deref() == Some("1");
 
-    let (bridge, mut msg_rx) = AcpBridge::spawn(zene_bin, workspace, yolo).await?;
+    let llm_env = match fetch_llm_auth(client, cli, run_id).await {
+        Ok(Some(auth)) => {
+            info!(
+                run_id = %run_id,
+                base_url = %auth.base_url,
+                model = %auth.model,
+                "using user BYOK llm settings"
+            );
+            llm_env_from_auth(&auth)
+        }
+        Ok(None) => {
+            info!(run_id = %run_id, "no user llm settings; inheriting worker env");
+            HashMap::new()
+        }
+        Err(err) => {
+            warn!(run_id = %run_id, error = %err, "llm-auth failed; inheriting worker env");
+            HashMap::new()
+        }
+    };
+
+    let (bridge, mut msg_rx) = AcpBridge::spawn(zene_bin, workspace, yolo, &llm_env).await?;
     let bridge = std::sync::Arc::new(tokio::sync::Mutex::new(Some(bridge)));
 
     let (session_id, init_events) = {

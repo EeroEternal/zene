@@ -12,10 +12,9 @@ use uuid::Uuid;
 use zene_cloud_domain::{
     ClaimedRun, CreateApprovalRequest, CreatePullRequestBody, CreateRepositoryRequest,
     CreateRunRequest, DecideApprovalRequest, GithubBranchSummary, GithubProviderConfigView,
-    LoginRequest,
-    PostMessageRequest, RegisterRequest, RunStatus, UpdateGithubProviderConfigRequest,
-    WorkerCommandsResponse, WorkerEventRequest, WorkerPullRequestRequest, WorkerPushRequest,
-    WorkerStatusRequest,
+    LlmAuthResponse, LlmSettingsView, LoginRequest, PostMessageRequest, RegisterRequest, RunStatus,
+    UpdateGithubProviderConfigRequest, UpdateLlmSettingsRequest, WorkerCommandsResponse,
+    WorkerEventRequest, WorkerPullRequestRequest, WorkerPushRequest, WorkerStatusRequest,
 };
 
 use crate::auth::{AuthUser, WorkerAuth};
@@ -30,6 +29,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/v1/auth/login", post(login))
         .route("/api/v1/me", get(me))
         .route("/api/v1/settings/github", get(get_github_settings).put(update_github_settings))
+        .route("/api/v1/settings/llm", get(get_llm_settings).put(update_llm_settings))
         .route("/api/v1/github/status", get(github_status))
         .route("/api/v1/github/connect/start", get(github_connect_start))
         .route("/api/v1/github/install/callback", get(github_install_callback))
@@ -65,6 +65,13 @@ pub fn router(state: AppState) -> Router {
         .route("/api/v1/runs/{run_id}/files", get(list_run_files))
         .route("/api/v1/runs/{run_id}/file", get(read_run_file))
         .route("/api/v1/runs/{run_id}/diff", get(run_diff))
+        .route("/api/v1/runs/{run_id}/git/status", get(run_git_status))
+        .route("/api/v1/runs/{run_id}/git/compare", get(run_git_compare))
+        .route(
+            "/api/v1/runs/{run_id}/git/compare/diff",
+            get(run_git_compare_diff),
+        )
+        .route("/api/v1/runs/{run_id}/git/commits", get(run_git_commits))
         .route(
             "/api/v1/runs/{run_id}/pull-requests",
             get(list_run_prs).post(create_run_pr),
@@ -78,6 +85,7 @@ pub fn router(state: AppState) -> Router {
             "/internal/v1/runs/{run_id}/clone-auth",
             get(clone_auth).post(clone_auth),
         )
+        .route("/internal/v1/runs/{run_id}/llm-auth", get(llm_auth))
         .route("/internal/v1/runs/{run_id}/commands", get(worker_commands))
         .route(
             "/internal/v1/runs/{run_id}/approvals",
@@ -185,6 +193,80 @@ async fn update_github_settings(
         "installUrl": github.install_url(),
         "redirectUri": format!("{}/api/v1/github/oauth/callback", state.public_base_url),
     })))
+}
+
+fn empty_llm_settings_view() -> LlmSettingsView {
+    LlmSettingsView {
+        provider_id: "custom".into(),
+        base_url: String::new(),
+        default_model: String::new(),
+        models: Vec::new(),
+        has_api_key: false,
+        api_key_hint: None,
+    }
+}
+
+async fn get_llm_settings(
+    State(state): State<AppState>,
+    AuthUser(user): AuthUser,
+) -> Result<impl IntoResponse, AppError> {
+    let settings = state.db.get_user_llm_settings(user.id).await?;
+    Ok(Json(
+        settings
+            .map(|s| s.to_view())
+            .unwrap_or_else(empty_llm_settings_view),
+    ))
+}
+
+async fn update_llm_settings(
+    State(state): State<AppState>,
+    AuthUser(user): AuthUser,
+    Json(req): Json<UpdateLlmSettingsRequest>,
+) -> Result<impl IntoResponse, AppError> {
+    if req.provider_id.trim().is_empty() {
+        return Err(AppError::bad_request("providerId is required"));
+    }
+    let saved = state.db.upsert_user_llm_settings(user.id, req).await?;
+    Ok(Json(saved.to_view()))
+}
+
+async fn llm_auth(
+    State(state): State<AppState>,
+    _worker: WorkerAuth,
+    Path(run_id): Path<Uuid>,
+) -> Result<impl IntoResponse, AppError> {
+    let run = state
+        .db
+        .get_run(run_id)
+        .await?
+        .ok_or_else(|| AppError::not_found("run not found"))?;
+    let settings = state
+        .db
+        .get_user_llm_settings(run.requested_by)
+        .await?
+        .ok_or_else(|| AppError::not_found("llm settings not configured"))?;
+    if settings.api_key.trim().is_empty() {
+        return Err(AppError::not_found("llm api key not configured"));
+    }
+    if settings.base_url.trim().is_empty() {
+        return Err(AppError::not_found("llm base url not configured"));
+    }
+    let model = {
+        let m = run.model.trim();
+        if !m.is_empty() && m != "default" {
+            m.to_string()
+        } else if !settings.default_model.trim().is_empty() {
+            settings.default_model.trim().to_string()
+        } else {
+            "default".into()
+        }
+    };
+    Ok(Json(LlmAuthResponse {
+        api_key: settings.api_key,
+        base_url: settings.base_url,
+        model,
+        provider: "openai".into(),
+    }))
 }
 
 async fn github_status(
@@ -835,15 +917,83 @@ async fn read_run_file(
     ))
 }
 
+#[derive(Debug, Deserialize)]
+struct DiffQuery {
+    path: Option<String>,
+}
+
 async fn run_diff(
+    State(state): State<AppState>,
+    AuthUser(user): AuthUser,
+    Path(run_id): Path<Uuid>,
+    Query(query): Query<DiffQuery>,
+) -> Result<impl IntoResponse, AppError> {
+    let _ = authorize_run(&state, user.id, run_id).await?;
+    let root = state.workspace_root.join(run_id.to_string());
+    let diff = workspace::git_diff(&root, query.path.as_deref())
+        .await
+        .map_err(AppError::from)?;
+    Ok(Json(serde_json::json!({ "diff": diff })))
+}
+
+async fn run_git_status(
     State(state): State<AppState>,
     AuthUser(user): AuthUser,
     Path(run_id): Path<Uuid>,
 ) -> Result<impl IntoResponse, AppError> {
     let _ = authorize_run(&state, user.id, run_id).await?;
     let root = state.workspace_root.join(run_id.to_string());
-    let diff = workspace::git_diff(&root).await.map_err(AppError::from)?;
+    Ok(Json(
+        workspace::git_status(&root).await.map_err(AppError::from)?,
+    ))
+}
+
+async fn run_git_compare(
+    State(state): State<AppState>,
+    AuthUser(user): AuthUser,
+    Path(run_id): Path<Uuid>,
+) -> Result<impl IntoResponse, AppError> {
+    let run = authorize_run(&state, user.id, run_id).await?;
+    let root = state.workspace_root.join(run_id.to_string());
+    Ok(Json(
+        workspace::git_compare(&root, &run.base_ref)
+            .await
+            .map_err(AppError::from)?,
+    ))
+}
+
+async fn run_git_compare_diff(
+    State(state): State<AppState>,
+    AuthUser(user): AuthUser,
+    Path(run_id): Path<Uuid>,
+    Query(query): Query<DiffQuery>,
+) -> Result<impl IntoResponse, AppError> {
+    let run = authorize_run(&state, user.id, run_id).await?;
+    let root = state.workspace_root.join(run_id.to_string());
+    let path = query
+        .path
+        .as_deref()
+        .map(str::trim)
+        .filter(|p| !p.is_empty())
+        .ok_or_else(|| AppError::bad_request("path is required"))?;
+    let diff = workspace::git_compare_diff(&root, &run.base_ref, path)
+        .await
+        .map_err(AppError::from)?;
     Ok(Json(serde_json::json!({ "diff": diff })))
+}
+
+async fn run_git_commits(
+    State(state): State<AppState>,
+    AuthUser(user): AuthUser,
+    Path(run_id): Path<Uuid>,
+) -> Result<impl IntoResponse, AppError> {
+    let run = authorize_run(&state, user.id, run_id).await?;
+    let root = state.workspace_root.join(run_id.to_string());
+    Ok(Json(
+        workspace::git_commits(&root, &run.base_ref, 50)
+            .await
+            .map_err(AppError::from)?,
+    ))
 }
 
 async fn list_run_prs(

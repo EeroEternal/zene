@@ -1,7 +1,17 @@
 "use client";
 
-import { useState } from "react";
-import type { ListFilter, ListGroup, Organization, Repo, User } from "@/lib/types";
+import { useCallback, useEffect, useState } from "react";
+import { api } from "@/lib/api";
+import { findPreset, LLM_PRESETS } from "@/lib/llmPresets";
+import type {
+  ListFilter,
+  ListGroup,
+  LlmSettingsView,
+  Organization,
+  Repo,
+  UpdateLlmSettingsRequest,
+  User,
+} from "@/lib/types";
 import { filterLabelText } from "./Sidebar";
 
 interface SettingsProps {
@@ -54,6 +64,14 @@ function SettingsRow({
   );
 }
 
+function FieldLabel({ children }: { children: React.ReactNode }) {
+  return (
+    <label className="mb-1.5 block text-[11px] font-medium uppercase tracking-[.04em] text-muted">
+      {children}
+    </label>
+  );
+}
+
 export function Settings(props: SettingsProps) {
   const {
     user,
@@ -69,20 +87,203 @@ export function Settings(props: SettingsProps) {
   } = props;
   const [ghError, setGhError] = useState("");
 
+  const [llmLoading, setLlmLoading] = useState(true);
+  const [llmSaving, setLlmSaving] = useState(false);
+  const [llmError, setLlmError] = useState("");
+  const [llmOk, setLlmOk] = useState("");
+  const [providerId, setProviderId] = useState("deepseek");
+  const [baseUrl, setBaseUrl] = useState("");
+  const [defaultModel, setDefaultModel] = useState("");
+  const [modelsText, setModelsText] = useState("");
+  const [apiKey, setApiKey] = useState("");
+  const [hasApiKey, setHasApiKey] = useState(false);
+  const [apiKeyHint, setApiKeyHint] = useState<string | null>(null);
+
+  const applyLlmView = useCallback((view: LlmSettingsView) => {
+    setProviderId(view.providerId || "custom");
+    setBaseUrl(view.baseUrl || "");
+    setDefaultModel(view.defaultModel || "");
+    setModelsText((view.models || []).join("\n"));
+    setHasApiKey(Boolean(view.hasApiKey));
+    setApiKeyHint(view.apiKeyHint || null);
+    setApiKey("");
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      setLlmLoading(true);
+      setLlmError("");
+      try {
+        const view = await api<LlmSettingsView>("/api/v1/settings/llm");
+        if (!cancelled) applyLlmView(view);
+      } catch (err) {
+        if (!cancelled) setLlmError(err instanceof Error ? err.message : String(err));
+      } finally {
+        if (!cancelled) setLlmLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [applyLlmView]);
+
+  const selectPreset = (id: string) => {
+    const preset = findPreset(id);
+    setProviderId(preset.id);
+    if (preset.baseUrl) setBaseUrl(preset.baseUrl);
+    if (!defaultModel && preset.suggestedModels[0]) {
+      setDefaultModel(preset.suggestedModels[0]);
+    }
+    if (!modelsText.trim() && preset.suggestedModels.length) {
+      setModelsText(preset.suggestedModels.join("\n"));
+    }
+  };
+
+  const saveLlm = async () => {
+    setLlmSaving(true);
+    setLlmError("");
+    setLlmOk("");
+    try {
+      const models = modelsText
+        .split(/\r?\n/)
+        .map((m) => m.trim())
+        .filter(Boolean);
+      const body: UpdateLlmSettingsRequest = {
+        providerId,
+        baseUrl: baseUrl.trim(),
+        defaultModel: defaultModel.trim(),
+        models,
+      };
+      if (apiKey.trim()) body.apiKey = apiKey.trim();
+      const view = await api<LlmSettingsView>("/api/v1/settings/llm", {
+        method: "PUT",
+        body: JSON.stringify(body),
+      });
+      applyLlmView(view);
+      setLlmOk("Models settings saved");
+    } catch (err) {
+      setLlmError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setLlmSaving(false);
+    }
+  };
+
   const name = user?.displayName || user?.email?.split("@")[0] || "User";
   const filterLabel = filterLabelText(listFilter, listRepoFilter, repos, selectedRepoId);
+  const preset = findPreset(providerId);
 
   return (
     <div className="h-full overflow-auto">
       <div className="mx-auto max-w-[640px] px-5 pb-10 pt-6">
         <h2 className="mb-1 text-xl font-bold tracking-[-0.02em]">Settings</h2>
-        <p className="mb-6 text-[13px] text-muted">Account, integrations, and agent list preferences.</p>
+        <p className="mb-6 text-[13px] text-muted">Account, models, integrations, and agent list preferences.</p>
 
         <div className="mb-4 rounded-xl border border-line bg-canvas px-[18px] py-4">
           <h3 className="mb-3 text-[13px] font-semibold uppercase tracking-[.04em] text-muted">Account</h3>
           <SettingsRow first label="Name" hint={name} />
           <SettingsRow label="Email" hint={user?.email || "—"} />
           <SettingsRow label="Organization" hint={org?.name || "—"} />
+        </div>
+
+        <div className="mb-4 rounded-xl border border-line bg-canvas px-[18px] py-4">
+          <h3 className="mb-1 text-[13px] font-semibold uppercase tracking-[.04em] text-muted">Models</h3>
+          <p className="mb-3 text-xs leading-relaxed text-muted">
+            Bring your own OpenAI-compatible API key. Runs use this credential via the cloud worker.
+          </p>
+          {llmLoading ? (
+            <p className="m-0 text-xs text-muted">Loading…</p>
+          ) : (
+            <>
+              <FieldLabel>Provider</FieldLabel>
+              <div className="mb-3 flex flex-wrap gap-1.5">
+                {LLM_PRESETS.map((p) => (
+                  <button
+                    key={p.id}
+                    type="button"
+                    className={`h-7 rounded-md px-2.5 text-[12.5px] font-medium transition-colors ${
+                      providerId === p.id
+                        ? "bg-ink text-white"
+                        : "bg-secondary text-muted hover:bg-active hover:text-ink"
+                    }`}
+                    onClick={() => selectPreset(p.id)}
+                  >
+                    {p.label}
+                  </button>
+                ))}
+              </div>
+
+              <div className="mb-3">
+                <FieldLabel>API Key</FieldLabel>
+                <input
+                  className="w-full rounded-md border border-line-strong bg-canvas px-3 py-2 font-mono text-[13px] text-ink outline-none focus:border-ink"
+                  type="password"
+                  autoComplete="off"
+                  placeholder={
+                    hasApiKey
+                      ? `Saved ${apiKeyHint || "••••"} — enter to replace`
+                      : "Enter your API key"
+                  }
+                  value={apiKey}
+                  onChange={(e) => setApiKey(e.target.value)}
+                />
+              </div>
+
+              <div className="mb-3">
+                <FieldLabel>Base URL</FieldLabel>
+                <input
+                  className="w-full rounded-md border border-line-strong bg-canvas px-3 py-2 font-mono text-[13px] text-ink outline-none focus:border-ink"
+                  type="url"
+                  autoComplete="off"
+                  placeholder={preset.baseUrl || "https://api.example.com/v1"}
+                  value={baseUrl}
+                  onChange={(e) => setBaseUrl(e.target.value)}
+                />
+              </div>
+
+              <div className="mb-3">
+                <FieldLabel>Default model</FieldLabel>
+                <input
+                  className="w-full rounded-md border border-line-strong bg-canvas px-3 py-2 font-mono text-[13px] text-ink outline-none focus:border-ink"
+                  type="text"
+                  autoComplete="off"
+                  placeholder={preset.suggestedModels[0] || "model-id"}
+                  value={defaultModel}
+                  onChange={(e) => setDefaultModel(e.target.value)}
+                />
+              </div>
+
+              <div className="mb-3">
+                <FieldLabel>Models (one per line)</FieldLabel>
+                <textarea
+                  className="min-h-[96px] w-full resize-y rounded-md border border-line-strong bg-canvas px-3 py-2 font-mono text-[13px] text-ink outline-none focus:border-ink"
+                  placeholder={
+                    preset.suggestedModels.length
+                      ? preset.suggestedModels.join("\n")
+                      : "model-a\nmodel-b"
+                  }
+                  value={modelsText}
+                  onChange={(e) => setModelsText(e.target.value)}
+                />
+              </div>
+
+              <div className="flex flex-wrap items-center gap-2">
+                <button
+                  type="button"
+                  className="btn btn-primary btn-sm"
+                  disabled={llmSaving}
+                  onClick={saveLlm}
+                >
+                  {llmSaving ? "Saving…" : "Save models"}
+                </button>
+                {hasApiKey && (
+                  <span className="text-xs text-muted">Key on file{apiKeyHint ? ` · ${apiKeyHint}` : ""}</span>
+                )}
+              </div>
+              <div className="mt-2.5 min-h-[18px] text-[13px] leading-snug text-danger">{llmError}</div>
+              <div className="min-h-[18px] text-[13px] leading-snug text-ok">{llmOk}</div>
+            </>
+          )}
         </div>
 
         <div className="mb-4 rounded-xl border border-line bg-canvas px-[18px] py-4">

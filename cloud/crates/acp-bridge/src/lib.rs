@@ -88,6 +88,7 @@ impl AcpBridge {
         zene_bin: &Path,
         workdir: &Path,
         yolo: bool,
+        env: &HashMap<String, String>,
     ) -> Result<(Self, mpsc::UnboundedReceiver<BridgeMsg>)> {
         let mut cmd = Command::new(zene_bin);
         cmd.current_dir(workdir)
@@ -98,6 +99,9 @@ impl AcpBridge {
             .kill_on_drop(true);
         if yolo {
             cmd.arg("--yolo");
+        }
+        for (key, value) in env {
+            cmd.env(key, value);
         }
         let mut child = cmd.spawn().context("spawn zene acp")?;
         let stdin = child.stdin.take().context("missing stdin")?;

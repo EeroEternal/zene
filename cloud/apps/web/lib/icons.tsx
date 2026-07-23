@@ -3,13 +3,25 @@ import {
   Check,
   ChevronDown,
   ChevronRight,
+  ChevronUp,
+  ChevronsDownUp,
+  ChevronsUpDown,
   Ellipsis,
   ExternalLink,
+  File,
+  Folder,
   FolderGit2,
+  FolderOpen,
   GitBranch,
   HelpCircle,
   ListFilter,
   LogOut,
+  Maximize2,
+  Minimize2,
+  PanelLeft,
+  PanelLeftClose,
+  PanelRight,
+  PanelRightClose,
   Paperclip,
   Plug,
   Plus,
@@ -17,6 +29,7 @@ import {
   Search,
   Settings,
   Sparkles,
+  Square,
   type LucideIcon,
   type LucideProps,
 } from "lucide-react";
@@ -67,11 +80,23 @@ export const IconBranch = lucideIcon(GitBranch);
 export const IconCheck = lucideIcon(Check);
 export const IconChevronDown = lucideIcon(ChevronDown);
 export const IconChevronRight = lucideIcon(ChevronRight);
+export const IconChevronUp = lucideIcon(ChevronUp);
+export const IconChevronsCollapse = lucideIcon(ChevronsDownUp);
+export const IconChevronsExpand = lucideIcon(ChevronsUpDown);
 export const IconDots = lucideIcon(Ellipsis);
 export const IconExternal = lucideIcon(ExternalLink);
+export const IconFile = lucideIcon(File);
 export const IconFilter = lucideIcon(ListFilter);
+export const IconFolder = lucideIcon(Folder);
+export const IconFolderOpen = lucideIcon(FolderOpen);
 export const IconHelp = lucideIcon(HelpCircle);
 export const IconLogout = lucideIcon(LogOut);
+export const IconMaximize = lucideIcon(Maximize2);
+export const IconMinimize = lucideIcon(Minimize2);
+export const IconPanelLeft = lucideIcon(PanelLeft);
+export const IconPanelLeftClose = lucideIcon(PanelLeftClose);
+export const IconPanelRight = lucideIcon(PanelRight);
+export const IconPanelRightClose = lucideIcon(PanelRightClose);
 export const IconPaperclip = lucideIcon(Paperclip);
 export const IconPlug = lucideIcon(Plug);
 export const IconPlus = lucideIcon(Plus);
@@ -80,3 +105,4 @@ export const IconRepo = lucideIcon(FolderGit2);
 export const IconSearch = lucideIcon(Search);
 export const IconSettings = lucideIcon(Settings);
 export const IconSkills = lucideIcon(Sparkles);
+export const IconStop = lucideIcon(Square);

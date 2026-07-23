@@ -14,11 +14,11 @@ import type {
   View,
 } from "@/lib/types";
 import { AuthView } from "./AuthView";
+import { useCodePanelOpen } from "./CodePanel";
 import { NewAgent } from "./NewAgent";
 import { RunView } from "./RunView";
 import { Settings } from "./Settings";
 import { Sidebar } from "./Sidebar";
-import { StatusPill } from "./StatusPill";
 import { ToastProvider, useToast } from "./Toast";
 
 function readPref(key: string, fallback: string): string {
@@ -47,9 +47,9 @@ function AppInner() {
   const [view, setView] = useState<View>("new");
   const [currentRunId, setCurrentRunId] = useState<string | null>(null);
   const [runTitle, setRunTitle] = useState("New Agent");
-  const [runStatus, setRunStatus] = useState("idle");
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [openProjectMenuSignal, setOpenProjectMenuSignal] = useState(0);
+  const { open: codePanelOpen, toggle: toggleCodePanel } = useCodePanelOpen();
 
   const githubConnected = useMemo(() => {
     if (github.connected) return true;
@@ -230,7 +230,6 @@ function AppInner() {
     setCurrentRunId(null);
     setView("new");
     setRunTitle("New Agent");
-    setRunStatus("idle");
     setDrawerOpen(false);
     refreshRuns();
     refreshGithub();
@@ -241,7 +240,6 @@ function AppInner() {
     setCurrentRunId(null);
     setView("settings");
     setRunTitle("Settings");
-    setRunStatus("idle");
     setDrawerOpen(false);
     refreshGithub();
     refreshRepos().catch(() => {});
@@ -352,23 +350,29 @@ function AppInner() {
         onSettings={showSettings}
         onLogout={doLogout}
       />
-      <section className="grid min-h-0 min-w-0 grid-rows-[48px_minmax(0,1fr)] bg-canvas">
-        <div className="flex h-12 items-center justify-between gap-3 border-b border-line bg-canvas px-5">
-          <div className="flex min-w-0 items-center gap-2.5">
-            <button
-              type="button"
-              className="hidden h-8 w-8 items-center justify-center rounded-md border border-line bg-canvas text-muted max-[980px]:inline-flex"
-              aria-label="Open menu"
-              onClick={() => setDrawerOpen(true)}
-            >
-              ☰
-            </button>
-            <div className="overflow-hidden text-ellipsis whitespace-nowrap text-[15px] font-semibold text-ink">
-              {runTitle}
+      <section
+        className={[
+          "grid min-h-0 min-w-0 bg-canvas",
+          view === "run" ? "grid-rows-1" : "grid-rows-[48px_minmax(0,1fr)]",
+        ].join(" ")}
+      >
+        {view !== "run" && (
+          <div className="flex h-12 items-center justify-between gap-2 border-b border-line bg-canvas px-5">
+            <div className="flex min-w-0 items-center gap-2.5">
+              <button
+                type="button"
+                className="hidden h-8 w-8 items-center justify-center rounded-md border border-line bg-canvas text-muted max-[980px]:inline-flex"
+                aria-label="Open menu"
+                onClick={() => setDrawerOpen(true)}
+              >
+                ☰
+              </button>
+              <div className="overflow-hidden text-ellipsis whitespace-nowrap text-[15px] font-semibold text-ink">
+                {runTitle}
+              </div>
             </div>
           </div>
-          <StatusPill status={runStatus} />
-        </div>
+        )}
         <div className="min-h-0 overflow-hidden bg-canvas">
           {view === "new" && (
             <NewAgent
@@ -409,9 +413,11 @@ function AppInner() {
               key={currentRunId}
               runId={currentRunId}
               repos={repos}
-              onMeta={(title, status) => {
+              codePanelOpen={codePanelOpen}
+              onToggleCodePanel={toggleCodePanel}
+              onOpenMenu={() => setDrawerOpen(true)}
+              onMeta={(title) => {
                 setRunTitle(title);
-                setRunStatus(status);
               }}
               onRunsChanged={refreshRuns}
             />

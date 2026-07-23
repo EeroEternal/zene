@@ -724,3 +724,79 @@ pub struct CloneTokenResponse {
     pub expires_at: DateTime<Utc>,
     pub mode: String,
 }
+
+/// User-facing BYOK settings (never includes full api_key).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LlmSettingsView {
+    pub provider_id: String,
+    pub base_url: String,
+    pub default_model: String,
+    pub models: Vec<String>,
+    pub has_api_key: bool,
+    pub api_key_hint: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateLlmSettingsRequest {
+    pub provider_id: String,
+    pub base_url: String,
+    pub default_model: String,
+    #[serde(default)]
+    pub models: Vec<String>,
+    /// Omit or empty to keep the existing key.
+    pub api_key: Option<String>,
+}
+
+/// Stored row (includes api_key for worker injection).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UserLlmSettings {
+    pub user_id: Id,
+    pub provider_id: String,
+    pub base_url: String,
+    pub api_key: String,
+    pub default_model: String,
+    pub models: Vec<String>,
+    pub updated_at: DateTime<Utc>,
+}
+
+/// Internal worker credential payload for spawning `zene acp`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LlmAuthResponse {
+    pub api_key: String,
+    pub base_url: String,
+    pub model: String,
+    /// Wire protocol for Zene (`openai` / openai-compatible).
+    pub provider: String,
+}
+
+impl UserLlmSettings {
+    pub fn to_view(&self) -> LlmSettingsView {
+        let trimmed = self.api_key.trim();
+        let has_api_key = !trimmed.is_empty();
+        let api_key_hint = if has_api_key {
+            let hint: String = trimmed
+                .chars()
+                .rev()
+                .take(4)
+                .collect::<String>()
+                .chars()
+                .rev()
+                .collect();
+            Some(format!("••••{hint}"))
+        } else {
+            None
+        };
+        LlmSettingsView {
+            provider_id: self.provider_id.clone(),
+            base_url: self.base_url.clone(),
+            default_model: self.default_model.clone(),
+            models: self.models.clone(),
+            has_api_key,
+            api_key_hint,
+        }
+    }
+}

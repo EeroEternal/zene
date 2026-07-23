@@ -95,6 +95,36 @@ export interface WorkspaceFile {
   size?: number;
 }
 
+export interface GitStatusFile {
+  path: string;
+  /** M / A / D / R / C / U / ? */
+  status: string;
+  additions: number;
+  deletions: number;
+}
+
+export interface GitStatus {
+  files: GitStatusFile[];
+  totalAdditions: number;
+  totalDeletions: number;
+}
+
+export interface GitCompare {
+  base: string;
+  head: string;
+  files: GitStatusFile[];
+  totalAdditions: number;
+  totalDeletions: number;
+}
+
+export interface GitCommit {
+  sha: string;
+  shortSha: string;
+  subject: string;
+  author: string;
+  authoredAt: string;
+}
+
 export interface PullRequest {
   title: string;
   url?: string;
@@ -120,3 +150,20 @@ export type ListGroup = "project" | "date" | "status" | "none";
 export type ListFilter = "none" | "running" | "completed" | "failed" | "project";
 export type PermissionMode = "default" | "accept_edits" | "yolo";
 export type View = "new" | "settings" | "run";
+
+export interface LlmSettingsView {
+  providerId: string;
+  baseUrl: string;
+  defaultModel: string;
+  models: string[];
+  hasApiKey: boolean;
+  apiKeyHint?: string | null;
+}
+
+export interface UpdateLlmSettingsRequest {
+  providerId: string;
+  baseUrl: string;
+  defaultModel: string;
+  models: string[];
+  apiKey?: string;
+}

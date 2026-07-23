@@ -19,7 +19,22 @@ import {
   IconSearch,
   IconSkills,
 } from "@/lib/icons";
-import type { Branch, McpServer, PermissionMode, Repo, Run, Skill } from "@/lib/types";
+import {
+  DEFAULT_MODEL_ID,
+  loadSelectedModel,
+  modelLabel,
+  modelsForPicker,
+  saveSelectedModel,
+} from "@/lib/models";
+import type {
+  Branch,
+  LlmSettingsView,
+  McpServer,
+  PermissionMode,
+  Repo,
+  Run,
+  Skill,
+} from "@/lib/types";
 import { useToast } from "./Toast";
 
 const SKILLS: Skill[] = [
@@ -27,6 +42,12 @@ const SKILLS: Skill[] = [
   { id: "fix", label: "Fix bugs", insert: "/fix " },
   { id: "test", label: "Add tests", insert: "/test " },
   { id: "docs", label: "Write docs", insert: "/docs " },
+];
+
+const PERMISSION_MODES: { id: PermissionMode; label: string }[] = [
+  { id: "default", label: "default" },
+  { id: "accept_edits", label: "accept_edits" },
+  { id: "yolo", label: "yolo" },
 ];
 
 function loadMcpServers(): McpServer[] {
@@ -69,10 +90,11 @@ export function NewAgent(props: NewAgentProps) {
   const [error, setError] = useState("");
   const [starting, setStarting] = useState(false);
 
-  const [openMenu, setOpenMenu] = useState<"project" | "branch" | "attach" | null>(null);
-  const [attachPanel, setAttachPanel] = useState<"skills" | "mcp" | null>(null);
+  const [openMenu, setOpenMenu] = useState<"project" | "branch" | "attach" | "model" | null>(null);
+  const [attachPanel, setAttachPanel] = useState<"skills" | "mcp" | "permission" | null>(null);
   const [projectQuery, setProjectQuery] = useState("");
   const [branchQuery, setBranchQuery] = useState("");
+  const [modelQuery, setModelQuery] = useState("");
   const [projectIndex, setProjectIndex] = useState(-1);
   const [branchIndex, setBranchIndex] = useState(-1);
   const [mcpQuery, setMcpQuery] = useState("");
@@ -80,8 +102,39 @@ export function NewAgent(props: NewAgentProps) {
   const [branchesByRepoId, setBranchesByRepoId] = useState<Record<string, Branch[]>>({});
   const [branchLoading, setBranchLoading] = useState(false);
   const [branchOverride, setBranchOverride] = useState<Record<string, string>>({});
+  const [selectedModel, setSelectedModel] = useState(DEFAULT_MODEL_ID);
+  const [llmSettings, setLlmSettings] = useState<LlmSettingsView | null>(null);
 
-  useEffect(() => setMcpServers(loadMcpServers()), []);
+  useEffect(() => {
+    setMcpServers(loadMcpServers());
+    setSelectedModel(loadSelectedModel());
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const view = await api<LlmSettingsView>("/api/v1/settings/llm");
+        if (cancelled) return;
+        setLlmSettings(view);
+        const models = modelsForPicker(view);
+        const current = loadSelectedModel();
+        if (current === DEFAULT_MODEL_ID && view.defaultModel) {
+          setSelectedModel(view.defaultModel);
+          saveSelectedModel(view.defaultModel);
+        } else if (current !== DEFAULT_MODEL_ID && models.length && !models.includes(current)) {
+          const next = view.defaultModel || models[0] || DEFAULT_MODEL_ID;
+          setSelectedModel(next);
+          saveSelectedModel(next);
+        }
+      } catch {
+        if (!cancelled) setLlmSettings(null);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const selectedRepo = useMemo(() => repos.find((r) => r.id === selectedRepoId) || null, [repos, selectedRepoId]);
 
@@ -109,11 +162,19 @@ export function NewAgent(props: NewAgentProps) {
     localStorage.setItem("zc.mcpServers", JSON.stringify(servers));
   }, []);
 
+  const selectModel = useCallback((id: string) => {
+    setSelectedModel(id);
+    saveSelectedModel(id);
+    setOpenMenu(null);
+    setModelQuery("");
+  }, []);
+
   const closeMenus = useCallback(() => {
     setOpenMenu(null);
     setAttachPanel(null);
     setProjectIndex(-1);
     setBranchIndex(-1);
+    setModelQuery("");
   }, []);
 
   useEffect(() => {
@@ -221,6 +282,7 @@ export function NewAgent(props: NewAgentProps) {
           repositoryId: selectedRepoId,
           prompt: text,
           baseRef: selectedBranch,
+          model: selectedModel,
           permissionMode,
         }),
       });
@@ -231,7 +293,7 @@ export function NewAgent(props: NewAgentProps) {
     } finally {
       setStarting(false);
     }
-  }, [selectedRepoId, prompt, selectedBranch, permissionMode, openProjectMenu, props]);
+  }, [selectedRepoId, prompt, selectedBranch, selectedModel, permissionMode, openProjectMenu, props]);
 
   const canStart = Boolean(selectedRepoId) && Boolean(prompt.trim()) && !starting;
 
@@ -251,6 +313,13 @@ export function NewAgent(props: NewAgentProps) {
     const q = mcpQuery.trim().toLowerCase();
     return mcpServers.filter((s) => !q || s.name.toLowerCase().includes(q));
   }, [mcpServers, mcpQuery]);
+
+  const pickerModels = useMemo(() => modelsForPicker(llmSettings), [llmSettings]);
+
+  const filteredModels = useMemo(() => {
+    const q = modelQuery.trim().toLowerCase();
+    return pickerModels.filter((m) => !q || m.toLowerCase().includes(q));
+  }, [pickerModels, modelQuery]);
 
   return (
     <div className="grid h-full place-items-center overflow-auto bg-canvas px-5 pb-12 pt-8">
@@ -517,6 +586,18 @@ export function NewAgent(props: NewAgentProps) {
                       <span className="min-w-0 flex-1">MCP Servers</span>
                       <IconChevronRight className="h-3.5 w-3.5 shrink-0 text-muted" />
                     </button>
+                    <div className="menu-sep" />
+                    <button
+                      type="button"
+                      className={`menu-item ${attachPanel === "permission" ? "bg-secondary" : ""}`}
+                      onClick={() => setAttachPanel(attachPanel === "permission" ? null : "permission")}
+                    >
+                      <span className="min-w-0 flex-1">Permission</span>
+                      <span className="max-w-[72px] shrink-0 overflow-hidden text-ellipsis whitespace-nowrap text-[11px] text-muted">
+                        {permissionMode}
+                      </span>
+                      <IconChevronRight className="h-3.5 w-3.5 shrink-0 text-muted" />
+                    </button>
                     {attachPanel === "skills" && (
                       <div className="absolute bottom-0 left-[calc(100%+6px)] z-[46] w-[280px] overflow-hidden rounded-xl border border-line bg-canvas shadow-menu max-[720px]:bottom-[calc(100%+6px)] max-[720px]:left-0 max-[720px]:w-[min(280px,calc(100vw-48px))]" role="menu">
                         <div className="max-h-[260px] overflow-auto p-1.5">
@@ -613,6 +694,29 @@ export function NewAgent(props: NewAgentProps) {
                         </div>
                       </div>
                     )}
+                    {attachPanel === "permission" && (
+                      <div className="absolute bottom-0 left-[calc(100%+6px)] z-[46] w-[220px] overflow-hidden rounded-xl border border-line bg-canvas shadow-menu max-[720px]:bottom-[calc(100%+6px)] max-[720px]:left-0 max-[720px]:w-[min(220px,calc(100vw-48px))]" role="menu">
+                        <div className="p-1.5">
+                          {PERMISSION_MODES.map((mode) => (
+                            <button
+                              key={mode.id}
+                              type="button"
+                              className="menu-item"
+                              onClick={() => {
+                                props.onSetPermissionMode(mode.id);
+                                setOpenMenu(null);
+                                setAttachPanel(null);
+                              }}
+                            >
+                              <span className="min-w-0 flex-1">{mode.label}</span>
+                              {permissionMode === mode.id && (
+                                <IconCheck className="h-3.5 w-3.5 shrink-0 text-ink" />
+                              )}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                    )}
                   </div>
                 )}
                 <input
@@ -635,18 +739,74 @@ export function NewAgent(props: NewAgentProps) {
                   }}
                 />
               </div>
-              <button
-                type="button"
-                className="inline-flex h-7 items-center gap-1 rounded-md px-2 text-[12.5px] font-medium text-muted hover:bg-secondary hover:text-ink"
-                title="Permission mode"
-                onClick={() => {
-                  const modes: PermissionMode[] = ["default", "accept_edits", "yolo"];
-                  props.onSetPermissionMode(modes[(modes.indexOf(permissionMode) + 1) % modes.length]);
-                }}
-              >
-                <span>{permissionMode}</span>
-                <IconChevronDown className="h-3 w-3" />
-              </button>
+              <div className="relative">
+                <button
+                  type="button"
+                  className="inline-flex h-7 max-w-[220px] items-center gap-1 rounded-md px-2 text-[12.5px] font-medium text-muted hover:bg-secondary hover:text-ink"
+                  title="Model"
+                  aria-label="Model"
+                  aria-haspopup="menu"
+                  aria-expanded={openMenu === "model"}
+                  onClick={() => {
+                    if (openMenu === "model") {
+                      setOpenMenu(null);
+                      setModelQuery("");
+                    } else {
+                      setOpenMenu("model");
+                      setAttachPanel(null);
+                      setModelQuery("");
+                    }
+                  }}
+                >
+                  <span className="min-w-0 overflow-hidden text-ellipsis whitespace-nowrap">
+                    {modelLabel(selectedModel)}
+                  </span>
+                  <IconChevronDown className="h-3 w-3 shrink-0" />
+                </button>
+                {openMenu === "model" && (
+                  <div
+                    className="absolute bottom-[calc(100%+8px)] left-0 z-[45] w-[min(280px,calc(100vw-48px))] overflow-hidden rounded-xl border border-line bg-canvas shadow-menu"
+                    role="menu"
+                    aria-label="Models"
+                  >
+                    <div className="flex items-center gap-2 border-b border-line px-3 py-2.5">
+                      <IconSearch className="h-3.5 w-3.5 shrink-0 text-placeholder" />
+                      <input
+                        className="min-w-0 flex-1 border-0 bg-transparent text-[13px] outline-none"
+                        type="search"
+                        placeholder="Search models"
+                        autoComplete="off"
+                        autoFocus
+                        value={modelQuery}
+                        onChange={(e) => setModelQuery(e.target.value)}
+                      />
+                    </div>
+                    <div className="max-h-[280px] overflow-auto p-1.5">
+                      {!filteredModels.length ? (
+                        <p className="m-0 px-2 py-1.5 text-xs text-muted">
+                          No models — configure in Settings
+                        </p>
+                      ) : (
+                        filteredModels.map((m) => (
+                          <button
+                            key={m}
+                            type="button"
+                            className="picker-item"
+                            onClick={() => selectModel(m)}
+                          >
+                            <span className="min-w-0 flex-1 overflow-hidden text-ellipsis whitespace-nowrap font-mono text-[12.5px]">
+                              {m}
+                            </span>
+                            {m === selectedModel && (
+                              <IconCheck className="h-3.5 w-3.5 shrink-0 text-ink" />
+                            )}
+                          </button>
+                        ))
+                      )}
+                    </div>
+                  </div>
+                )}
+              </div>
             </div>
             <button
               type="button"

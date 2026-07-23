@@ -1,4 +1,5 @@
 mod github;
+mod llm;
 
 use std::path::Path;
 
@@ -72,6 +73,10 @@ impl Db {
             (
                 "005_purge_mock_github",
                 include_str!("../../../migrations/005_purge_mock_github.sql"),
+            ),
+            (
+                "006_user_llm_settings",
+                include_str!("../../../migrations/006_user_llm_settings.sql"),
             ),
         ];
 

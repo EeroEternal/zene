@@ -28,6 +28,9 @@ if [[ -z "${ZENE_BIN:-}" && -x /workspace/target/debug/zene ]]; then
 fi
 export ZENE_CLOUD_ACP_YOLO="${ZENE_CLOUD_ACP_YOLO:-1}"
 
+echo "building web UI (apps/web → dist)..."
+(cd "$ROOT/apps/web" && npm run build)
+
 echo "building zene-cloud-api and zene-cloud-worker..."
 cargo build -p zene-cloud-api -p zene-cloud-worker
 
