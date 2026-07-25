@@ -54,11 +54,11 @@ pub struct Cli {
     #[arg(long)]
     yolo: bool,
 
-    /// Removed: ratatui TUI. Use `zene` / `zene web` instead.
+    /// Removed: ratatui TUI. Use `zene` / `zene --repl` instead.
     #[arg(long, hide = true)]
     tui: bool,
 
-    /// Launch the debug line REPL (not the default UI)
+    /// Launch the interactive line REPL
     #[arg(long)]
     repl: bool,
 
@@ -110,12 +110,6 @@ enum Commands {
     },
     /// Speak Agent Client Protocol (ACP) over stdio JSON-RPC
     Acp,
-    /// Launch the local Web Agent UI via `zene-gateway`
-    Web {
-        /// Extra arguments forwarded to `zene-gateway` (e.g. `--port 8787 --yolo`)
-        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
-        gateway_args: Vec<String>,
-    },
 }
 
 #[derive(Subcommand)]
@@ -134,8 +128,8 @@ fn init_tracing() {
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli_args: Vec<String> = std::env::args().collect();
-    let is_repl = cli_args.iter().any(|a| a == "--repl");
     let is_acp = cli_args.iter().any(|a| a == "acp");
+    let is_headless = cli_args.iter().any(|a| a == "-p" || a == "--prompt");
     if is_acp {
         // Keep ACP stdout reserved for NDJSON; send logs to stderr.
         tracing_subscriber::fmt()
@@ -150,7 +144,7 @@ async fn main() -> Result<()> {
         init_tracing();
     }
 
-    if is_repl {
+    if !is_acp && !is_headless {
         ctrlc::set_handler(|| {
             if cancel_active_turn() {
                 eprintln!("\n[cancelled]");
@@ -163,8 +157,8 @@ async fn main() -> Result<()> {
     let cli = Cli::parse();
     if cli.tui {
         anyhow::bail!(
-            "the ratatui TUI was removed; run `zene` or `zene web` for the Web Agent UI, \
-             `zene --repl` for the debug REPL, or `zene -p` for headless prompts"
+            "the ratatui TUI was removed; run `zene` or `zene --repl` for the interactive REPL, \
+             or `zene -p` for headless prompts. Cloud Console lives at cloud/apps/web."
         );
     }
     let workdir = std::env::current_dir().context("resolve current directory")?;
@@ -234,26 +228,10 @@ async fn main() -> Result<()> {
             acp::run_acp(workdir, cli.yolo).await?;
             return Ok(());
         }
-        Some(Commands::Web { gateway_args }) => {
-            run_web_gateway(gateway_args)?;
-            return Ok(());
-        }
         None => {}
     }
 
-    // Default interactive entry is the Web Agent UI (phase E).
-    if cli.prompt.is_none() && !cli.repl {
-        let mut gateway_args = Vec::new();
-        if cli.yolo {
-            gateway_args.push("--yolo".to_string());
-        }
-        if cli.sandbox.as_deref() == Some("off") {
-            gateway_args.push("--sandbox-off".to_string());
-        }
-        run_web_gateway(gateway_args)?;
-        return Ok(());
-    }
-
+    // Default interactive entry is the line REPL.
     let config = ZeneConfig::load(&workdir).map_err(|err| anyhow::anyhow!(err.to_string()))?;
     let mut session = if let Some(ref id) = cli.session {
         SessionRecord::load(id).context("load session")?
@@ -412,89 +390,3 @@ async fn run_mcp_doctor(workdir: &std::path::Path) -> Result<()> {
     Ok(())
 }
 
-fn run_web_gateway(gateway_args: Vec<String>) -> Result<()> {
-    let gateway = resolve_gateway_bin();
-    let zene_bin = resolve_web_zene_bin(&gateway);
-    eprintln!("zene launcher: {}", std::env::current_exe().map(|p| p.display().to_string()).unwrap_or_else(|_| "?".into()));
-    eprintln!("zene binary: {}", zene_bin.display());
-    eprintln!("zene-gateway: {}", gateway.display());
-    let mut cmd = std::process::Command::new(&gateway);
-    if !gateway_args
-        .iter()
-        .any(|arg| arg == "--zene-bin" || arg.starts_with("--zene-bin="))
-    {
-        cmd.arg("--zene-bin").arg(&zene_bin);
-    }
-    cmd.args(&gateway_args);
-    let status = cmd
-        .status()
-        .with_context(|| format!("failed to launch {}", gateway.display()))?;
-    if !status.success() {
-        std::process::exit(status.code().unwrap_or(1));
-    }
-    Ok(())
-}
-
-fn resolve_gateway_bin() -> PathBuf {
-    if let Ok(path) = std::env::var("ZENE_GATEWAY_BIN") {
-        return PathBuf::from(path);
-    }
-    if let Some(local_gateway) = local_release_bin("zene-gateway") {
-        if local_gateway.exists() && should_prefer_local_release() {
-            return local_gateway;
-        }
-    }
-    if let Ok(exe) = std::env::current_exe() {
-        let sibling = exe.with_file_name("zene-gateway");
-        if sibling.exists() {
-            return sibling;
-        }
-        #[cfg(windows)]
-        {
-            let sibling = exe.with_file_name("zene-gateway.exe");
-            if sibling.exists() {
-                return sibling;
-            }
-        }
-    }
-    PathBuf::from("zene-gateway")
-}
-
-fn resolve_web_zene_bin(gateway: &std::path::Path) -> PathBuf {
-    if let Ok(path) = std::env::var("ZENE_BIN") {
-        return PathBuf::from(path);
-    }
-    if let Some(parent) = gateway.parent() {
-        let paired = parent.join("zene");
-        if paired.exists() {
-            return paired;
-        }
-        #[cfg(windows)]
-        {
-            let paired = parent.join("zene.exe");
-            if paired.exists() {
-                return paired;
-            }
-        }
-    }
-    if let Some(local_zene) = local_release_bin("zene") {
-        if local_zene.exists() && should_prefer_local_release() {
-            return local_zene;
-        }
-    }
-    std::env::current_exe().unwrap_or_else(|_| PathBuf::from("zene"))
-}
-
-fn local_release_bin(name: &str) -> Option<PathBuf> {
-    std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".local/bin").join(name))
-}
-
-fn should_prefer_local_release() -> bool {
-    let Ok(launcher) = std::env::current_exe() else {
-        return false;
-    };
-    let Some(local_zene) = local_release_bin("zene") else {
-        return false;
-    };
-    local_zene.exists() && launcher != local_zene
-}

@@ -213,7 +213,7 @@ export function Settings(props: SettingsProps) {
                     type="button"
                     className={`h-7 rounded-md px-2.5 text-[12.5px] font-medium transition-colors ${
                       providerId === p.id
-                        ? "bg-ink text-white"
+                        ? "bg-primary text-white"
                         : "bg-secondary text-muted hover:bg-active hover:text-ink"
                     }`}
                     onClick={() => selectPreset(p.id)}

@@ -171,14 +171,14 @@ export function Sidebar(props: SidebarProps) {
   return (
     <aside
       className={[
-        "flex min-h-0 select-none flex-col border-r border-line bg-secondary",
+        "flex min-h-0 select-none flex-col border-r border-line bg-canvas",
         "max-[980px]:fixed max-[980px]:bottom-0 max-[980px]:left-0 max-[980px]:top-0 max-[980px]:z-40 max-[980px]:w-[min(272px,86vw)] max-[980px]:shadow-card max-[980px]:transition-transform",
         drawerOpen ? "max-[980px]:translate-x-0" : "max-[980px]:-translate-x-[105%]",
       ].join(" ")}
     >
       <div className="border-b border-line p-2">
         <div className="flex items-center gap-2.5 px-2.5 pb-3 pt-2">
-          <div className="grid h-7 w-7 place-items-center rounded-lg bg-ink text-[13px] font-bold text-white">Z</div>
+          <div className="grid h-7 w-7 place-items-center rounded-sm bg-ink text-[13px] font-bold text-white">Z</div>
           <div>
             <strong className="text-sm tracking-[-0.01em] text-ink">Zene Cloud</strong>
             <span className="block text-[11px] font-normal text-placeholder">Cloud Agents</span>
@@ -186,7 +186,7 @@ export function Sidebar(props: SidebarProps) {
         </div>
         <button
           type="button"
-          className="mb-1 w-full rounded-lg px-2.5 py-2 text-left text-[13px] font-medium text-[#3C4043] transition-colors hover:bg-tertiary hover:text-ink"
+          className="btn-primary mb-1 w-full rounded-sm px-2.5 py-2 text-left text-[13px] font-semibold"
           onClick={props.onNewAgent}
         >
           New Agent
@@ -209,7 +209,7 @@ export function Sidebar(props: SidebarProps) {
                 key={run.id}
                 type="button"
                 className={[
-                  "mb-0.5 w-full rounded-lg text-left text-[13px] text-ink transition-colors hover:bg-tertiary",
+                  "mb-0.5 w-full rounded-sm text-left text-[13px] text-ink transition-colors hover:bg-secondary",
                   listCompact ? "px-2 py-1.5" : "px-2.5 py-2",
                   run.id === currentRunId ? "bg-active font-medium" : "",
                 ].join(" ")}

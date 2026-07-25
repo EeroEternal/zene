@@ -1,7 +1,6 @@
 [workspace]
 members = [
     "apps/cli",
-    "apps/gateway",
     "crates/config",
     "crates/llm",
     "crates/sandbox",

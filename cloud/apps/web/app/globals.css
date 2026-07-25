@@ -2,6 +2,18 @@
 @tailwind components;
 @tailwind utilities;
 
+:root {
+  --color-primary: #0090ff;
+  --color-primary-hover: #0588f0;
+  --color-ink: #1c2024;
+  --color-muted: #60646c;
+  --color-bg: #fcfcfd;
+  --color-surface: #f9f9fb;
+  --color-tint: #e6f4fe;
+  --color-line: #e6e8eb;
+  --sidebar-w: 272px;
+}
+
 @layer base {
   html,
   body {
@@ -21,10 +33,10 @@
 
 @layer components {
   .btn {
-    @apply rounded-md border border-line bg-canvas px-3 py-2 font-medium text-ink transition-colors hover:bg-secondary disabled:opacity-40 disabled:hover:bg-canvas;
+    @apply rounded-sm border border-line-strong bg-canvas px-3 py-2 font-semibold text-ink transition-colors hover:bg-secondary disabled:opacity-40 disabled:hover:bg-canvas;
   }
   .btn-primary {
-    @apply border-ink bg-ink text-white hover:border-ink-hover hover:bg-ink-hover disabled:hover:border-ink disabled:hover:bg-ink;
+    @apply border-primary bg-primary text-white hover:border-primary-hover hover:bg-primary-hover disabled:hover:border-primary disabled:hover:bg-primary;
   }
   .btn-danger {
     @apply border-danger-line text-danger hover:bg-danger-soft disabled:hover:bg-canvas;
@@ -33,22 +45,22 @@
     @apply px-2.5 py-1.5 text-xs;
   }
   .field-input {
-    @apply w-full rounded-md border border-line-strong bg-canvas px-3 py-[9px] text-ink outline-none transition-colors focus:border-ink focus:shadow-[0_0_0_1px_#202124];
+    @apply w-full rounded-sm border border-line-strong bg-canvas px-3 py-[9px] text-ink outline-none transition-colors focus:border-primary focus:shadow-[0_0_0_3px_#E6F4FE];
   }
   .field-label {
-    @apply mb-1.5 mt-3 block text-[11px] font-semibold uppercase tracking-[.04em] text-muted;
+    @apply mb-1.5 mt-3 block text-[11px] font-semibold tracking-[.02em] text-muted;
   }
   .menu-card {
-    @apply rounded-xl border border-line bg-canvas p-1.5 shadow-menu;
+    @apply rounded-md border border-line bg-canvas p-1.5 shadow-menu;
   }
   .menu-item {
-    @apply flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-left text-[13px] text-ink hover:bg-secondary;
+    @apply flex w-full items-center gap-2.5 rounded-sm px-2.5 py-2 text-left text-[13px] text-ink hover:bg-secondary;
   }
   .picker-item {
-    @apply flex w-full items-center gap-2.5 rounded-lg p-2 text-left text-[13px] font-normal text-ink hover:bg-secondary;
+    @apply flex w-full items-center gap-2.5 rounded-sm p-2 text-left text-[13px] font-normal text-ink hover:bg-secondary;
   }
   .picker-item-active {
-    @apply bg-secondary;
+    @apply bg-active;
   }
   .menu-label {
     @apply px-2.5 pb-1 pt-2 text-[11px] font-medium text-placeholder;

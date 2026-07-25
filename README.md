@@ -7,7 +7,7 @@ Zene is a local coding agent CLI written in Rust. It runs in your project direct
 From the repo:
 
 ```bash
-./install.sh
+./scripts/install.sh
 ```
 
 Or manually:
@@ -16,10 +16,10 @@ Or manually:
 cargo install --path apps/cli --locked
 ```
 
-Pre-built binaries are published on [GitHub Releases](https://github.com/ParaTensor/zene/releases) when a version tag (`v*`) is pushed. Each release includes `zene` and `zene-gateway` for Linux and macOS (x86_64 + Apple Silicon). Download install (no compile):
+Pre-built binaries are published on [GitHub Releases](https://github.com/ParaTensor/zene/releases) when a version tag (`v*`) is pushed. Each release includes `zene` for Linux and macOS (x86_64 + Apple Silicon). Download install (no compile):
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/ParaTensor/zene/main/install-release.sh | bash
+curl -fsSL https://raw.githubusercontent.com/ParaTensor/zene/main/scripts/install-release.sh | bash
 ```
 
 Or run directly without installing:
@@ -112,7 +112,7 @@ Skills live under `.agents/skills/*/SKILL.md`. Zene lists discovered skills in t
 
 ```bash
 cd your-project
-zene                   # opens local Web Agent UI (zene-gateway)
+zene                   # interactive line REPL
 ```
 
 CLI commands:
@@ -121,19 +121,13 @@ CLI commands:
 zene sessions          # list saved sessions for current workdir
 zene config            # show config paths
 zene -p "prompt"       # headless single prompt
-zene --yolo            # auto-approve Write / Edit / Bash (also forwarded to web)
+zene --yolo            # auto-approve Write / Edit / Bash
 zene --sandbox strict  # Keel profile: off | workspace | read-only | strict | custom
-zene acp               # Agent Client Protocol over stdio (for editors / gateway)
-zene web --yolo --sandbox-off   # explicit Web Agent launch
-zene --repl            # debug line REPL (not the default UI)
+zene acp               # Agent Client Protocol over stdio (for editors / Cloud workers)
+zene --repl            # same as bare `zene` (explicit REPL)
 ```
 
-```bash
-cargo run -p zene-cli -- --yolo --sandbox-off
-# open the printed http://127.0.0.1:8787/#token=... URL
-```
-
-`zene-gateway` is a thin local HTTP bridge: the Web UI prefers SSE and falls back to long-polling; the gateway speaks ACP NDJSON to a `zene acp` child process. Journals persist under `~/.zene/gateway` for restart/attach recovery. UI sources live in `apps/web-agent/`. See [docs/WEB_AGENT_GATEWAY.md](docs/WEB_AGENT_GATEWAY.md), [docs/GATEWAY_OPS.md](docs/GATEWAY_OPS.md), and [docs/TUI_MIGRATION.md](docs/TUI_MIGRATION.md).
+See [docs/TUI_MIGRATION.md](docs/TUI_MIGRATION.md) for the move away from TUI / local Web Agent.
 
 ## Cloud Platform
 
@@ -150,8 +144,8 @@ cd cloud && ./scripts/dev.sh
 
 ```
 zene/
-├── apps/cli/          # web / headless / ACP / debug REPL entrypoint
-├── apps/gateway/      # local HTTP gateway for Web Agent UI
+├── apps/cli/          # REPL / headless / ACP entrypoint
+├── cloud/apps/web/    # Cloud Console UI
 └── crates/
     ├── core/          # agent turn loop, hooks
     ├── llm/           # OpenAI-compatible (unigateway-sdk from crates.io) + Anthropic clients

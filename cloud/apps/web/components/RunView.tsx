@@ -641,7 +641,7 @@ export function RunView({
                   {isActive ? (
                     <button
                       type="button"
-                      className="inline-flex h-6 w-6 items-center justify-center rounded-full bg-ink text-white hover:bg-ink-hover disabled:opacity-35"
+                      className="inline-flex h-6 w-6 items-center justify-center rounded-sm bg-primary text-white hover:bg-primary-hover disabled:opacity-35"
                       title="Stop"
                       aria-label="Stop"
                       disabled={cancelling}
@@ -652,7 +652,7 @@ export function RunView({
                   ) : (
                     <button
                       type="button"
-                      className="inline-flex h-6 w-6 items-center justify-center rounded-full bg-ink text-white hover:bg-ink-hover disabled:opacity-35 disabled:hover:bg-ink"
+                      className="inline-flex h-6 w-6 items-center justify-center rounded-sm bg-primary text-white hover:bg-primary-hover disabled:opacity-35 disabled:hover:bg-primary"
                       title="Send"
                       aria-label="Send"
                       disabled={!canSend}

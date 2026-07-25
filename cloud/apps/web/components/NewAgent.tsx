@@ -541,7 +541,7 @@ export function NewAgent(props: NewAgentProps) {
           </div>
         )}
 
-        <div className="rounded-[14px] border border-line-strong bg-canvas p-3 pb-2.5 shadow-card focus-within:shadow-[0_0_0_1px_#DADCE0]">
+        <div className="rounded-md border border-line-strong bg-canvas p-3 pb-2.5 shadow-card focus-within:border-primary focus-within:shadow-[0_0_0_3px_#E6F4FE]">
           <textarea
             ref={promptRef}
             className="block max-h-[200px] min-h-[72px] w-full resize-none border-0 bg-transparent px-1 pb-2.5 pt-0.5 text-sm leading-normal text-ink outline-none"
@@ -866,7 +866,7 @@ export function NewAgent(props: NewAgentProps) {
             </div>
             <button
               type="button"
-              className="inline-flex h-8 w-8 items-center justify-center rounded-full bg-ink text-white hover:bg-ink-hover disabled:opacity-35 disabled:hover:bg-ink"
+              className="inline-flex h-8 w-8 items-center justify-center rounded-sm bg-primary text-white hover:bg-primary-hover disabled:opacity-35 disabled:hover:bg-primary"
               title={llmReady ? "Start agent" : "Set API key first"}
               aria-label="Start agent"
               disabled={!canStart}

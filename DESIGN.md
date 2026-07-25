@@ -1,26 +1,29 @@
 # Zene Design System
 
-**Console UI 唯一规范入口**（对齐 [XEnsemble DESIGN.md](https://github.com/ParaTensor/XEnsemble/blob/main/DESIGN.md) / ParaRouter Console 面）。`AGENTS.md` 与 Cursor 规则仅指向本文；**完整细则见 [`docs/Designs.md`](docs/Designs.md)**。
+**Console UI 唯一规范入口**。完整细则见 [`docs/Designs.md`](docs/Designs.md)。视觉系统以 [`docs/design/`](docs/design/) 为准（Cursor 风格 AI 工作区）。
 
-后端与网关协议以 `docs/WEB_AGENT_GATEWAY.md` 等架构文档为准；勿在本文重复 API 契约。
+后端与 Cloud 协议以架构文档为准；勿在本文重复 API 契约。
 
 ## Surfaces
 
-### Console（authenticated / local agent）
+### Console（Cloud）
 
-本地 Web Agent（`apps/web-agent` → `zene-gateway`）、Cloud Console（`cloud/apps/web`）等控制台界面。
+Cloud Console（`cloud/apps/web`）是唯一控制台界面。
 
-- **Accent**：black / zinc，**不用**紫色营销色、青绿霓虹、大面积 glow
-- **Palette**：Morandi 浅色或等价 `zinc-*`（不用 `gray-*` / `blue-*` / `purple-*` 作 Console chrome）
-- **字体**：`Inter`（UI）；等宽 `Menlo, Monaco, Consolas…`（代码 / 终端输出）
-- **密度**：页面区块 `space-y-6` 量级；顶栏固定 `h-12`（48px）
-- **圆角**：控件 `rounded-md`（6–8px）；卡片 / 弹窗 `rounded-lg` / `rounded-xl`（8–12px）
-- **Shadow**：卡片 / 弹窗 `shadow-sm`；backdrop `bg-black/50`，**无** blur
-- **Shell**：侧栏固定 **272px**（`#F4F5F6`）+ 白主区；中央主内容装在 `rounded-xl border shadow-sm` 卡片内（XEnsemble Sessions 终端卡位；Zene 用对话区替代终端）
+- **Accent / Primary**：`#0090FF`（主操作、焦点、选中指示）
+- **Ink**：`#1C2024`（主文字与关键信息）
+- **Canvas / Surface**：`#FCFCFD` / `#F9F9FB` / `#FFFFFF`
+- **字体**：`Inter`（UI）；`JetBrains Mono`（路径、代码、计数）
+- **密度**：顶栏约 48–56px；侧栏 **272px**；列表行高 28–32px；间距 4 / 8 / 12 / 16 / 24
+- **圆角**：2 / 4 / 8px（控件与面板）；避免大面积圆角营销卡片
+- **层级**：1px 边界优先于阴影；卡片阴影极轻 `0 1px 2px rgba(0,0,0,.05)`
+- **Shell**：侧栏 + 顶栏 + 主区；Run 为对话左 + 代码/变更右（保持现有信息架构）
+
+拒绝：渐变壳、玻璃拟态、大面积装饰插画、Gold/Manrope 旧 Atelier 营销语言作为 Console 默认。
 
 ### 非 Console 例外
 
-Login / Register 等公开认证页可用居中卡片（`max-w-sm`），仍用 Console token，勿引入另一套品牌色。
+Login / Register 可用居中卡片，仍用同一套 token。
 
 ## 实现对照
 
@@ -28,56 +31,43 @@ Login / Register 等公开认证页可用居中卡片（`max-w-sm`），仍用 C
 |------|------|
 | 设计入口 | 本文 `DESIGN.md` |
 | 完整细则 | `docs/Designs.md` |
-| Local Agent UI | `apps/web-agent/index.html`（零构建，经 gateway `include_str!` 嵌入） |
-| Cloud Console | `cloud/apps/web/dist/index.html` |
-| Morandi token 参考 | XEnsemble `web/src/lib/consoleTheme.js` |
+| Cloud Console | `cloud/apps/web/` |
+| 对照稿 | `docs/design/` |
 
 ## 核心原则
 
-1. **Content first** — 数据与操作优先于装饰
-2. **Token reuse** — 共用 CSS 变量 / 类名语义，禁止每页自造主色
-3. **表单** — 大写分区标签 + 输入；密钥 `font-mono`
-4. **结构化弹窗** — Header / Body / Footer；固定宽度档位
-5. **反馈** — 优先 toast / 顶栏状态点；禁止页面内联大红大绿 banner 作为主反馈
-6. **页面稳定性** — 加载与状态切换不得导致可感知 layout shift；预留固定尺寸槽位
+1. **边界优先** — 用发丝线分区，而不是重阴影堆叠
+2. **蓝色只做动作** — `#0090FF` 用于主按钮、焦点、选中；语义色留给成功/警告/错误软底
+3. **紧凑可扫** — 技术信息用等宽字体；列表与工具栏保持 IDE 密度
+4. **Token reuse** — Tailwind 语义色 / CSS 变量共用，禁止每页自造主色
+5. **页面稳定** — 状态切换不得导致可感知 layout shift；过渡 ≤ 150ms
 
-## 页面稳定性
-
-Console 在连接、会话切换、面板开关时**不得出现可感知的布局位移**。
-
-- 弹窗：固定档位宽度；Header / Footer 固定分区；Body 单独滚动
-- 列表：Status / Actions 列宽固定；行内 loading 用同尺寸 spinner 原位替换
-- 动画：过渡 ≤ `150ms`；禁止用动画掩盖布局跳动
-
-## 配色（Console chrome）
+## 配色速查
 
 | 角色 | Token |
 |------|-------|
-| Canvas | `#FFFFFF` |
-| Sidebar / secondary | `#F4F5F6` |
-| Tertiary | `#FAFBFC` |
-| Active | `#E8EAED` |
-| 主文字 | `#202124` |
-| 次文字 | `#5F6368` |
-| Placeholder | `#9AA0A6` |
-| 边线 | `#E8EAED` / `#DADCE0` |
-| 主操作 | `#202124`（黑 / zinc-900） |
-| 输入 focus | `border` + `ring` 用 `#202124` 或 `#5B8DB8`（二选一，全站统一） |
-| Running / OK | `#4A7C59` |
-| Danger | `#C06C5D` / `#FDECEA` |
+| Primary | `#0090FF` |
+| Accent | `#0588F0` |
+| Ink | `#1C2024` |
+| Muted | `#60646C` |
+| Canvas | `#FCFCFD` |
+| Surface | `#F9F9FB` |
+| White / panel | `#FFFFFF` |
+| Selected / tint | `#E6F4FE` |
+| Line | `#E6E8EB` |
+| Success soft | `#E0FFE0` |
+| Warning soft | `#FEF8E3` |
+| Error soft | `#FEE8E7` |
+| Info soft | `#E8F0FE` |
 
-## 布局骨架（Console）
+## 布局骨架（现有 Console IA）
 
 ```
 ┌─────────────┬──────────────────────────────────────────┐
 │ Sidebar     │ Topbar (h-12)                            │
 │ 272px       ├──────────────────────────────────────────┤
-│ New Agent   │ ┌─ Main card (rounded-xl) ─────┐ ┌ Panel┐│
-│ Search      │ │ Conversation / Agent stream  │ │ Act. ││
-│ Sessions /  │ │ …                            │ │ …    ││
-│ Agents      │ │ Composer                     │ └──────┘│
-│ Account     │ └──────────────────────────────┘         │
+│ New Agent   │ New: 居中 Composer                       │
+│ Agents      │ Run: Chat (左) │ Code / Diff (右)         │
+│ Profile     │ Settings: 居中表单卡片                   │
 └─────────────┴──────────────────────────────────────────┘
 ```
-
-中间主卡在 XEnsemble 为 Web Terminal；在 Zene 为 **对话 / Agent 流**。右侧可选 Activity / Files / Overview 面板。

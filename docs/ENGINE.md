@@ -171,18 +171,9 @@ Before/after compaction, checkpoints are saved under `~/.zene/sessions/<id>/comp
 
 Stdout is reserved for protocol frames; logs go to stderr.
 
-## HTTP Gateway (Web Agent)
+## Cloud ACP bridge
 
-`zene-gateway` is a thin local HTTP adapter in front of `zene acp` (see `docs/WEB_AGENT_GATEWAY.md`):
-
-- Default bind: `127.0.0.1` with a generated `X-Zene-Token`
-- `POST /api/v1/agents/{id}/messages` forwards raw ACP JSON-RPC frames to the child stdin
-- `GET /api/v1/agents/{id}/events?cursor=&waitMs=` long-polls a cursored event journal fed by child stdout
-- `GET /api/v1/agents/{id}/events/stream` is optional SSE; clients must fall back to long-polling
-- Controller lease (`/lease`, heartbeat, release) serializes multi-tab writes via `X-Zene-Client-Id`
-- When the Web client advertises `terminal`, the gateway hosts ACP `terminal/*` locally and mirrors output as `gateway.terminal` events
-- WebSocket is intentionally not required
-- The gateway does not own Agent loop / tools / sessions — those stay in Zene
+Cloud workers speak ACP to a `zene acp` child via `cloud/crates/acp-bridge`. There is no local browser gateway; the product UI is Cloud Console (`cloud/apps/web`).
 
 ## LLM layer
 

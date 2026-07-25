@@ -31,7 +31,6 @@ esac
 INSTALL_DIR="$HOME/.local/bin"
 mkdir -p "$INSTALL_DIR"
 ZENE_PATH="$INSTALL_DIR/zene"
-GATEWAY_PATH="$INSTALL_DIR/zene-gateway"
 
 install_binary() {
   local url="$1"
@@ -51,35 +50,30 @@ install_binary() {
 if [ -n "$TARGET" ]; then
   echo "Detected platform: $OS ($ARCH)"
   echo "Fetching latest release tag from GitHub..."
-  
-  # Fetch latest release tag
+
   LATEST_TAG=$(curl -sfI https://github.com/ParaTensor/zene/releases/latest | grep -i "location:" | grep -oE "tag/v[0-9.]+" | cut -d/ -f2 || echo "")
-  
-  # Fallback to a default version if API fails
+
   if [ -z "$LATEST_TAG" ]; then
     LATEST_TAG="v0.1.0"
   fi
-  
+
   ZENE_URL="https://github.com/ParaTensor/zene/releases/download/${LATEST_TAG}/zene-${TARGET}"
-  GATEWAY_URL="https://github.com/ParaTensor/zene/releases/download/${LATEST_TAG}/zene-gateway-${TARGET}"
-  
-    if install_binary "$ZENE_URL" "$ZENE_PATH" "zene" \
-    && install_binary "$GATEWAY_URL" "$GATEWAY_PATH" "zene-gateway"; then
-    # Check macOS Quarantine attribute
+
+  if install_binary "$ZENE_URL" "$ZENE_PATH" "zene"; then
     if [ "$OS" = "Darwin" ]; then
       if command -v xattr &> /dev/null; then
         xattr -d com.apple.quarantine "$ZENE_PATH" 2>/dev/null || true
-        xattr -d com.apple.quarantine "$GATEWAY_PATH" 2>/dev/null || true
       fi
     fi
 
     LEGACY_DIR="$HOME/.cargo/bin"
     for legacy in "$LEGACY_DIR/zene" "$LEGACY_DIR/zene-gateway"; do
       if [ -f "$legacy" ]; then
-        echo "⚠ Removing older Cargo install: $legacy"
+        echo "⚠ Removing older install: $legacy"
         rm -f "$legacy"
       fi
     done
+    rm -f "$INSTALL_DIR/zene-gateway" 2>/dev/null || true
 
     SHELL_RC=""
     case "${SHELL:-}" in
@@ -93,10 +87,10 @@ if [ -n "$TARGET" ]; then
       echo "$PATH_HINT" >> "$SHELL_RC"
       echo "✓ Added $PATH_HINT to $SHELL_RC"
     fi
-    
+
     echo "=== Installation Completed ==="
     echo "Installed to $INSTALL_DIR"
-    echo "Run: $ZENE_PATH web --yolo --sandbox-off"
+    echo "Run: zene --repl   or   zene -p \"your prompt\""
     echo "If 'zene' still resolves to an old path, open a new terminal or run: hash -r"
     exit 0
   else
@@ -109,19 +103,16 @@ fi
 # 3. Source compilation fallback
 echo "=== Building from Source ==="
 
-# Check Rust/Cargo
 if ! command -v cargo &> /dev/null; then
   echo "Rust/Cargo not found. Installing via rustup..."
   curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+  # shellcheck disable=SC1091
   source "$HOME/.cargo/env"
 fi
 
 echo "Installing Zene from GitHub..."
-if cargo install --git https://github.com/ParaTensor/zene --locked zene-cli \
-  && cargo install --git https://github.com/ParaTensor/zene --locked zene-gateway --bin zene-gateway; then
-  # Cargo installs to ~/.cargo/bin
+if cargo install --git https://github.com/ParaTensor/zene --locked zene-cli; then
   echo "✓ zene installed to ~/.cargo/bin/zene"
-  echo "✓ zene-gateway installed to ~/.cargo/bin/zene-gateway"
   echo "=== Installation Completed ==="
   echo "Make sure ~/.cargo/bin is in your shell PATH."
 else

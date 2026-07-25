@@ -1,37 +1,19 @@
-# 从 TUI 迁移到 Web Agent
+# 从 TUI / 本地 Web Agent 到 CLI 与 Cloud
 
-Zene 已移除 ratatui TUI。默认交互入口是本地 Web Agent（`zene-gateway`）。
+Zene 已移除 ratatui TUI 与本地 Web Agent（`zene-gateway` / `apps/web-agent`）。
 
-## 怎么启动
+## 本地交互
 
-```bash
-zene                      # 等同于 zene web（默认）
-zene web --yolo --sandbox-off
-zene -p "fix the suite" # headless
-zene acp                  # 编辑器 / Gateway 用的 ACP stdio
-zene --repl               # 调试用行 REPL（非默认 UI）
-```
+| 场景 | 命令 |
+|------|------|
+| 交互 REPL | `zene` 或 `zene --repl` |
+| 无头单次提示 | `zene -p "…"` |
+| ACP（编辑器 / Cloud worker） | `zene acp` |
 
-旧命令 `zene --tui` 会退出并提示改用 Web。
+## Cloud Console
 
-## 能力对照
+浏览器产品界面在 `cloud/apps/web/`，由 `zene-cloud-api` 服务；生产见 `cloud/deploy/`。
 
-| 原 TUI | Web Agent |
-|--------|-----------|
-| 会话创建 / 列表 | Sessions 面板 + New / load |
-| 恢复上下文 | 每条会话的 Resume（`session/resume`，不重放） |
-| 历史重放 | 点击会话 → load（`session/load`） |
-| 流式对话 / thought | 主日志区 |
-| 权限审批 | Permission 卡片 |
-| AskUser | Ask user 卡片（选项 + 自由文本） |
-| Plan / Todo / 终端 | 右侧面板 |
-| 模式切换 | default / plan 按钮 |
+## 清理
 
-运维与恢复见 [GATEWAY_OPS.md](./GATEWAY_OPS.md)；协议设计见 [WEB_AGENT_GATEWAY.md](./WEB_AGENT_GATEWAY.md)。
-
-## 仍保留的非 Web 入口
-
-- `zene -p` / `--output-format json`：脚本与 CI
-- `zene acp`：标准 ACP
-- `zene sessions` / `config` / `export` / `mcp doctor`：运维
-- `zene --repl`：轻量调试 REPL（无完整权限/Plan UI）
+若本机仍有旧二进制，可删除 `~/.local/bin/zene-gateway` / `~/.cargo/bin/zene-gateway`，以及运行时目录 `~/.zene/gateway`。
