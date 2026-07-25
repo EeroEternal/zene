@@ -91,15 +91,16 @@ impl AcpBridge {
         env: &HashMap<String, String>,
     ) -> Result<(Self, mpsc::UnboundedReceiver<BridgeMsg>)> {
         let mut cmd = Command::new(zene_bin);
-        cmd.current_dir(workdir)
-            .arg("acp")
+        // Global flags must precede the `acp` subcommand (`zene --yolo acp`).
+        cmd.current_dir(workdir);
+        if yolo {
+            cmd.arg("--yolo");
+        }
+        cmd.arg("acp")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .kill_on_drop(true);
-        if yolo {
-            cmd.arg("--yolo");
-        }
         for (key, value) in env {
             cmd.env(key, value);
         }

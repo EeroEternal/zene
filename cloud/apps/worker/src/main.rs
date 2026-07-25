@@ -172,6 +172,12 @@ async fn execute_run(
     // b) clone or mock workspace
     set_status(client, cli, run_id, RunStatus::Cloning, None, None).await?;
     prepare_workspace(&workspace, &clone_auth).await?;
+    // ACP `session/new` validates cwd as an absolute filesystem path. Relative
+    // workspace roots (e.g. `./data/workspaces/<id>`) fail after `current_dir`
+    // is already set to that workspace.
+    let workspace = workspace
+        .canonicalize()
+        .with_context(|| format!("canonicalize workspace {}", workspace.display()))?;
 
     set_status(client, cli, run_id, RunStatus::Running, None, None).await?;
 
