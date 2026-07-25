@@ -218,20 +218,37 @@ export function RunView({
         setRun(r);
         const msgs = (await api<RunMessage[]>(`/api/v1/runs/${runId}/messages`)) || [];
         if (stopped) return;
-        setItems(
-          msgs.map((m) => ({
-            kind: "bubble" as const,
-            id: nextId.current++,
-            role: bubbleRole(m.role),
-            text: m.content,
-          })),
-        );
-        hasAssistantTail.current = false;
         const hist = await api<{ events?: RunEvent[]; nextSeq?: number }>(
           `/api/v1/runs/${runId}/events?afterSeq=0`,
         );
         if (stopped) return;
-        for (const e of hist.events || []) handleEvent(e);
+        setItems([]);
+        hasAssistantTail.current = false;
+        const history = [
+          ...msgs.map((message) => ({
+            kind: "message" as const,
+            createdAt: message.createdAt,
+            message,
+            seq: -1,
+          })),
+          ...(hist.events || []).map((event) => ({
+            kind: "event" as const,
+            createdAt: event.createdAt,
+            event,
+            seq: event.seq,
+          })),
+        ].sort(
+          (a, b) =>
+            a.createdAt.localeCompare(b.createdAt) ||
+            (a.kind === b.kind ? a.seq - b.seq : a.kind === "message" ? -1 : 1),
+        );
+        for (const entry of history) {
+          if (entry.kind === "message") {
+            appendBubble(entry.message.role, entry.message.content);
+          } else {
+            handleEvent(entry.event);
+          }
+        }
         afterSeq.current = hist.nextSeq || afterSeq.current;
         await refreshApprovals();
         onRunsChanged();

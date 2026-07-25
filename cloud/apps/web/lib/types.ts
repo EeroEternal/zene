@@ -58,10 +58,12 @@ export interface Run {
 export interface RunMessage {
   role: string;
   content: string;
+  createdAt: string;
 }
 
 export interface RunEvent {
   seq: number;
+  createdAt: string;
   eventType?: string;
   event_type?: string;
   payload?: {
