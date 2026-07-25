@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+## v0.1.9 (2026-07-25)
+
+### Changed
+- Retire local Web Agent / `zene-gateway`; default CLI entry is REPL; Cloud Console adopts Cursor-style Inter / `#0090FF` tokens while keeping the existing layout IA.
+- Cloud Run page: wider Git/Files panel, narrower chat composer, Stop + Send available during active runs.
+- Install scripts moved under `scripts/`.
+
+### Fixed
+- Cloud Run follow-up: restore assistant history and chronological message order after refresh.
+- Real ACP worker: pass `--yolo` before the `acp` subcommand; canonicalize workspace cwd so `session/new` works with relative workspace roots.
+
 ## v0.1.8 (2026-07-25)
 
 ### Added
