@@ -127,9 +127,11 @@ export function RunView({
   const appendBubble = useCallback(
     (role: string, text: string) => {
       const r = bubbleRole(role);
-      setItems((prev) => [...prev, { kind: "bubble", id: nextId.current++, role: r, text }]);
+      const id = nextId.current++;
+      setItems((prev) => [...prev, { kind: "bubble", id, role: r, text }]);
       hasAssistantTail.current = r === "assistant";
       scrollMessages();
+      return id;
     },
     [scrollMessages],
   );
@@ -158,7 +160,7 @@ export function RunView({
   );
 
   const handleEvent = useCallback(
-    (event: RunEvent, live: boolean) => {
+    (event: RunEvent) => {
       const payload = event.payload || {};
       if (payload.event === "run.status" && payload.status) {
         setRun((prev) => {
@@ -172,7 +174,7 @@ export function RunView({
 
       const update = payload.params?.update;
       if (update) {
-        if (update.sessionUpdate === "agent_message_chunk" && live) {
+        if (update.sessionUpdate === "agent_message_chunk") {
           appendAssistantChunk(update.content?.text || "");
         } else if (update.sessionUpdate === "tool_call") {
           hasAssistantTail.current = false;
@@ -229,7 +231,7 @@ export function RunView({
           `/api/v1/runs/${runId}/events?afterSeq=0`,
         );
         if (stopped) return;
-        for (const e of hist.events || []) handleEvent(e, false);
+        for (const e of hist.events || []) handleEvent(e);
         afterSeq.current = hist.nextSeq || afterSeq.current;
         await refreshApprovals();
         onRunsChanged();
@@ -245,7 +247,7 @@ export function RunView({
           `/api/v1/runs/${runId}/events?afterSeq=${afterSeq.current}`,
         );
         for (const e of hist.events || []) {
-          handleEvent(e, true);
+          handleEvent(e);
           afterSeq.current = e.seq;
         }
         if (hist.nextSeq != null) afterSeq.current = hist.nextSeq;
@@ -314,7 +316,10 @@ export function RunView({
   const isActive = ACTIVE_STATUSES.has(statusKey);
   const isSetup = SETUP_STATUSES.has(statusKey);
   const setupCopy = isSetup ? setupStatusCopy(statusKey, repoName) : null;
-  const canSend = Boolean(followUp.trim()) && !sending && !isActive;
+  const cannotSend =
+    !run ||
+    ["created", "stopping", "failed", "timed_out", "cancelled"].includes(statusKey);
+  const canSend = Boolean(followUp.trim()) && !sending && !cannotSend;
 
   const autosize = useCallback(() => {
     const el = promptRef.current;
@@ -325,21 +330,23 @@ export function RunView({
 
   const sendFollowUp = useCallback(async () => {
     const text = followUp.trim();
-    if (!text) return;
+    if (!text || sending || cannotSend) return;
+    const optimisticId = appendBubble("user", text);
     setSending(true);
+    setFollowUp("");
     try {
-      appendBubble("user", text);
-      setFollowUp("");
       await api(`/api/v1/runs/${runId}/messages`, {
         method: "POST",
         body: JSON.stringify({ text, clientMessageId: crypto.randomUUID() }),
       });
     } catch (err) {
+      setItems((prev) => prev.filter((item) => item.id !== optimisticId));
+      setFollowUp(text);
       toast(err instanceof Error ? err.message : String(err), "error");
     } finally {
       setSending(false);
     }
-  }, [followUp, runId, appendBubble, toast]);
+  }, [followUp, sending, cannotSend, runId, appendBubble, toast]);
 
   const cancelRun = useCallback(async () => {
     setCancelling(true);
@@ -421,7 +428,7 @@ export function RunView({
             ref={messagesRef}
             className="flex flex-col gap-2 overflow-auto px-3 pb-1.5 pt-2"
           >
-            <div className="mx-auto flex w-full max-w-[720px] flex-col gap-2">
+            <div className="mx-auto flex w-full max-w-[620px] flex-col gap-2">
               {setupCopy && (
                 <div
                   className="flex items-start gap-3 self-stretch rounded-xl border border-line bg-tertiary px-3.5 py-3"
@@ -537,7 +544,7 @@ export function RunView({
             </div>
           </div>
           <div ref={composerRef} className="border-t border-line bg-canvas px-3 pb-2.5 pt-2">
-            <div className="mx-auto w-full max-w-[720px]">
+            <div className="mx-auto w-full max-w-[620px]">
               <div className="rounded-[10px] border border-line-strong bg-tertiary px-2 pb-1.5 pt-1.5 focus-within:border-ink/30 focus-within:bg-canvas">
                 <textarea
                   ref={promptRef}
@@ -638,18 +645,19 @@ export function RunView({
                       <span className="max-w-[140px] truncate font-mono">{run?.headBranch || "—"}</span>
                     </span>
                   </div>
-                  {isActive ? (
-                    <button
-                      type="button"
-                      className="inline-flex h-6 w-6 items-center justify-center rounded-sm bg-primary text-white hover:bg-primary-hover disabled:opacity-35"
-                      title="Stop"
-                      aria-label="Stop"
-                      disabled={cancelling}
-                      onClick={cancelRun}
-                    >
-                      <IconStop className="h-2.5 w-2.5 fill-current" />
-                    </button>
-                  ) : (
+                  <div className="flex shrink-0 items-center gap-1">
+                    {isActive && (
+                      <button
+                        type="button"
+                        className="inline-flex h-6 w-6 items-center justify-center rounded-sm border border-line-strong bg-canvas text-muted hover:bg-secondary hover:text-ink disabled:opacity-35"
+                        title="Stop"
+                        aria-label="Stop"
+                        disabled={cancelling}
+                        onClick={cancelRun}
+                      >
+                        <IconStop className="h-2.5 w-2.5 fill-current" />
+                      </button>
+                    )}
                     <button
                       type="button"
                       className="inline-flex h-6 w-6 items-center justify-center rounded-sm bg-primary text-white hover:bg-primary-hover disabled:opacity-35 disabled:hover:bg-primary"
@@ -658,9 +666,13 @@ export function RunView({
                       disabled={!canSend}
                       onClick={sendFollowUp}
                     >
-                      <IconArrowUp className="h-3.5 w-3.5" />
+                      {sending ? (
+                        <IconLoader className="h-3.5 w-3.5 animate-spin" />
+                      ) : (
+                        <IconArrowUp className="h-3.5 w-3.5" />
+                      )}
                     </button>
-                  )}
+                  </div>
                 </div>
               </div>
             </div>
