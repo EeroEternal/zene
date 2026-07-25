@@ -2,8 +2,17 @@
 
 ## Unreleased
 
+## v0.1.8 (2026-07-25)
+
+### Added
+- Cloud Console: per-user BYOK LLM settings required before starting agents; worker injects credentials into `zene acp`.
+- Cloud: reclaim stale worker leases and re-queue abandoned runs; ACP idle session hold for follow-ups.
+- Cloud web design samples under `cloud/apps/web/sample/`.
+
 ### Changed
 - Bump Keel sandbox stack to `eero-keel-core` 0.0.15 (baseline credential denies, audit hash chain, Windows Job/AppContainer). On Linux, Zene strips Keel FS deny rules before `Space::create` to avoid Keel 0.0.15’s outer-`bwrap` + Landlock `pre_exec` userns failure; host `path_policy` still blocks credential reads.
+- Cloud Console UI: Changes / Diff / Git / Run / New Agent panels refined toward Cursor-style review workflow.
+- `cloud/scripts/dev.sh` auto-builds or locates `zene` and prefers real ACP (mock only when allowed).
 
 ## v0.1.7 (2026-07-20)
 

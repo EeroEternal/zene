@@ -25,6 +25,7 @@ interface SettingsProps {
   listCompact: boolean;
   repos: Repo[];
   selectedRepoId: string;
+  focusSection?: "models" | null;
   onSetListGroup: (group: ListGroup) => void;
   onSetListFilter: (filter: ListFilter, repoFilter?: string) => void;
   onSetListCompact: (compact: boolean) => void;
@@ -84,6 +85,7 @@ export function Settings(props: SettingsProps) {
     listCompact,
     repos,
     selectedRepoId,
+    focusSection,
   } = props;
   const [ghError, setGhError] = useState("");
 
@@ -108,6 +110,14 @@ export function Settings(props: SettingsProps) {
     setApiKeyHint(view.apiKeyHint || null);
     setApiKey("");
   }, []);
+
+  useEffect(() => {
+    if (focusSection !== "models") return;
+    const t = window.setTimeout(() => {
+      document.getElementById("settings-models")?.scrollIntoView({ behavior: "smooth", block: "start" });
+    }, 50);
+    return () => window.clearTimeout(t);
+  }, [focusSection]);
 
   useEffect(() => {
     let cancelled = false;
@@ -186,7 +196,7 @@ export function Settings(props: SettingsProps) {
           <SettingsRow label="Organization" hint={org?.name || "—"} />
         </div>
 
-        <div className="mb-4 rounded-xl border border-line bg-canvas px-[18px] py-4">
+        <div id="settings-models" className="mb-4 scroll-mt-4 rounded-xl border border-line bg-canvas px-[18px] py-4">
           <h3 className="mb-1 text-[13px] font-semibold uppercase tracking-[.04em] text-muted">Models</h3>
           <p className="mb-3 text-xs leading-relaxed text-muted">
             Bring your own OpenAI-compatible API key. Runs use this credential via the cloud worker.

@@ -2,6 +2,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+REPO_ROOT="$(cd "$ROOT/.." && pwd)"
 cd "$ROOT"
 
 mkdir -p data/workspaces
@@ -22,11 +23,40 @@ export ZENE_CLOUD_API_URL="${ZENE_CLOUD_API_URL:-http://127.0.0.1:8788}"
 export ZENE_CLOUD_PUBLIC_BASE_URL="${ZENE_CLOUD_PUBLIC_BASE_URL:-http://127.0.0.1:8788}"
 export ZENE_CLOUD_GITHUB_MODE="${ZENE_CLOUD_GITHUB_MODE:-live}"
 export ZENE_CLOUD_PUSH_PR="${ZENE_CLOUD_PUSH_PR:-1}"
-# Prefer workspace-built zene when present.
-if [[ -z "${ZENE_BIN:-}" && -x /workspace/target/debug/zene ]]; then
-  export ZENE_BIN=/workspace/target/debug/zene
-fi
+export ZENE_CLOUD_ALLOW_MOCK="${ZENE_CLOUD_ALLOW_MOCK:-1}"
 export ZENE_CLOUD_ACP_YOLO="${ZENE_CLOUD_ACP_YOLO:-1}"
+# Keep localhost API calls off the system proxy (Clash/V2Ray etc. often break claim).
+export NO_PROXY="${NO_PROXY:+$NO_PROXY,}127.0.0.1,localhost"
+export no_proxy="${no_proxy:+$no_proxy,}127.0.0.1,localhost"
+
+resolve_zene_bin() {
+  local candidates=(
+    "${ZENE_BIN:-}"
+    "$REPO_ROOT/target/debug/zene"
+    "$REPO_ROOT/target/release/zene"
+    "/workspace/target/debug/zene"
+    "/workspace/target/release/zene"
+  )
+  local path
+  for path in "${candidates[@]}"; do
+    if [[ -n "$path" && -x "$path" ]]; then
+      # Prefer absolute path for worker logs / restart stability.
+      (cd "$(dirname "$path")" && echo "$(pwd)/$(basename "$path")")
+      return 0
+    fi
+  done
+  return 1
+}
+
+if ! ZENE_BIN="$(resolve_zene_bin)"; then
+  echo "zene binary not found; building zene-cli at repo root..."
+  (cd "$REPO_ROOT" && cargo build -p zene-cli)
+  if ! ZENE_BIN="$(resolve_zene_bin)"; then
+    echo "error: failed to locate zene after build" >&2
+    exit 1
+  fi
+fi
+export ZENE_BIN
 
 echo "building web UI (apps/web → dist)..."
 (cd "$ROOT/apps/web" && npm run build)
@@ -51,13 +81,18 @@ API_PID=$!
 
 sleep 1
 
-./target/debug/zene-cloud-worker \
-  --api-url "$ZENE_CLOUD_API_URL" \
-  --worker-token "$ZENE_CLOUD_WORKER_TOKEN" \
-  --workspace-root "$ZENE_CLOUD_WORKSPACE_ROOT" \
-  ${ZENE_BIN:+--zene-bin "$ZENE_BIN"} \
-  --acp-yolo \
-  --push-pr &
+WORKER_ARGS=(
+  --api-url "$ZENE_CLOUD_API_URL"
+  --worker-token "$ZENE_CLOUD_WORKER_TOKEN"
+  --workspace-root "$ZENE_CLOUD_WORKSPACE_ROOT"
+  --zene-bin "$ZENE_BIN"
+  --acp-yolo
+  --push-pr
+)
+if [[ "$ZENE_CLOUD_ALLOW_MOCK" == "1" || "$ZENE_CLOUD_ALLOW_MOCK" == "true" ]]; then
+  WORKER_ARGS+=(--allow-mock)
+fi
+./target/debug/zene-cloud-worker "${WORKER_ARGS[@]}" &
 WORKER_PID=$!
 
 echo
@@ -73,9 +108,10 @@ if [[ "$ZENE_CLOUD_GITHUB_MODE" == "live" ]]; then
     echo "               2) cp github.env.example github.env && ./scripts/dev.sh"
   fi
 fi
-echo "  ZENE_BIN:    ${ZENE_BIN:-mock-agent}"
+echo "  ZENE_BIN:    $ZENE_BIN"
+echo "  Allow mock:  $ZENE_CLOUD_ALLOW_MOCK"
 echo
-echo "Flow: Register → Connect GitHub → New Agent → Approve/Files/Diff/PR"
+echo "Flow: Register → Settings (LLM BYOK) → Connect GitHub → New Agent → Approve/Files/Diff/PR"
 echo "Press Ctrl+C to stop."
 
 wait

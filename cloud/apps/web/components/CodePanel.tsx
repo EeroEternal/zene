@@ -19,9 +19,9 @@ export type IdeTab = "git" | "files";
 
 const STORAGE_KEY = "zene.codePanelWidth";
 const OPEN_KEY = "zene.codePanelOpen";
-const DEFAULT_W = 480;
-const MIN_W = 360;
-const MAX_W = 720;
+const DEFAULT_W = 520;
+const MIN_W = 380;
+const MAX_W = 860;
 
 export function useCodePanelWidth() {
   const [width, setWidth] = useState(DEFAULT_W);

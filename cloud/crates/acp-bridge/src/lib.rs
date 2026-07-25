@@ -314,6 +314,11 @@ impl AcpBridge {
         Ok(())
     }
 
+    /// Returns true if the ACP child has exited.
+    pub fn child_exited(&mut self) -> bool {
+        matches!(self.child.try_wait(), Ok(Some(_)))
+    }
+
     pub async fn kill(mut self) -> Result<()> {
         self.pump.abort();
         let _ = self.child.kill().await;

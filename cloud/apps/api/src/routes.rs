@@ -722,6 +722,15 @@ async fn create_run(
     AuthUser(user): AuthUser,
     Json(req): Json<CreateRunRequest>,
 ) -> Result<impl IntoResponse, AppError> {
+    let settings = state.db.get_user_llm_settings(user.id).await?;
+    let ready = settings
+        .as_ref()
+        .is_some_and(|s| !s.api_key.trim().is_empty() && !s.base_url.trim().is_empty());
+    if !ready {
+        return Err(AppError::bad_request(
+            "Configure LLM API key and base URL in Settings before starting an agent",
+        ));
+    }
     let org = state.db.primary_org(user.id).await?;
     Ok(Json(state.db.create_run(org.id, user.id, req).await?))
 }

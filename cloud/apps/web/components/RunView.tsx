@@ -7,6 +7,7 @@ import {
   IconBranch,
   IconCheck,
   IconChevronDown,
+  IconLoader,
   IconPanelRight,
   IconPlus,
   IconSearch,
@@ -22,6 +23,7 @@ import {
 import type { Approval, LlmSettingsView, Repo, Run, RunEvent, RunMessage } from "@/lib/types";
 import { CodePanel, useCodePanelWidth } from "./CodePanel";
 import { repoLabel } from "./Sidebar";
+import { StatusPill } from "./StatusPill";
 import { useToast } from "./Toast";
 
 const ACTIVE_STATUSES = new Set([
@@ -33,6 +35,36 @@ const ACTIVE_STATUSES = new Set([
   "waiting_for_approval",
   "waiting_for_user",
 ]);
+
+const SETUP_STATUSES = new Set(["queued", "provisioning", "starting", "cloning"]);
+
+function setupStatusCopy(status: string, repo?: string): { title: string; detail: string } {
+  const repoLabel = repo && repo !== "—" ? repo : "repository";
+  switch (status) {
+    case "cloning":
+      return {
+        title: `Cloning ${repoLabel}`,
+        detail:
+          "Downloading the repository into a local workspace. Large repos can take several minutes — the agent starts after clone finishes.",
+      };
+    case "queued":
+      return {
+        title: "Waiting for a worker",
+        detail: "Your task is queued. A worker will pick it up shortly.",
+      };
+    case "provisioning":
+    case "starting":
+      return {
+        title: "Starting agent",
+        detail: "Preparing the workspace and launching the coding agent.",
+      };
+    default:
+      return {
+        title: status,
+        detail: "Setting up your agent session…",
+      };
+  }
+}
 
 type TimelineItem =
   | { kind: "bubble"; id: number; role: string; text: string }
@@ -222,11 +254,26 @@ export function RunView({
       }
     }, 1000);
     const approvalTimer = setInterval(refreshApprovals, 2000);
+    const statusTimer = setInterval(async () => {
+      try {
+        const r = await api<Run>(`/api/v1/runs/${runId}`);
+        if (stopped) return;
+        setRun((prev) => {
+          if (!prev) return r;
+          if (prev.status === r.status && prev.headSha === r.headSha) return prev;
+          return { ...prev, ...r };
+        });
+        if (SETUP_STATUSES.has((r.status || "").toLowerCase())) onRunsChanged();
+      } catch (err) {
+        console.warn(err);
+      }
+    }, 2000);
 
     return () => {
       stopped = true;
       clearInterval(pollTimer);
       clearInterval(approvalTimer);
+      clearInterval(statusTimer);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [runId]);
@@ -262,7 +309,11 @@ export function RunView({
     return pickerModels.filter((m) => m.toLowerCase().includes(q));
   }, [pickerModels, modelQuery]);
 
-  const isActive = ACTIVE_STATUSES.has((run?.status || "").toLowerCase());
+  const repoName = run ? repoLabel(repos, run.repositoryId) : "";
+  const statusKey = (run?.status || "").toLowerCase();
+  const isActive = ACTIVE_STATUSES.has(statusKey);
+  const isSetup = SETUP_STATUSES.has(statusKey);
+  const setupCopy = isSetup ? setupStatusCopy(statusKey, repoName) : null;
   const canSend = Boolean(followUp.trim()) && !sending && !isActive;
 
   const autosize = useCallback(() => {
@@ -322,8 +373,6 @@ export function RunView({
     [runId, toast],
   );
 
-  const repoName = run ? repoLabel(repos, run.repositoryId) : "";
-
   return (
     <div
       className={[
@@ -353,8 +402,39 @@ export function RunView({
                 {repoName}
               </span>
             )}
+            {run?.status && <StatusPill status={run.status} />}
+            <div className="ml-auto flex shrink-0 items-center gap-1">
+              {!codePanelOpen && (
+                <button
+                  type="button"
+                  className="hidden h-7 w-7 items-center justify-center rounded-md text-muted hover:bg-secondary hover:text-ink min-[981px]:inline-flex"
+                  title="Show panel"
+                  aria-label="Show panel"
+                  onClick={onToggleCodePanel}
+                >
+                  <IconPanelRight className="h-3.5 w-3.5" />
+                </button>
+              )}
+            </div>
           </header>
-          <div ref={messagesRef} className="flex flex-col gap-2 overflow-auto px-3 pb-1.5 pt-2">
+          <div
+            ref={messagesRef}
+            className="flex flex-col gap-2 overflow-auto px-3 pb-1.5 pt-2"
+          >
+            <div className="mx-auto flex w-full max-w-[720px] flex-col gap-2">
+              {setupCopy && (
+                <div
+                  className="flex items-start gap-3 self-stretch rounded-xl border border-line bg-tertiary px-3.5 py-3"
+                  role="status"
+                  aria-live="polite"
+                >
+                  <IconLoader className="mt-0.5 h-4 w-4 shrink-0 animate-spin text-ink" />
+                  <div className="min-w-0">
+                    <div className="text-[13.5px] font-semibold text-ink">{setupCopy.title}</div>
+                    <p className="m-0 mt-1 text-[12.5px] leading-[1.45] text-muted">{setupCopy.detail}</p>
+                  </div>
+                </div>
+              )}
               {items.map((item) => {
                 if (item.kind === "approval") {
                   const ap = item.approval;
@@ -455,130 +535,133 @@ export function RunView({
                 );
               })}
             </div>
-          <div ref={composerRef} className="border-t border-line bg-canvas px-2.5 pb-2.5 pt-2">
-            <div className="rounded-[10px] border border-line-strong bg-tertiary px-2 pb-1.5 pt-1.5 focus-within:border-ink/30 focus-within:bg-canvas">
-              <textarea
-                ref={promptRef}
-                className="block max-h-32 min-h-[32px] w-full resize-none border-0 bg-transparent px-0.5 pb-1 pt-0 text-[13px] leading-normal text-ink outline-none"
-                rows={1}
-                placeholder="Send follow-up…"
-                aria-label="Follow-up"
-                value={followUp}
-                onChange={(e) => {
-                  setFollowUp(e.target.value);
-                  autosize();
-                }}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
-                    e.preventDefault();
-                    if (canSend) sendFollowUp();
-                  }
-                }}
-              />
-              <div className="flex items-center justify-between gap-2">
-                <div className="flex min-w-0 items-center gap-1">
-                  <button
-                    type="button"
-                    className="inline-flex h-6 w-6 items-center justify-center rounded-full bg-secondary text-muted hover:bg-active hover:text-ink"
-                    title="Add"
-                    aria-label="Add"
-                    onClick={() => toast("Attachments coming soon", "ok")}
-                  >
-                    <IconPlus className="h-3.5 w-3.5" />
-                  </button>
-                  <div className="relative">
+          </div>
+          <div ref={composerRef} className="border-t border-line bg-canvas px-3 pb-2.5 pt-2">
+            <div className="mx-auto w-full max-w-[720px]">
+              <div className="rounded-[10px] border border-line-strong bg-tertiary px-2 pb-1.5 pt-1.5 focus-within:border-ink/30 focus-within:bg-canvas">
+                <textarea
+                  ref={promptRef}
+                  className="block max-h-32 min-h-[32px] w-full resize-none border-0 bg-transparent px-0.5 pb-1 pt-0 text-[13px] leading-normal text-ink outline-none"
+                  rows={1}
+                  placeholder="Send follow-up…"
+                  aria-label="Follow-up"
+                  value={followUp}
+                  onChange={(e) => {
+                    setFollowUp(e.target.value);
+                    autosize();
+                  }}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
+                      e.preventDefault();
+                      if (canSend) sendFollowUp();
+                    }
+                  }}
+                />
+                <div className="flex items-center justify-between gap-2">
+                  <div className="flex min-w-0 items-center gap-1">
                     <button
                       type="button"
-                      className="inline-flex h-6 max-w-[200px] items-center gap-1 rounded-md px-1.5 text-[12px] font-medium text-muted hover:bg-secondary hover:text-ink"
-                      title="Model"
-                      aria-label="Model"
-                      aria-haspopup="menu"
-                      aria-expanded={modelMenuOpen}
-                      onClick={() => {
-                        setModelMenuOpen((o) => !o);
-                        setModelQuery("");
-                      }}
+                      className="inline-flex h-6 w-6 items-center justify-center rounded-full bg-secondary text-muted hover:bg-active hover:text-ink"
+                      title="Add"
+                      aria-label="Add"
+                      onClick={() => toast("Attachments coming soon", "ok")}
                     >
-                      <span className="min-w-0 overflow-hidden text-ellipsis whitespace-nowrap">
-                        {modelLabel(selectedModel)}
-                      </span>
-                      <IconChevronDown className="h-3 w-3 shrink-0" />
+                      <IconPlus className="h-3.5 w-3.5" />
                     </button>
-                    {modelMenuOpen && (
-                      <div
-                        className="absolute bottom-[calc(100%+8px)] left-0 z-[45] w-[min(280px,calc(100vw-48px))] overflow-hidden rounded-xl border border-line bg-canvas shadow-menu"
-                        role="menu"
-                        aria-label="Models"
+                    <div className="relative">
+                      <button
+                        type="button"
+                        className="inline-flex h-6 max-w-[200px] items-center gap-1 rounded-md px-1.5 text-[12px] font-medium text-muted hover:bg-secondary hover:text-ink"
+                        title="Model"
+                        aria-label="Model"
+                        aria-haspopup="menu"
+                        aria-expanded={modelMenuOpen}
+                        onClick={() => {
+                          setModelMenuOpen((o) => !o);
+                          setModelQuery("");
+                        }}
                       >
-                        <div className="flex items-center gap-2 border-b border-line px-3 py-2">
-                          <IconSearch className="h-3.5 w-3.5 shrink-0 text-placeholder" />
-                          <input
-                            className="min-w-0 flex-1 border-0 bg-transparent text-[13px] outline-none"
-                            type="search"
-                            placeholder="Search models"
-                            autoComplete="off"
-                            autoFocus
-                            value={modelQuery}
-                            onChange={(e) => setModelQuery(e.target.value)}
-                          />
+                        <span className="min-w-0 overflow-hidden text-ellipsis whitespace-nowrap">
+                          {modelLabel(selectedModel)}
+                        </span>
+                        <IconChevronDown className="h-3 w-3 shrink-0" />
+                      </button>
+                      {modelMenuOpen && (
+                        <div
+                          className="absolute bottom-[calc(100%+8px)] left-0 z-[45] w-[min(280px,calc(100vw-48px))] overflow-hidden rounded-xl border border-line bg-canvas shadow-menu"
+                          role="menu"
+                          aria-label="Models"
+                        >
+                          <div className="flex items-center gap-2 border-b border-line px-3 py-2">
+                            <IconSearch className="h-3.5 w-3.5 shrink-0 text-placeholder" />
+                            <input
+                              className="min-w-0 flex-1 border-0 bg-transparent text-[13px] outline-none"
+                              type="search"
+                              placeholder="Search models"
+                              autoComplete="off"
+                              autoFocus
+                              value={modelQuery}
+                              onChange={(e) => setModelQuery(e.target.value)}
+                            />
+                          </div>
+                          <div className="max-h-[280px] overflow-auto p-1.5">
+                            {!filteredModels.length ? (
+                              <p className="m-0 px-2 py-1.5 text-xs text-muted">No models — configure in Settings</p>
+                            ) : (
+                              filteredModels.map((m) => (
+                                <button
+                                  key={m}
+                                  type="button"
+                                  className="picker-item"
+                                  onClick={() => {
+                                    setSelectedModel(m);
+                                    saveSelectedModel(m);
+                                    setModelMenuOpen(false);
+                                    setModelQuery("");
+                                  }}
+                                >
+                                  <span className="min-w-0 flex-1 overflow-hidden text-ellipsis whitespace-nowrap font-mono text-[12.5px]">
+                                    {m}
+                                  </span>
+                                  {m === selectedModel && (
+                                    <IconCheck className="h-3.5 w-3.5 shrink-0 text-ink" />
+                                  )}
+                                </button>
+                              ))
+                            )}
+                          </div>
                         </div>
-                        <div className="max-h-[280px] overflow-auto p-1.5">
-                          {!filteredModels.length ? (
-                            <p className="m-0 px-2 py-1.5 text-xs text-muted">No models — configure in Settings</p>
-                          ) : (
-                            filteredModels.map((m) => (
-                              <button
-                                key={m}
-                                type="button"
-                                className="picker-item"
-                                onClick={() => {
-                                  setSelectedModel(m);
-                                  saveSelectedModel(m);
-                                  setModelMenuOpen(false);
-                                  setModelQuery("");
-                                }}
-                              >
-                                <span className="min-w-0 flex-1 overflow-hidden text-ellipsis whitespace-nowrap font-mono text-[12.5px]">
-                                  {m}
-                                </span>
-                                {m === selectedModel && (
-                                  <IconCheck className="h-3.5 w-3.5 shrink-0 text-ink" />
-                                )}
-                              </button>
-                            ))
-                          )}
-                        </div>
-                      </div>
-                    )}
+                      )}
+                    </div>
+                    <span className="ml-0.5 hidden items-center gap-1 text-[11px] text-placeholder min-[640px]:inline-flex">
+                      <IconBranch className="h-3 w-3" />
+                      <span className="max-w-[140px] truncate font-mono">{run?.headBranch || "—"}</span>
+                    </span>
                   </div>
-                  <span className="ml-0.5 hidden items-center gap-1 text-[11px] text-placeholder min-[640px]:inline-flex">
-                    <IconBranch className="h-3 w-3" />
-                    <span className="max-w-[140px] truncate font-mono">{run?.headBranch || "—"}</span>
-                  </span>
+                  {isActive ? (
+                    <button
+                      type="button"
+                      className="inline-flex h-6 w-6 items-center justify-center rounded-full bg-ink text-white hover:bg-ink-hover disabled:opacity-35"
+                      title="Stop"
+                      aria-label="Stop"
+                      disabled={cancelling}
+                      onClick={cancelRun}
+                    >
+                      <IconStop className="h-2.5 w-2.5 fill-current" />
+                    </button>
+                  ) : (
+                    <button
+                      type="button"
+                      className="inline-flex h-6 w-6 items-center justify-center rounded-full bg-ink text-white hover:bg-ink-hover disabled:opacity-35 disabled:hover:bg-ink"
+                      title="Send"
+                      aria-label="Send"
+                      disabled={!canSend}
+                      onClick={sendFollowUp}
+                    >
+                      <IconArrowUp className="h-3.5 w-3.5" />
+                    </button>
+                  )}
                 </div>
-                {isActive ? (
-                  <button
-                    type="button"
-                    className="inline-flex h-6 w-6 items-center justify-center rounded-full bg-ink text-white hover:bg-ink-hover disabled:opacity-35"
-                    title="Stop"
-                    aria-label="Stop"
-                    disabled={cancelling}
-                    onClick={cancelRun}
-                  >
-                    <IconStop className="h-2.5 w-2.5 fill-current" />
-                  </button>
-                ) : (
-                  <button
-                    type="button"
-                    className="inline-flex h-6 w-6 items-center justify-center rounded-full bg-ink text-white hover:bg-ink-hover disabled:opacity-35 disabled:hover:bg-ink"
-                    title="Send"
-                    aria-label="Send"
-                    disabled={!canSend}
-                    onClick={sendFollowUp}
-                  >
-                    <IconArrowUp className="h-3.5 w-3.5" />
-                  </button>
-                )}
               </div>
             </div>
           </div>
@@ -595,17 +678,6 @@ export function RunView({
             onWidthChange={setCodeWidth}
             onCollapse={onToggleCodePanel}
           />
-        )}
-        {!codePanelOpen && (
-          <button
-            type="button"
-            className="absolute right-0 top-1/2 z-20 hidden h-16 w-6 -translate-y-1/2 items-center justify-center rounded-l-md border border-r-0 border-line bg-secondary text-muted hover:bg-active hover:text-ink min-[981px]:flex"
-            title="Show panel"
-            aria-label="Show panel"
-            onClick={onToggleCodePanel}
-          >
-            <IconPanelRight className="h-3.5 w-3.5" />
-          </button>
         )}
     </div>
   );

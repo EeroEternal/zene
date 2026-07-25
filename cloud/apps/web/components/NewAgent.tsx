@@ -17,6 +17,7 @@ import {
   IconRefresh,
   IconRepo,
   IconSearch,
+  IconSettings,
   IconSkills,
 } from "@/lib/icons";
 import {
@@ -77,6 +78,7 @@ interface NewAgentProps {
   onConnectGithub: () => Promise<string>;
   onRefreshRepos: () => Promise<Repo[]>;
   onRunStarted: (runId: string) => void;
+  onOpenSettings: (section?: "models") => void;
 }
 
 export function NewAgent(props: NewAgentProps) {
@@ -266,8 +268,22 @@ export function NewAgent(props: NewAgentProps) {
     });
   }, []);
 
+  const llmReady = Boolean(llmSettings?.hasApiKey && llmSettings?.baseUrl?.trim());
+
+  const openLlmSettings = useCallback(() => {
+    setOpenMenu(null);
+    setModelQuery("");
+    props.onOpenSettings("models");
+  }, [props]);
+
   const startRun = useCallback(async () => {
     setError("");
+    if (!llmReady) {
+      setOpenMenu("model");
+      setAttachPanel(null);
+      setModelQuery("");
+      return;
+    }
     setStarting(true);
     try {
       if (!selectedRepoId) {
@@ -293,7 +309,16 @@ export function NewAgent(props: NewAgentProps) {
     } finally {
       setStarting(false);
     }
-  }, [selectedRepoId, prompt, selectedBranch, selectedModel, permissionMode, openProjectMenu, props]);
+  }, [
+    llmReady,
+    selectedRepoId,
+    prompt,
+    selectedBranch,
+    selectedModel,
+    permissionMode,
+    openProjectMenu,
+    props,
+  ]);
 
   const canStart = Boolean(selectedRepoId) && Boolean(prompt.trim()) && !starting;
 
@@ -742,8 +767,10 @@ export function NewAgent(props: NewAgentProps) {
               <div className="relative">
                 <button
                   type="button"
-                  className="inline-flex h-7 max-w-[220px] items-center gap-1 rounded-md px-2 text-[12.5px] font-medium text-muted hover:bg-secondary hover:text-ink"
-                  title="Model"
+                  className={`inline-flex h-7 max-w-[220px] items-center gap-1 rounded-md px-2 text-[12.5px] font-medium hover:bg-secondary hover:text-ink ${
+                    llmReady ? "text-muted" : "text-ink"
+                  }`}
+                  title={llmReady ? "Model" : "Set API key to run agents"}
                   aria-label="Model"
                   aria-haspopup="menu"
                   aria-expanded={openMenu === "model"}
@@ -759,7 +786,7 @@ export function NewAgent(props: NewAgentProps) {
                   }}
                 >
                   <span className="min-w-0 overflow-hidden text-ellipsis whitespace-nowrap">
-                    {modelLabel(selectedModel)}
+                    {llmReady ? modelLabel(selectedModel) : "Set API key"}
                   </span>
                   <IconChevronDown className="h-3 w-3 shrink-0" />
                 </button>
@@ -781,11 +808,27 @@ export function NewAgent(props: NewAgentProps) {
                         onChange={(e) => setModelQuery(e.target.value)}
                       />
                     </div>
+                    {!llmReady && llmSettings !== null && (
+                      <button
+                        type="button"
+                        className="flex w-full items-start gap-2.5 border-b border-line px-3 py-2.5 text-left hover:bg-secondary"
+                        onClick={openLlmSettings}
+                      >
+                        <IconSettings className="mt-0.5 h-3.5 w-3.5 shrink-0 text-ink" />
+                        <span className="min-w-0">
+                          <span className="block text-[13px] font-medium text-ink">
+                            Set API key &amp; models
+                          </span>
+                          <span className="mt-0.5 block text-[11.5px] leading-snug text-muted">
+                            Required before starting an agent
+                          </span>
+                        </span>
+                        <IconChevronRight className="mt-0.5 h-3.5 w-3.5 shrink-0 text-placeholder" />
+                      </button>
+                    )}
                     <div className="max-h-[280px] overflow-auto p-1.5">
                       {!filteredModels.length ? (
-                        <p className="m-0 px-2 py-1.5 text-xs text-muted">
-                          No models — configure in Settings
-                        </p>
+                        <p className="m-0 px-2 py-1.5 text-xs text-muted">No models yet</p>
                       ) : (
                         filteredModels.map((m) => (
                           <button
@@ -804,6 +847,19 @@ export function NewAgent(props: NewAgentProps) {
                         ))
                       )}
                     </div>
+                    <div className="border-t border-line p-1.5">
+                      <button
+                        type="button"
+                        className="picker-item"
+                        onClick={openLlmSettings}
+                      >
+                        <IconSettings className="h-3.5 w-3.5 shrink-0 text-muted" />
+                        <span className="min-w-0 flex-1 text-left text-[12.5px] text-ink">
+                          {llmReady ? "Manage API key & models" : "Configure in Settings"}
+                        </span>
+                        <IconChevronRight className="h-3.5 w-3.5 shrink-0 text-placeholder" />
+                      </button>
+                    </div>
                   </div>
                 )}
               </div>
@@ -811,7 +867,7 @@ export function NewAgent(props: NewAgentProps) {
             <button
               type="button"
               className="inline-flex h-8 w-8 items-center justify-center rounded-full bg-ink text-white hover:bg-ink-hover disabled:opacity-35 disabled:hover:bg-ink"
-              title="Start agent"
+              title={llmReady ? "Start agent" : "Set API key first"}
               aria-label="Start agent"
               disabled={!canStart}
               onClick={startRun}

@@ -15,6 +15,7 @@ import {
   GitBranch,
   HelpCircle,
   ListFilter,
+  Loader2,
   LogOut,
   Maximize2,
   Minimize2,
@@ -90,6 +91,7 @@ export const IconFilter = lucideIcon(ListFilter);
 export const IconFolder = lucideIcon(Folder);
 export const IconFolderOpen = lucideIcon(FolderOpen);
 export const IconHelp = lucideIcon(HelpCircle);
+export const IconLoader = lucideIcon(Loader2);
 export const IconLogout = lucideIcon(LogOut);
 export const IconMaximize = lucideIcon(Maximize2);
 export const IconMinimize = lucideIcon(Minimize2);

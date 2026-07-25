@@ -49,6 +49,7 @@ function AppInner() {
   const [runTitle, setRunTitle] = useState("New Agent");
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [openProjectMenuSignal, setOpenProjectMenuSignal] = useState(0);
+  const [settingsSection, setSettingsSection] = useState<"models" | null>(null);
   const { open: codePanelOpen, toggle: toggleCodePanel } = useCodePanelOpen();
 
   const githubConnected = useMemo(() => {
@@ -236,14 +237,18 @@ function AppInner() {
     refreshRepos().catch(() => {});
   }, [refreshRuns, refreshGithub, refreshRepos]);
 
-  const showSettings = useCallback(() => {
-    setCurrentRunId(null);
-    setView("settings");
-    setRunTitle("Settings");
-    setDrawerOpen(false);
-    refreshGithub();
-    refreshRepos().catch(() => {});
-  }, [refreshGithub, refreshRepos]);
+  const showSettings = useCallback(
+    (section?: "models") => {
+      setCurrentRunId(null);
+      setSettingsSection(section ?? null);
+      setView("settings");
+      setRunTitle("Settings");
+      setDrawerOpen(false);
+      refreshGithub();
+      refreshRepos().catch(() => {});
+    },
+    [refreshGithub, refreshRepos],
+  );
 
   const openRun = useCallback(
     (runId: string) => {
@@ -386,6 +391,7 @@ function AppInner() {
               onConnectGithub={connectGithub}
               onRefreshRepos={refreshRepos}
               onRunStarted={openRun}
+              onOpenSettings={showSettings}
             />
           )}
           {view === "settings" && (
@@ -400,6 +406,7 @@ function AppInner() {
               listCompact={listCompact}
               repos={repos}
               selectedRepoId={selectedRepoId}
+              focusSection={settingsSection}
               onSetListGroup={setListGroup}
               onSetListFilter={setListFilter}
               onSetListCompact={setListCompact}

@@ -8,7 +8,8 @@
 - GitHub 集成（默认 **live**；凭证可在 Settings 页面配置，也可用 env 覆盖）
 - Repository 同步 / 选择
 - Run 生命周期：创建、消息、取消、事件
-- Worker：clone（mock workspace 或真实 git）、真实 `zene acp` 或 MockAgent
+- Worker：clone（mock workspace 或真实 git）、默认真实 `zene acp`（缺二进制且 `ZENE_CLOUD_ALLOW_MOCK=1` 时才 MockAgent）
+- 用户 BYOK LLM（Settings → 注入 `zene acp` 环境变量）
 - Permission / AskUser 审批
 - Files / Diff / Push / Draft PR（Git Broker，mock 或 live）
 - Cursor 风格 Web UI
@@ -19,6 +20,8 @@
 cd cloud
 ./scripts/dev.sh
 ```
+
+`dev.sh` 会探测或构建仓库根的 `zene`（`../target/debug/zene`），并以真实 ACP 启动 worker。
 
 Web UI 源码在 `apps/web/`（Next.js + Tailwind CSS，静态导出）。修改后重新构建并提交 `dist/`：
 
@@ -33,9 +36,10 @@ npm run build   # next build && 导出到 dist/（API 直接静态托管）
 推荐演示路径：
 
 1. 注册账号
-2. 点击 **Connect GitHub (mock)**
-3. New Agent 选择仓库，输入任务并 Start
-4. 在 Run 页查看消息、审批、Files、Changes、PR
+2. **Settings** 配置 LLM（API key + base URL，如 DeepSeek / Custom）
+3. Connect GitHub
+4. New Agent 选择仓库，输入任务并 Start
+5. 在 Run 页查看消息、审批、Files、Changes、PR
 
 ## 环境变量
 
@@ -43,12 +47,14 @@ npm run build   # next build && 导出到 dist/（API 直接静态托管）
 |------|------|------|
 | `ZENE_CLOUD_GITHUB_MODE` | `live` | `live` 或 `mock` |
 | `ZENE_CLOUD_WORKER_TOKEN` | `dev-worker-token` | Worker 鉴权 |
-| `ZENE_BIN` | 自动探测 | 真实 `zene` 路径；缺失则 MockAgent |
+| `ZENE_BIN` | 自动探测/构建 | 真实 `zene` 路径 |
+| `ZENE_CLOUD_ALLOW_MOCK` | `0`（dev.sh 为 `1`） | 无 `zene` 时是否允许 MockAgent |
 | `ZENE_CLOUD_ACP_YOLO` | `1`（dev.sh） | 真实 ACP 自动批准工具 |
+| `ZENE_CLOUD_ACP_IDLE_SECS` | `600` | 主轮次结束后保留会话以接收 follow-up |
 | `ZENE_CLOUD_PUSH_PR` | `1` | 完成后自动 push + draft PR |
 | `GITHUB_CLIENT_ID/SECRET` | — | live OAuth |
 | `GITHUB_APP_ID` / `GITHUB_APP_PRIVATE_KEY_PATH` | — | live App |
-| `ZENE_API_KEY` 或 `ZENE_BASE_URL` | — | 真实 ACP 需要 LLM |
+| 用户 Settings LLM / `ZENE_API_KEY` | — | 真实 ACP 需要 LLM（优先 per-user BYOK） |
 
 ## Live GitHub（Cursor 同款流程）
 

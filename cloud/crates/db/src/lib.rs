@@ -482,11 +482,55 @@ impl Db {
         Ok(row.map(RunRow::into_run))
     }
 
+    pub async fn reclaim_stale_runs(&self) -> Result<u64> {
+        let now = Utc::now().to_rfc3339();
+        let mut tx = self.pool.begin().await?;
+        let stale = sqlx::query_scalar::<_, String>(
+            "SELECT DISTINCT run_id FROM run_attempts
+             WHERE finished_at IS NULL
+               AND lease_expires_at IS NOT NULL
+               AND lease_expires_at < ?",
+        )
+        .bind(&now)
+        .fetch_all(&mut *tx)
+        .await?;
+        if stale.is_empty() {
+            tx.commit().await?;
+            return Ok(0);
+        }
+        for run_id in &stale {
+            sqlx::query(
+                "UPDATE run_attempts
+                 SET status = 'expired', finished_at = ?, failure_code = 'lease_expired'
+                 WHERE run_id = ? AND finished_at IS NULL",
+            )
+            .bind(&now)
+            .bind(run_id)
+            .execute(&mut *tx)
+            .await?;
+            sqlx::query(
+                "UPDATE runs
+                 SET status = 'queued', status_version = status_version + 1,
+                     finished_at = NULL, last_error = 'worker lease expired; re-queued'
+                 WHERE id = ?
+                   AND status IN ('provisioning','starting','cloning','running')",
+            )
+            .bind(run_id)
+            .execute(&mut *tx)
+            .await?;
+        }
+        tx.commit().await?;
+        Ok(stale.len() as u64)
+    }
+
     pub async fn claim_next_run(
         &self,
         worker_id: &str,
         workspace_root: &Path,
     ) -> Result<Option<(Run, Uuid, i64, String)>> {
+        // Recover runs left mid-flight when a worker dies (common during long git clones).
+        let _ = self.reclaim_stale_runs().await;
+
         let mut tx = self.pool.begin().await?;
         let sql = format!(
             "SELECT {RUN_COLUMNS} FROM runs WHERE status = 'queued' ORDER BY created_at ASC LIMIT 1"
@@ -499,7 +543,13 @@ impl Db {
         };
         let run = row.into_run();
         let attempt_id = Uuid::new_v4();
-        let generation = 1i64;
+        let attempt = sqlx::query_scalar::<_, i64>(
+            "SELECT COALESCE(MAX(attempt), 0) + 1 FROM run_attempts WHERE run_id = ?",
+        )
+        .bind(run.id.to_string())
+        .fetch_one(&mut *tx)
+        .await?;
+        let generation = attempt;
         let now = Utc::now();
         let lease = now + Duration::seconds(60);
         sqlx::query(
@@ -518,7 +568,7 @@ impl Db {
         )
         .bind(attempt_id.to_string())
         .bind(run.id.to_string())
-        .bind(1)
+        .bind(attempt)
         .bind(generation)
         .bind(worker_id)
         .bind("running")

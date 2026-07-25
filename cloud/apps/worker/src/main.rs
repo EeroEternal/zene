@@ -42,6 +42,14 @@ struct Cli {
     #[arg(long, env = "ZENE_CLOUD_ACP_YOLO", default_value_t = false)]
     acp_yolo: bool,
 
+    /// Idle seconds after a prompt returns before ending the ACP session (follow-ups reset idle).
+    #[arg(long, env = "ZENE_CLOUD_ACP_IDLE_SECS", default_value_t = 600)]
+    acp_idle_secs: u64,
+
+    /// Allow in-process MockAgent when no zene binary is available.
+    #[arg(long, env = "ZENE_CLOUD_ALLOW_MOCK", default_value_t = false)]
+    allow_mock: bool,
+
     #[arg(long, default_value_t = 2)]
     poll_seconds: u64,
 
@@ -62,19 +70,31 @@ async fn main() -> Result<()> {
         .clone()
         .unwrap_or_else(|| format!("worker-{}", &Uuid::new_v4().to_string()[..8]));
     std::fs::create_dir_all(&cli.workspace_root)?;
-    let client = reqwest::Client::new();
+    // Local API must not go through HTTP(S)_PROXY (common on developer machines);
+    // otherwise claim/heartbeat get 502 from the proxy and runs stay queued forever.
+    let client = reqwest::Client::builder()
+        .no_proxy()
+        .build()
+        .context("build HTTP client")?;
     let zene_bin = resolve_zene_bin(cli.zene_bin.clone());
-    let has_process_llm = std::env::var("ZENE_API_KEY").is_ok()
-        || std::env::var("OPENAI_API_KEY").is_ok()
-        || std::env::var("ANTHROPIC_API_KEY").is_ok()
-        || std::env::var("ZENE_BASE_URL").is_ok();
+    let has_process_llm = has_process_llm_credentials();
     if zene_bin.is_some() && !has_process_llm {
         info!("no process-level LLM credentials; runs will use per-user BYOK when configured");
     }
     if let Some(path) = &zene_bin {
-        info!(path = %path.display(), yolo = cli.acp_yolo, "using real zene acp");
+        info!(
+            agent_mode = "real",
+            path = %path.display(),
+            yolo = cli.acp_yolo,
+            idle_secs = cli.acp_idle_secs,
+            "using real zene acp"
+        );
+    } else if cli.allow_mock {
+        warn!(agent_mode = "mock", "zene binary missing; using MockAgent (ZENE_CLOUD_ALLOW_MOCK=1)");
     } else {
-        warn!("using mock agent");
+        bail!(
+            "zene binary not found and ZENE_CLOUD_ALLOW_MOCK is disabled; set ZENE_BIN or build zene"
+        );
     }
 
     info!(%worker_id, api = %cli.api_url, "zene-cloud-worker started");
@@ -156,9 +176,13 @@ async fn execute_run(
     set_status(client, cli, run_id, RunStatus::Running, None, None).await?;
 
     let result = if let Some(bin) = zene_bin {
+        info!(run_id = %run_id, agent_mode = "real", "starting agent");
         run_with_real_acp(client, cli, claimed, &workspace, bin).await
-    } else {
+    } else if cli.allow_mock {
+        info!(run_id = %run_id, agent_mode = "mock", "starting agent");
         run_with_mock(client, cli, claimed, &workspace).await
+    } else {
+        bail!("zene binary not found and mock agent is disabled")
     };
 
     match result {
@@ -208,11 +232,43 @@ async fn fetch_clone_auth(
     Ok(response.json().await?)
 }
 
+async fn workspace_ready(workspace: &Path) -> bool {
+    if !workspace.join(".git").exists() {
+        return false;
+    }
+    // Partial/interrupted clones leave a .git dir with no usable checkout.
+    match run_git_output(workspace, &["rev-parse", "--verify", "HEAD"]).await {
+        Ok(sha) => !sha.trim().is_empty(),
+        Err(_) => false,
+    }
+}
+
+fn git_command() -> Command {
+    let mut cmd = Command::new("git");
+    // Developer proxies often throttle or stall github.com clones.
+    for key in [
+        "HTTP_PROXY",
+        "HTTPS_PROXY",
+        "ALL_PROXY",
+        "http_proxy",
+        "https_proxy",
+        "all_proxy",
+    ] {
+        cmd.env_remove(key);
+    }
+    cmd
+}
+
 async fn prepare_workspace(workspace: &Path, auth: &CloneAuthResponse) -> Result<()> {
-    if workspace.join(".git").exists() {
+    if workspace_ready(workspace).await {
         info!(path = %workspace.display(), "workspace already initialized");
         return Ok(());
     }
+    if workspace.exists() {
+        warn!(path = %workspace.display(), "removing incomplete workspace before clone");
+        let _ = tokio::fs::remove_dir_all(workspace).await;
+    }
+    std::fs::create_dir_all(workspace)?;
 
     if auth.mock {
         info!(path = %workspace.display(), "preparing mock git workspace");
@@ -255,10 +311,7 @@ async fn prepare_workspace(workspace: &Path, auth: &CloneAuthResponse) -> Result
         return Ok(());
     }
 
-    info!(url = %auth.clone_url, "cloning repository");
-    if workspace.exists() {
-        let _ = tokio::fs::remove_dir_all(workspace).await;
-    }
+    info!(url = %auth.clone_url, "cloning repository (shallow)");
     std::fs::create_dir_all(
         workspace
             .parent()
@@ -273,9 +326,11 @@ async fn prepare_workspace(workspace: &Path, auth: &CloneAuthResponse) -> Result
         }
     }
 
-    let status = Command::new("git")
+    let status = git_command()
         .args([
             "clone",
+            "--depth",
+            "1",
             "--branch",
             &auth.base_ref,
             "--single-branch",
@@ -464,6 +519,13 @@ fn llm_env_from_auth(auth: &LlmAuthResponse) -> HashMap<String, String> {
     env
 }
 
+fn has_process_llm_credentials() -> bool {
+    std::env::var("ZENE_API_KEY").is_ok()
+        || std::env::var("OPENAI_API_KEY").is_ok()
+        || std::env::var("ANTHROPIC_API_KEY").is_ok()
+        || std::env::var("ZENE_BASE_URL").is_ok()
+}
+
 async fn run_with_real_acp(
     client: &reqwest::Client,
     cli: &Cli,
@@ -487,12 +549,26 @@ async fn run_with_real_acp(
             llm_env_from_auth(&auth)
         }
         Ok(None) => {
-            info!(run_id = %run_id, "no user llm settings; inheriting worker env");
-            HashMap::new()
+            if has_process_llm_credentials() {
+                info!(run_id = %run_id, "no user llm settings; inheriting worker env");
+                HashMap::new()
+            } else {
+                bail!(
+                    "no LLM credentials: configure API key and base URL in Settings (BYOK), \
+                     or set ZENE_API_KEY / ZENE_BASE_URL on the worker"
+                );
+            }
         }
         Err(err) => {
-            warn!(run_id = %run_id, error = %err, "llm-auth failed; inheriting worker env");
-            HashMap::new()
+            if has_process_llm_credentials() {
+                warn!(run_id = %run_id, error = %err, "llm-auth failed; inheriting worker env");
+                HashMap::new()
+            } else {
+                bail!(
+                    "llm-auth failed and no process-level LLM credentials: {err}; \
+                     configure Settings → LLM before starting an agent"
+                );
+            }
         }
     };
 
@@ -582,9 +658,11 @@ async fn run_with_real_acp(
     });
 
     let cancelled = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let last_activity = std::sync::Arc::new(tokio::sync::Mutex::new(tokio::time::Instant::now()));
     let session_for_cancel = session_id.clone();
     let bridge_cancel = bridge.clone();
     let cancel_flag = cancelled.clone();
+    let activity_cmd = last_activity.clone();
     let client_cmd = client.clone();
     let cli_cmd = cli.api_url.clone();
     let token_cmd = cli.worker_token.clone();
@@ -603,11 +681,19 @@ async fn run_with_real_acp(
                         }
                         if cmd.kind == "prompt" {
                             if let Some(text) = cmd.text {
+                                {
+                                    let mut ts = activity_cmd.lock().await;
+                                    *ts = tokio::time::Instant::now();
+                                }
                                 let mut guard = bridge_cancel.lock().await;
                                 if let Some(b) = guard.as_mut() {
                                     if let Err(err) = b.prompt(&session_for_cancel, &text).await {
                                         warn!(error = %err, "follow-up prompt failed");
                                     }
+                                }
+                                {
+                                    let mut ts = activity_cmd.lock().await;
+                                    *ts = tokio::time::Instant::now();
                                 }
                             }
                         }
@@ -626,11 +712,34 @@ async fn run_with_real_acp(
             .await
             .context("session/prompt")?;
     }
+    {
+        let mut ts = last_activity.lock().await;
+        *ts = tokio::time::Instant::now();
+    }
 
-    // After the main prompt returns, wait briefly for follow-ups / cancel.
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
-    while tokio::time::Instant::now() < deadline {
+    // Keep the session alive for follow-ups until idle timeout, cancel, or child exit.
+    let idle = Duration::from_secs(cli.acp_idle_secs.max(1));
+    loop {
         if cancelled.load(std::sync::atomic::Ordering::SeqCst) {
+            break;
+        }
+        {
+            let mut guard = bridge.lock().await;
+            if let Some(b) = guard.as_mut() {
+                if b.child_exited() {
+                    info!(run_id = %run_id, "acp child exited");
+                    break;
+                }
+            } else {
+                break;
+            }
+        }
+        let elapsed = {
+            let ts = last_activity.lock().await;
+            ts.elapsed()
+        };
+        if elapsed >= idle {
+            info!(run_id = %run_id, idle_secs = cli.acp_idle_secs, "acp idle timeout");
             break;
         }
         tokio::time::sleep(Duration::from_millis(400)).await;
@@ -904,7 +1013,7 @@ async fn git_commit_all(workspace: &Path, title: &str) -> Result<Option<String>>
 }
 
 async fn run_git(workspace: &Path, args: &[&str]) -> Result<()> {
-    let output = Command::new("git")
+    let output = git_command()
         .current_dir(workspace)
         .args(args)
         .stdout(Stdio::piped())
@@ -920,7 +1029,7 @@ async fn run_git(workspace: &Path, args: &[&str]) -> Result<()> {
 }
 
 async fn run_git_output(workspace: &Path, args: &[&str]) -> Result<String> {
-    let output = Command::new("git")
+    let output = git_command()
         .current_dir(workspace)
         .args(args)
         .output()
