@@ -634,10 +634,17 @@ impl Agent {
         self.session.push_message(Message::user(user_input));
 
         let mut final_text = String::new();
+        // 0 = unlimited (do not use `for _ in 0..0`).
         let max_steps = self.config.max_turns;
         let mut completed = false;
+        let mut steps_done = 0u32;
 
-        for _ in 0..max_steps {
+        loop {
+            if max_steps > 0 && steps_done >= max_steps {
+                break;
+            }
+            steps_done = steps_done.saturating_add(1);
+
             if Self::check_cancelled(cancel)? {
                 return Err(turn::aborted_error());
             }
@@ -723,7 +730,23 @@ impl Agent {
         }
 
         if !completed {
-            return Err(turn::max_steps_error(max_steps));
+            // Soft-stop: leave the session usable for a follow-up instead of failing the run.
+            let notice = turn::max_turns_notice(max_steps);
+            let delta = if final_text.trim().is_empty() {
+                format!("\n{notice}\n")
+            } else {
+                format!("\n\n{notice}")
+            };
+            final_text = if final_text.trim().is_empty() {
+                notice
+            } else {
+                format!("{final_text}\n\n{notice}")
+            };
+            self.session.push_message(Message::assistant(&final_text));
+            emit_event(
+                &options.event_handler,
+                AgentEvent::TextDelta { delta },
+            );
         }
 
         self.sync_todos_to_session();

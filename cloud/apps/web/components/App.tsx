@@ -13,11 +13,12 @@ import type {
   User,
   View,
 } from "@/lib/types";
+import { IconPanelLeft } from "@/lib/icons";
 import { AuthView } from "./AuthView";
 import { useCodePanelOpen } from "./CodePanel";
 import { NewAgent } from "./NewAgent";
 import { RunView } from "./RunView";
-import { Settings } from "./Settings";
+import { Settings, type SettingsSection } from "./Settings";
 import { Sidebar } from "./Sidebar";
 import { ToastProvider, useToast } from "./Toast";
 
@@ -41,15 +42,16 @@ function AppInner() {
   const [listGroup, setListGroupState] = useState<ListGroup>("date");
   const [listFilter, setListFilterState] = useState<ListFilter>("none");
   const [listRepoFilter, setListRepoFilterState] = useState("");
-  const [listCompact, setListCompactState] = useState(false);
+  const [listCompact, setListCompactState] = useState(true);
   const [permissionMode, setPermissionMode] = useState<PermissionMode>("default");
 
   const [view, setView] = useState<View>("new");
   const [currentRunId, setCurrentRunId] = useState<string | null>(null);
   const [runTitle, setRunTitle] = useState("New Agent");
   const [drawerOpen, setDrawerOpen] = useState(false);
+  const [sidebarCollapsed, setSidebarCollapsedState] = useState(false);
   const [openProjectMenuSignal, setOpenProjectMenuSignal] = useState(0);
-  const [settingsSection, setSettingsSection] = useState<"models" | null>(null);
+  const [settingsSection, setSettingsSection] = useState<SettingsSection | null>(null);
   const { open: codePanelOpen, toggle: toggleCodePanel } = useCodePanelOpen();
 
   const githubConnected = useMemo(() => {
@@ -93,6 +95,16 @@ function AppInner() {
     setListCompactState(compact);
     localStorage.setItem("zc.listCompact", compact ? "1" : "0");
   }, []);
+
+  const setSidebarCollapsed = useCallback((collapsed: boolean) => {
+    setSidebarCollapsedState(collapsed);
+    localStorage.setItem("zc.sidebarCollapsed", collapsed ? "1" : "0");
+  }, []);
+
+  const openSidebar = useCallback(() => {
+    setSidebarCollapsed(false);
+    setDrawerOpen(true);
+  }, [setSidebarCollapsed]);
 
   const refreshRepos = useCallback(async () => {
     const list = (await api<Repo[]>("/api/v1/repositories")) || [];
@@ -144,26 +156,48 @@ function AppInner() {
       const st = await api<GithubStatus>("/api/v1/github/status");
       setGithub(st);
       const installations = st.installations || [];
-      const hasLiveInstall = installations.some((i) => i.accountLogin && i.accountLogin !== "mock-org");
-      if (st.mode === "live" && st.account && hasLiveInstall) {
-        setRepos((prev) => {
-          if (!prev.some((r) => r.owner && r.owner !== "mock-org")) {
-            syncGithubRepos({ silent: true }).catch(() => {});
-          }
-          return prev;
-        });
+      const hasLiveInstall =
+        !!st.connected ||
+        installations.some((i) => i.accountLogin && i.accountLogin !== "mock-org");
+      // Connected but empty picker: load DB list, then sync from GitHub if still empty.
+      if (st.mode === "live" && hasLiveInstall) {
+        const list = await refreshRepos().catch(() => [] as Repo[]);
+        if (!list.some((r) => r.owner && r.owner !== "mock-org")) {
+          await syncGithubRepos({ silent: true }).catch(() => {});
+        }
       }
+      return st;
     } catch {
       /* status refresh is best-effort */
+      return null;
     }
-  }, [syncGithubRepos]);
+  }, [refreshRepos, syncGithubRepos]);
 
   const finishGithubConnect = useCallback(async () => {
-    await refreshGithub();
-    await refreshRepos();
-    toast(`GitHub connected${githubDisplayLogin ? ` · @${githubDisplayLogin}` : ""}`, "ok");
+    const st = await refreshGithub();
+    const installations = st?.installations || [];
+    const connected =
+      !!st?.connected ||
+      installations.some((i) => i.accountLogin && i.accountLogin !== "mock-org");
+    if (!connected) {
+      toast(
+        "GitHub connection did not complete. Re-open Connect GitHub and finish the App install.",
+        "error",
+      );
+      return;
+    }
+    try {
+      await syncGithubRepos({ silent: true });
+    } catch {
+      await refreshRepos().catch(() => {});
+    }
+    const login =
+      st?.displayLogin ||
+      st?.account?.login ||
+      installations.find((i) => i.accountLogin && i.accountLogin !== "mock-org")?.accountLogin;
+    toast(`GitHub connected${login ? ` · @${login}` : ""}`, "ok");
     if (view !== "settings") setOpenProjectMenuSignal((n) => n + 1);
-  }, [refreshGithub, refreshRepos, toast, githubDisplayLogin, view]);
+  }, [refreshGithub, refreshRepos, syncGithubRepos, toast, view]);
 
   const openGithubConnectPopup = useCallback(
     (url: string, onComplete: () => Promise<void>) => {
@@ -185,7 +219,7 @@ function AppInner() {
         await onComplete();
       };
       const onMessage = (event: MessageEvent) => {
-        if (event.origin !== location.origin) return;
+        // Install callback may land on API origin (e.g. :8788) while UI is on :8787.
         if (event.data?.type !== "github-connected") return;
         try {
           popup.close();
@@ -238,9 +272,9 @@ function AppInner() {
   }, [refreshRuns, refreshGithub, refreshRepos]);
 
   const showSettings = useCallback(
-    (section?: "models") => {
+    (section?: SettingsSection) => {
       setCurrentRunId(null);
-      setSettingsSection(section ?? null);
+      setSettingsSection(section ?? "account");
       setView("settings");
       setRunTitle("Settings");
       setDrawerOpen(false);
@@ -257,6 +291,55 @@ function AppInner() {
       setDrawerOpen(false);
     },
     [],
+  );
+
+  const renameRun = useCallback(
+    async (runId: string, title: string) => {
+      try {
+        const updated = await api<Run>(`/api/v1/runs/${runId}`, {
+          method: "PATCH",
+          body: JSON.stringify({ title }),
+        });
+        setRuns((prev) => prev.map((r) => (r.id === runId ? { ...r, ...updated } : r)));
+        if (currentRunId === runId) setRunTitle(updated.title || title);
+        toast("Renamed", "ok");
+      } catch (err) {
+        toast(err instanceof Error ? err.message : String(err), "error");
+      }
+    },
+    [currentRunId, toast],
+  );
+
+  const archiveRun = useCallback(
+    async (runId: string) => {
+      try {
+        await api(`/api/v1/runs/${runId}`, {
+          method: "PATCH",
+          body: JSON.stringify({ archived: true }),
+        });
+        setRuns((prev) => prev.filter((r) => r.id !== runId));
+        if (currentRunId === runId) showNewAgent();
+        toast("Archived", "ok");
+      } catch (err) {
+        toast(err instanceof Error ? err.message : String(err), "error");
+      }
+    },
+    [currentRunId, showNewAgent, toast],
+  );
+
+  const deleteRun = useCallback(
+    async (runId: string) => {
+      if (!window.confirm("Delete this agent session permanently?")) return;
+      try {
+        await api(`/api/v1/runs/${runId}`, { method: "DELETE" });
+        setRuns((prev) => prev.filter((r) => r.id !== runId));
+        if (currentRunId === runId) showNewAgent();
+        toast("Deleted", "ok");
+      } catch (err) {
+        toast(err instanceof Error ? err.message : String(err), "error");
+      }
+    },
+    [currentRunId, showNewAgent, toast],
   );
 
   const doLogout = useCallback(() => {
@@ -286,7 +369,8 @@ function AppInner() {
     setListGroupState((readPref("zc.listGroup", "date") as ListGroup) || "date");
     setListFilterState((readPref("zc.listFilter", "none") as ListFilter) || "none");
     setListRepoFilterState(readPref("zc.listRepoFilter", ""));
-    setListCompactState(readPref("zc.listCompact", "") === "1");
+    setListCompactState(readPref("zc.listCompact", "1") !== "0");
+    setSidebarCollapsedState(readPref("zc.sidebarCollapsed", "0") === "1");
     setSelectedRepoIdState(readPref("zc.repoId", ""));
 
     (async () => {
@@ -315,7 +399,8 @@ function AppInner() {
     if (new URLSearchParams(location.search).get("github") !== "connected") return;
     history.replaceState({}, "", location.pathname);
     if (window.opener && !window.opener.closed) {
-      window.opener.postMessage({ type: "github-connected" }, location.origin);
+      // Parent may be on a different localhost port (Next :8787 vs API :8788).
+      window.opener.postMessage({ type: "github-connected" }, "*");
       window.close();
       return;
     }
@@ -331,7 +416,14 @@ function AppInner() {
   }
 
   return (
-    <div className="grid h-full grid-cols-1 bg-canvas min-[981px]:grid-cols-[272px_minmax(0,1fr)]">
+    <div
+      className={[
+        "grid h-full grid-cols-1 bg-canvas",
+        sidebarCollapsed
+          ? "min-[981px]:grid-cols-1"
+          : "min-[981px]:grid-cols-[272px_minmax(0,1fr)]",
+      ].join(" ")}
+    >
       {drawerOpen && (
         <div className="fixed inset-0 z-30 bg-black/50 min-[981px]:hidden" onClick={() => setDrawerOpen(false)} />
       )}
@@ -341,17 +433,23 @@ function AppInner() {
         runs={runs}
         repos={repos}
         currentRunId={currentRunId}
+        newAgentActive={view === "new"}
         selectedRepoId={selectedRepoId}
         listGroup={listGroup}
         listFilter={listFilter}
         listRepoFilter={listRepoFilter}
         listCompact={listCompact}
         drawerOpen={drawerOpen}
+        collapsed={sidebarCollapsed}
+        onCollapse={() => setSidebarCollapsed(true)}
         onSetListGroup={setListGroup}
         onSetListFilter={setListFilter}
         onSetListCompact={setListCompact}
         onNewAgent={showNewAgent}
         onOpenRun={openRun}
+        onRenameRun={renameRun}
+        onArchiveRun={archiveRun}
+        onDeleteRun={deleteRun}
         onSettings={showSettings}
         onLogout={doLogout}
       />
@@ -366,11 +464,15 @@ function AppInner() {
             <div className="flex min-w-0 items-center gap-2.5">
               <button
                 type="button"
-                className="hidden h-8 w-8 items-center justify-center rounded-md border border-line bg-canvas text-muted max-[980px]:inline-flex"
-                aria-label="Open menu"
-                onClick={() => setDrawerOpen(true)}
+                className={[
+                  "h-8 w-8 items-center justify-center rounded-md text-muted hover:bg-secondary hover:text-ink",
+                  sidebarCollapsed ? "inline-flex" : "hidden max-[980px]:inline-flex",
+                ].join(" ")}
+                title="Show sidebar"
+                aria-label="Show sidebar"
+                onClick={openSidebar}
               >
-                ☰
+                <IconPanelLeft className="h-4 w-4" />
               </button>
               <div className="overflow-hidden text-ellipsis whitespace-nowrap text-[15px] font-semibold text-ink">
                 {runTitle}
@@ -389,7 +491,14 @@ function AppInner() {
               onSelectRepo={setSelectedRepoId}
               onSetPermissionMode={setPermissionMode}
               onConnectGithub={connectGithub}
-              onRefreshRepos={refreshRepos}
+              onRefreshRepos={async () => {
+                try {
+                  await syncGithubRepos({ silent: true });
+                } catch {
+                  /* not connected or sync unavailable — still reload DB list */
+                }
+                return refreshRepos();
+              }}
               onRunStarted={openRun}
               onOpenSettings={showSettings}
             />
@@ -422,10 +531,17 @@ function AppInner() {
               repos={repos}
               codePanelOpen={codePanelOpen}
               onToggleCodePanel={toggleCodePanel}
-              onOpenMenu={() => setDrawerOpen(true)}
+              sidebarCollapsed={sidebarCollapsed}
+              onOpenMenu={openSidebar}
               onMeta={(title) => {
                 setRunTitle(title);
+                if (currentRunId && title) {
+                  setRuns((prev) =>
+                    prev.map((r) => (r.id === currentRunId && r.title !== title ? { ...r, title } : r)),
+                  );
+                }
               }}
+              onRename={(title) => (currentRunId ? renameRun(currentRunId, title) : undefined)}
               onRunsChanged={refreshRuns}
             />
           )}

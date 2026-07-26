@@ -9,10 +9,13 @@ User=zene
 Group=zene
 EnvironmentFile=/etc/zene-cloud.env
 WorkingDirectory=/var/lib/zene-cloud
-ExecStart=/opt/zene-cloud/bin/zene-cloud-worker
+ExecStart=/opt/zene-cloud/bin/zene-cloud-worker --supervisor
 Restart=on-failure
 RestartSec=3
 LimitNOFILE=65535
+# Supervisor spawns executor children; kill the whole group on stop.
+KillMode=control-group
+TimeoutStopSec=60
 
 [Install]
 WantedBy=multi-user.target

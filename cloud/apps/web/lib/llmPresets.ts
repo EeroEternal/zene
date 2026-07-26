@@ -11,7 +11,7 @@ export const LLM_PRESETS: LlmPreset[] = [
     id: "deepseek",
     label: "DeepSeek",
     baseUrl: "https://api.deepseek.com/v1",
-    suggestedModels: ["deepseek-v4-flash", "deepseek-v4-pro", "deepseek-chat"],
+    suggestedModels: ["deepseek-v4-flash", "deepseek-v4-pro"],
   },
   {
     id: "kimi",

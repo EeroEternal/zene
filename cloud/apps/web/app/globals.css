@@ -81,4 +81,105 @@
     fill: none;
     stroke-width: 2;
   }
+  .md-body {
+    @apply min-w-0 text-[13.5px] leading-[1.55] text-ink;
+    overflow-wrap: anywhere;
+    word-break: break-word;
+  }
+  .file-md .md-body {
+    @apply text-[15px] leading-[1.65];
+  }
+  .file-md .md-body h1 {
+    @apply text-[22px];
+  }
+  .file-md .md-body h2 {
+    @apply text-[18px];
+  }
+  .file-md .md-body h3 {
+    @apply text-[16px];
+  }
+  .file-md .md-body code {
+    @apply text-[13.5px];
+  }
+  .file-md .md-body pre code {
+    @apply text-[13.5px] leading-[1.55];
+  }
+  .md-body > :first-child {
+    @apply mt-0;
+  }
+  .md-body > :last-child {
+    @apply mb-0;
+  }
+  .md-body p {
+    @apply my-2;
+  }
+  .md-body h1,
+  .md-body h2,
+  .md-body h3,
+  .md-body h4 {
+    @apply mb-1.5 mt-3 font-semibold text-ink;
+  }
+  .md-body h1 {
+    @apply text-[18px];
+  }
+  .md-body h2 {
+    @apply text-[16px];
+  }
+  .md-body h3 {
+    @apply text-[14.5px];
+  }
+  .md-body h4 {
+    @apply text-[13.5px];
+  }
+  .md-body ul,
+  .md-body ol {
+    @apply my-2 pl-5;
+  }
+  .md-body ul {
+    @apply list-disc;
+  }
+  .md-body ol {
+    @apply list-decimal;
+  }
+  .md-body li {
+    @apply my-0.5;
+  }
+  .md-body li > p {
+    @apply my-0.5;
+  }
+  .md-body a {
+    @apply text-primary underline underline-offset-2;
+  }
+  .md-body strong {
+    @apply font-semibold text-ink;
+  }
+  .md-body code {
+    @apply rounded-[3px] bg-secondary px-1 py-px font-mono text-[12px] text-ink;
+  }
+  .md-body pre {
+    @apply my-2 overflow-x-auto rounded-lg border border-line bg-tertiary p-2.5;
+  }
+  .md-body pre code {
+    @apply bg-transparent p-0 text-[12px] leading-[1.5];
+  }
+  .md-body blockquote {
+    @apply my-2 border-l-2 border-line-strong pl-3 text-muted;
+  }
+  .md-body hr {
+    @apply my-3 border-0 border-t border-line;
+  }
+  /* Models often emit a leading ---; don't show a stray rule above the first heading. */
+  .md-body > hr:first-child {
+    display: none;
+  }
+  .md-body table {
+    @apply my-2 w-full border-collapse text-[12.5px];
+  }
+  .md-body th,
+  .md-body td {
+    @apply border border-line px-2 py-1.5 text-left;
+  }
+  .md-body th {
+    @apply bg-tertiary font-semibold;
+  }
 }

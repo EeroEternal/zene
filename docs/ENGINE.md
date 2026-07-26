@@ -7,7 +7,7 @@ Core agent loop lives in `crates/core`. This document tracks engine-level behavi
 - One **active turn** per `Agent` (`TurnState` in `turn.rs`).
 - `Agent::prompt()` starts a turn; concurrent `prompt()` calls fail with an error that suggests `steer()`.
 - **`Agent::steer(text)`** queues follow-up user guidance in `SteerBuffer` (kimi `steerBuffer` analogue). Messages are injected as `Message::user` **after the current step completes** (post-tool or post-assistant), not as a new turn.
-- CLI REPL: `/steer <message>` when a turn is active (typically from Web/async callers; blocking `--repl` waits on `prompt()`).
+- Steer is typically used from Cloud / ACP / async callers (the interactive local REPL was removed).
 - Event: `AgentEvent::SteerInput { text }` for UI/replay hooks.
 
 ## Token estimation
@@ -79,7 +79,7 @@ Avoids paying for LLM summarize when truncation alone fixes the overflow.
 
 ### Usage-driven water level
 
-`ContextWaterLevel` (`context_water.rs`) tracks the last provider `prompt_tokens` and the heuristic estimate. Auto-compact triggers on `max(usage, estimate)` vs `context_window * trigger_ratio` (default 85%). After tool results, a preflight pass also compacts when the estimate exceeds the hard window. Failed summarize sets sticky suppression until a successful `/compact`. Session persists `context_window_usage` / `context_tokens_used`; Web UI shows usage/context; `/context` (alias `/tokens`) prints the report in `--repl`.
+`ContextWaterLevel` (`context_water.rs`) tracks the last provider `prompt_tokens` and the heuristic estimate. Auto-compact triggers on `max(usage, estimate)` vs `context_window * trigger_ratio` (default 85%). After tool results, a preflight pass also compacts when the estimate exceeds the hard window. Failed summarize sets sticky suppression until a successful `/compact`. Session persists `context_window_usage` / `context_tokens_used`; Cloud Console shows usage/context.
 
 ### Full-replace assemble + input ladder
 

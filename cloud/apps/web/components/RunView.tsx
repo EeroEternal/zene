@@ -1,16 +1,26 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  type CSSProperties,
+} from "react";
 import { api } from "@/lib/api";
 import {
   IconArrowUp,
-  IconBranch,
   IconCheck,
   IconChevronDown,
+  IconChevronRight,
   IconLoader,
+  IconPanelLeft,
   IconPanelRight,
   IconPlus,
   IconSearch,
+  IconSkills,
   IconStop,
 } from "@/lib/icons";
 import {
@@ -20,21 +30,26 @@ import {
   modelsForPicker,
   saveSelectedModel,
 } from "@/lib/models";
-import type { Approval, LlmSettingsView, Repo, Run, RunEvent, RunMessage } from "@/lib/types";
+import type { AcpSessionUpdate, Approval, LlmSettingsView, Repo, Run, RunEvent, RunMessage } from "@/lib/types";
 import { CodePanel, useCodePanelWidth } from "./CodePanel";
+import { Markdown } from "./Markdown";
 import { repoLabel } from "./Sidebar";
-import { StatusPill } from "./StatusPill";
+import { StatusDot } from "./StatusPill";
 import { useToast } from "./Toast";
 
-const ACTIVE_STATUSES = new Set([
+/** Show Stop — agent/session is in progress (includes setup). */
+const BUSY_STATUSES = new Set([
   "running",
   "starting",
   "cloning",
   "provisioning",
   "queued",
   "waiting_for_approval",
-  "waiting_for_user",
+  "stopping",
 ]);
+
+/** Block Send only while a turn is actively executing (follow-ups still OK when queued/ready). */
+const SEND_BLOCKED_STATUSES = new Set(["running", "waiting_for_approval", "stopping"]);
 
 const SETUP_STATUSES = new Set(["queued", "provisioning", "starting", "cloning"]);
 
@@ -67,15 +82,797 @@ function setupStatusCopy(status: string, repo?: string): { title: string; detail
 }
 
 type TimelineItem =
-  | { kind: "bubble"; id: number; role: string; text: string }
+  | { kind: "bubble"; id: number; role: "user" | "assistant"; text: string }
+  | {
+      kind: "thought";
+      id: number;
+      text: string;
+      expanded: boolean;
+      sealed: boolean;
+      startedAt: number;
+      endedAt?: number;
+    }
+  | {
+      kind: "tool";
+      id: number;
+      toolCallId: string;
+      title: string;
+      toolKind?: string;
+      status: string;
+      input?: string;
+      output?: string;
+      expanded: boolean;
+    }
   | { kind: "approval"; id: number; approval: Approval; decision?: string };
 
-function bubbleRole(role?: string): "user" | "assistant" | "tool" | "event" {
-  const r = (role || "assistant").toLowerCase();
-  if (r === "user") return "user";
-  if (r === "tool") return "tool";
-  if (r === "system" || r === "event") return "event";
-  return "assistant";
+function bubbleRole(role?: string): "user" | "assistant" {
+  return (role || "").toLowerCase() === "user" ? "user" : "assistant";
+}
+
+/** Offline builder so history opens at the final state (no per-chunk React replay). */
+type TimelineDraft = {
+  items: TimelineItem[];
+  nextId: number;
+  hasAssistantTail: boolean;
+};
+
+function sealDraftMeta(draft: TimelineDraft, at = Date.now()) {
+  draft.items = draft.items.map((it) => {
+    if (it.kind === "thought" && !it.sealed) {
+      return { ...it, sealed: true, endedAt: at };
+    }
+    return it;
+  });
+}
+
+function draftAppendUser(draft: TimelineDraft, text: string) {
+  if (!text) return;
+  if (draft.items.some((it) => it.kind === "bubble" && it.role === "user" && it.text === text)) {
+    return;
+  }
+  draft.hasAssistantTail = false;
+  draft.items.push({
+    kind: "bubble",
+    id: draft.nextId++,
+    role: "user",
+    text,
+  });
+}
+
+function draftAppendAssistant(draft: TimelineDraft, text: string) {
+  if (!text) return;
+  if (!draft.hasAssistantTail) sealDraftMeta(draft);
+  if (draft.hasAssistantTail) {
+    for (let i = draft.items.length - 1; i >= 0; i--) {
+      const it = draft.items[i];
+      if (it.kind === "bubble" && it.role === "assistant") {
+        draft.items[i] = { ...it, text: it.text + text };
+        return;
+      }
+      if (it.kind === "bubble" && it.role === "user") break;
+    }
+  }
+  draft.hasAssistantTail = true;
+  draft.items.push({
+    kind: "bubble",
+    id: draft.nextId++,
+    role: "assistant",
+    text,
+  });
+}
+
+function draftAppendThought(draft: TimelineDraft, text: string) {
+  if (!text) return;
+  draft.hasAssistantTail = false;
+  for (let i = draft.items.length - 1; i >= 0; i--) {
+    const it = draft.items[i];
+    if (it.kind === "thought" && !it.sealed) {
+      draft.items[i] = { ...it, text: it.text + text };
+      return;
+    }
+    if (it.kind === "bubble" || it.kind === "tool" || it.kind === "approval") break;
+  }
+  sealDraftMeta(draft);
+  draft.items.push({
+    kind: "thought",
+    id: draft.nextId++,
+    text,
+    expanded: false,
+    sealed: false,
+    startedAt: Date.now(),
+  });
+}
+
+function draftUpsertTool(draft: TimelineDraft, update: AcpSessionUpdate) {
+  const toolCallId = update.toolCallId || `tool-${draft.nextId}`;
+  const title = update.title || update.toolName || "tool";
+  const status = update.status || "pending";
+  const input = formatJsonish(update.rawInput);
+  draft.hasAssistantTail = false;
+  const idx = draft.items.findIndex((it) => it.kind === "tool" && it.toolCallId === toolCallId);
+  if (idx >= 0) {
+    const cur = draft.items[idx] as Extract<TimelineItem, { kind: "tool" }>;
+    draft.items[idx] = {
+      ...cur,
+      title: title || cur.title,
+      toolKind: update.kind || cur.toolKind,
+      status,
+      input: input || cur.input,
+    };
+    return;
+  }
+  sealDraftMeta(draft);
+  draft.items.push({
+    kind: "tool",
+    id: draft.nextId++,
+    toolCallId,
+    title,
+    toolKind: update.kind,
+    status,
+    input: input || undefined,
+    expanded: false,
+  });
+}
+
+function draftApplyToolUpdate(draft: TimelineDraft, update: AcpSessionUpdate) {
+  const toolCallId = update.toolCallId;
+  if (!toolCallId) return;
+  const status = update.status || "completed";
+  const output = toolOutputText(update);
+  draft.hasAssistantTail = false;
+  const idx = draft.items.findIndex((it) => it.kind === "tool" && it.toolCallId === toolCallId);
+  if (idx < 0) {
+    sealDraftMeta(draft);
+    draft.items.push({
+      kind: "tool",
+      id: draft.nextId++,
+      toolCallId,
+      title: update.title || update.toolName || "tool",
+      toolKind: update.kind,
+      status,
+      output: output || undefined,
+      expanded: false,
+    });
+    return;
+  }
+  const cur = draft.items[idx] as Extract<TimelineItem, { kind: "tool" }>;
+  draft.items[idx] = {
+    ...cur,
+    title: update.title || cur.title,
+    toolKind: update.kind || cur.toolKind,
+    status,
+    output: output || cur.output,
+  };
+}
+
+function applySessionUpdateToDraft(draft: TimelineDraft, update: AcpSessionUpdate) {
+  if (!update.sessionUpdate) return;
+  if (update.sessionUpdate === "agent_message_chunk") {
+    const text =
+      update.content && !Array.isArray(update.content) ? update.content.text || "" : "";
+    draftAppendAssistant(draft, text);
+  } else if (update.sessionUpdate === "agent_thought_chunk") {
+    const text =
+      update.content && !Array.isArray(update.content) ? update.content.text || "" : "";
+    draftAppendThought(draft, text);
+  } else if (update.sessionUpdate === "tool_call") {
+    draftUpsertTool(draft, update);
+  } else if (update.sessionUpdate === "tool_call_update") {
+    draftApplyToolUpdate(draft, update);
+  }
+}
+
+function applyPlatformEventToDraft(draft: TimelineDraft, payload: NonNullable<RunEvent["payload"]>) {
+  if (payload.event === "run.created" && typeof (payload as { prompt?: string }).prompt === "string") {
+    draftAppendUser(draft, (payload as { prompt?: string }).prompt || "");
+  }
+  if (payload.event === "message.created") {
+    const role = (payload as { role?: string }).role;
+    const text = (payload as { text?: string }).text || "";
+    if (bubbleRole(role) === "user" && text) draftAppendUser(draft, text);
+  }
+  const update = payload.params?.update;
+  if (update) applySessionUpdateToDraft(draft, update);
+}
+
+function finalizeTimelineDraft(draft: TimelineDraft): TimelineItem[] {
+  const sealedAt = Date.now();
+  return draft.items.map((it) => {
+    if (it.kind === "thought") {
+      return {
+        ...it,
+        sealed: true,
+        expanded: false,
+        endedAt: it.endedAt ?? sealedAt,
+      };
+    }
+    if (it.kind === "tool" && !/pending|in_progress|running/i.test(it.status)) {
+      return { ...it, expanded: false };
+    }
+    return it;
+  });
+}
+
+function buildTimelineFromEvents(events: RunEvent[]): TimelineDraft {
+  const draft: TimelineDraft = { items: [], nextId: 1, hasAssistantTail: false };
+  for (const event of events) {
+    applyPlatformEventToDraft(draft, event.payload || {});
+  }
+  draft.items = finalizeTimelineDraft(draft);
+  return draft;
+}
+
+function formatJsonish(value: unknown): string {
+  if (value == null) return "";
+  if (typeof value === "string") return value;
+  try {
+    return JSON.stringify(value, null, 2);
+  } catch {
+    return String(value);
+  }
+}
+
+function toolOutputText(update: AcpSessionUpdate): string {
+  if (update.rawOutput?.text) return update.rawOutput.text;
+  const content = update.content;
+  if (Array.isArray(content)) {
+    return content
+      .map((c) => c.content?.text || c.text || "")
+      .filter(Boolean)
+      .join("\n");
+  }
+  if (content && typeof content === "object" && "text" in content) {
+    return content.text || "";
+  }
+  return "";
+}
+
+type MetaItem = Extract<TimelineItem, { kind: "thought" | "tool" }>;
+type ToolItem = Extract<MetaItem, { kind: "tool" }>;
+
+type DisplaySegment =
+  | { type: "solo"; item: TimelineItem }
+  | { type: "activity"; key: string; items: MetaItem[]; live: boolean };
+
+function isMetaItem(item: TimelineItem): item is MetaItem {
+  return item.kind === "thought" || item.kind === "tool";
+}
+
+function metaIsLive(item: MetaItem): boolean {
+  if (item.kind === "thought") return !item.sealed;
+  return /pending|in_progress|running/i.test(item.status);
+}
+
+function groupTimeline(items: TimelineItem[]): DisplaySegment[] {
+  const out: DisplaySegment[] = [];
+  let buf: MetaItem[] = [];
+  const flush = () => {
+    if (!buf.length) return;
+    out.push({
+      type: "activity",
+      key: `act-${buf[0].id}`,
+      items: buf,
+      live: buf.some(metaIsLive),
+    });
+    buf = [];
+  };
+  for (const item of items) {
+    if (isMetaItem(item)) {
+      buf.push(item);
+    } else {
+      flush();
+      out.push({ type: "solo", item });
+    }
+  }
+  flush();
+  return out;
+}
+
+function formatElapsed(ms: number): string {
+  const secs = Math.max(1, Math.round(ms / 1000));
+  if (secs < 60) return `${secs}s`;
+  const m = Math.floor(secs / 60);
+  const s = secs % 60;
+  return s ? `${m}m ${s}s` : `${m}m`;
+}
+
+function thoughtDurationMs(item: Extract<MetaItem, { kind: "thought" }>, now: number): number {
+  const end = item.endedAt ?? (item.sealed ? item.startedAt : now);
+  return Math.max(0, end - item.startedAt);
+}
+
+function parseToolInput(item: ToolItem): Record<string, unknown> | null {
+  if (item.input) {
+    try {
+      const parsed = JSON.parse(item.input);
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+        return parsed as Record<string, unknown>;
+      }
+    } catch {
+      /* ignore */
+    }
+  }
+  const title = (item.title || "").trim();
+  const m = title.match(/^([A-Za-z_][\w]*)\s*\(([\s\S]*)\)\s*$/);
+  if (m) {
+    try {
+      const parsed = JSON.parse(m[2]);
+      if (parsed && typeof parsed === "object") return parsed as Record<string, unknown>;
+    } catch {
+      /* ignore */
+    }
+  }
+  return null;
+}
+
+function detectToolName(item: ToolItem, raw: Record<string, unknown> | null): string {
+  const title = (item.title || "").trim();
+  const fromParen = title.match(/^([A-Za-z_][\w]*)\s*\(/)?.[1];
+  if (fromParen) return fromParen;
+  if (raw?.command && (item.toolKind === "execute" || /^Ran\b/i.test(title))) return "Bash";
+  if (raw?.path || raw?.file) {
+    if (/^Wrote\b|^Write\b/i.test(title) || item.toolKind === "edit") {
+      return /^Edit/i.test(title) || /^Edited\b/i.test(title) ? "Edit" : "Write";
+    }
+    if (/^Read\b|^Explored\b/i.test(title) || item.toolKind === "read") return "Read";
+    if (/^Edit/i.test(title)) return "Edit";
+  }
+  if (/^Read\b/i.test(title)) return "Read";
+  if (/^Wrote\b|^Write\b/i.test(title)) return "Write";
+  if (/^Edited\b|^Edit\b/i.test(title)) return "Edit";
+  if (/^Ran\b|^Created\b|^Listed\b|^Checked\b|^Built\b|^Removed\b|^Inspected\b|^Synced\b|^Pushed\b|^Recorded\b|^Fetched\b|^Printed\b|^Processed\b|^Installed\b|^Updated\b|^Used\b|^Moved\b|^Archived\b|^Queried\b|^Changed\b/i.test(title)) {
+    if (raw?.command) return "Bash";
+  }
+  const word = title.match(/^([A-Za-z_][\w]*)/)?.[1];
+  return word || "Tool";
+}
+
+/** Intent-first label; never put raw shell / absolute paths on the collapsed row. */
+function toolLabel(item: ToolItem): string {
+  let raw = parseToolInput(item);
+  const name = detectToolName(item, raw);
+  const title = (item.title || "").trim();
+  // Recover args from legacy titles when rawInput is missing.
+  if (!strField(raw, "path", "file", "command")) {
+    const pathMatch = title.match(/^(?:Read|Write|Wrote|Edit|Edited)\s+(.+)$/i);
+    if (pathMatch) raw = { ...(raw || {}), path: pathMatch[1] };
+    const ranMatch = title.match(/^Ran\s+(.+)$/i);
+    if (ranMatch && (name === "Bash" || !raw)) {
+      raw = { ...(raw || {}), command: ranMatch[1] };
+    }
+  }
+  const derived = labelFromArgs(name === "Tool" && strField(raw, "command") ? "Bash" : name, raw);
+  if (derived) return derived;
+  if (/^Ran\s+\S+/.test(title) && /[\/|;&]/.test(title)) return "Ran a command";
+  if (title && !/^[A-Za-z_][\w]*\s*\(/.test(title) && !title.startsWith("{")) return title;
+  return name;
+}
+
+function strField(raw: Record<string, unknown> | null, ...keys: string[]): string | undefined {
+  if (!raw) return undefined;
+  for (const k of keys) {
+    const v = raw[k];
+    if (typeof v === "string" && v.trim()) return v.trim();
+  }
+  return undefined;
+}
+
+function displayPath(path: string): string {
+  let p = path.trim().replace(/\\/g, "/");
+  const ws = p.indexOf("/workspaces/");
+  if (ws >= 0) {
+    const after = p.slice(ws + "/workspaces/".length);
+    const slash = after.indexOf("/");
+    p = slash >= 0 ? after.slice(slash + 1) : after;
+  }
+  if (p.length > 42) {
+    const parts = p.split("/").filter(Boolean);
+    if (parts.length >= 2) p = `${parts[parts.length - 2]}/${parts[parts.length - 1]}`;
+  }
+  return p.length > 42 ? `${p.slice(0, 42)}…` : p;
+}
+
+function stripLeadingCd(cmd: string): string {
+  const m = cmd.match(/^cd\s+\S+\s*&&\s*(.+)$/);
+  return (m?.[1] || cmd).trim();
+}
+
+function bashIntent(command: string): string {
+  const first = command.split("\n").map((l) => l.trim()).find(Boolean) || "";
+  const collapsed = first.replace(/\s+/g, " ").trim();
+  if (!collapsed) return "Ran a command";
+  const cmd = stripLeadingCd(collapsed);
+  const lower = cmd.toLowerCase();
+  const [head, ...restParts] = lower.split(/\s+/);
+  const rest = restParts.join(" ");
+
+  switch (head) {
+    case "mkdir":
+    case "mktemp":
+      return "Created directories";
+    case "rm":
+    case "rmdir":
+      return "Removed files";
+    case "cp":
+    case "mv":
+    case "install":
+      return "Moved or copied files";
+    case "touch":
+      return "Created files";
+    case "chmod":
+    case "chown":
+      return "Changed file permissions";
+    case "ls":
+    case "tree":
+    case "find":
+    case "du":
+    case "stat":
+    case "file":
+      return "Listed files";
+    case "cat":
+    case "head":
+    case "tail":
+    case "less":
+    case "more":
+    case "bat":
+      return "Inspected file contents";
+    case "rg":
+    case "grep":
+    case "ag":
+    case "ack":
+      return "Searched files";
+    case "curl":
+    case "wget":
+    case "http":
+      return "Fetched from the network";
+    case "echo":
+    case "printf":
+      return "Printed output";
+    case "which":
+    case "type":
+    case "command":
+    case "whereis":
+      return "Checked available tools";
+    case "pwd":
+      return "Checked working directory";
+    case "cargo": {
+      const sub = rest.split(/\s+/)[0] || "";
+      if (sub === "build" || sub === "b") return "Built with Cargo";
+      if (sub === "check" || sub === "c" || sub === "clippy") return "Checked with Cargo";
+      if (sub === "test" || sub === "t") return "Ran Cargo tests";
+      if (sub === "run" || sub === "r") return "Ran a Cargo binary";
+      if (sub === "init" || sub === "new") return "Created a Cargo project";
+      if (sub === "add") return "Added a Cargo dependency";
+      if (sub === "fmt") return "Formatted Rust code";
+      if (sub === "--version" || sub === "-v" || sub === "version") return "Checked Cargo version";
+      return "Ran Cargo";
+    }
+    case "rustc":
+    case "rustup":
+      return "Checked Rust toolchain";
+    case "git": {
+      const sub = rest.split(/\s+/)[0] || "";
+      if (["status", "diff", "log", "show", "blame"].includes(sub)) return "Inspected git state";
+      if (["branch", "switch", "checkout"].includes(sub)) return "Changed git branch";
+      if (["clone", "fetch", "pull"].includes(sub)) return "Synced git remotes";
+      if (sub === "push") return "Pushed to remote";
+      if (["add", "commit", "stash"].includes(sub)) return "Recorded git changes";
+      return "Ran a git command";
+    }
+    case "gh": {
+      const sub = rest.split(/\s+/)[0] || "";
+      if (sub === "pr") return "Checked pull requests";
+      if (sub === "issue") return "Checked issues";
+      return "Ran GitHub CLI";
+    }
+    case "npm":
+    case "pnpm":
+    case "yarn":
+    case "bun":
+      return `Ran ${head}`;
+    case "docker":
+    case "podman":
+      return "Ran a container command";
+    case "bash":
+    case "sh":
+    case "zsh":
+      return "Ran a shell script";
+    default:
+      if (/&&|;|\|/.test(lower)) return "Ran a shell script";
+      return "Ran a command";
+  }
+}
+
+function toolCommand(item: ToolItem): string | undefined {
+  const raw = parseToolInput(item);
+  return strField(raw, "command");
+}
+
+function toolPath(item: ToolItem): string | undefined {
+  const raw = parseToolInput(item);
+  const path = strField(raw, "path", "file");
+  return path ? displayPath(path) : undefined;
+}
+
+function labelFromArgs(name: string, raw: Record<string, unknown> | null): string {
+  switch (name) {
+    case "Read":
+      return `Read ${displayPath(strField(raw, "path", "file") || "file")}`;
+    case "Write":
+      return `Wrote ${displayPath(strField(raw, "path", "file") || "file")}`;
+    case "Edit":
+      return `Edited ${displayPath(strField(raw, "path", "file") || "file")}`;
+    case "Bash":
+      return bashIntent(strField(raw, "command") || "");
+    case "Grep":
+      return `Searched code for ${strField(raw, "pattern", "regex", "query") || "…"}`;
+    case "Glob":
+      return `Found files matching ${strField(raw, "glob_pattern", "pattern", "glob") || "*"}`;
+    case "WebSearch":
+      return `Searched the web for "${strField(raw, "query", "search_term") || "…"}"`;
+    case "FetchUrl":
+      return "Fetched a web page";
+    case "TodoWrite":
+      return "Updated todos";
+    case "Task":
+      return "Ran a subtask";
+    case "TaskOutput":
+      return "Checked task output";
+    case "AskUser":
+      return "Asked a question";
+    case "EnterPlanMode":
+      return "Entered plan mode";
+    case "ExitPlanMode":
+      return "Exited plan mode";
+    case "Skill":
+      return `Used skill ${strField(raw, "skill", "name") || "skill"}`;
+    default:
+      if (name.startsWith("mcp__")) {
+        const short = name.split("__").pop() || name;
+        return `Used ${short}`;
+      }
+      return name === "Tool" ? "" : `Used ${name}`;
+  }
+}
+
+function summarizeTools(tools: ToolItem[]): string {
+  if (tools.length === 0) return "";
+  if (tools.length === 1) return toolLabel(tools[0]);
+
+  let reads = 0;
+  let edits = 0;
+  let runs = 0;
+  let searches = 0;
+  for (const t of tools) {
+    const name = detectToolName(t, parseToolInput(t));
+    if (name === "Read" || t.toolKind === "read") reads += 1;
+    else if (name === "Write" || name === "Edit" || t.toolKind === "edit") edits += 1;
+    else if (name === "Bash" || name === "Task" || t.toolKind === "execute") runs += 1;
+    else if (name === "Grep" || name === "Glob" || name === "WebSearch") searches += 1;
+    else if (t.toolKind === "fetch") searches += 1;
+  }
+
+  const parts: string[] = [];
+  if (reads) parts.push(reads === 1 ? "Explored 1 file" : `Explored ${reads} files`);
+  if (edits) parts.push(edits === 1 ? "Edited 1 file" : `Edited ${edits} files`);
+  if (runs) parts.push(runs === 1 ? "Ran 1 command" : `Ran ${runs} commands`);
+  if (searches) parts.push(searches === 1 ? "1 search" : `${searches} searches`);
+  if (parts.length) return parts.join(" · ");
+  return `${tools.length} steps`;
+}
+
+function activitySummary(items: MetaItem[], now: number): string {
+  const live = [...items].reverse().find(metaIsLive);
+  if (live?.kind === "thought") {
+    return `Thinking · ${formatElapsed(thoughtDurationMs(live, now))}`;
+  }
+  if (live?.kind === "tool") {
+    return toolLabel(live);
+  }
+
+  const thoughts = items.filter((it): it is Extract<MetaItem, { kind: "thought" }> => it.kind === "thought");
+  const tools = items.filter((it): it is ToolItem => it.kind === "tool");
+  const thoughtMs = thoughts.reduce((acc, t) => acc + thoughtDurationMs(t, now), 0);
+  const parts: string[] = [];
+  if (thoughts.length) {
+    parts.push(`Thought for ${formatElapsed(thoughtMs || 1000)}`);
+  }
+  if (tools.length) parts.push(summarizeTools(tools));
+  return parts.length ? parts.join(" · ") : "Activity";
+}
+
+type ThoughtItem = Extract<MetaItem, { kind: "thought" }>;
+
+type ActivityRow =
+  | { type: "thought"; item: ThoughtItem }
+  | { type: "thought-bunch"; key: string; items: ThoughtItem[] }
+  | { type: "tool"; item: ToolItem }
+  | { type: "tool-bunch"; key: string; family: string; items: ToolItem[]; summary: string };
+
+/** Same-family tools collapse into one row (Write+Edit share "edit"). */
+function mergeFamily(item: MetaItem): string | null {
+  if (item.kind === "thought") return item.sealed ? "thought" : null;
+  const raw = parseToolInput(item);
+  const name = detectToolName(item, raw);
+  if (name === "Write" || name === "Edit") return "edit";
+  if (name === "Read") return "read";
+  if (name === "TodoWrite") return "todo";
+  if (name === "TaskOutput") return "task-output";
+  if (name === "Bash") return `bash:${bashIntent(strField(raw, "command") || "")}`;
+  return null;
+}
+
+/** Short sealed thoughts / todos between same tools — skip so edits can merge. */
+function isSkippableGap(item: MetaItem, now: number): boolean {
+  if (item.kind === "thought") {
+    if (!item.sealed) return false;
+    return thoughtDurationMs(item, now) < 4000;
+  }
+  const name = detectToolName(item, parseToolInput(item));
+  return name === "TodoWrite";
+}
+
+function commonParentDir(paths: string[]): string | null {
+  const dirs = paths
+    .map((p) => {
+      const i = p.lastIndexOf("/");
+      return i > 0 ? p.slice(0, i) : "";
+    })
+    .filter(Boolean);
+  if (dirs.length < 2) return null;
+  const first = dirs[0];
+  return dirs.every((d) => d === first) ? first : null;
+}
+
+function toolBunchSummary(family: string, tools: ToolItem[]): string {
+  const n = tools.length;
+  if (family === "edit") {
+    const paths = tools.map((t) => toolPath(t) || "").filter(Boolean);
+    const dir = commonParentDir(paths);
+    return dir ? `Edited ${n} files in ${dir}` : `Edited ${n} files`;
+  }
+  if (family === "read") {
+    return n === 1 ? "Explored 1 file" : `Explored ${n} files`;
+  }
+  if (family === "todo") return n === 1 ? "Updated todos" : `Updated todos ×${n}`;
+  if (family === "task-output") {
+    return n === 1 ? "Checked task output" : `Checked task output ×${n}`;
+  }
+  if (family.startsWith("bash:")) {
+    const intent = family.slice("bash:".length) || "Ran a command";
+    if (intent === "Created directories") return `Created ${n} directories`;
+    if (intent === "Removed files") return `Removed files ×${n}`;
+    if (intent === "Listed files") return `Listed files ×${n}`;
+    if (intent === "Created files") return `Created ${n} files`;
+    return `${intent} ×${n}`;
+  }
+  return `${n} steps`;
+}
+
+function thoughtBunchSummary(items: ThoughtItem[], now: number): string {
+  const ms = items.reduce((acc, t) => acc + thoughtDurationMs(t, now), 0);
+  const live = items.some((t) => !t.sealed);
+  return live
+    ? `Thinking · ${formatElapsed(ms || 1000)}`
+    : `Thought for ${formatElapsed(ms || 1000)}`;
+}
+
+function pushToolRows(rows: ActivityRow[], tools: ToolItem[], family: string) {
+  if (tools.length === 1) {
+    rows.push({ type: "tool", item: tools[0] });
+    return;
+  }
+  rows.push({
+    type: "tool-bunch",
+    key: `mb-${tools[0].id}`,
+    family,
+    items: tools,
+    summary: toolBunchSummary(family, tools),
+  });
+}
+
+function pushThoughtRows(rows: ActivityRow[], thoughts: ThoughtItem[]) {
+  if (!thoughts.length) return;
+  if (thoughts.length === 1) {
+    rows.push({ type: "thought", item: thoughts[0] });
+    return;
+  }
+  rows.push({
+    type: "thought-bunch",
+    key: `tb-${thoughts[0].id}`,
+    items: thoughts,
+  });
+}
+
+/**
+ * Cluster timeline rows. Same-family tools merge even when short thoughts / todos
+ * sit between them (those gaps are absorbed so the list stays readable).
+ */
+function clusterActivityItems(items: MetaItem[], now: number = Date.now()): ActivityRow[] {
+  const rows: ActivityRow[] = [];
+  const used = new Array(items.length).fill(false);
+  let i = 0;
+
+  while (i < items.length) {
+    if (used[i]) {
+      i += 1;
+      continue;
+    }
+    const item = items[i];
+
+    // Tool with a merge family: gather further same-family tools across skippable gaps.
+    if (item.kind === "tool") {
+      const family = mergeFamily(item);
+      if (family && family !== "thought") {
+        const tools: ToolItem[] = [item];
+        used[i] = true;
+        let j = i + 1;
+        while (j < items.length) {
+          while (j < items.length && used[j]) j += 1;
+          if (j >= items.length) break;
+
+          const cur = items[j];
+          if (cur.kind === "tool" && mergeFamily(cur) === family) {
+            tools.push(cur);
+            used[j] = true;
+            j += 1;
+            continue;
+          }
+
+          // Peek through skippable gaps for another tool of the same family.
+          if (!isSkippableGap(cur, now)) break;
+          let k = j;
+          const gapIdx: number[] = [];
+          while (k < items.length && (used[k] || isSkippableGap(items[k], now))) {
+            if (!used[k] && isSkippableGap(items[k], now)) gapIdx.push(k);
+            k += 1;
+            while (k < items.length && used[k]) k += 1;
+          }
+          if (k < items.length && items[k].kind === "tool" && mergeFamily(items[k]) === family) {
+            for (const g of gapIdx) used[g] = true; // absorb short thoughts/todos
+            tools.push(items[k] as ToolItem);
+            used[k] = true;
+            j = k + 1;
+            continue;
+          }
+          break;
+        }
+        pushToolRows(rows, tools, family);
+        i += 1;
+        continue;
+      }
+
+      rows.push({ type: "tool", item });
+      used[i] = true;
+      i += 1;
+      continue;
+    }
+
+    // Thoughts: merge consecutive sealed thoughts (skip already-absorbed ones).
+    if (item.kind === "thought") {
+      const thoughts: ThoughtItem[] = [item];
+      used[i] = true;
+      let j = i + 1;
+      while (j < items.length) {
+        while (j < items.length && used[j]) j += 1;
+        if (j >= items.length) break;
+        const cur = items[j];
+        if (cur.kind === "thought" && cur.sealed && item.sealed) {
+          thoughts.push(cur);
+          used[j] = true;
+          j += 1;
+          continue;
+        }
+        break;
+      }
+      pushThoughtRows(rows, thoughts);
+      i += 1;
+      continue;
+    }
+
+    i += 1;
+  }
+  return rows;
 }
 
 interface RunViewProps {
@@ -83,8 +880,10 @@ interface RunViewProps {
   repos: Repo[];
   codePanelOpen?: boolean;
   onToggleCodePanel?: () => void;
+  sidebarCollapsed?: boolean;
   onOpenMenu?: () => void;
   onMeta: (title: string, status: string) => void;
+  onRename?: (title: string) => Promise<void> | void;
   onRunsChanged: () => void;
 }
 
@@ -93,14 +892,18 @@ export function RunView({
   repos,
   codePanelOpen = true,
   onToggleCodePanel,
+  sidebarCollapsed = false,
   onOpenMenu,
   onMeta,
+  onRename,
   onRunsChanged,
 }: RunViewProps) {
   const toast = useToast();
   const { width: codeWidth, setWidth: setCodeWidth } = useCodePanelWidth();
   const [run, setRun] = useState<Run | null>(null);
   const [items, setItems] = useState<TimelineItem[]>([]);
+  /** False until initial event history is applied in one shot. */
+  const [historyReady, setHistoryReady] = useState(false);
   const [followUp, setFollowUp] = useState("");
   const [sending, setSending] = useState(false);
   const [cancelling, setCancelling] = useState(false);
@@ -108,20 +911,46 @@ export function RunView({
   const [modelMenuOpen, setModelMenuOpen] = useState(false);
   const [modelQuery, setModelQuery] = useState("");
   const [llmSettings, setLlmSettings] = useState<LlmSettingsView | null>(null);
+  const modelTriggerRef = useRef<HTMLDivElement>(null);
+  const [modelMenuPos, setModelMenuPos] = useState<{
+    left: number;
+    bottom: number;
+    maxHeight: number;
+  } | null>(null);
+  /** User-expanded activity groups (default collapsed — keeps layout stable while live). */
+  const [openGroups, setOpenGroups] = useState<Set<string>>(() => new Set());
+  /** Expanded consecutive tool/thought bunches inside an activity group. */
+  const [openBunches, setOpenBunches] = useState<Set<string>>(() => new Set());
+  const [editingTitle, setEditingTitle] = useState(false);
+  const [titleDraft, setTitleDraft] = useState("");
+  const [nowTick, setNowTick] = useState(() => Date.now());
+  const [setupStartedAt, setSetupStartedAt] = useState<number | null>(null);
+  const titleInputRef = useRef<HTMLInputElement>(null);
 
   const nextId = useRef(1);
   const afterSeq = useRef(0);
   const seenApprovals = useRef(new Set<string>());
   const hasAssistantTail = useRef(false);
+  const lastKnownTitle = useRef<string | null>(null);
+  const stickToBottom = useRef(true);
   const messagesRef = useRef<HTMLDivElement>(null);
   const promptRef = useRef<HTMLTextAreaElement>(null);
   const composerRef = useRef<HTMLDivElement>(null);
 
-  const scrollMessages = useCallback(() => {
+  const scrollMessages = useCallback((force = false) => {
     requestAnimationFrame(() => {
       const el = messagesRef.current;
-      if (el) el.scrollTop = el.scrollHeight;
+      if (!el) return;
+      if (!force && !stickToBottom.current) return;
+      el.scrollTop = el.scrollHeight;
     });
+  }, []);
+
+  const onMessagesScroll = useCallback(() => {
+    const el = messagesRef.current;
+    if (!el) return;
+    const gap = el.scrollHeight - el.scrollTop - el.clientHeight;
+    stickToBottom.current = gap < 80;
   }, []);
 
   const appendBubble = useCallback(
@@ -134,15 +963,33 @@ export function RunView({
     [scrollMessages],
   );
 
+  const sealOpenMeta = useCallback((prev: TimelineItem[]): TimelineItem[] => {
+    const sealedAt = Date.now();
+    return prev.map((it) => {
+      if (it.kind === "thought" && !it.sealed) {
+        // Keep expanded as-is if user opened it; otherwise stay collapsed.
+        return { ...it, sealed: true, endedAt: sealedAt };
+      }
+      if (it.kind === "tool" && /pending|in_progress|running/i.test(it.status)) {
+        return it;
+      }
+      return it;
+    });
+  }, []);
+
   const appendAssistantChunk = useCallback(
     (text: string) => {
       if (!text) return;
       setItems((prev) => {
+        let base = prev;
+        if (!hasAssistantTail.current) {
+          base = sealOpenMeta(prev);
+        }
         if (hasAssistantTail.current) {
-          for (let i = prev.length - 1; i >= 0; i--) {
-            const it = prev[i];
+          for (let i = base.length - 1; i >= 0; i--) {
+            const it = base[i];
             if (it.kind === "bubble" && it.role === "assistant") {
-              const copy = [...prev];
+              const copy = [...base];
               copy[i] = { ...it, text: it.text + text };
               return copy;
             }
@@ -150,15 +997,181 @@ export function RunView({
           }
         }
         hasAssistantTail.current = true;
-        return [...prev, { kind: "bubble", id: nextId.current++, role: "assistant", text }];
+        return [...base, { kind: "bubble", id: nextId.current++, role: "assistant", text }];
       });
       scrollMessages();
     },
-    [scrollMessages],
+    [scrollMessages, sealOpenMeta],
   );
 
+  const appendThoughtChunk = useCallback(
+    (text: string) => {
+      if (!text) return;
+      hasAssistantTail.current = false;
+      setItems((prev) => {
+        for (let i = prev.length - 1; i >= 0; i--) {
+          const it = prev[i];
+          if (it.kind === "thought" && !it.sealed) {
+            const copy = [...prev];
+            // Keep collapsed while streaming so the page height stays stable.
+            copy[i] = { ...it, text: it.text + text };
+            return copy;
+          }
+          if (it.kind === "bubble" || it.kind === "tool" || it.kind === "approval") break;
+        }
+        const sealed = sealOpenMeta(prev);
+        return [
+          ...sealed,
+          {
+            kind: "thought",
+            id: nextId.current++,
+            text,
+            expanded: false,
+            sealed: false,
+            startedAt: Date.now(),
+          },
+        ];
+      });
+      // Only nudge scroll when near bottom; avoid thrashing on every token.
+      scrollMessages();
+    },
+    [scrollMessages, sealOpenMeta],
+  );
+
+  const upsertToolCall = useCallback(
+    (update: AcpSessionUpdate) => {
+      const toolCallId = update.toolCallId || `tool-${nextId.current}`;
+      const title = update.title || update.toolName || "tool";
+      const status = update.status || "pending";
+      const input = formatJsonish(update.rawInput);
+      hasAssistantTail.current = false;
+      setItems((prev) => {
+        const idx = prev.findIndex((it) => it.kind === "tool" && it.toolCallId === toolCallId);
+        if (idx >= 0) {
+          const copy = [...prev];
+          const cur = copy[idx] as Extract<TimelineItem, { kind: "tool" }>;
+          copy[idx] = {
+            ...cur,
+            title: title || cur.title,
+            toolKind: update.kind || cur.toolKind,
+            status,
+            input: input || cur.input,
+          };
+          return copy;
+        }
+        return [
+          ...sealOpenMeta(prev),
+          {
+            kind: "tool",
+            id: nextId.current++,
+            toolCallId,
+            title,
+            toolKind: update.kind,
+            status,
+            input: input || undefined,
+            expanded: false,
+          },
+        ];
+      });
+      scrollMessages();
+    },
+    [scrollMessages, sealOpenMeta],
+  );
+
+  const applyToolUpdate = useCallback(
+    (update: AcpSessionUpdate) => {
+      const toolCallId = update.toolCallId;
+      if (!toolCallId) return;
+      const status = update.status || "completed";
+      const output = toolOutputText(update);
+      hasAssistantTail.current = false;
+      setItems((prev) => {
+        const idx = prev.findIndex((it) => it.kind === "tool" && it.toolCallId === toolCallId);
+        if (idx < 0) {
+          return [
+            ...sealOpenMeta(prev),
+            {
+              kind: "tool",
+              id: nextId.current++,
+              toolCallId,
+              title: update.title || update.toolName || "tool",
+              toolKind: update.kind,
+              status,
+              output: output || undefined,
+              expanded: false,
+            },
+          ];
+        }
+        const copy = [...prev];
+        const cur = copy[idx] as Extract<TimelineItem, { kind: "tool" }>;
+        copy[idx] = {
+          ...cur,
+          title: update.title || cur.title,
+          toolKind: update.kind || cur.toolKind,
+          status,
+          output: output || cur.output,
+        };
+        return copy;
+      });
+      scrollMessages();
+    },
+    [scrollMessages, sealOpenMeta],
+  );
+
+  const toggleItem = useCallback((id: number) => {
+    setItems((prev) =>
+      prev.map((it) => {
+        if (it.id !== id) return it;
+        if (it.kind === "thought" || it.kind === "tool") {
+          return { ...it, expanded: !it.expanded };
+        }
+        return it;
+      }),
+    );
+  }, []);
+
+  const toggleGroup = useCallback((key: string) => {
+    setOpenGroups((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  }, []);
+
+  const toggleBunch = useCallback((key: string) => {
+    setOpenBunches((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  }, []);
+
+  const segments = useMemo(() => groupTimeline(items), [items]);
+  const hasLiveMeta = useMemo(() => segments.some((s) => s.type === "activity" && s.live), [segments]);
+
+  useEffect(() => {
+    if (!hasLiveMeta) return;
+    const id = window.setInterval(() => setNowTick(Date.now()), 1000);
+    return () => window.clearInterval(id);
+  }, [hasLiveMeta]);
+
+  const commitTitleEdit = useCallback(async () => {
+    const next = titleDraft.trim();
+    setEditingTitle(false);
+    if (!next || !onRename || next === (run?.title || "")) return;
+    try {
+      await onRename(next);
+      setRun((prev) => (prev ? { ...prev, title: next } : prev));
+      lastKnownTitle.current = next;
+    } catch {
+      /* toast handled by parent */
+    }
+  }, [titleDraft, onRename, run?.title]);
+
   const handleEvent = useCallback(
-    (event: RunEvent, live: boolean) => {
+    (event: RunEvent) => {
       const payload = event.payload || {};
       if (payload.event === "run.status" && payload.status) {
         setRun((prev) => {
@@ -169,27 +1182,68 @@ export function RunView({
         });
         onRunsChanged();
       }
+      if (payload.event === "run.title" && typeof payload.title === "string" && payload.title) {
+        lastKnownTitle.current = payload.title;
+        setRun((prev) => (prev ? { ...prev, title: payload.title! } : prev));
+        onRunsChanged();
+      }
 
-      const update = payload.params?.update;
-      if (update) {
-        if (update.sessionUpdate === "agent_message_chunk" && live) {
-          appendAssistantChunk(update.content?.text || "");
-        } else if (update.sessionUpdate === "tool_call") {
+      if (payload.event === "run.created" && typeof (payload as { prompt?: string }).prompt === "string") {
+        const prompt = (payload as { prompt?: string }).prompt || "";
+        if (prompt) {
           hasAssistantTail.current = false;
-          setItems((prev) => [
-            ...prev,
-            {
-              kind: "bubble",
-              id: nextId.current++,
-              role: "tool",
-              text: `${update.title || update.toolName || "tool"} · ${update.status || ""}`,
-            },
-          ]);
+          setItems((prev) => {
+            if (prev.some((it) => it.kind === "bubble" && it.role === "user" && it.text === prompt)) {
+              return prev;
+            }
+            return [...prev, { kind: "bubble", id: nextId.current++, role: "user", text: prompt }];
+          });
+        }
+      }
+
+      if (payload.event === "message.created") {
+        const role = (payload as { role?: string }).role;
+        const text = (payload as { text?: string }).text || "";
+        if (bubbleRole(role) === "user" && text) {
+          hasAssistantTail.current = false;
+          setItems((prev) => {
+            // Avoid duplicating the optimistic bubble from sendFollowUp.
+            for (let i = prev.length - 1; i >= 0; i--) {
+              const it = prev[i];
+              if (it.kind === "bubble" && it.role === "user" && it.text === text) return prev;
+              if (it.kind === "bubble" && it.role === "assistant") break;
+            }
+            return [...prev, { kind: "bubble", id: nextId.current++, role: "user", text }];
+          });
           scrollMessages();
         }
       }
+
+      const update = payload.params?.update;
+      if (!update?.sessionUpdate) return;
+
+      if (update.sessionUpdate === "agent_message_chunk") {
+        const text =
+          update.content && !Array.isArray(update.content) ? update.content.text || "" : "";
+        appendAssistantChunk(text);
+      } else if (update.sessionUpdate === "agent_thought_chunk") {
+        const text =
+          update.content && !Array.isArray(update.content) ? update.content.text || "" : "";
+        appendThoughtChunk(text);
+      } else if (update.sessionUpdate === "tool_call") {
+        upsertToolCall(update);
+      } else if (update.sessionUpdate === "tool_call_update") {
+        applyToolUpdate(update);
+      }
     },
-    [appendAssistantChunk, onRunsChanged, scrollMessages],
+    [
+      appendAssistantChunk,
+      appendThoughtChunk,
+      upsertToolCall,
+      applyToolUpdate,
+      onRunsChanged,
+      scrollMessages,
+    ],
   );
 
   const refreshApprovals = useCallback(async () => {
@@ -209,71 +1263,166 @@ export function RunView({
 
   useEffect(() => {
     let stopped = false;
+    const timers: {
+      poll?: ReturnType<typeof setInterval>;
+      approval?: ReturnType<typeof setInterval>;
+      status?: ReturnType<typeof setInterval>;
+    } = {};
+    nextId.current = 1;
+    afterSeq.current = 0;
+    seenApprovals.current = new Set();
+    hasAssistantTail.current = false;
+    lastKnownTitle.current = null;
+    stickToBottom.current = true;
+    setItems([]);
+    setHistoryReady(false);
+    setOpenGroups(new Set());
+    setOpenBunches(new Set());
+    setEditingTitle(false);
+    setRun(null);
+
     (async () => {
       try {
         const r = await api<Run>(`/api/v1/runs/${runId}`);
         if (stopped) return;
+        if (r.title) lastKnownTitle.current = r.title;
+        // Apply status/title from the run row first; event payloads may refine later.
         setRun(r);
+        // API pages at 500 events — drain all pages offline, then commit once.
+        const allEvents: RunEvent[] = [];
+        let cursor = 0;
+        for (;;) {
+          const page = await api<{ events?: RunEvent[]; nextSeq?: number }>(
+            `/api/v1/runs/${runId}/events?afterSeq=${cursor}`,
+          );
+          if (stopped) return;
+          const batch = page.events || [];
+          if (!batch.length) {
+            afterSeq.current = page.nextSeq ?? cursor;
+            break;
+          }
+          allEvents.push(...batch);
+          cursor = page.nextSeq ?? batch[batch.length - 1]!.seq;
+          afterSeq.current = cursor;
+          if (batch.length < 500) break;
+        }
+
+        // Build the full timeline offline, then commit once (no chunk-by-chunk UI replay).
+        const draft = buildTimelineFromEvents(allEvents);
+        let statusPatch: Partial<Run> | null = null;
+        for (const e of allEvents) {
+          const payload = e.payload || {};
+          if (payload.event === "run.status" && payload.status) {
+            statusPatch = {
+              ...(statusPatch || {}),
+              status: payload.status,
+              ...(payload.headSha ? { headSha: payload.headSha } : {}),
+            };
+          }
+          if (payload.event === "run.title" && typeof payload.title === "string" && payload.title) {
+            lastKnownTitle.current = payload.title;
+            statusPatch = { ...(statusPatch || {}), title: payload.title };
+          }
+        }
+        if (statusPatch) {
+          setRun((prev) => (prev ? { ...prev, ...statusPatch } : prev));
+        }
+
+        // Fallback: if events missed the initial user prompt, seed from messages.
         const msgs = (await api<RunMessage[]>(`/api/v1/runs/${runId}/messages`)) || [];
         if (stopped) return;
-        setItems(
-          msgs.map((m) => ({
-            kind: "bubble" as const,
-            id: nextId.current++,
-            role: bubbleRole(m.role),
-            text: m.content,
-          })),
-        );
-        hasAssistantTail.current = false;
-        const hist = await api<{ events?: RunEvent[]; nextSeq?: number }>(
-          `/api/v1/runs/${runId}/events?afterSeq=0`,
-        );
-        if (stopped) return;
-        for (const e of hist.events || []) handleEvent(e, false);
-        afterSeq.current = hist.nextSeq || afterSeq.current;
+        if (!draft.items.some((it) => it.kind === "bubble" && it.role === "user")) {
+          const users = msgs.filter((m) => bubbleRole(m.role) === "user");
+          if (users.length) {
+            draft.items = [
+              ...users.map((m) => ({
+                kind: "bubble" as const,
+                id: draft.nextId++,
+                role: "user" as const,
+                text: m.content,
+              })),
+              ...draft.items,
+            ];
+          }
+        }
+
+        nextId.current = draft.nextId;
+        hasAssistantTail.current = draft.hasAssistantTail;
+        setItems(draft.items);
+        setHistoryReady(true);
         await refreshApprovals();
         onRunsChanged();
-        scrollMessages();
+        // Jump straight to the latest message after paint.
+        requestAnimationFrame(() => scrollMessages(true));
+
+        // Start live polls only after bootstrap — otherwise afterSeq=0 races and replays.
+        if (stopped) return;
+        timers.poll = setInterval(async () => {
+          try {
+            // Drain pages so a catch-up burst does not look like chunked replay.
+            for (;;) {
+              const live = await api<{ events?: RunEvent[]; nextSeq?: number }>(
+                `/api/v1/runs/${runId}/events?afterSeq=${afterSeq.current}`,
+              );
+              const batch = live.events || [];
+              if (!batch.length) {
+                if (live.nextSeq != null) afterSeq.current = live.nextSeq;
+                break;
+              }
+              for (const e of batch) {
+                handleEvent(e);
+                afterSeq.current = e.seq;
+              }
+              if (live.nextSeq != null) afterSeq.current = live.nextSeq;
+              if (batch.length < 500) break;
+            }
+          } catch (err) {
+            console.warn(err);
+          }
+        }, 1000);
+        timers.approval = setInterval(refreshApprovals, 2000);
+        timers.status = setInterval(async () => {
+          try {
+            const next = await api<Run>(`/api/v1/runs/${runId}`);
+            if (stopped) return;
+            const titleChanged = Boolean(next.title && next.title !== lastKnownTitle.current);
+            if (next.title) lastKnownTitle.current = next.title;
+            setRun((prev) => {
+              if (!prev) return next;
+              if (
+                prev.status === next.status &&
+                prev.headSha === next.headSha &&
+                prev.title === next.title
+              ) {
+                return prev;
+              }
+              return { ...prev, ...next };
+            });
+            if (titleChanged || SETUP_STATUSES.has((next.status || "").toLowerCase())) {
+              onRunsChanged();
+            }
+          } catch (err) {
+            console.warn(err);
+          }
+        }, 2000);
+        if (stopped) {
+          if (timers.poll) clearInterval(timers.poll);
+          if (timers.approval) clearInterval(timers.approval);
+          if (timers.status) clearInterval(timers.status);
+        }
       } catch (err) {
-        if (!stopped) toast(err instanceof Error ? err.message : String(err), "error");
+        if (!stopped) {
+          setHistoryReady(true);
+          toast(err instanceof Error ? err.message : String(err), "error");
+        }
       }
     })();
 
-    const pollTimer = setInterval(async () => {
-      try {
-        const hist = await api<{ events?: RunEvent[]; nextSeq?: number }>(
-          `/api/v1/runs/${runId}/events?afterSeq=${afterSeq.current}`,
-        );
-        for (const e of hist.events || []) {
-          handleEvent(e, true);
-          afterSeq.current = e.seq;
-        }
-        if (hist.nextSeq != null) afterSeq.current = hist.nextSeq;
-      } catch (err) {
-        console.warn(err);
-      }
-    }, 1000);
-    const approvalTimer = setInterval(refreshApprovals, 2000);
-    const statusTimer = setInterval(async () => {
-      try {
-        const r = await api<Run>(`/api/v1/runs/${runId}`);
-        if (stopped) return;
-        setRun((prev) => {
-          if (!prev) return r;
-          if (prev.status === r.status && prev.headSha === r.headSha) return prev;
-          return { ...prev, ...r };
-        });
-        if (SETUP_STATUSES.has((r.status || "").toLowerCase())) onRunsChanged();
-      } catch (err) {
-        console.warn(err);
-      }
-    }, 2000);
-
     return () => {
       stopped = true;
-      clearInterval(pollTimer);
-      clearInterval(approvalTimer);
-      clearInterval(statusTimer);
+      if (timers.poll) clearInterval(timers.poll);
+      if (timers.approval) clearInterval(timers.approval);
+      if (timers.status) clearInterval(timers.status);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [runId]);
@@ -302,6 +1451,32 @@ export function RunView({
     return () => document.removeEventListener("mousedown", onDoc);
   }, [modelMenuOpen]);
 
+  useLayoutEffect(() => {
+    if (!modelMenuOpen) {
+      setModelMenuPos(null);
+      return;
+    }
+    const update = () => {
+      const el = modelTriggerRef.current;
+      if (!el) return;
+      const rect = el.getBoundingClientRect();
+      const gap = 8;
+      const spaceAbove = Math.max(160, rect.top - gap - 8);
+      setModelMenuPos({
+        left: Math.min(rect.left, window.innerWidth - 296),
+        bottom: window.innerHeight - rect.top + gap,
+        maxHeight: Math.min(420, spaceAbove),
+      });
+    };
+    update();
+    window.addEventListener("resize", update);
+    window.addEventListener("scroll", update, true);
+    return () => {
+      window.removeEventListener("resize", update);
+      window.removeEventListener("scroll", update, true);
+    };
+  }, [modelMenuOpen]);
+
   const pickerModels = useMemo(() => modelsForPicker(llmSettings), [llmSettings]);
   const filteredModels = useMemo(() => {
     const q = modelQuery.trim().toLowerCase();
@@ -311,10 +1486,11 @@ export function RunView({
 
   const repoName = run ? repoLabel(repos, run.repositoryId) : "";
   const statusKey = (run?.status || "").toLowerCase();
-  const isActive = ACTIVE_STATUSES.has(statusKey);
+  const isBusy = BUSY_STATUSES.has(statusKey);
+  const sendBlocked = SEND_BLOCKED_STATUSES.has(statusKey);
   const isSetup = SETUP_STATUSES.has(statusKey);
   const setupCopy = isSetup ? setupStatusCopy(statusKey, repoName) : null;
-  const canSend = Boolean(followUp.trim()) && !sending && !isActive;
+  const canSend = Boolean(followUp.trim()) && !sending && !sendBlocked;
 
   const autosize = useCallback(() => {
     const el = promptRef.current;
@@ -328,18 +1504,23 @@ export function RunView({
     if (!text) return;
     setSending(true);
     try {
+      setItems((prev) => sealOpenMeta(prev));
+      hasAssistantTail.current = false;
+      stickToBottom.current = true;
       appendBubble("user", text);
+      scrollMessages(true);
       setFollowUp("");
       await api(`/api/v1/runs/${runId}/messages`, {
         method: "POST",
         body: JSON.stringify({ text, clientMessageId: crypto.randomUUID() }),
       });
+      setRun((prev) => (prev ? { ...prev, status: "running" } : prev));
     } catch (err) {
       toast(err instanceof Error ? err.message : String(err), "error");
     } finally {
       setSending(false);
     }
-  }, [followUp, runId, appendBubble, toast]);
+  }, [followUp, runId, appendBubble, toast, sealOpenMeta, scrollMessages]);
 
   const cancelRun = useCallback(async () => {
     setCancelling(true);
@@ -378,53 +1559,100 @@ export function RunView({
       className={[
         "relative grid h-full min-h-0 grid-cols-1",
         codePanelOpen
-          ? "grid-rows-[minmax(0,1fr)_minmax(0,38vh)] min-[981px]:grid-rows-1 min-[981px]:grid-cols-[minmax(0,1fr)_var(--code-panel-w)]"
+          ? [
+              "grid-rows-[minmax(0,1fr)_minmax(0,38vh)] min-[981px]:grid-rows-1",
+              // Sidebar collapsed: chat = prompt max width (720 + px-4); Files/Git fills the rest.
+              sidebarCollapsed
+                ? "min-[981px]:grid-cols-[calc(720px+2rem)_minmax(0,1fr)]"
+                : "min-[981px]:grid-cols-[minmax(0,1fr)_var(--code-panel-w)]",
+            ].join(" ")
           : "grid-rows-1",
       ].join(" ")}
       style={{ ["--code-panel-w" as string]: `${codeWidth}px` } as CSSProperties}
     >
-        {/* 中：title + 对话 + Prompt（白底） */}
         <div className="grid min-h-0 min-w-0 grid-rows-[36px_minmax(0,1fr)_auto] overflow-hidden bg-canvas">
-          <header className="flex h-9 items-center gap-2 border-b border-line px-3">
-            <button
-              type="button"
-              className="hidden h-7 w-7 shrink-0 items-center justify-center rounded-md text-muted hover:bg-secondary max-[980px]:inline-flex"
-              aria-label="Open menu"
-              onClick={onOpenMenu}
-            >
-              ☰
-            </button>
-            <h1 className="min-w-0 truncate text-[13px] font-semibold text-ink">
-              {run?.title || "Agent"}
-            </h1>
-            {repoName && repoName !== "—" && (
-              <span className="hidden min-w-0 truncate text-[12px] text-muted min-[720px]:inline">
-                {repoName}
-              </span>
-            )}
-            {run?.status && <StatusPill status={run.status} />}
-            <div className="ml-auto flex shrink-0 items-center gap-1">
-              {!codePanelOpen && (
+          <header className="px-4 pt-1">
+            <div className="mx-auto flex h-9 w-full max-w-[720px] items-center gap-2.5 px-3.5">
+              <button
+                type="button"
+                className={[
+                  "h-7 w-7 shrink-0 items-center justify-center rounded-md text-muted hover:bg-secondary hover:text-ink",
+                  sidebarCollapsed ? "inline-flex" : "hidden max-[980px]:inline-flex",
+                ].join(" ")}
+                title="Show sidebar"
+                aria-label="Show sidebar"
+                onClick={onOpenMenu}
+              >
+                <IconPanelLeft className="h-3.5 w-3.5" />
+              </button>
+              {editingTitle ? (
+                <input
+                  ref={titleInputRef}
+                  className="min-w-0 flex-1 rounded-md border border-line-strong bg-canvas px-1.5 py-0.5 text-[13px] font-semibold text-ink outline-none focus:border-primary"
+                  value={titleDraft}
+                  aria-label="Rename agent"
+                  onChange={(e) => setTitleDraft(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") {
+                      e.preventDefault();
+                      void commitTitleEdit();
+                    } else if (e.key === "Escape") {
+                      e.preventDefault();
+                      setEditingTitle(false);
+                    }
+                  }}
+                  onBlur={() => void commitTitleEdit()}
+                />
+              ) : (
                 <button
                   type="button"
-                  className="hidden h-7 w-7 items-center justify-center rounded-md text-muted hover:bg-secondary hover:text-ink min-[981px]:inline-flex"
-                  title="Show panel"
-                  aria-label="Show panel"
-                  onClick={onToggleCodePanel}
+                  className="min-w-0 truncate rounded-md px-1 py-0.5 text-left text-[13px] font-semibold text-ink hover:bg-secondary"
+                  title={onRename ? "Click to rename" : undefined}
+                  onClick={() => {
+                    if (!onRename) return;
+                    setTitleDraft(run?.title || "");
+                    setEditingTitle(true);
+                    requestAnimationFrame(() => titleInputRef.current?.select());
+                  }}
                 >
-                  <IconPanelRight className="h-3.5 w-3.5" />
+                  {run?.title || "Agent"}
                 </button>
               )}
+              {repoName && repoName !== "—" && (
+                <span className="ml-auto hidden min-w-0 truncate text-[12px] text-muted min-[720px]:inline">
+                  {repoName}
+                </span>
+              )}
+              {run?.status && (
+                <span className="inline-flex items-center" title={run.status} aria-label={run.status}>
+                  <StatusDot status={run.status} />
+                </span>
+              )}
+              <div className={`flex shrink-0 items-center gap-1 ${repoName && repoName !== "—" ? "" : "ml-auto"}`}>
+                {!codePanelOpen && (
+                  <button
+                    type="button"
+                    className="hidden h-7 w-7 items-center justify-center rounded-md text-muted hover:bg-secondary hover:text-ink min-[981px]:inline-flex"
+                    title="Show panel"
+                    aria-label="Show panel"
+                    onClick={onToggleCodePanel}
+                  >
+                    <IconPanelRight className="h-3.5 w-3.5" />
+                  </button>
+                )}
+              </div>
             </div>
           </header>
           <div
             ref={messagesRef}
-            className="flex flex-col gap-2 overflow-auto px-3 pb-1.5 pt-2"
+            className="flex flex-col gap-3 overflow-auto px-4 pb-2 pt-1"
+            onScroll={onMessagesScroll}
           >
-            <div className="mx-auto flex w-full max-w-[720px] flex-col gap-2">
+            {/* Shared px-3.5 text gutter; chrome (bubbles) bleeds with -mx-3.5. */}
+            <div className="mx-auto flex w-full max-w-[720px] flex-col gap-3 px-3.5">
               {setupCopy && (
                 <div
-                  className="flex items-start gap-3 self-stretch rounded-xl border border-line bg-tertiary px-3.5 py-3"
+                  className="-mx-3.5 flex items-start gap-3 self-stretch rounded-xl border border-line bg-tertiary px-3.5 py-3"
                   role="status"
                   aria-live="polite"
                 >
@@ -435,7 +1663,253 @@ export function RunView({
                   </div>
                 </div>
               )}
-              {items.map((item) => {
+              {!historyReady && (
+                <div className="flex items-center gap-2 py-6 text-[12.5px] text-muted" role="status">
+                  <IconLoader className="h-3.5 w-3.5 shrink-0 animate-spin" />
+                  Loading conversation…
+                </div>
+              )}
+              {historyReady && segments.map((seg) => {
+                if (seg.type === "activity") {
+                  // Default collapsed while live/finished — only the summary line updates.
+                  const open = openGroups.has(seg.key);
+                  const summary = activitySummary(seg.items, nowTick);
+                  return (
+                    <div key={seg.key} className="self-stretch">
+                      <button
+                        type="button"
+                        className="relative flex w-full items-center gap-1.5 rounded-md py-1 text-left text-[12px] text-muted hover:bg-secondary hover:text-ink"
+                        aria-expanded={open}
+                        onClick={() => toggleGroup(seg.key)}
+                      >
+                        <span className="pointer-events-none absolute right-full top-1/2 mr-1 -translate-y-1/2 text-placeholder">
+                          {open ? (
+                            <IconChevronDown className="h-3.5 w-3.5" />
+                          ) : (
+                            <IconChevronRight className="h-3.5 w-3.5" />
+                          )}
+                        </span>
+                        <span className="min-w-0 flex-1 truncate font-medium text-muted">{summary}</span>
+                        {seg.live && (
+                          <IconLoader className="h-3 w-3 shrink-0 animate-spin text-primary" />
+                        )}
+                      </button>
+                      {open && (
+                        <div className="mt-0.5 space-y-0.5 border-l border-line pl-2.5 ml-1.5">
+                          {clusterActivityItems(seg.items, nowTick).map((row) => {
+                            if (row.type === "thought") {
+                              const item = row.item;
+                              const elapsed = formatElapsed(thoughtDurationMs(item, nowTick));
+                              const thoughtLabel = item.sealed
+                                ? `Thought for ${elapsed}`
+                                : `Thinking · ${elapsed}`;
+                              return (
+                                <div key={item.id}>
+                                  <button
+                                    type="button"
+                                    className="flex w-full items-center gap-1.5 rounded-md px-1 py-0.5 text-left text-[12px] text-muted hover:bg-secondary hover:text-ink"
+                                    aria-expanded={item.expanded}
+                                    onClick={() => toggleItem(item.id)}
+                                  >
+                                    {item.expanded ? (
+                                      <IconChevronDown className="h-3 w-3 shrink-0" />
+                                    ) : (
+                                      <IconChevronRight className="h-3 w-3 shrink-0" />
+                                    )}
+                                    <IconSkills className="h-3 w-3 shrink-0" />
+                                    <span className="font-medium">{thoughtLabel}</span>
+                                    {!item.sealed && (
+                                      <IconLoader className="ml-auto h-3 w-3 shrink-0 animate-spin" />
+                                    )}
+                                  </button>
+                                  {item.expanded && (
+                                    <div className="mt-0.5 whitespace-pre-wrap break-words rounded-md border border-line bg-tertiary px-2.5 py-1.5 text-[12px] leading-[1.5] text-muted [overflow-wrap:anywhere]">
+                                      {item.text}
+                                    </div>
+                                  )}
+                                </div>
+                              );
+                            }
+
+                            if (row.type === "thought-bunch") {
+                              const bunchOpen = openBunches.has(row.key);
+                              const liveThought = row.items.some((t) => !t.sealed);
+                              return (
+                                <div key={row.key}>
+                                  <button
+                                    type="button"
+                                    className="flex w-full items-center gap-1.5 rounded-md px-1 py-0.5 text-left text-[12px] text-muted hover:bg-secondary hover:text-ink"
+                                    aria-expanded={bunchOpen}
+                                    onClick={() => toggleBunch(row.key)}
+                                  >
+                                    {bunchOpen ? (
+                                      <IconChevronDown className="h-3 w-3 shrink-0" />
+                                    ) : (
+                                      <IconChevronRight className="h-3 w-3 shrink-0" />
+                                    )}
+                                    <IconSkills className="h-3 w-3 shrink-0" />
+                                    <span className="font-medium">
+                                      {thoughtBunchSummary(row.items, nowTick)}
+                                    </span>
+                                    {liveThought && (
+                                      <IconLoader className="ml-auto h-3 w-3 shrink-0 animate-spin" />
+                                    )}
+                                  </button>
+                                  {bunchOpen && (
+                                    <div className="mt-0.5 space-y-1 rounded-md border border-line bg-tertiary px-2.5 py-1.5 text-[12px] leading-[1.5] text-muted [overflow-wrap:anywhere]">
+                                      {row.items.map((t, idx) => (
+                                        <div
+                                          key={t.id}
+                                          className={
+                                            idx > 0 ? "border-t border-line pt-1.5 whitespace-pre-wrap break-words" : "whitespace-pre-wrap break-words"
+                                          }
+                                        >
+                                          {t.text}
+                                        </div>
+                                      ))}
+                                    </div>
+                                  )}
+                                </div>
+                              );
+                            }
+
+                            const renderTool = (item: ToolItem) => {
+                              const busy = /pending|in_progress|running/i.test(item.status);
+                              const failed = /failed/i.test(item.status);
+                              const label = toolLabel(item);
+                              const command = toolCommand(item);
+                              const path = toolPath(item);
+                              const detailCmd = command
+                                ? `$ ${command}`
+                                : path
+                                  ? path
+                                  : item.input && !item.input.trimStart().startsWith("{")
+                                    ? item.input
+                                    : "";
+                              return (
+                                <div key={item.id}>
+                                  <button
+                                    type="button"
+                                    className="flex w-full items-center gap-1.5 rounded-md px-1 py-0.5 text-left text-[12px] text-muted hover:bg-secondary hover:text-ink"
+                                    aria-expanded={item.expanded}
+                                    onClick={() => toggleItem(item.id)}
+                                  >
+                                    {item.expanded ? (
+                                      <IconChevronDown className="h-3 w-3 shrink-0" />
+                                    ) : (
+                                      <IconChevronRight className="h-3 w-3 shrink-0" />
+                                    )}
+                                    <span
+                                      className={[
+                                        "min-w-0 flex-1 truncate",
+                                        failed ? "text-danger" : "text-ink",
+                                      ].join(" ")}
+                                    >
+                                      {label}
+                                    </span>
+                                    {busy ? (
+                                      <IconLoader className="h-3 w-3 shrink-0 animate-spin text-primary" />
+                                    ) : failed ? (
+                                      <span className="shrink-0 text-[10px] font-medium text-danger">
+                                        failed
+                                      </span>
+                                    ) : null}
+                                  </button>
+                                  {item.expanded && (
+                                    <div className="mt-0.5 space-y-1 rounded-md border border-line bg-tertiary px-2.5 py-1.5">
+                                      {detailCmd && (
+                                        <pre className="m-0 max-h-36 overflow-auto whitespace-pre-wrap break-words font-mono text-[11px] leading-[1.45] text-muted [overflow-wrap:anywhere]">
+                                          {detailCmd}
+                                        </pre>
+                                      )}
+                                      {item.output && (
+                                        <pre
+                                          className={[
+                                            "m-0 max-h-40 overflow-auto whitespace-pre-wrap break-words font-mono text-[11px] leading-[1.45] [overflow-wrap:anywhere]",
+                                            detailCmd ? "border-t border-line pt-1.5" : "",
+                                            failed ? "text-danger" : "text-muted",
+                                          ].join(" ")}
+                                        >
+                                          {item.output}
+                                        </pre>
+                                      )}
+                                      {!detailCmd && !item.output && (
+                                        <div className="text-[11px] text-placeholder">No details</div>
+                                      )}
+                                    </div>
+                                  )}
+                                </div>
+                              );
+                            };
+
+                            if (row.type === "tool-bunch") {
+                              const bunchOpen = openBunches.has(row.key);
+                              const busy = row.items.some((t) =>
+                                /pending|in_progress|running/i.test(t.status),
+                              );
+                              const failed = row.items.some((t) => /failed/i.test(t.status));
+                              const paths = row.items
+                                .map((t) => toolPath(t) || toolLabel(t))
+                                .filter(Boolean);
+                              return (
+                                <div key={row.key}>
+                                  <button
+                                    type="button"
+                                    className="flex w-full items-center gap-1.5 rounded-md px-1 py-0.5 text-left text-[12px] text-muted hover:bg-secondary hover:text-ink"
+                                    aria-expanded={bunchOpen}
+                                    onClick={() => toggleBunch(row.key)}
+                                  >
+                                    {bunchOpen ? (
+                                      <IconChevronDown className="h-3 w-3 shrink-0" />
+                                    ) : (
+                                      <IconChevronRight className="h-3 w-3 shrink-0" />
+                                    )}
+                                    <span
+                                      className={[
+                                        "min-w-0 flex-1 truncate",
+                                        failed ? "text-danger" : "text-ink",
+                                      ].join(" ")}
+                                    >
+                                      {row.summary}
+                                    </span>
+                                    {busy ? (
+                                      <IconLoader className="h-3 w-3 shrink-0 animate-spin text-primary" />
+                                    ) : (
+                                      <span className="shrink-0 text-[10px] tabular-nums text-placeholder">
+                                        {row.items.length}
+                                      </span>
+                                    )}
+                                  </button>
+                                  {bunchOpen && (
+                                    <div className="mt-0.5 space-y-0.5 border-l border-line pl-2 ml-1.5">
+                                      {row.family === "edit" || row.family === "read" ? (
+                                        paths.map((p, idx) => (
+                                          <div
+                                            key={`${row.key}-${idx}`}
+                                            className="truncate px-1 py-0.5 text-[12px] text-muted"
+                                            title={p}
+                                          >
+                                            {p}
+                                          </div>
+                                        ))
+                                      ) : (
+                                        row.items.map((t) => renderTool(t))
+                                      )}
+                                    </div>
+                                  )}
+                                </div>
+                              );
+                            }
+
+                            return renderTool(row.item);
+                          })}
+                        </div>
+                      )}
+                    </div>
+                  );
+                }
+
+                const item = seg.item;
                 if (item.kind === "approval") {
                   const ap = item.approval;
                   const summary =
@@ -495,55 +1969,47 @@ export function RunView({
                     </div>
                   );
                 }
-                const role = item.role;
-                if (role === "user") {
+
+                if (item.kind === "bubble" && item.role === "user") {
                   return (
                     <div
                       key={item.id}
-                      className="max-w-[78%] self-end whitespace-pre-wrap break-words rounded-xl rounded-br-[4px] bg-ink px-3.5 py-2.5 text-[13.5px] leading-[1.55] text-white"
+                      className="-mx-3.5 min-w-0 self-stretch whitespace-pre-wrap break-words rounded-2xl border border-line bg-secondary px-3.5 py-2.5 text-[13.5px] leading-[1.55] text-ink [overflow-wrap:anywhere]"
                     >
-                      <div className="mb-1.5 text-[10px] font-semibold uppercase tracking-[0.04em] text-placeholder">
-                        user
-                      </div>
                       {item.text}
                     </div>
                   );
                 }
-                if (role === "tool" || role === "event") {
+
+                if (item.kind === "bubble") {
                   return (
                     <div
                       key={item.id}
-                      className="ml-9 self-stretch whitespace-pre-wrap break-words rounded-lg border border-line bg-tertiary px-3 py-2.5 font-mono text-[11px] leading-[1.55] text-muted"
+                      className="min-w-0 w-full self-stretch text-[13.5px] leading-[1.55] text-ink"
                     >
-                      <div className="mb-1.5 font-sans text-[10px] font-semibold uppercase tracking-[0.04em] text-placeholder">
-                        {role}
-                      </div>
-                      {item.text}
+                      <Markdown text={item.text} />
                     </div>
                   );
                 }
-                return (
-                  <div
-                    key={item.id}
-                    className="relative max-w-[min(780px,92%)] self-start whitespace-pre-wrap break-words pl-9 text-[13.5px] leading-[1.55] text-ink before:absolute before:left-0 before:top-0 before:grid before:h-[26px] before:w-[26px] before:place-items-center before:rounded-[7px] before:bg-secondary before:text-xs before:font-bold before:text-ink before:content-['Z']"
-                  >
-                    <div className="mb-1.5 text-[10px] font-semibold uppercase tracking-[0.04em] text-placeholder">
-                      assistant
-                    </div>
-                    {item.text}
-                  </div>
-                );
+
+                return null;
               })}
             </div>
           </div>
-          <div ref={composerRef} className="border-t border-line bg-canvas px-3 pb-2.5 pt-2">
-            <div className="mx-auto w-full max-w-[720px]">
-              <div className="rounded-[10px] border border-line-strong bg-tertiary px-2 pb-1.5 pt-1.5 focus-within:border-ink/30 focus-within:bg-canvas">
+          <div ref={composerRef} className="bg-canvas px-4 pb-3 pt-1">
+            <div className="mx-auto w-full max-w-[720px] px-3.5">
+              <div className="-mx-3.5 rounded-2xl border border-line bg-secondary px-3.5 pb-2 pt-2.5 focus-within:border-line-strong focus-within:bg-canvas">
                 <textarea
                   ref={promptRef}
-                  className="block max-h-32 min-h-[32px] w-full resize-none border-0 bg-transparent px-0.5 pb-1 pt-0 text-[13px] leading-normal text-ink outline-none"
+                  className="block max-h-32 min-h-[32px] w-full resize-none border-0 bg-transparent px-0 pb-1 pt-0 text-[13px] leading-normal text-ink outline-none"
                   rows={1}
-                  placeholder="Send follow-up…"
+                  placeholder={
+                    sendBlocked
+                      ? "Agent is working…"
+                      : isSetup
+                        ? "Waiting for worker… you can still queue a follow-up"
+                        : "Send follow-up…"
+                  }
                   aria-label="Follow-up"
                   value={followUp}
                   onChange={(e) => {
@@ -568,7 +2034,7 @@ export function RunView({
                     >
                       <IconPlus className="h-3.5 w-3.5" />
                     </button>
-                    <div className="relative">
+                    <div className="relative" ref={modelTriggerRef}>
                       <button
                         type="button"
                         className="inline-flex h-6 max-w-[200px] items-center gap-1 rounded-md px-1.5 text-[12px] font-medium text-muted hover:bg-secondary hover:text-ink"
@@ -586,13 +2052,18 @@ export function RunView({
                         </span>
                         <IconChevronDown className="h-3 w-3 shrink-0" />
                       </button>
-                      {modelMenuOpen && (
+                      {modelMenuOpen && modelMenuPos && (
                         <div
-                          className="absolute bottom-[calc(100%+8px)] left-0 z-[45] w-[min(280px,calc(100vw-48px))] overflow-hidden rounded-xl border border-line bg-canvas shadow-menu"
+                          className="fixed z-[45] flex w-[min(280px,calc(100vw-48px))] flex-col overflow-hidden rounded-xl border border-line bg-canvas shadow-menu"
+                          style={{
+                            left: modelMenuPos.left,
+                            bottom: modelMenuPos.bottom,
+                            maxHeight: modelMenuPos.maxHeight,
+                          }}
                           role="menu"
                           aria-label="Models"
                         >
-                          <div className="flex items-center gap-2 border-b border-line px-3 py-2">
+                          <div className="flex shrink-0 items-center gap-2 border-b border-line px-3 py-2">
                             <IconSearch className="h-3.5 w-3.5 shrink-0 text-placeholder" />
                             <input
                               className="min-w-0 flex-1 border-0 bg-transparent text-[13px] outline-none"
@@ -604,7 +2075,7 @@ export function RunView({
                               onChange={(e) => setModelQuery(e.target.value)}
                             />
                           </div>
-                          <div className="max-h-[280px] overflow-auto p-1.5">
+                          <div className="min-h-0 flex-1 overflow-auto p-1.5">
                             {!filteredModels.length ? (
                               <p className="m-0 px-2 py-1.5 text-xs text-muted">No models — configure in Settings</p>
                             ) : (
@@ -633,23 +2104,20 @@ export function RunView({
                         </div>
                       )}
                     </div>
-                    <span className="ml-0.5 hidden items-center gap-1 text-[11px] text-placeholder min-[640px]:inline-flex">
-                      <IconBranch className="h-3 w-3" />
-                      <span className="max-w-[140px] truncate font-mono">{run?.headBranch || "—"}</span>
-                    </span>
                   </div>
-                  {isActive ? (
-                    <button
-                      type="button"
-                      className="inline-flex h-6 w-6 items-center justify-center rounded-sm bg-primary text-white hover:bg-primary-hover disabled:opacity-35"
-                      title="Stop"
-                      aria-label="Stop"
-                      disabled={cancelling}
-                      onClick={cancelRun}
-                    >
-                      <IconStop className="h-2.5 w-2.5 fill-current" />
-                    </button>
-                  ) : (
+                  <div className="flex shrink-0 items-center gap-1">
+                    {isBusy && (
+                      <button
+                        type="button"
+                        className="inline-flex h-6 w-6 items-center justify-center rounded-sm border border-line-strong bg-canvas text-muted hover:bg-secondary hover:text-ink disabled:opacity-35"
+                        title="Stop"
+                        aria-label="Stop"
+                        disabled={cancelling}
+                        onClick={cancelRun}
+                      >
+                        <IconStop className="h-2.5 w-2.5 fill-current" />
+                      </button>
+                    )}
                     <button
                       type="button"
                       className="inline-flex h-6 w-6 items-center justify-center rounded-sm bg-primary text-white hover:bg-primary-hover disabled:opacity-35 disabled:hover:bg-primary"
@@ -660,14 +2128,13 @@ export function RunView({
                     >
                       <IconArrowUp className="h-3.5 w-3.5" />
                     </button>
-                  )}
+                  </div>
                 </div>
               </div>
             </div>
           </div>
         </div>
 
-        {/* 右：代码 / 文件独立分栏 */}
         {codePanelOpen && (
           <CodePanel
             runId={runId}
@@ -677,6 +2144,7 @@ export function RunView({
             width={codeWidth}
             onWidthChange={setCodeWidth}
             onCollapse={onToggleCodePanel}
+            equalSplit={sidebarCollapsed}
           />
         )}
     </div>

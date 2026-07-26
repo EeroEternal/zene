@@ -90,7 +90,8 @@ if [ -n "$TARGET" ]; then
 
     echo "=== Installation Completed ==="
     echo "Installed to $INSTALL_DIR"
-    echo "Run: zene --repl   or   zene -p \"your prompt\""
+    echo "Cloud Console: cd cloud && ./scripts/dev.sh"
+    echo "ACP (workers/editors): zene acp"
     echo "If 'zene' still resolves to an old path, open a new terminal or run: hash -r"
     exit 0
   else

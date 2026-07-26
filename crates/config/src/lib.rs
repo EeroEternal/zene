@@ -651,6 +651,12 @@ impl ZeneConfig {
                 self.sandbox.auto_allow_bash = false;
             }
         }
+        // 0 = unlimited; invalid values are ignored.
+        if let Ok(raw) = env::var("ZENE_MAX_TURNS") {
+            if let Ok(n) = raw.trim().parse::<u32>() {
+                self.max_turns = n;
+            }
+        }
     }
 
     /// Persist model/provider/base_url/api_key to `~/.zene/config.toml`.

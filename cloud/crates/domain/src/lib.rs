@@ -133,9 +133,21 @@ pub struct Run {
     pub head_sha: Option<String>,
     pub model: String,
     pub permission_mode: String,
+    /// Agent step budget for this run; `0` means unlimited.
+    #[serde(default = "default_max_turns")]
+    pub max_turns: u32,
     pub created_at: DateTime<Utc>,
     pub started_at: Option<DateTime<Utc>>,
     pub finished_at: Option<DateTime<Utc>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub archived_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateRunRequest {
+    pub title: Option<String>,
+    pub archived: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -170,6 +182,9 @@ pub struct CreateRunRequest {
     pub model: String,
     #[serde(default = "default_permission_mode")]
     pub permission_mode: String,
+    /// Agent step budget; `0` = unlimited. Defaults to 50.
+    #[serde(default = "default_max_turns")]
+    pub max_turns: u32,
 }
 
 fn default_branch_name() -> String {
@@ -182,6 +197,10 @@ fn default_model() -> String {
 
 fn default_permission_mode() -> String {
     "default".into()
+}
+
+fn default_max_turns() -> u32 {
+    50
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -244,6 +263,32 @@ pub struct ClaimedRun {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct QueueHold {
+    pub worker_id: String,
+    pub run_id: Id,
+    pub since: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct QueueActive {
+    pub worker_id: String,
+    pub run_id: Id,
+    pub status: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct QueueStats {
+    pub queued: u64,
+    pub active: u64,
+    pub holding: u64,
+    pub holds: Vec<QueueHold>,
+    pub actives: Vec<QueueActive>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct WorkerEventRequest {
     pub source_event_id: String,
     pub event_type: String,
@@ -256,6 +301,12 @@ pub struct WorkerStatusRequest {
     pub status: RunStatus,
     pub head_sha: Option<String>,
     pub failure_code: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkerTitleRequest {
+    pub title: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

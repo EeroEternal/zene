@@ -123,12 +123,19 @@ pub(crate) async fn run_subagent_with_runner(
         runner,
     };
 
+    // 0 = unlimited.
     let max_steps = config.max_turns;
     let mut final_text = String::new();
     let mut completed = false;
+    let mut steps_done = 0u32;
     let compaction_config = subagent_compaction_config(&config.compaction);
 
-    for _ in 0..max_steps {
+    loop {
+        if max_steps > 0 && steps_done >= max_steps {
+            break;
+        }
+        steps_done = steps_done.saturating_add(1);
+
         if check_cancelled(cancel)? {
             return Err(turn::aborted_error());
         }
@@ -182,7 +189,13 @@ pub(crate) async fn run_subagent_with_runner(
     }
 
     if !completed {
-        return Err(turn::max_steps_error(max_steps));
+        let notice = turn::max_turns_notice(max_steps);
+        final_text = if final_text.trim().is_empty() {
+            notice
+        } else {
+            format!("{final_text}\n\n{notice}")
+        };
+        messages.push(Message::assistant(&final_text));
     }
 
     Ok(final_text)

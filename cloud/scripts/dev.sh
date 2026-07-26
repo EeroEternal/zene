@@ -25,6 +25,11 @@ export ZENE_CLOUD_GITHUB_MODE="${ZENE_CLOUD_GITHUB_MODE:-live}"
 export ZENE_CLOUD_PUSH_PR="${ZENE_CLOUD_PUSH_PR:-1}"
 export ZENE_CLOUD_ALLOW_MOCK="${ZENE_CLOUD_ALLOW_MOCK:-1}"
 export ZENE_CLOUD_ACP_YOLO="${ZENE_CLOUD_ACP_YOLO:-1}"
+# Supervisor pool (1B+2B): warm claimers + scale for queue; holds don't consume active slots.
+export ZENE_CLOUD_WORKER_MIN_WARM="${ZENE_CLOUD_WORKER_MIN_WARM:-1}"
+export ZENE_CLOUD_WORKER_MAX_ACTIVE="${ZENE_CLOUD_WORKER_MAX_ACTIVE:-4}"
+export ZENE_CLOUD_WORKER_MAX_HOLD="${ZENE_CLOUD_WORKER_MAX_HOLD:-8}"
+export ZENE_CLOUD_WORKER_SCALE_INTERVAL_MS="${ZENE_CLOUD_WORKER_SCALE_INTERVAL_MS:-1000}"
 # Keep localhost API calls off the system proxy (Clash/V2Ray etc. often break claim).
 export NO_PROXY="${NO_PROXY:+$NO_PROXY,}127.0.0.1,localhost"
 export no_proxy="${no_proxy:+$no_proxy,}127.0.0.1,localhost"
@@ -58,8 +63,12 @@ if ! ZENE_BIN="$(resolve_zene_bin)"; then
 fi
 export ZENE_BIN
 
-echo "building web UI (apps/web → dist)..."
-(cd "$ROOT/apps/web" && npm run build)
+if [[ "${ZENE_CLOUD_SKIP_WEB_BUILD:-0}" == "1" || "${ZENE_CLOUD_SKIP_WEB_BUILD:-}" == "true" ]]; then
+  echo "skipping web UI build (ZENE_CLOUD_SKIP_WEB_BUILD=1); use apps/web npm run dev for HMR"
+else
+  echo "building web UI (apps/web → dist)..."
+  (cd "$ROOT/apps/web" && npm run build)
+fi
 
 echo "building zene-cloud-api and zene-cloud-worker..."
 cargo build -p zene-cloud-api -p zene-cloud-worker
@@ -82,12 +91,17 @@ API_PID=$!
 sleep 1
 
 WORKER_ARGS=(
+  --supervisor
   --api-url "$ZENE_CLOUD_API_URL"
   --worker-token "$ZENE_CLOUD_WORKER_TOKEN"
   --workspace-root "$ZENE_CLOUD_WORKSPACE_ROOT"
   --zene-bin "$ZENE_BIN"
   --acp-yolo
   --push-pr
+  --min-warm "$ZENE_CLOUD_WORKER_MIN_WARM"
+  --max-active "$ZENE_CLOUD_WORKER_MAX_ACTIVE"
+  --max-hold "$ZENE_CLOUD_WORKER_MAX_HOLD"
+  --scale-interval-ms "$ZENE_CLOUD_WORKER_SCALE_INTERVAL_MS"
 )
 if [[ "$ZENE_CLOUD_ALLOW_MOCK" == "1" || "$ZENE_CLOUD_ALLOW_MOCK" == "true" ]]; then
   WORKER_ARGS+=(--allow-mock)
@@ -98,6 +112,7 @@ WORKER_PID=$!
 echo
 echo "Zene Cloud is running:"
 echo "  Web/API:     http://127.0.0.1:8788/"
+echo "  Worker pool: supervisor min_warm=$ZENE_CLOUD_WORKER_MIN_WARM max_active=$ZENE_CLOUD_WORKER_MAX_ACTIVE max_hold=$ZENE_CLOUD_WORKER_MAX_HOLD"
 echo "  GitHub mode: $ZENE_CLOUD_GITHUB_MODE"
 if [[ "$ZENE_CLOUD_GITHUB_MODE" == "live" ]]; then
   if [[ -n "${GITHUB_APP_ID:-}" && -n "${GITHUB_APP_SLUG:-}" && -f "${GITHUB_APP_PRIVATE_KEY_PATH:-}" ]]; then

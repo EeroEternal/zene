@@ -46,6 +46,7 @@ async fn mock_clone_push_and_draft_pr() {
                 base_ref: Some("main".into()),
                 model: "default".into(),
                 permission_mode: "default".into(),
+                max_turns: 50,
             },
         )
         .await

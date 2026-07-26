@@ -1,6 +1,6 @@
 "use client";
 
-import { statusTone } from "@/lib/api";
+import { statusLabel, statusTone } from "@/lib/api";
 
 const TONE_CLASSES: Record<string, string> = {
   ok: "bg-ok-soft text-ok",
@@ -13,7 +13,7 @@ export function StatusPill({ status }: { status?: string }) {
   const tone = statusTone(status);
   return (
     <div className={`whitespace-nowrap rounded-md px-2 py-0.5 text-[11px] font-medium ${TONE_CLASSES[tone]}`}>
-      {status || "idle"}
+      {statusLabel(status)}
     </div>
   );
 }

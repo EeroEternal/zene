@@ -6,14 +6,21 @@ import type { PullRequest, WorkspaceFile } from "@/lib/types";
 import {
   IconChevronsCollapse,
   IconChevronsExpand,
+  IconCode,
   IconDots,
+  IconEye,
   IconPanelRightClose,
   IconRefresh,
 } from "@/lib/icons";
 import { FileTree } from "./FileTree";
 import { GitPanel } from "./GitPanel";
+import { Markdown } from "./Markdown";
 import { PrPanel } from "./PrPanel";
 import { useToast } from "./Toast";
+
+function isMarkdownPath(path: string): boolean {
+  return /\.(md|markdown|mdx)$/i.test(path);
+}
 
 export type IdeTab = "git" | "files";
 
@@ -22,6 +29,26 @@ const OPEN_KEY = "zene.codePanelOpen";
 const DEFAULT_W = 520;
 const MIN_W = 380;
 const MAX_W = 860;
+
+/** Prefer root README, else the first file in the repo root (then any file). */
+function pickDefaultFile(files: WorkspaceFile[]): string | null {
+  const onlyFiles = files.filter((f) => f.kind === "file");
+  if (!onlyFiles.length) return null;
+  const rootFiles = onlyFiles.filter((f) => !f.path.includes("/"));
+  const byName = (list: WorkspaceFile[]) =>
+    list.find((f) => {
+      const name = f.path.split("/").pop() || f.path;
+      return /^readme(\.[^.]+)?$/i.test(name);
+    });
+  const readme = byName(rootFiles) || byName(onlyFiles);
+  if (readme) return readme.path;
+  if (rootFiles.length) {
+    return [...rootFiles].sort((a, b) => a.path.localeCompare(b.path, undefined, { sensitivity: "base" }))[0]
+      .path;
+  }
+  return [...onlyFiles].sort((a, b) => a.path.localeCompare(b.path, undefined, { sensitivity: "base" }))[0]
+    .path;
+}
 
 export function useCodePanelWidth() {
   const [width, setWidth] = useState(DEFAULT_W);
@@ -144,6 +171,8 @@ interface CodePanelProps {
   width: number;
   onWidthChange: (w: number) => void;
   onCollapse?: () => void;
+  /** When true, panel fills remaining width after the chat column; hide the drag handle. */
+  equalSplit?: boolean;
 }
 
 export function CodePanel({
@@ -154,9 +183,10 @@ export function CodePanel({
   width,
   onWidthChange,
   onCollapse,
+  equalSplit = false,
 }: CodePanelProps) {
   const toast = useToast();
-  const [tab, setTab] = useState<IdeTab>("git");
+  const [tab, setTab] = useState<IdeTab>("files");
   const [menuOpen, setMenuOpen] = useState(false);
   const [prModalOpen, setPrModalOpen] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
@@ -170,25 +200,8 @@ export function CodePanel({
   const [latestPr, setLatestPr] = useState<PullRequest | null>(null);
   const [treeExpandAll, setTreeExpandAll] = useState(0);
   const [treeCollapseAll, setTreeCollapseAll] = useState(0);
-
-  const loadFiles = useCallback(async () => {
-    try {
-      setFiles((await api<WorkspaceFile[]>(`/api/v1/runs/${runId}/files`)) || []);
-      setFilesError("");
-    } catch (err) {
-      setFiles([]);
-      setFilesError(err instanceof Error ? err.message : String(err));
-    }
-  }, [runId]);
-
-  const loadPrs = useCallback(async () => {
-    try {
-      const prs = (await api<PullRequest[]>(`/api/v1/runs/${runId}/pull-requests`)) || [];
-      setLatestPr(prs[0] ?? null);
-    } catch {
-      setLatestPr(null);
-    }
-  }, [runId]);
+  const [mdPreview, setMdPreview] = useState(true);
+  const autoOpenedRef = useRef(false);
 
   const openFile = useCallback(
     async (path: string) => {
@@ -204,6 +217,44 @@ export function CodePanel({
     },
     [runId, toast],
   );
+
+  const loadFiles = useCallback(async () => {
+    try {
+      const list = (await api<WorkspaceFile[]>(`/api/v1/runs/${runId}/files`)) || [];
+      setFiles(list);
+      setFilesError("");
+      if (!autoOpenedRef.current) {
+        const def = pickDefaultFile(list);
+        if (def) {
+          autoOpenedRef.current = true;
+          void openFile(def);
+        }
+      }
+    } catch (err) {
+      setFiles([]);
+      setFilesError(err instanceof Error ? err.message : String(err));
+    }
+  }, [runId, openFile]);
+
+  const loadPrs = useCallback(async () => {
+    try {
+      const prs = (await api<PullRequest[]>(`/api/v1/runs/${runId}/pull-requests`)) || [];
+      setLatestPr(prs[0] ?? null);
+    } catch {
+      setLatestPr(null);
+    }
+  }, [runId]);
+
+  useEffect(() => {
+    autoOpenedRef.current = false;
+    setSelectedFile(null);
+    setFileView(null);
+    setMdPreview(true);
+  }, [runId]);
+
+  useEffect(() => {
+    if (fileView?.path && isMarkdownPath(fileView.path)) setMdPreview(true);
+  }, [fileView?.path]);
 
   useEffect(() => {
     if (tab === "files") loadFiles();
@@ -239,7 +290,7 @@ export function CodePanel({
 
   return (
     <aside className="relative grid h-full min-h-0 max-h-[38vh] grid-rows-[36px_minmax(0,1fr)] overflow-hidden border-t border-line bg-secondary min-[981px]:max-h-none min-[981px]:border-l min-[981px]:border-t-0">
-      <CodePanelResizeHandle width={width} onWidthChange={onWidthChange} />
+      {!equalSplit && <CodePanelResizeHandle width={width} onWidthChange={onWidthChange} />}
       <div className="flex h-9 items-center justify-between gap-2 border-b border-line bg-secondary px-2">
         <div className="flex min-w-0 items-center gap-1" role="tablist">
           {mainTabs.map((t) => (
@@ -316,65 +367,89 @@ export function CodePanel({
           />
         )}
         {tab === "files" && (
-          <div className="flex h-full min-h-0 flex-col bg-canvas p-2">
-            <div className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-lg border border-line bg-canvas shadow-card">
-              <div className="flex h-8 items-center justify-between gap-2 border-b border-line px-2.5">
-                <span className="truncate font-mono text-[11px] text-muted">
-                  {fileView?.path || "Select a file"}
-                </span>
-                <div className="flex shrink-0 items-center gap-0.5">
+          <div className="flex h-full min-h-0 flex-col bg-canvas">
+            <div className="flex h-8 shrink-0 items-center justify-between gap-2 px-2">
+              <span className="truncate font-mono text-[12px] text-muted">
+                {fileView?.path || "Select a file"}
+              </span>
+              <div className="flex shrink-0 items-center gap-0.5">
+                {fileView && isMarkdownPath(fileView.path) && (
                   <button
                     type="button"
-                    className="inline-flex h-6 w-6 items-center justify-center rounded-md text-muted hover:bg-secondary hover:text-ink"
-                    title="Expand all"
-                    aria-label="Expand all folders"
-                    onClick={() => setTreeExpandAll((n) => n + 1)}
+                    className={[
+                      "inline-flex h-6 w-6 items-center justify-center rounded-md",
+                      mdPreview
+                        ? "bg-active text-ink"
+                        : "text-muted hover:bg-secondary hover:text-ink",
+                    ].join(" ")}
+                    title={mdPreview ? "View source" : "Preview Markdown"}
+                    aria-label={mdPreview ? "View source" : "Preview Markdown"}
+                    aria-pressed={mdPreview}
+                    onClick={() => setMdPreview((v) => !v)}
                   >
-                    <IconChevronsExpand className="h-3.5 w-3.5" />
+                    {mdPreview ? <IconCode className="h-3.5 w-3.5" /> : <IconEye className="h-3.5 w-3.5" />}
                   </button>
-                  <button
-                    type="button"
-                    className="inline-flex h-6 w-6 items-center justify-center rounded-md text-muted hover:bg-secondary hover:text-ink"
-                    title="Collapse all"
-                    aria-label="Collapse all folders"
-                    onClick={() => setTreeCollapseAll((n) => n + 1)}
-                  >
-                    <IconChevronsCollapse className="h-3.5 w-3.5" />
-                  </button>
-                  <button
-                    type="button"
-                    className="inline-flex h-6 w-6 items-center justify-center rounded-md text-muted hover:bg-secondary hover:text-ink"
-                    title="Refresh"
-                    aria-label="Refresh files"
-                    onClick={loadFiles}
-                  >
-                    <IconRefresh className="h-3.5 w-3.5" />
-                  </button>
-                </div>
+                )}
+                <button
+                  type="button"
+                  className="inline-flex h-6 w-6 items-center justify-center rounded-md text-muted hover:bg-secondary hover:text-ink"
+                  title="Expand all"
+                  aria-label="Expand all folders"
+                  onClick={() => setTreeExpandAll((n) => n + 1)}
+                >
+                  <IconChevronsExpand className="h-3.5 w-3.5" />
+                </button>
+                <button
+                  type="button"
+                  className="inline-flex h-6 w-6 items-center justify-center rounded-md text-muted hover:bg-secondary hover:text-ink"
+                  title="Collapse all"
+                  aria-label="Collapse all folders"
+                  onClick={() => setTreeCollapseAll((n) => n + 1)}
+                >
+                  <IconChevronsCollapse className="h-3.5 w-3.5" />
+                </button>
+                <button
+                  type="button"
+                  className="inline-flex h-6 w-6 items-center justify-center rounded-md text-muted hover:bg-secondary hover:text-ink"
+                  title="Refresh"
+                  aria-label="Refresh files"
+                  onClick={loadFiles}
+                >
+                  <IconRefresh className="h-3.5 w-3.5" />
+                </button>
               </div>
-              <div className="grid min-h-0 flex-1 grid-cols-[minmax(140px,200px)_minmax(0,1fr)]">
-                <div className="flex min-h-0 flex-col border-r border-line bg-canvas">
-                  <FileTree
-                    files={files}
-                    selected={selectedFile}
-                    onSelect={openFile}
-                    expandAllSignal={treeExpandAll}
-                    collapseAllSignal={treeCollapseAll}
-                  />
-                  {filesError && <div className="px-2.5 py-2 text-[12px] text-danger">{filesError}</div>}
-                </div>
-                <div className="flex min-h-0 flex-col bg-canvas">
-                  {fileView ? (
-                    <pre className="m-0 min-h-0 flex-1 overflow-auto whitespace-pre-wrap break-words p-3 font-mono text-[11px] leading-[1.45] text-ink">
+            </div>
+            <div className="grid min-h-0 flex-1 grid-cols-[minmax(160px,220px)_minmax(0,1fr)]">
+              <div className="flex min-h-0 flex-col bg-canvas">
+                <FileTree
+                  files={files}
+                  selected={selectedFile}
+                  onSelect={openFile}
+                  expandAllSignal={treeExpandAll}
+                  collapseAllSignal={treeCollapseAll}
+                />
+                {filesError && <div className="px-2 py-2 text-[12px] text-danger">{filesError}</div>}
+              </div>
+              <div className="flex min-h-0 flex-col bg-canvas">
+                {fileView ? (
+                  isMarkdownPath(fileView.path) && mdPreview ? (
+                    <div className="file-md min-h-0 flex-1 overflow-auto px-3 py-2">
+                      <Markdown text={fileView.content} />
+                      {fileView.truncated ? (
+                        <p className="mt-3 text-[12px] text-placeholder">(truncated)</p>
+                      ) : null}
+                    </div>
+                  ) : (
+                    <pre className="m-0 min-h-0 flex-1 overflow-auto whitespace-pre-wrap break-words px-3 py-2 font-mono text-[13.5px] leading-[1.55] text-ink">
                       {fileView.content}
                       {fileView.truncated ? "\n\n(truncated)" : ""}
                     </pre>
-                  ) : (
-                    <div className="flex flex-1 items-center justify-center px-3 text-[13px] text-placeholder">
-                      Select a file to edit
-                    </div>
-                  )}
-                </div>
+                  )
+                ) : (
+                  <div className="flex flex-1 items-center justify-center text-[13px] text-placeholder">
+                    Select a file
+                  </div>
+                )}
               </div>
             </div>
           </div>

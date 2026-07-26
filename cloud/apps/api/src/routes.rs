@@ -12,9 +12,10 @@ use uuid::Uuid;
 use zene_cloud_domain::{
     ClaimedRun, CreateApprovalRequest, CreatePullRequestBody, CreateRepositoryRequest,
     CreateRunRequest, DecideApprovalRequest, GithubBranchSummary, GithubProviderConfigView,
-    LlmAuthResponse, LlmSettingsView, LoginRequest, PostMessageRequest, RegisterRequest, RunStatus,
-    UpdateGithubProviderConfigRequest, UpdateLlmSettingsRequest, WorkerCommandsResponse,
-    WorkerEventRequest, WorkerPullRequestRequest, WorkerPushRequest, WorkerStatusRequest,
+    LlmAuthResponse, LlmSettingsView, LoginRequest, PostMessageRequest, QueueStats, RegisterRequest,
+    RunStatus, UpdateGithubProviderConfigRequest, UpdateLlmSettingsRequest, UpdateRunRequest,
+    WorkerCommandsResponse, WorkerEventRequest, WorkerPullRequestRequest, WorkerPushRequest,
+    WorkerStatusRequest, WorkerTitleRequest,
 };
 
 use crate::auth::{AuthUser, WorkerAuth};
@@ -49,7 +50,10 @@ pub fn router(state: AppState) -> Router {
             get(list_repo_branches),
         )
         .route("/api/v1/runs", get(list_runs).post(create_run))
-        .route("/api/v1/runs/{run_id}", get(get_run))
+        .route(
+            "/api/v1/runs/{run_id}",
+            get(get_run).patch(update_run).delete(delete_run),
+        )
         .route(
             "/api/v1/runs/{run_id}/messages",
             get(list_messages).post(post_message),
@@ -78,9 +82,11 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/api/v1/runs/{run_id}/git/push", post(user_push))
         .route("/internal/v1/runs/claim", post(claim_run))
+        .route("/internal/v1/queue/stats", get(queue_stats))
         .route("/internal/v1/runs/{run_id}/heartbeat", post(heartbeat))
         .route("/internal/v1/runs/{run_id}/events", post(worker_event))
         .route("/internal/v1/runs/{run_id}/status", post(worker_status))
+        .route("/internal/v1/runs/{run_id}/title", post(worker_title))
         .route(
             "/internal/v1/runs/{run_id}/clone-auth",
             get(clone_auth).post(clone_auth),
@@ -395,7 +401,12 @@ async fn github_install_callback(
         .map_err(AppError::from)?;
     state.db.sync_repos_from_github(org.id, &listed).await?;
     let _ = query.setup_action;
-    Ok(Redirect::temporary("/?github=connected"))
+    // Absolute redirect so the popup lands on the configured public origin
+    // (important when UI and API use different localhost ports).
+    Ok(Redirect::temporary(&format!(
+        "{}/?github=connected",
+        state.public_base_url.trim_end_matches('/')
+    )))
 }
 
 async fn github_oauth_start(
@@ -574,32 +585,40 @@ async fn github_sync(
         })));
     }
 
-    let account = state
-        .db
-        .get_github_account(user.id)
-        .await?
-        .ok_or_else(|| AppError::bad_request("connect GitHub before syncing repositories"))?;
-    let _ = account;
-    let remote = github
-        .list_app_installations()
-        .await
-        .map_err(AppError::from)?;
+    // App install flow stores installations on the org; OAuth account is optional.
+    // Re-sync repos for installations already linked to this org (do not pull every
+    // installation of the GitHub App — that would cross tenants).
+    let installations = state.db.list_installations(org.id).await?;
+    let live: Vec<_> = installations
+        .into_iter()
+        .filter(|i| !is_mock_installation(i))
+        .collect();
+    if live.is_empty() {
+        return Err(AppError::bad_request(
+            "connect GitHub before syncing repositories",
+        ));
+    }
     let mut synced_installations = Vec::new();
     let mut all_repos = Vec::new();
-    for inst in remote {
-        let installation = state
-            .db
-            .upsert_installation(
-                org.id,
-                &inst.id,
-                &inst.account_login,
-                &inst.account_type,
-                "active",
-            )
-            .await?;
-        synced_installations.push(installation);
+    for inst in live {
+        // Refresh account metadata from GitHub when possible.
+        if let Ok(remote) = github.get_installation(&inst.installation_id).await {
+            let installation = state
+                .db
+                .upsert_installation(
+                    org.id,
+                    &remote.id,
+                    &remote.account_login,
+                    &remote.account_type,
+                    "active",
+                )
+                .await?;
+            synced_installations.push(installation);
+        } else {
+            synced_installations.push(inst.clone());
+        }
         let listed = github
-            .list_installation_repos(&inst.id)
+            .list_installation_repos(&inst.installation_id)
             .await
             .map_err(AppError::from)?;
         let repos = state.db.sync_repos_from_github(org.id, &listed).await?;
@@ -741,6 +760,31 @@ async fn get_run(
     Path(run_id): Path<Uuid>,
 ) -> Result<impl IntoResponse, AppError> {
     Ok(Json(authorize_run(&state, user.id, run_id).await?))
+}
+
+async fn update_run(
+    State(state): State<AppState>,
+    AuthUser(user): AuthUser,
+    Path(run_id): Path<Uuid>,
+    Json(req): Json<UpdateRunRequest>,
+) -> Result<impl IntoResponse, AppError> {
+    let _ = authorize_run(&state, user.id, run_id).await?;
+    Ok(Json(
+        state
+            .db
+            .update_run_meta(run_id, req.title.as_deref(), req.archived)
+            .await?,
+    ))
+}
+
+async fn delete_run(
+    State(state): State<AppState>,
+    AuthUser(user): AuthUser,
+    Path(run_id): Path<Uuid>,
+) -> Result<impl IntoResponse, AppError> {
+    let _ = authorize_run(&state, user.id, run_id).await?;
+    state.db.delete_run(run_id).await?;
+    Ok(Json(serde_json::json!({ "ok": true })))
 }
 
 async fn list_messages(
@@ -1077,6 +1121,13 @@ async fn claim_run(
     })))
 }
 
+async fn queue_stats(
+    State(state): State<AppState>,
+    _worker: WorkerAuth,
+) -> Result<Json<QueueStats>, AppError> {
+    Ok(Json(state.db.queue_stats().await?))
+}
+
 async fn heartbeat(
     State(state): State<AppState>,
     _worker: WorkerAuth,
@@ -1117,6 +1168,20 @@ async fn worker_status(
         state
             .db
             .update_run_status(run_id, req.status, req.head_sha, req.failure_code)
+            .await?,
+    ))
+}
+
+async fn worker_title(
+    State(state): State<AppState>,
+    _worker: WorkerAuth,
+    Path(run_id): Path<Uuid>,
+    Json(req): Json<WorkerTitleRequest>,
+) -> Result<impl IntoResponse, AppError> {
+    Ok(Json(
+        state
+            .db
+            .update_run_meta(run_id, Some(req.title.trim()), None)
             .await?,
     ))
 }

@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+## v0.1.9 (2026-07-26)
+
+### Added
+- Configurable run max turns (`ZENE_MAX_TURNS` / New Agent picker); `0` = unlimited, soft-stop instead of failing the run.
+- Cloud worker supervisor scaling and run archive migration.
+- Cloud Console markdown rendering and Cursor-style tool/activity summaries in Run view.
+
+### Changed
+- CLI focuses on `zene acp` (interactive REPL / headless `-p` removed).
+- Opening a past run drains all event pages offline and commits the timeline once (no chunked replay).
+
+### Fixed
+- Run history reopen no longer appears to stream in slowly when events exceed the 500-per-page API limit.
+
 ## v0.1.8 (2026-07-25)
 
 ### Added

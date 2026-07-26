@@ -21,17 +21,27 @@ cd cloud
 ./scripts/dev.sh
 ```
 
-`dev.sh` 会探测或构建仓库根的 `zene`（`../target/debug/zene`），并以真实 ACP 启动 worker。
+`dev.sh` 会探测或构建仓库根的 `zene`（`../target/debug/zene`），并以 **supervisor 池** 启动 worker：常驻 warm claimer，按队列深度扩容 executor 子进程；`waiting_for_user` 暖会话不占用 active 槽位。
 
-Web UI 源码在 `apps/web/`（Next.js + Tailwind CSS，静态导出）。修改后重新构建并提交 `dist/`：
+Web UI 源码在 `apps/web/`（Next.js + Tailwind CSS，静态导出）。API 托管 `dist/`；改 UI 后提交前需重新构建：
 
 ```bash
 cd cloud/apps/web
 npm install
-npm run build   # next build && 导出到 dist/（API 直接静态托管）
+npm run build   # next build && 导出到 dist/
 ```
 
 打开 http://127.0.0.1:8788/
+
+**本地改 UI（热更新）**：先起 API/worker，再开 Next dev（`/api/*` 代理到 8788）：
+
+```bash
+cd cloud && ZENE_CLOUD_SKIP_WEB_BUILD=1 ./scripts/dev.sh   # 可选：跳过每次启动时的 web build
+# 另开终端：
+cd cloud/apps/web && npm run dev
+```
+
+浏览器打开 http://127.0.0.1:8787/。本地 GitHub App **Setup URL** 建议直接指向 API：`http://127.0.0.1:8788/api/v1/github/install/callback`（与 `dev.sh` 默认 `ZENE_CLOUD_PUBLIC_BASE_URL` 一致），并勾选 **Redirect on update**。若 Setup URL 要用 `:8787`，需保证 `npm run dev` 已绕过本机 HTTP 代理（脚本已设 `NO_PROXY`），且 `ZENE_CLOUD_PUBLIC_BASE_URL=http://127.0.0.1:8787` 后重启 API。
 
 推荐演示路径：
 
@@ -51,6 +61,10 @@ npm run build   # next build && 导出到 dist/（API 直接静态托管）
 | `ZENE_CLOUD_ALLOW_MOCK` | `0`（dev.sh 为 `1`） | 无 `zene` 时是否允许 MockAgent |
 | `ZENE_CLOUD_ACP_YOLO` | `1`（dev.sh） | 真实 ACP 自动批准工具 |
 | `ZENE_CLOUD_ACP_IDLE_SECS` | `600` | 主轮次结束后保留会话以接收 follow-up |
+| `ZENE_CLOUD_WORKER_MIN_WARM` | `1` | supervisor 常驻空闲 claimer 数 |
+| `ZENE_CLOUD_WORKER_MAX_ACTIVE` | `4` | 同时 provisioning/starting/cloning/running 上限 |
+| `ZENE_CLOUD_WORKER_MAX_HOLD` | `8` | 同时 waiting_for_user/approval 暖持上限 |
+| `ZENE_CLOUD_WORKER_SCALE_INTERVAL_MS` | `1000` | supervisor 调谐周期 |
 | `ZENE_CLOUD_PUSH_PR` | `1` | 完成后自动 push + draft PR |
 | `GITHUB_CLIENT_ID/SECRET` | — | live OAuth |
 | `GITHUB_APP_ID` / `GITHUB_APP_PRIVATE_KEY_PATH` | — | live App |

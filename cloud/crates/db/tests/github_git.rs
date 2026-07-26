@@ -76,6 +76,7 @@ async fn github_crud_and_migrations() {
                 base_ref: Some("main".into()),
                 model: "default".into(),
                 permission_mode: "default".into(),
+                max_turns: 50,
             },
         )
         .await

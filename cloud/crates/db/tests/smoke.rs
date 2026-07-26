@@ -39,10 +39,15 @@ async fn register_create_run_and_claim() {
                 base_ref: Some("main".into()),
                 model: "default".into(),
                 permission_mode: "default".into(),
+                max_turns: 50,
             },
         )
         .await
         .unwrap();
+
+    let stats_before = db.queue_stats().await.unwrap();
+    assert_eq!(stats_before.queued, 1);
+    assert_eq!(stats_before.active, 0);
 
     let claimed = db
         .claim_next_run("worker-1", std::path::Path::new("/tmp/zc-workspaces"))
@@ -50,6 +55,11 @@ async fn register_create_run_and_claim() {
         .unwrap()
         .expect("queued run should be claimable");
     assert_eq!(claimed.0.id, run.id);
+
+    let stats_after = db.queue_stats().await.unwrap();
+    assert_eq!(stats_after.queued, 0);
+    assert_eq!(stats_after.active, 1);
+    assert_eq!(stats_after.actives[0].worker_id, "worker-1");
 
     let events = db.events_after(run.id, 0).await.unwrap();
     assert!(!events.is_empty());

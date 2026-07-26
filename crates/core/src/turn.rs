@@ -91,9 +91,10 @@ pub fn steer_requires_active_turn() -> anyhow::Error {
     anyhow!("no turn in progress; use prompt() to start a new turn")
 }
 
-pub fn max_steps_error(max_steps: u32) -> anyhow::Error {
-    anyhow!(
-        "Agent reached max_turns ({max_steps}) without producing a final assistant response"
+/// Soft-stop notice when a turn hits `max_turns` (`0` means unlimited and should not appear).
+pub fn max_turns_notice(max_steps: u32) -> String {
+    format!(
+        "[notice] Reached max_turns ({max_steps}) without a final answer. Send a follow-up to continue, or raise max turns / use Unlimited."
     )
 }
 
@@ -141,8 +142,9 @@ mod tests {
     }
 
     #[test]
-    fn max_steps_error_mentions_limit() {
-        let err = max_steps_error(3);
-        assert!(err.to_string().contains("max_turns (3)"));
+    fn max_turns_notice_mentions_limit_and_follow_up() {
+        let notice = max_turns_notice(50);
+        assert!(notice.contains("max_turns (50)"));
+        assert!(notice.contains("follow-up"));
     }
 }

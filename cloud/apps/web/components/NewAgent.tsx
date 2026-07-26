@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { api } from "@/lib/api";
 import {
   IconArrowUp,
@@ -36,6 +36,7 @@ import type {
   Run,
   Skill,
 } from "@/lib/types";
+import type { SettingsSection } from "./Settings";
 import { useToast } from "./Toast";
 
 const SKILLS: Skill[] = [
@@ -50,6 +51,40 @@ const PERMISSION_MODES: { id: PermissionMode; label: string }[] = [
   { id: "accept_edits", label: "accept_edits" },
   { id: "yolo", label: "yolo" },
 ];
+
+/** Presets for agent step budget; `0` = unlimited. */
+const MAX_TURNS_PRESETS: { value: number; label: string }[] = [
+  { value: 50, label: "50" },
+  { value: 100, label: "100" },
+  { value: 200, label: "200" },
+  { value: 0, label: "Unlimited" },
+];
+
+const MAX_TURNS_STORAGE_KEY = "zc.maxTurns";
+
+function loadMaxTurns(): number {
+  try {
+    const raw = localStorage.getItem(MAX_TURNS_STORAGE_KEY);
+    if (raw == null) return 50;
+    const n = Number(raw);
+    if (!Number.isFinite(n) || n < 0) return 50;
+    return Math.floor(n);
+  } catch {
+    return 50;
+  }
+}
+
+function saveMaxTurns(n: number) {
+  try {
+    localStorage.setItem(MAX_TURNS_STORAGE_KEY, String(n));
+  } catch {
+    /* ignore */
+  }
+}
+
+function maxTurnsLabel(n: number): string {
+  return n === 0 ? "Unlimited" : String(n);
+}
 
 function loadMcpServers(): McpServer[] {
   try {
@@ -78,7 +113,7 @@ interface NewAgentProps {
   onConnectGithub: () => Promise<string>;
   onRefreshRepos: () => Promise<Repo[]>;
   onRunStarted: (runId: string) => void;
-  onOpenSettings: (section?: "models") => void;
+  onOpenSettings: (section?: SettingsSection) => void;
 }
 
 export function NewAgent(props: NewAgentProps) {
@@ -87,13 +122,22 @@ export function NewAgent(props: NewAgentProps) {
   const shellRef = useRef<HTMLDivElement>(null);
   const promptRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const modelTriggerRef = useRef<HTMLDivElement>(null);
+  const [modelMenuPos, setModelMenuPos] = useState<{
+    left: number;
+    bottom: number;
+    maxHeight: number;
+  } | null>(null);
 
   const [prompt, setPrompt] = useState("");
   const [error, setError] = useState("");
   const [starting, setStarting] = useState(false);
 
   const [openMenu, setOpenMenu] = useState<"project" | "branch" | "attach" | "model" | null>(null);
-  const [attachPanel, setAttachPanel] = useState<"skills" | "mcp" | "permission" | null>(null);
+  const [attachPanel, setAttachPanel] = useState<"skills" | "mcp" | "permission" | "maxTurns" | null>(
+    null,
+  );
+  const [maxTurns, setMaxTurns] = useState(50);
   const [projectQuery, setProjectQuery] = useState("");
   const [branchQuery, setBranchQuery] = useState("");
   const [modelQuery, setModelQuery] = useState("");
@@ -110,6 +154,7 @@ export function NewAgent(props: NewAgentProps) {
   useEffect(() => {
     setMcpServers(loadMcpServers());
     setSelectedModel(loadSelectedModel());
+    setMaxTurns(loadMaxTurns());
   }, []);
 
   useEffect(() => {
@@ -229,11 +274,15 @@ export function NewAgent(props: NewAgentProps) {
     }
   }, [selectedRepo, ensureBranches, toast]);
 
+  const { onRefreshRepos } = props;
   const openProjectMenu = useCallback(() => {
     setProjectQuery("");
     setProjectIndex(-1);
     setOpenMenu("project");
-  }, []);
+    if (!repos.length) {
+      onRefreshRepos().catch(() => {});
+    }
+  }, [repos.length, onRefreshRepos]);
 
   const lastSignal = useRef(openProjectMenuSignal);
   useEffect(() => {
@@ -300,6 +349,7 @@ export function NewAgent(props: NewAgentProps) {
           baseRef: selectedBranch,
           model: selectedModel,
           permissionMode,
+          maxTurns,
         }),
       });
       setPrompt("");
@@ -316,11 +366,13 @@ export function NewAgent(props: NewAgentProps) {
     selectedBranch,
     selectedModel,
     permissionMode,
+    maxTurns,
     openProjectMenu,
     props,
   ]);
 
-  const canStart = Boolean(selectedRepoId) && Boolean(prompt.trim()) && !starting;
+  const canStart =
+    llmReady && Boolean(selectedRepoId) && Boolean(prompt.trim()) && !starting;
 
   const autosize = useCallback(() => {
     const t = promptRef.current;
@@ -345,6 +397,32 @@ export function NewAgent(props: NewAgentProps) {
     const q = modelQuery.trim().toLowerCase();
     return pickerModels.filter((m) => !q || m.toLowerCase().includes(q));
   }, [pickerModels, modelQuery]);
+
+  useLayoutEffect(() => {
+    if (openMenu !== "model") {
+      setModelMenuPos(null);
+      return;
+    }
+    const update = () => {
+      const el = modelTriggerRef.current;
+      if (!el) return;
+      const rect = el.getBoundingClientRect();
+      const gap = 8;
+      const spaceAbove = Math.max(160, rect.top - gap - 8);
+      setModelMenuPos({
+        left: Math.min(rect.left, window.innerWidth - 296),
+        bottom: window.innerHeight - rect.top + gap,
+        maxHeight: Math.min(420, spaceAbove),
+      });
+    };
+    update();
+    window.addEventListener("resize", update);
+    window.addEventListener("scroll", update, true);
+    return () => {
+      window.removeEventListener("resize", update);
+      window.removeEventListener("scroll", update, true);
+    };
+  }, [openMenu]);
 
   return (
     <div className="grid h-full place-items-center overflow-auto bg-canvas px-5 pb-12 pt-8">
@@ -478,7 +556,11 @@ export function NewAgent(props: NewAgentProps) {
               <div className="px-2 pb-1 pt-2 text-[11px] font-medium text-placeholder">Repositories</div>
               {!filteredRepos.length ? (
                 <p className="m-0 px-2 py-1.5 text-xs text-muted">
-                  {githubConnected ? "No matching repositories" : "Connect GitHub to see repos"}
+                  {githubConnected
+                    ? repos.length
+                      ? "No matching repositories"
+                      : "No repositories yet — try Refresh repos"
+                    : "Connect GitHub to see repos"}
                 </p>
               ) : (
                 filteredRepos.map((r, i) => (
@@ -555,6 +637,12 @@ export function NewAgent(props: NewAgentProps) {
             onKeyDown={(e) => {
               if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
                 e.preventDefault();
+                if (!llmReady) {
+                  setOpenMenu("model");
+                  setAttachPanel(null);
+                  setModelQuery("");
+                  return;
+                }
                 if (canStart) startRun();
               }
             }}
@@ -620,6 +708,17 @@ export function NewAgent(props: NewAgentProps) {
                       <span className="min-w-0 flex-1">Permission</span>
                       <span className="max-w-[72px] shrink-0 overflow-hidden text-ellipsis whitespace-nowrap text-[11px] text-muted">
                         {permissionMode}
+                      </span>
+                      <IconChevronRight className="h-3.5 w-3.5 shrink-0 text-muted" />
+                    </button>
+                    <button
+                      type="button"
+                      className={`menu-item ${attachPanel === "maxTurns" ? "bg-secondary" : ""}`}
+                      onClick={() => setAttachPanel(attachPanel === "maxTurns" ? null : "maxTurns")}
+                    >
+                      <span className="min-w-0 flex-1">Max turns</span>
+                      <span className="max-w-[72px] shrink-0 overflow-hidden text-ellipsis whitespace-nowrap text-[11px] text-muted">
+                        {maxTurnsLabel(maxTurns)}
                       </span>
                       <IconChevronRight className="h-3.5 w-3.5 shrink-0 text-muted" />
                     </button>
@@ -742,6 +841,35 @@ export function NewAgent(props: NewAgentProps) {
                         </div>
                       </div>
                     )}
+                    {attachPanel === "maxTurns" && (
+                      <div className="absolute bottom-0 left-[calc(100%+6px)] z-[46] w-[220px] overflow-hidden rounded-xl border border-line bg-canvas shadow-menu max-[720px]:bottom-[calc(100%+6px)] max-[720px]:left-0 max-[720px]:w-[min(220px,calc(100vw-48px))]" role="menu">
+                        <div className="border-b border-line px-3 py-2">
+                          <p className="m-0 text-[11px] leading-snug text-muted">
+                            Steps per turn before the agent pauses for a follow-up.
+                          </p>
+                        </div>
+                        <div className="p-1.5">
+                          {MAX_TURNS_PRESETS.map((preset) => (
+                            <button
+                              key={preset.label}
+                              type="button"
+                              className="menu-item"
+                              onClick={() => {
+                                setMaxTurns(preset.value);
+                                saveMaxTurns(preset.value);
+                                setOpenMenu(null);
+                                setAttachPanel(null);
+                              }}
+                            >
+                              <span className="min-w-0 flex-1">{preset.label}</span>
+                              {maxTurns === preset.value && (
+                                <IconCheck className="h-3.5 w-3.5 shrink-0 text-ink" />
+                              )}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                    )}
                   </div>
                 )}
                 <input
@@ -764,7 +892,7 @@ export function NewAgent(props: NewAgentProps) {
                   }}
                 />
               </div>
-              <div className="relative">
+              <div className="relative" ref={modelTriggerRef}>
                 <button
                   type="button"
                   className={`inline-flex h-7 max-w-[220px] items-center gap-1 rounded-md px-2 text-[12.5px] font-medium hover:bg-secondary hover:text-ink ${
@@ -790,28 +918,21 @@ export function NewAgent(props: NewAgentProps) {
                   </span>
                   <IconChevronDown className="h-3 w-3 shrink-0" />
                 </button>
-                {openMenu === "model" && (
+                {openMenu === "model" && modelMenuPos && (
                   <div
-                    className="absolute bottom-[calc(100%+8px)] left-0 z-[45] w-[min(280px,calc(100vw-48px))] overflow-hidden rounded-xl border border-line bg-canvas shadow-menu"
+                    className="fixed z-[45] flex w-[min(280px,calc(100vw-48px))] flex-col overflow-hidden rounded-xl border border-line bg-canvas shadow-menu"
+                    style={{
+                      left: modelMenuPos.left,
+                      bottom: modelMenuPos.bottom,
+                      maxHeight: modelMenuPos.maxHeight,
+                    }}
                     role="menu"
                     aria-label="Models"
                   >
-                    <div className="flex items-center gap-2 border-b border-line px-3 py-2.5">
-                      <IconSearch className="h-3.5 w-3.5 shrink-0 text-placeholder" />
-                      <input
-                        className="min-w-0 flex-1 border-0 bg-transparent text-[13px] outline-none"
-                        type="search"
-                        placeholder="Search models"
-                        autoComplete="off"
-                        autoFocus
-                        value={modelQuery}
-                        onChange={(e) => setModelQuery(e.target.value)}
-                      />
-                    </div>
-                    {!llmReady && llmSettings !== null && (
+                    {!llmReady ? (
                       <button
                         type="button"
-                        className="flex w-full items-start gap-2.5 border-b border-line px-3 py-2.5 text-left hover:bg-secondary"
+                        className="flex w-full items-start gap-2.5 px-3 py-3 text-left hover:bg-secondary"
                         onClick={openLlmSettings}
                       >
                         <IconSettings className="mt-0.5 h-3.5 w-3.5 shrink-0 text-ink" />
@@ -825,41 +946,56 @@ export function NewAgent(props: NewAgentProps) {
                         </span>
                         <IconChevronRight className="mt-0.5 h-3.5 w-3.5 shrink-0 text-placeholder" />
                       </button>
-                    )}
-                    <div className="max-h-[280px] overflow-auto p-1.5">
-                      {!filteredModels.length ? (
-                        <p className="m-0 px-2 py-1.5 text-xs text-muted">No models yet</p>
-                      ) : (
-                        filteredModels.map((m) => (
+                    ) : (
+                      <>
+                        <div className="flex shrink-0 items-center gap-2 border-b border-line px-3 py-2.5">
+                          <IconSearch className="h-3.5 w-3.5 shrink-0 text-placeholder" />
+                          <input
+                            className="min-w-0 flex-1 border-0 bg-transparent text-[13px] outline-none"
+                            type="search"
+                            placeholder="Search models"
+                            autoComplete="off"
+                            autoFocus
+                            value={modelQuery}
+                            onChange={(e) => setModelQuery(e.target.value)}
+                          />
+                        </div>
+                        <div className="min-h-0 flex-1 overflow-auto p-1.5">
+                          {!filteredModels.length ? (
+                            <p className="m-0 px-2 py-1.5 text-xs text-muted">No models yet</p>
+                          ) : (
+                            filteredModels.map((m) => (
+                              <button
+                                key={m}
+                                type="button"
+                                className="picker-item"
+                                onClick={() => selectModel(m)}
+                              >
+                                <span className="min-w-0 flex-1 overflow-hidden text-ellipsis whitespace-nowrap font-mono text-[12.5px]">
+                                  {m}
+                                </span>
+                                {m === selectedModel && (
+                                  <IconCheck className="h-3.5 w-3.5 shrink-0 text-ink" />
+                                )}
+                              </button>
+                            ))
+                          )}
+                        </div>
+                        <div className="shrink-0 border-t border-line p-1.5">
                           <button
-                            key={m}
                             type="button"
                             className="picker-item"
-                            onClick={() => selectModel(m)}
+                            onClick={openLlmSettings}
                           >
-                            <span className="min-w-0 flex-1 overflow-hidden text-ellipsis whitespace-nowrap font-mono text-[12.5px]">
-                              {m}
+                            <IconSettings className="h-3.5 w-3.5 shrink-0 text-muted" />
+                            <span className="min-w-0 flex-1 text-left text-[12.5px] text-ink">
+                              Manage API key &amp; models
                             </span>
-                            {m === selectedModel && (
-                              <IconCheck className="h-3.5 w-3.5 shrink-0 text-ink" />
-                            )}
+                            <IconChevronRight className="h-3.5 w-3.5 shrink-0 text-placeholder" />
                           </button>
-                        ))
-                      )}
-                    </div>
-                    <div className="border-t border-line p-1.5">
-                      <button
-                        type="button"
-                        className="picker-item"
-                        onClick={openLlmSettings}
-                      >
-                        <IconSettings className="h-3.5 w-3.5 shrink-0 text-muted" />
-                        <span className="min-w-0 flex-1 text-left text-[12.5px] text-ink">
-                          {llmReady ? "Manage API key & models" : "Configure in Settings"}
-                        </span>
-                        <IconChevronRight className="h-3.5 w-3.5 shrink-0 text-placeholder" />
-                      </button>
-                    </div>
+                        </div>
+                      </>
+                    )}
                   </div>
                 )}
               </div>
