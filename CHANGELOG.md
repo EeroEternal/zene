@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-## v0.1.9 (2026-07-26)
+## v0.1.10 (2026-07-26)
 
 ### Added
 - Configurable run max turns (`ZENE_MAX_TURNS` / New Agent picker); `0` = unlimited, soft-stop instead of failing the run.
