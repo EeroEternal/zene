@@ -5,6 +5,8 @@ pub struct TokenUsage {
     pub prompt_tokens: u64,
     pub completion_tokens: u64,
     pub total_tokens: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cached_tokens: Option<u64>,
 }
 
 impl TokenUsage {
@@ -30,10 +32,21 @@ pub fn parse_usage_from_raw(raw: &serde_json::Value) -> Option<TokenUsage> {
         .and_then(serde_json::Value::as_u64)
         .unwrap_or(prompt_tokens + completion_tokens);
 
+    let cached_tokens = usage
+        .get("cached_tokens")
+        .or_else(|| usage.get("prompt_tokens_details").and_then(|d| d.get("cached_tokens")))
+        .and_then(serde_json::Value::as_u64)
+        .or_else(|| {
+            usage
+                .get("cache_read_input_tokens")
+                .and_then(serde_json::Value::as_u64)
+        });
+
     Some(TokenUsage {
         prompt_tokens,
         completion_tokens,
         total_tokens,
+        cached_tokens,
     })
 }
 
@@ -63,11 +76,13 @@ mod tests {
             prompt_tokens: 1,
             completion_tokens: 2,
             total_tokens: 3,
+            cached_tokens: None,
         };
         total.accumulate(&TokenUsage {
             prompt_tokens: 4,
             completion_tokens: 5,
             total_tokens: 9,
+            cached_tokens: Some(2),
         });
         assert_eq!(total.prompt_tokens, 5);
         assert_eq!(total.completion_tokens, 7);

@@ -154,6 +154,7 @@ pub(crate) async fn run_subagent_with_runner(
             messages: messages.clone(),
             tools: tools.definitions(),
             stream: false,
+            gateway: None,
         };
 
         let response = backend.chat(request).await.context("subagent llm step")?;

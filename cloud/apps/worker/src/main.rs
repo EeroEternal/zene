@@ -724,6 +724,16 @@ fn inject_run_max_turns(env: &mut HashMap<String, String>, max_turns: u32) {
     env.insert("ZENE_MAX_TURNS".into(), max_turns.to_string());
 }
 
+fn inject_gateway_session(env: &mut HashMap<String, String>, run_id: uuid::Uuid) {
+    env.insert("ZENE_SESSION_ID".into(), run_id.to_string());
+    if std::env::var("ZENE_GATEWAY_SESSION")
+        .ok()
+        .is_none_or(|v| !matches!(v.trim(), "0" | "false" | "off" | "no"))
+    {
+        env.insert("ZENE_GATEWAY_SESSION".into(), "1".into());
+    }
+}
+
 fn has_process_llm_credentials() -> bool {
     std::env::var("ZENE_API_KEY").is_ok()
         || std::env::var("OPENAI_API_KEY").is_ok()
@@ -778,10 +788,11 @@ async fn run_with_real_acp(
         }
     };
     inject_run_max_turns(&mut llm_env, claimed.run.max_turns);
+    inject_gateway_session(&mut llm_env, run_id);
     info!(
         run_id = %run_id,
         max_turns = claimed.run.max_turns,
-        "injected ZENE_MAX_TURNS for acp"
+        "injected ZENE_MAX_TURNS and ZENE_SESSION_ID for acp"
     );
 
     let (bridge, mut msg_rx) = AcpBridge::spawn(zene_bin, workspace, yolo, &llm_env).await?;

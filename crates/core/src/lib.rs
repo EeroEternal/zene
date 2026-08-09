@@ -8,7 +8,10 @@ use parking_lot::Mutex;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
 use zene_config::ZeneConfig;
-use zene_llm::{ChatClient, ChatRequest, Message, StreamEvent, TokenUsage, ToolCall};
+use zene_llm::{
+    prefix_hash, ChatClient, ChatRequest, GatewaySubcall, Message, StreamEvent, TokenUsage,
+    ToolCall,
+};
 use zene_sandbox::LocalSandbox;
 use zene_session::{
     fork_session, latest_checkpoint_id, load_checkpoint, restore_checkpoint, save_checkpoint,
@@ -26,6 +29,7 @@ use zene_mcp::McpManager;
 mod compaction;
 mod context_water;
 mod events;
+mod gateway;
 mod hooks;
 mod input_ladder;
 mod memory;
@@ -93,6 +97,8 @@ pub struct Agent {
     prefire: prefire::PrefireState,
     /// Compaction cycle index of the last successful memory flush.
     last_memory_flush_compaction: u64,
+    /// When true, send `publish` to the LLM gateway before the next main LLM step.
+    gateway_publish_needed: bool,
 }
 
 pub struct PromptOptions {
@@ -179,6 +185,7 @@ impl Agent {
             background: shared_background_tasks(),
             prefire: prefire::PrefireState::new(),
             last_memory_flush_compaction: 0,
+            gateway_publish_needed: false,
         })
     }
 
@@ -369,6 +376,7 @@ impl Agent {
                 self.context_water.clear_auto_compact_suppression();
                 if let Some(result) = &result {
                     self.record_compaction(result)?;
+                    self.schedule_gateway_publish_after_compaction();
                     let _ = save_checkpoint(&self.session, "post_manual_compact");
                     self.sync_context_water_from_estimate();
                 }
@@ -691,6 +699,7 @@ impl Agent {
                 );
                 self.turn_usage.accumulate(&usage);
                 self.context_water.record_usage(&usage);
+                gateway::record_gateway_usage(&mut self.session, &usage);
                 self.session.update_context_usage(
                     self.context_water.effective_tokens(),
                     self.config.compaction.context_window_tokens,
@@ -870,6 +879,7 @@ impl Agent {
                     self.prefire.clear();
                     self.context_water.clear_auto_compact_suppression();
                     self.record_compaction(&result)?;
+                    self.schedule_gateway_publish_after_compaction();
                     let _ = save_checkpoint(&self.session, "post_auto_compact");
                     self.sync_context_water_from_estimate();
                 }
@@ -1013,6 +1023,11 @@ impl Agent {
                 return Err(turn::aborted_error());
             }
 
+            if gateway::gateway_session_enabled(&self.config) && self.gateway_publish_needed {
+                self.gateway_publish_prefix(options.stream).await?;
+                self.gateway_publish_needed = false;
+            }
+
             let messages = self.build_messages();
             let estimated_tokens = self.estimated_context_tokens(&messages, tools);
             debug!(
@@ -1022,12 +1037,31 @@ impl Agent {
             );
             self.warn_if_near_context_limit(estimated_tokens);
 
-            let request = ChatRequest {
+            let mut request = ChatRequest {
                 model: self.config.model.clone(),
                 messages,
                 tools: tools.to_vec(),
                 stream: options.stream,
+                gateway: None,
             };
+
+            if gateway::gateway_session_enabled(&self.config) {
+                if let Some(plan) = gateway::plan_gateway_request(
+                    &self.session,
+                    &request.messages,
+                    &self.config.gateway_session,
+                    GatewaySubcall::Main,
+                    false,
+                )? {
+                    request = gateway::attach_gateway_context(
+                        request,
+                        &self.session,
+                        &plan,
+                        GatewaySubcall::Main,
+                    );
+                    request.messages = plan.messages;
+                }
+            }
 
             let result = if options.stream {
                 self.run_streaming_step(request, options, cancel).await
@@ -1039,7 +1073,26 @@ impl Agent {
             };
 
             match result {
-                Ok(value) => return Ok(value),
+                Ok(value) => {
+                    if gateway::gateway_session_enabled(&self.config) {
+                        let full = self.build_messages();
+                        let prefix_len = gateway::canonical_prefix_len(&full);
+                        gateway::mark_gateway_synced(
+                            &mut self.session,
+                            full.len(),
+                            prefix_len,
+                        );
+                        if prefix_len > 0 {
+                            gateway::ensure_gateway_state(&mut self.session);
+                            if let Some(gw) = self.session.gateway.as_mut() {
+                                let prefix = &full[..prefix_len];
+                                gw.prefix_hash = prefix_hash(&prefix).ok();
+                                gw.prefix_len = Some(prefix_len);
+                            }
+                        }
+                    }
+                    return Ok(value);
+                }
                 Err(err) if is_context_overflow_error(&err) => {
                     if !overflow_truncated {
                         overflow_truncated = true;
@@ -1083,6 +1136,7 @@ impl Agent {
                                 self.prefire.clear();
                                 self.context_water.clear_auto_compact_suppression();
                                 self.record_compaction(&result)?;
+                                self.schedule_gateway_publish_after_compaction();
                                 let _ = save_checkpoint(&self.session, "post_overflow_compact");
                                 self.sync_context_water_from_estimate();
                             }
@@ -1479,6 +1533,61 @@ impl Agent {
             tokens_after: Some(result.stats.tokens_after),
             ts: chrono::Utc::now(),
         })
+    }
+
+    fn schedule_gateway_publish_after_compaction(&mut self) {
+        if gateway::gateway_session_enabled(&self.config) {
+            gateway::mark_gateway_publish_needed(&mut self.session);
+            self.gateway_publish_needed = true;
+        }
+    }
+
+    async fn gateway_publish_prefix(&mut self, _stream: bool) -> Result<()> {
+        let full_messages = self.build_messages();
+        let Some(plan) = gateway::plan_gateway_request(
+            &self.session,
+            &full_messages,
+            &self.config.gateway_session,
+            GatewaySubcall::Main,
+            true,
+        )?
+        else {
+            return Ok(());
+        };
+        if plan.messages.is_empty() {
+            gateway::ensure_gateway_state(&mut self.session);
+            if let Some(gw) = self.session.gateway.as_mut() {
+                gw.prefix_len = plan.prefix_len;
+                gw.prefix_hash = plan.prefix_hash.clone();
+                gw.synced_message_count = plan.prefix_len.unwrap_or(0);
+            }
+            return Ok(());
+        }
+        let mut request = ChatRequest {
+            model: self.config.model.clone(),
+            messages: plan.messages.clone(),
+            tools: Vec::new(),
+            stream: false,
+            gateway: None,
+        };
+        request = gateway::attach_gateway_context(
+            request,
+            &self.session,
+            &plan,
+            GatewaySubcall::Main,
+        );
+        let _ = self.client.chat(request).await?;
+        gateway::mark_gateway_synced(
+            &mut self.session,
+            plan.prefix_len.unwrap_or(0),
+            plan.prefix_len.unwrap_or(0),
+        );
+        gateway::ensure_gateway_state(&mut self.session);
+        if let Some(gw) = self.session.gateway.as_mut() {
+            gw.prefix_hash = plan.prefix_hash.clone();
+            gw.prefix_len = plan.prefix_len;
+        }
+        Ok(())
     }
 
     async fn maybe_flush_memory(&mut self) -> Result<()> {

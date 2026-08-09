@@ -55,6 +55,27 @@ pub struct SessionRecord {
     /// Last observed effective prompt tokens used for water-level checks.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub context_tokens_used: Option<u32>,
+    /// LLM gateway session state (epoch, prefix sync, cache metrics).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gateway: Option<GatewaySessionState>,
+}
+
+/// Persisted gateway session protocol state (Agent authoritative).
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct GatewaySessionState {
+    #[serde(default)]
+    pub epoch: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prefix_len: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prefix_hash: Option<String>,
+    /// Number of leading messages in `messages` already synced to the gateway.
+    #[serde(default)]
+    pub synced_message_count: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_cached_tokens: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_prompt_tokens: Option<u64>,
 }
 
 impl SessionRecord {
@@ -73,6 +94,7 @@ impl SessionRecord {
             todos: Vec::new(),
             context_window_usage: None,
             context_tokens_used: None,
+            gateway: None,
         }
     }
 
@@ -328,6 +350,7 @@ fn legacy_record(
         todos: Vec::new(),
         context_window_usage: None,
         context_tokens_used: None,
+        gateway: None,
     }
 }
 

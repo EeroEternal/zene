@@ -125,6 +125,41 @@ impl Default for CompactionConfig {
     }
 }
 
+/// Agent ↔ LLM gateway session protocol (see docs/agent-inference-context.md).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GatewaySessionConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default = "default_gateway_mode")]
+    pub default_mode: String,
+    #[serde(default = "default_gateway_fallback_mode")]
+    pub fallback_mode: String,
+}
+
+fn default_gateway_mode() -> String {
+    "delta".to_string()
+}
+
+fn default_gateway_fallback_mode() -> String {
+    "full".to_string()
+}
+
+impl Default for GatewaySessionConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            default_mode: default_gateway_mode(),
+            fallback_mode: default_gateway_fallback_mode(),
+        }
+    }
+}
+
+impl GatewaySessionConfig {
+    pub fn use_delta(&self) -> bool {
+        self.default_mode.trim().eq_ignore_ascii_case("delta")
+    }
+}
+
 fn merge_config_toml(global_path: &Path, project_path: &Path) -> Result<toml::Value, ConfigError> {
     let global_raw = fs::read_to_string(global_path).map_err(|source| ConfigError::Read {
         path: global_path.to_path_buf(),
@@ -258,6 +293,8 @@ pub struct ZeneConfig {
     pub system_prompt: String,
     #[serde(default)]
     pub compaction: CompactionConfig,
+    #[serde(default)]
+    pub gateway_session: GatewaySessionConfig,
     #[serde(default = "default_include_workspace_context")]
     pub include_workspace_context: bool,
     #[serde(default = "default_permission_mode")]
@@ -401,6 +438,7 @@ impl Default for ZeneConfig {
             max_turns: default_max_turns(),
             system_prompt: default_system_prompt(),
             compaction: CompactionConfig::default(),
+            gateway_session: GatewaySessionConfig::default(),
             include_workspace_context: default_include_workspace_context(),
             permission_mode: default_permission_mode(),
             permission_rules: PermissionRulesConfig::default(),
@@ -655,6 +693,18 @@ impl ZeneConfig {
         if let Ok(raw) = env::var("ZENE_MAX_TURNS") {
             if let Ok(n) = raw.trim().parse::<u32>() {
                 self.max_turns = n;
+            }
+        }
+        if let Ok(flag) = env::var("ZENE_GATEWAY_SESSION") {
+            let enabled = matches!(
+                flag.trim().to_lowercase().as_str(),
+                "1" | "true" | "yes" | "on"
+            );
+            self.gateway_session.enabled = enabled;
+        }
+        if let Ok(mode) = env::var("ZENE_GATEWAY_DEFAULT_MODE") {
+            if !mode.trim().is_empty() {
+                self.gateway_session.default_mode = mode.trim().to_string();
             }
         }
     }

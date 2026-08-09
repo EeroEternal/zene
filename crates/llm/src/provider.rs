@@ -14,6 +14,7 @@ pub struct ChatRequest {
     pub messages: Vec<Message>,
     pub tools: Vec<ToolDefinition>,
     pub stream: bool,
+    pub gateway: Option<crate::gateway::GatewayRequestContext>,
 }
 
 #[derive(Debug, Clone)]

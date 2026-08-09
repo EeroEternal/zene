@@ -35,7 +35,7 @@ impl AnthropicProvider {
         let response = self
             .client
             .post(format!("{}/v1/messages", self.base_url))
-            .headers(anthropic_headers(&self.api_key)?)
+            .headers(anthropic_headers(&self.api_key, request.gateway.as_ref())?)
             .json(&body)
             .send()
             .await
@@ -56,6 +56,17 @@ impl AnthropicProvider {
             anyhow::bail!("Anthropic API error ({status}): {message}");
         }
 
+        if request
+            .gateway
+            .as_ref()
+            .is_some_and(|g| g.mode == crate::gateway::GatewayMode::Publish)
+        {
+            return Ok(ChatResponse {
+                message: Message::assistant(""),
+                usage: parse_anthropic_usage(&raw),
+            });
+        }
+
         Ok(parse_anthropic_response(&raw)?)
     }
 
@@ -69,7 +80,7 @@ impl AnthropicProvider {
         let response = self
             .client
             .post(format!("{}/v1/messages", self.base_url))
-            .headers(anthropic_headers(&self.api_key)?)
+            .headers(anthropic_headers(&self.api_key, request.gateway.as_ref())?)
             .json(&body)
             .send()
             .await
@@ -119,7 +130,10 @@ impl Provider for AnthropicProvider {
     }
 }
 
-fn anthropic_headers(api_key: &str) -> Result<HeaderMap> {
+fn anthropic_headers(
+    api_key: &str,
+    gateway: Option<&crate::gateway::GatewayRequestContext>,
+) -> Result<HeaderMap> {
     let mut headers = HeaderMap::new();
     headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
     headers.insert(
@@ -130,6 +144,9 @@ fn anthropic_headers(api_key: &str) -> Result<HeaderMap> {
         "anthropic-version",
         HeaderValue::from_static("2023-06-01"),
     );
+    if let Some(gateway) = gateway {
+        gateway.apply_reqwest_headers(&mut headers);
+    }
     Ok(headers)
 }
 
@@ -297,24 +314,7 @@ fn parse_anthropic_response(raw: &Value) -> Result<ChatResponse> {
         }
     }
 
-    let usage = raw.get("usage").map(|usage| TokenUsage {
-        prompt_tokens: usage
-            .get("input_tokens")
-            .and_then(Value::as_u64)
-            .unwrap_or(0),
-        completion_tokens: usage
-            .get("output_tokens")
-            .and_then(Value::as_u64)
-            .unwrap_or(0),
-        total_tokens: usage
-            .get("input_tokens")
-            .and_then(Value::as_u64)
-            .unwrap_or(0)
-            + usage
-                .get("output_tokens")
-                .and_then(Value::as_u64)
-                .unwrap_or(0),
-    });
+    let usage = parse_anthropic_usage(raw);
 
     let message = if tool_calls.is_empty() {
         Message::assistant(text)
@@ -326,6 +326,27 @@ fn parse_anthropic_response(raw: &Value) -> Result<ChatResponse> {
     };
 
     Ok(ChatResponse { message, usage })
+}
+
+fn parse_anthropic_usage(raw: &Value) -> Option<TokenUsage> {
+    let usage = raw.get("usage")?;
+    let prompt_tokens = usage
+        .get("input_tokens")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    let completion_tokens = usage
+        .get("output_tokens")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    let cached_tokens = usage
+        .get("cache_read_input_tokens")
+        .and_then(Value::as_u64);
+    Some(TokenUsage {
+        prompt_tokens,
+        completion_tokens,
+        total_tokens: prompt_tokens + completion_tokens,
+        cached_tokens,
+    })
 }
 
 #[derive(Default)]
@@ -467,6 +488,9 @@ impl AnthropicStreamState {
                                 .get("output_tokens")
                                 .and_then(Value::as_u64)
                                 .unwrap_or(0),
+                            cached_tokens: usage
+                                .get("cache_read_input_tokens")
+                                .and_then(Value::as_u64),
                         });
                     }
                 }

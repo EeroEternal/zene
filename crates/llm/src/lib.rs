@@ -1,14 +1,19 @@
 mod anthropic;
 mod client;
+mod gateway;
 mod message;
 mod models;
 mod openai_compatible;
+mod openai_direct;
 mod provider;
 mod retry;
 mod tool;
 mod usage;
 
 pub use client::{provider_from_config, selected_provider_kind, ChatClient};
+pub use gateway::{
+    prefix_hash, GatewayMode, GatewayRequestContext, GatewaySubcall,
+};
 pub use message::{ContentPart, Message, MessageKind, Role, ToolCall};
 pub use models::context_window_for_model;
 pub use zene_config::default_context_window_for_model;
