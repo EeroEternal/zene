@@ -1,7 +1,5 @@
 use std::io::{self, Write};
 use std::sync::Arc;
-use std::time::Instant;
-
 use anyhow::{bail, Context, Result};
 use futures::StreamExt;
 use parking_lot::Mutex;
@@ -9,7 +7,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
 use zene_config::ZeneConfig;
 use zene_context::{
-    ContextDeps, ContextEngine, FsMemoryStore, PrefireClientFactory, StepContext,
+    ContextDeps, ContextEngine, PrefireClientFactory, StepContext,
 };
 use zene_llm::{ChatClient, ChatRequest, Message, StreamEvent, TokenUsage, ToolCall};
 use zene_sandbox::{LocalSandbox, Sandbox};
@@ -17,14 +15,10 @@ use zene_session::{
     fork_session, latest_checkpoint_id, load_checkpoint, restore_checkpoint, save_checkpoint,
     AgentRecordWriter, RecordEntry, SessionRecord,
 };
-use zene_tool_runtime::{
-    apply_tool_bound_plan, plan_tool_output_bound, FsToolOutputStore,
-};
 use zene_tools::{
     shared_todo_store_from,
-    SharedAskUserPrompter, SharedBackgroundTasks, SharedTodoStore, PlanModeState,
-    SharedPlanMode, SubagentEnv, ToolContext, ToolRegistry,
-    DEFAULT_SUBAGENT_MAX_DEPTH,
+    SharedAskUserPrompter, SharedBackgroundTasks, SharedTodoStore, SharedPlanMode,
+    SubagentEnv, ToolRegistry, DEFAULT_SUBAGENT_MAX_DEPTH,
 };
 pub use zene_tools::AskUserOption;
 use zene_mcp::McpManager;
@@ -38,6 +32,7 @@ mod events;
 mod plan_mode;
 mod subagent;
 mod tool_dedup;
+mod tool_executor;
 pub mod tool_scheduler;
 mod worktree;
 
@@ -61,12 +56,10 @@ pub use zene_turn::{
     EventSequence, RuntimeEvent, RuntimeEventHandler, RuntimeEventKind, SessionId, SteerBuffer,
     StepId, ToolCallId, TurnId, TurnState,
 };
-use plan_mode::{
-    build_effective_system_prompt, handle_enter_plan_mode,
-    handle_exit_plan_mode, tool_visible_in_definitions,
-};
+use plan_mode::{build_effective_system_prompt, tool_visible_in_definitions};
 pub use tool_dedup::{append_reminder, ToolDedup};
 pub use tool_scheduler::{classify_tool_accesses, ToolScheduler};
+use crate::tool_executor::{DefaultToolExecutor, ToolExecutorDeps};
 pub use zene_workspace::{build_system_prompt, FsWorkspaceProvider, WorkspaceProvider};
 pub use worktree::ensure_session_worktree;
 
@@ -884,262 +877,49 @@ impl Agent {
         tool_calls: &[ToolCall],
         options: &PromptOptions,
         cancel: Option<&CancellationToken>,
-    ) -> Result<()> {
+    ) -> Result<zene_turn::ToolBatchOutcome> {
         let subagent_runner = Arc::new(CoreSubagentRunner::new(self.config.clone()));
-        let permission: SharedToolPermission = Arc::clone(&self.permission);
-        let plan_mode: SharedPlanMode = Arc::clone(&self.plan_mode);
-        let plan_approval: PlanApprovalPrompter = Arc::clone(&self.plan_approval);
-        let session_id = self.session.meta.id.clone();
-        let workdir = self.sandbox.workdir().to_path_buf();
-        let ctx = ToolContext {
-            sandbox: Arc::clone(&self.sandbox),
-            cancel: cancel.cloned(),
-            subagent: Some(SubagentEnv {
-                depth: 0,
-                max_depth: DEFAULT_SUBAGENT_MAX_DEPTH,
-                runner: subagent_runner,
-            }),
-            permission: Some(permission),
-            plan_mode: Some(Arc::clone(&plan_mode)),
-            todos: Some(Arc::clone(&self.todos)),
-            ask_user: Some(Arc::clone(&self.ask_user)),
-            background: Some(Arc::clone(&self.background)),
+        let result = {
+            let executor = DefaultToolExecutor::new(ToolExecutorDeps {
+                tools: Arc::clone(&self.tools),
+                sandbox: Arc::clone(&self.sandbox),
+                permission: Arc::clone(&self.permission),
+                plan_mode: Arc::clone(&self.plan_mode),
+                plan_approval: &self.plan_approval,
+                todos: Arc::clone(&self.todos),
+                ask_user: Arc::clone(&self.ask_user),
+                background: Arc::clone(&self.background),
+                subagent: Some(SubagentEnv {
+                    depth: 0,
+                    max_depth: DEFAULT_SUBAGENT_MAX_DEPTH,
+                    runner: subagent_runner,
+                }),
+                hooks: &self.hooks,
+            });
+            executor
+                .execute(
+                    tool_calls,
+                    options,
+                    cancel,
+                    &self.session.meta.id,
+                    self.sandbox.workdir(),
+                    &mut self.tool_dedup,
+                )
+                .await?
         };
 
-        struct PreparedTool {
-            call: ToolCall,
-            immediate: Option<(zene_tools::ToolResult, Option<u64>)>,
-            schedule: Option<(tool_scheduler::ToolAccesses, String, String)>,
+        if !result.mode_changes.is_empty() {
+            self.sync_plan_mode_system();
         }
-
-        let mut prepared = Vec::with_capacity(tool_calls.len());
-
-        for call in tool_calls {
-            if Self::check_cancelled(cancel)? {
-                return Err(zene_turn::aborted_error());
-            }
-
-            if !options.quiet {
-                eprintln!("\n[tool] {}({})", call.name, truncate(&call.arguments, 120));
-            }
-            emit_event(
-                &options.event_handler,
-                AgentEvent::ToolCall {
-                    id: call.id.clone(),
-                    name: call.name.clone(),
-                    arguments: call.arguments.clone(),
-                },
-            );
-
-            let immediate = if call.name == "EnterPlanMode" {
-                let mut state = plan_mode.lock();
-                let result = handle_enter_plan_mode(&mut state, &call.arguments);
-                drop(state);
-                if !result.is_error {
-                    self.sync_plan_mode_system();
-                    emit_event(
-                        &options.event_handler,
-                        AgentEvent::ModeChanged {
-                            mode_id: "plan".into(),
-                        },
-                    );
-                }
-                Some((result, None))
-            } else if call.name == "ExitPlanMode" {
-                let mut state = plan_mode.lock();
-                let result = handle_exit_plan_mode(
-                    &mut state,
-                    &call.arguments,
-                    &workdir,
-                    &session_id,
-                    &plan_approval,
-                )
-                .unwrap_or_else(|err| zene_tools::ToolResult {
-                    content: err.to_string(),
-                    is_error: true,
-                });
-                drop(state);
-                if !result.is_error {
-                    self.sync_plan_mode_system();
-                    emit_event(
-                        &options.event_handler,
-                        AgentEvent::ModeChanged {
-                            mode_id: "default".into(),
-                        },
-                    );
-                }
-                Some((result, None))
-            } else if let Some(block) = self
-                .hooks
-                .run_pre_tool_use(&call.name, &call.arguments)
-                .await?
-            {
-                Some((
-                    zene_tools::ToolResult {
-                        content: format!("Hook blocked tool: {}", block.reason),
-                        is_error: true,
-                    },
-                    None,
-                ))
-            } else if !self.tools.contains(&call.name) {
-                Some((
-                    zene_tools::ToolResult {
-                        content: format!("unknown tool: {}", call.name),
-                        is_error: true,
-                    },
-                    None,
-                ))
-            } else if self.is_plan_mode_active() {
-                let allowed_in_plan = self
-                    .plan_mode
-                    .lock()
-                    .is_tool_allowed(&call.name);
-                if !allowed_in_plan {
-                    Some((
-                        zene_tools::ToolResult {
-                            content: PlanModeState::blocked_message(&call.name),
-                            is_error: true,
-                        },
-                        None,
-                    ))
-                } else {
-                    None
-                }
-            } else {
-                let allowed = match self.permission.lock().approve_tool_call(&call.name, &call.arguments) {
-                    Ok(v) => v,
-                    Err(err) => {
-                        if !options.quiet {
-                            eprintln!("permission prompt error: {err}");
-                        }
-                        false
-                    }
-                };
-                if !allowed {
-                    Some((
-                        zene_tools::ToolResult {
-                            content: PermissionGate::permission_denied_message(
-                                &call.name,
-                                &call.arguments,
-                            ),
-                            is_error: true,
-                        },
-                        None,
-                    ))
-                } else {
-                    None
-                }
-            };
-
-            let schedule = if immediate.is_some() {
-                None
-            } else {
-                Some((
-                    classify_tool_accesses(&call.name, &call.arguments),
-                    call.name.clone(),
-                    call.arguments.clone(),
-                ))
-            };
-
-            prepared.push(PreparedTool {
-                call: call.clone(),
-                immediate,
-                schedule,
-            });
-        }
-
-        let tools = Arc::clone(&self.tools);
-        let mut scheduled = Vec::new();
-        for item in &prepared {
-            if let Some((accesses, name, arguments)) = item.schedule.as_ref() {
-                let ctx = ToolContext {
-                    sandbox: Arc::clone(&ctx.sandbox),
-                    cancel: ctx.cancel.clone(),
-                    subagent: ctx.subagent.clone(),
-                    permission: ctx.permission.clone(),
-                    plan_mode: ctx.plan_mode.clone(),
-                    todos: ctx.todos.clone(),
-                    ask_user: ctx.ask_user.clone(),
-                    background: ctx.background.clone(),
-                };
-                let tools = Arc::clone(&tools);
-                let name = name.clone();
-                let arguments = arguments.clone();
-                let future: std::pin::Pin<
-                    Box<dyn std::future::Future<Output = (zene_tools::ToolResult, Option<u64>)> + Send>,
-                > = Box::pin(async move {
-                    let started = Instant::now();
-                    let result = tools
-                        .execute(&name, &arguments, &ctx)
-                        .await
-                        .unwrap_or_else(|err| zene_tools::ToolResult {
-                            content: err.to_string(),
-                            is_error: true,
-                        });
-                    (result, Some(started.elapsed().as_millis() as u64))
-                });
-                scheduled.push((accesses.clone(), future));
-            }
-        }
-
-        let scheduled_results = ToolScheduler::run_ordered(scheduled).await;
-        let mut scheduled_iter = scheduled_results.into_iter();
-
-        for item in prepared {
-            let (result, duration_ms) = if let Some(immediate) = item.immediate {
-                immediate
-            } else {
-                scheduled_iter
-                    .next()
-                    .expect("missing scheduled tool result")
-            };
-
-            let call = item.call;
-
-            if !result.is_error {
-                self.hooks
-                    .run_post_tool_use(&call.name, &call.arguments)
-                    .await;
-            }
-
-            if result.is_error && !options.quiet {
-                eprintln!("[tool error] {}", truncate(&result.content, 200));
-            }
-
-            let mut content = if result.content.is_empty() {
-                if result.is_error {
-                    "(tool returned empty error output)".to_string()
-                } else {
-                    "(tool returned no output)".to_string()
-                }
-            } else {
-                bound_tool_output(&workdir, &call.name, result.content)
-            };
-
-            if let Some(reminder) = self.tool_dedup.on_call(&call.name, &call.arguments) {
-                content = append_reminder(&content, reminder);
-            }
-
-            emit_event(
-                &options.event_handler,
-                AgentEvent::ToolResult {
-                    id: call.id.clone(),
-                    name: call.name.clone(),
-                    content: content.clone(),
-                    is_error: result.is_error,
-                    duration_ms,
-                },
-            );
-
+        for message in result.messages {
             self.session.push_message(Message::tool_result_with_error(
-                &call.id,
-                &call.name,
-                content,
-                result.is_error,
+                &message.call.id,
+                &message.call.name,
+                message.content,
+                message.is_error,
             ));
         }
-
-        Ok(())
+        Ok(result.outcome)
     }
 
     fn record_compaction(&self, result: &CompactionResult) -> Result<()> {
@@ -1181,21 +961,6 @@ fn normalize_tool_calls(calls: Vec<ToolCall>) -> Vec<ToolCall> {
             call
         })
         .collect()
-}
-
-fn truncate(input: &str, max: usize) -> String {
-    if input.chars().count() <= max {
-        input.to_string()
-    } else {
-        format!("{}...", input.chars().take(max).collect::<String>())
-    }
-}
-
-/// Plan output bounds (pure) then spill via filesystem store (runtime IO).
-fn bound_tool_output(workdir: &std::path::Path, tool_name: &str, content: String) -> String {
-    let plan = plan_tool_output_bound(content, tool_name);
-    let store = FsToolOutputStore::new(workdir);
-    apply_tool_bound_plan(plan, &store)
 }
 
 fn merge_event_handler(

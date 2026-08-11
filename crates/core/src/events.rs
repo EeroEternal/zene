@@ -55,10 +55,21 @@ pub fn runtime_event_handler(
                     id: ToolCallId::from_string(id.clone()), name: name.clone(), arguments: arguments.clone(),
                 },
             ),
-            AgentEvent::ToolResult { id, name, content, is_error, duration_ms } => (
-                current_turn, current_step, RuntimeEventKind::ToolResult {
-                    id: ToolCallId::from_string(id.clone()), name: name.clone(), content: content.clone(),
-                    is_error: *is_error, duration_ms: *duration_ms,
+            AgentEvent::ToolResult {
+                id,
+                name,
+                content,
+                is_error,
+                duration_ms,
+            } => (
+                current_turn,
+                current_step,
+                RuntimeEventKind::ToolResult {
+                    id: ToolCallId::from_string(id.clone()),
+                    name: name.clone(),
+                    content: content.clone(),
+                    is_error: *is_error,
+                    duration_ms: *duration_ms,
                 },
             ),
             AgentEvent::UsageUpdate { usage, context_tokens, context_window, context_percent, context_epoch } => (
