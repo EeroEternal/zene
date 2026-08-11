@@ -18,7 +18,7 @@ use zene_context::{
 };
 use crate::context_config;
 use zene_permission::{PermissionGate, SharedToolPermission};
-use crate::turn;
+use zene_turn::{aborted_error, max_turns_notice};
 
 #[async_trait]
 pub trait ChatBackend: Send + Sync {
@@ -141,7 +141,7 @@ pub(crate) async fn run_subagent_with_runner(
         steps_done = steps_done.saturating_add(1);
 
         if check_cancelled(cancel)? {
-            return Err(turn::aborted_error());
+            return Err(aborted_error());
         }
 
         maybe_compact_subagent_messages(
@@ -194,7 +194,7 @@ pub(crate) async fn run_subagent_with_runner(
     }
 
     if !completed {
-        let notice = turn::max_turns_notice(max_steps);
+        let notice = max_turns_notice(max_steps);
         final_text = if final_text.trim().is_empty() {
             notice
         } else {
@@ -228,7 +228,7 @@ async fn run_subagent_tools(
 
     for call in tool_calls {
         if check_cancelled(cancel)? {
-            return Err(turn::aborted_error());
+            return Err(aborted_error());
         }
 
         let allowed = if let Some(ref gate) = permission {

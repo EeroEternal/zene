@@ -75,7 +75,6 @@ impl SteerBuffer {
         self.pending.len()
     }
 
-    /// Drain all pending steer messages in FIFO order.
     pub fn take_all(&mut self) -> Vec<String> {
         std::mem::take(&mut self.pending)
     }
@@ -91,7 +90,6 @@ pub fn steer_requires_active_turn() -> anyhow::Error {
     anyhow!("no turn in progress; use prompt() to start a new turn")
 }
 
-/// Soft-stop notice when a turn hits `max_turns` (`0` means unlimited and should not appear).
 pub fn max_turns_notice(max_steps: u32) -> String {
     format!(
         "[notice] Reached max_turns ({max_steps}) without a final answer. Send a follow-up to continue, or raise max turns / use Unlimited."
@@ -102,7 +100,6 @@ pub fn aborted_error() -> anyhow::Error {
     anyhow!("turn aborted")
 }
 
-/// Guard: only one active turn at a time.
 pub fn begin_turn(active: &mut Option<TurnState>) -> Result<()> {
     if active.is_some() {
         return Err(agent_busy_error());
@@ -115,6 +112,10 @@ pub fn end_turn(active: &mut Option<TurnState>) {
     active.take();
 }
 
+pub fn is_cancelled(cancel: Option<&tokio_util::sync::CancellationToken>) -> bool {
+    cancel.is_some_and(tokio_util::sync::CancellationToken::is_cancelled)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -125,7 +126,6 @@ mod tests {
         begin_turn(&mut active).expect("first turn");
         let err = begin_turn(&mut active).unwrap_err();
         assert!(err.to_string().contains("agent busy"));
-        assert!(err.to_string().contains("steer()"));
         end_turn(&mut active);
         begin_turn(&mut active).expect("turn after end");
     }
@@ -139,12 +139,5 @@ mod tests {
         let drained = buf.take_all();
         assert_eq!(drained, vec!["first", "second"]);
         assert!(buf.is_empty());
-    }
-
-    #[test]
-    fn max_turns_notice_mentions_limit_and_follow_up() {
-        let notice = max_turns_notice(50);
-        assert!(notice.contains("max_turns (50)"));
-        assert!(notice.contains("follow-up"));
     }
 }

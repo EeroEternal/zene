@@ -4063,6 +4063,7 @@ dependencies = [
  "zene-session",
  "zene-tool-runtime",
  "zene-tools",
+ "zene-turn",
  "zene-workspace",
 ]
 
@@ -4210,6 +4211,18 @@ dependencies = [
  "zene-permission",
  "zene-sandbox",
  "zene-session",
+]
+
+[[package]]
+name = "zene-turn"
+version = "0.1.11"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "tokio-util",
+ "tracing",
+ "uuid",
+ "zene-llm",
 ]
 
 [[package]]

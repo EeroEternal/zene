@@ -18,11 +18,12 @@ Phased refactor toward composable agent crates (see `docs/agent-components.md`).
 - **`zene-workspace`**: `WorkspaceProvider` trait + `FsWorkspaceProvider`; pure `build_system_prompt`.
 - Agent instructions, directory listing, git branch, skills discovery IO in FS adapter.
 
-## Phase 4 — Context IO 收尾 (current)
+## Phase 4 — Context IO 收尾 (done)
 
 - **`CompactionSegmentWrite`** + `ContextEvent::CompactionSegment`; runtime persists via `FsCompactionSegmentStore`.
 - **`MemoryStore`** trait + `FsMemoryStore`; memory flush/load IO moved out of `memory.rs` logic.
 
-## Phase 5 — Turn loop → `zene-turn` (planned)
+## Phase 5 — Turn loop → `zene-turn` (current)
 
-- Extract `run_turn` / `run_step` from `Agent`; core keeps `AgentBuilder` only.
+- **`zene-turn`**: `TurnId` / `SteerBuffer` / turn guards; `TurnRuntime` trait + `run_turn_loop`.
+- `Agent` implements `TurnRuntime`; core keeps step/tools/LLM wiring, loop orchestration in `zene-turn`.

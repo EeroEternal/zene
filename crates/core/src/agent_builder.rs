@@ -22,7 +22,7 @@ use zene_hooks::{HookRunner, HookSpec};
 use zene_permission::{PermissionGate, PermissionMode, PermissionRule, RuleAction, SharedToolPermission};
 use crate::plan_mode::{default_plan_approval_prompter, PlanApprovalPrompter};
 use crate::tool_dedup::ToolDedup;
-use crate::turn::SteerBuffer;
+use zene_turn::SteerBuffer;
 use zene_workspace::{build_system_prompt, FsWorkspaceProvider};
 use crate::Agent;
 

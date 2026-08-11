@@ -139,6 +139,11 @@ loop {
 
 拆分方向：`AgentBuilder` + trait object hooks（**已实现 builder**）；`ToolContext` 已改为 `Arc<dyn Sandbox>`；`TodoItem` / Permission 双层仍待拆。
 
+### 2026-08-11 — Phase 5 Turn loop
+
+- 新增 `zene-turn`：`TurnRuntime` trait + `run_turn_loop`；turn 状态从 core 迁出
+- `Agent` 实现 `TurnRuntime`（`agent_turn.rs`）；core 保留 LLM/tools/context 步骤实现
+
 ### 2026-08-11 — Phase 4 Context IO
 
 - compaction segment：`plan_compaction_segment` + `ContextEvent::CompactionSegment`；core 用 `FsCompactionSegmentStore` 落盘
