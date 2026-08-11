@@ -40,6 +40,17 @@ if ! command -v caddy >/dev/null 2>&1; then
   apt-get install -y caddy git
 fi
 
+if ! command -v redis-server >/dev/null 2>&1; then
+  apt-get update -y
+  apt-get install -y redis-server
+fi
+if [[ -f /etc/redis/redis.conf ]]; then
+  sed -i 's/^bind 127\.0\.0\.1 .*/bind 127.0.0.1 -::1/' /etc/redis/redis.conf 2>/dev/null || true
+  sed -i 's/^# bind 127\.0\.0\.1 .*/bind 127.0.0.1 -::1/' /etc/redis/redis.conf 2>/dev/null || true
+fi
+systemctl enable redis-server 2>/dev/null || true
+systemctl start redis-server 2>/dev/null || true
+
 # Deploy user for CI SSH (authorized_keys added separately).
 if ! id -u deploy >/dev/null 2>&1; then
   useradd --create-home --shell /bin/bash deploy

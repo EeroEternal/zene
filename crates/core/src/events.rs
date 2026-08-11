@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use zene_llm::TokenUsage;
 
-use crate::turn::{StepId, TurnId};
+use zene_turn::{StepId, TurnId};
 
 pub type EventHandler = Arc<dyn Fn(AgentEvent) + Send + Sync>;
 
@@ -44,6 +44,7 @@ pub enum AgentEvent {
         context_tokens: u32,
         context_window: u32,
         context_percent: u8,
+        context_epoch: u64,
     },
     TurnEnd {
         turn_id: TurnId,

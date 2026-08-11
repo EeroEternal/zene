@@ -3,6 +3,11 @@ name = "zene-session"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+description = "Session persistence for Zene agents: transcripts, compactions, checkpoints, todos"
+readme = "README.md"
+repository = "https://github.com/ParaTensor/zene"
+keywords = ["agent", "session", "chat"]
+categories = ["database", "development-tools"]
 
 [dependencies]
 anyhow.workspace = true
@@ -13,7 +18,6 @@ serde_json.workspace = true
 thiserror.workspace = true
 uuid.workspace = true
 zip = "2"
-zene-config = { workspace = true }
 zene-llm = { workspace = true }
 
 [dev-dependencies]

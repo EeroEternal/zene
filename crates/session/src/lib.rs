@@ -1,3 +1,4 @@
+mod paths;
 mod checkpoint;
 mod record;
 mod todo;
@@ -9,9 +10,9 @@ use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
-use zene_config::{sessions_dir, workdir_slug, zene_home};
 use zene_llm::Message;
 
+pub use paths::{sessions_dir, workdir_slug, zene_home};
 pub use checkpoint::{
     fork_session, latest_checkpoint_id, list_checkpoints, load_checkpoint, restore_checkpoint,
     save_checkpoint, SessionCheckpoint,

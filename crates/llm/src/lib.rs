@@ -1,18 +1,19 @@
 mod anthropic;
 mod client;
-mod gateway;
+mod context;
 mod message;
 mod models;
 mod openai_compatible;
-mod openai_direct;
 mod provider;
 mod retry;
 mod tool;
 mod usage;
 
 pub use client::{provider_from_config, selected_provider_kind, ChatClient};
-pub use gateway::{
-    prefix_hash, GatewayMode, GatewayRequestContext, GatewaySubcall,
+pub use context::{
+    ContextDelivery, ContextMetadata, BODY_ZENE_CONTEXT, HEADER_CONTEXT_DELIVERY,
+    HEADER_CONTEXT_EPOCH, HEADER_PREFIX_HASH, HEADER_SESSION_ID, HEADER_TAIL_START,
+    SESSION_GATEWAY_FIELD,
 };
 pub use message::{ContentPart, Message, MessageKind, Role, ToolCall};
 pub use models::context_window_for_model;

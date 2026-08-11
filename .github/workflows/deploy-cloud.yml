@@ -6,6 +6,7 @@ on:
     paths:
       - "cloud/**"
       - "apps/cli/**"
+      - "apps/inference-gateway/**"
       - "crates/**"
       - ".github/workflows/deploy-cloud.yml"
   workflow_dispatch:
@@ -26,8 +27,9 @@ jobs:
         working-directory: cloud
         run: cargo build --release -p zene-cloud-api -p zene-cloud-worker --locked
 
-      - name: Build zene CLI
-        run: cargo build --release -p zene-cli --locked
+      - name: Build zene CLI and inference gateway
+        run: |
+          cargo build --release -p zene-cli -p zene-inference-gateway --locked
 
       - uses: actions/setup-node@v4
         with:
@@ -45,7 +47,7 @@ jobs:
           rm -rf "$STAGE"
           mkdir -p "$STAGE/bin" "$STAGE/web" "$STAGE/systemd"
           cp cloud/target/release/zene-cloud-api cloud/target/release/zene-cloud-worker "$STAGE/bin/"
-          cp target/release/zene "$STAGE/bin/"
+          cp target/release/zene target/release/zene-inference-gateway "$STAGE/bin/"
           cp -a cloud/apps/web/dist/. "$STAGE/web/"
           cp cloud/deploy/systemd/*.service "$STAGE/systemd/"
           cp cloud/deploy/Caddyfile cloud/deploy/install-remote.sh "$STAGE/"

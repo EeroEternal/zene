@@ -1,6 +1,6 @@
 # Zene Engine Notes
 
-Core agent loop lives in `crates/core`. This document tracks engine-level behaviors (turn flow, context, permissions) beyond the milestone checklist in [ROADMAP.md](./ROADMAP.md).
+Core agent loop lives in `crates/core`. This document tracks engine-level behaviors (turn flow, context, permissions) beyond the milestone checklist in [ROADMAP.md](./ROADMAP.md). For the Session-vs-Context architecture model, see [session-as-source-of-truth.md](./session-as-source-of-truth.md). For Context Engine projection-oriented next steps, see [context-engine-projection.md](./context-engine-projection.md). For Pi agent-harness comparisons, see [pi-agent-harness-lessons.md](./pi-agent-harness-lessons.md).
 
 ## Turn flow & steer
 

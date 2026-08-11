@@ -3,7 +3,7 @@
 //! Prefers the last provider-reported prompt token count when available;
 //! falls back to the heuristic estimator for pre-sample checks.
 
-use zene_config::CompactionConfig;
+use crate::config::CompactionConfig;
 use zene_llm::TokenUsage;
 
 /// Live context occupancy used for auto-compact and UI status.

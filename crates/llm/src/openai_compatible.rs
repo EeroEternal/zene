@@ -7,11 +7,16 @@ use futures::{Stream, StreamExt};
 use serde_json::{json, Value};
 use unigateway_sdk::core::response::{ChatResponseChunk, ChatResponseFinal};
 use unigateway_sdk::core::{
-    Endpoint, ExecutionTarget, LoadBalancingStrategy, ModelPolicy, ProviderKind, ProviderPool,
-    ProxyChatRequest, ProxySession, RetryPolicy, SecretString, UniGatewayEngine,
+    Endpoint, EndpointCapabilities, ExecutionTarget, LoadBalancingStrategy, ModelPolicy,
+    ProviderKind, ProviderPool, ProxyChatRequest, ProxySession, RetryPolicy, SecretString,
+    UniGatewayEngine,
 };
 use zene_config::ZeneConfig;
 
+use crate::context::{
+    HEADER_CONTEXT_DELIVERY, HEADER_CONTEXT_EPOCH, HEADER_PREFIX_HASH, HEADER_SESSION_ID,
+    HEADER_TAIL_START, SESSION_GATEWAY_FIELD,
+};
 use crate::message::{Message, Role, ToolCall};
 use crate::openai_direct::OpenAiDirectClient;
 use crate::provider::{ChatRequest, ChatResponse, Provider, StreamEvent};
@@ -35,6 +40,19 @@ impl OpenAiCompatibleProvider {
             .build()
             .map_err(|err| anyhow!("{err}"))?;
 
+        let inference_gateway = std::env::var("ZENE_INFERENCE_GATEWAY_URL")
+            .ok()
+            .is_some_and(|url| !url.trim().is_empty());
+        let forward_metadata_as_headers = inference_gateway.then(|| {
+            vec![
+                HEADER_SESSION_ID.to_string(),
+                HEADER_CONTEXT_EPOCH.to_string(),
+                HEADER_CONTEXT_DELIVERY.to_string(),
+                HEADER_PREFIX_HASH.to_string(),
+                HEADER_TAIL_START.to_string(),
+            ]
+        });
+
         let endpoint = Endpoint {
             endpoint_id: DEFAULT_ENDPOINT_ID.to_string(),
             provider_name: Some(DEFAULT_ENDPOINT_ID.to_string()),
@@ -50,7 +68,9 @@ impl OpenAiCompatibleProvider {
             },
             enabled: true,
             max_concurrency: None,
+            capabilities: EndpointCapabilities::default(),
             metadata: HashMap::new(),
+            forward_metadata_as_headers: forward_metadata_as_headers.clone(),
         };
 
         let pool = ProviderPool {
@@ -59,6 +79,7 @@ impl OpenAiCompatibleProvider {
             load_balancing: LoadBalancingStrategy::RoundRobin,
             retry_policy: RetryPolicy::default(),
             metadata: HashMap::new(),
+            forward_metadata_as_headers,
         };
 
         engine
@@ -211,10 +232,51 @@ pub(crate) fn to_proxy_request(request: &ChatRequest, stream: bool) -> Result<Pr
         tools,
         tool_choice: None,
         raw_messages: Some(raw_messages),
+        gateway_fields: HashMap::new(),
         extra: HashMap::new(),
         metadata: HashMap::new(),
     };
     proxy.mark_openai_raw_messages();
+    if let Some(ctx) = &request.context {
+        proxy
+            .metadata
+            .insert(HEADER_SESSION_ID.to_string(), ctx.session_id.clone());
+        proxy.metadata.insert(
+            HEADER_CONTEXT_EPOCH.to_string(),
+            ctx.context_epoch.to_string(),
+        );
+        proxy.metadata.insert(
+            HEADER_CONTEXT_DELIVERY.to_string(),
+            ctx.delivery.as_str().to_string(),
+        );
+        if let Some(hash) = &ctx.prefix_hash {
+            proxy
+                .metadata
+                .insert(HEADER_PREFIX_HASH.to_string(), hash.clone());
+        }
+        if let Some(start) = ctx.tail_start {
+            proxy
+                .metadata
+                .insert(HEADER_TAIL_START.to_string(), start.to_string());
+        }
+        let mut session_context = serde_json::json!({
+            "session_id": ctx.session_id,
+            "epoch": ctx.context_epoch,
+            "delivery": ctx.delivery.as_str(),
+            "tail_start": ctx.tail_start,
+        });
+        if let Some(hash) = &ctx.prefix_hash {
+            session_context["prefix_hash"] = serde_json::json!(hash);
+            session_context["fingerprint"] = serde_json::json!({
+                "algorithm": "zene-v1",
+                "value": hash,
+            });
+        }
+        proxy.gateway_fields.insert(
+            SESSION_GATEWAY_FIELD.to_string(),
+            session_context,
+        );
+    }
     Ok(proxy)
 }
 

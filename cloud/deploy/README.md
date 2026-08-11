@@ -33,7 +33,7 @@ cargo build --release -p zene-cli --locked
 STAGE=/tmp/zene-cloud-stage
 rm -rf "$STAGE" && mkdir -p "$STAGE/bin" "$STAGE/web" "$STAGE/systemd"
 cp cloud/target/release/zene-cloud-api cloud/target/release/zene-cloud-worker "$STAGE/bin/"
-cp target/release/zene "$STAGE/bin/"
+cp target/release/zene target/release/zene-inference-gateway "$STAGE/bin/"
 cp -a cloud/apps/web/dist/. "$STAGE/web/"
 cp cloud/deploy/systemd/*.service "$STAGE/systemd/"
 cp cloud/deploy/Caddyfile cloud/deploy/install-remote.sh "$STAGE/"

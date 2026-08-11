@@ -6,6 +6,8 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
+pub const DEFAULT_CONTEXT_WINDOW_TOKENS: u32 = 128_000;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProviderKind {
     OpenAi,
@@ -49,8 +51,6 @@ pub enum ConfigError {
     },
 }
 
-pub const DEFAULT_CONTEXT_WINDOW_TOKENS: u32 = 128_000;
-
 /// Main agent tool profile. Subset of built-in tools; MCP tools are always merged on top.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "lowercase")]
@@ -77,7 +77,8 @@ impl AgentProfile {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// Compaction settings (serde shape must match `zene_context::CompactionConfig`).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct CompactionConfig {
     #[serde(default = "default_compaction_trigger_ratio")]
     pub trigger_ratio: f32,
@@ -87,8 +88,6 @@ pub struct CompactionConfig {
     pub context_window_tokens: u32,
     #[serde(default = "default_min_keep_messages")]
     pub min_keep_messages: usize,
-    /// Before full compact, aggressively truncate tool results in the current
-    /// turn's steps (after the last user message) — grok Intra Steps-first lite.
     #[serde(default = "default_intra_steps_first")]
     pub intra_steps_first: bool,
 }
@@ -531,6 +530,12 @@ impl ZeneConfig {
     }
 
     pub fn openai_base_url(&self) -> String {
+        if let Ok(gw) = std::env::var("ZENE_INFERENCE_GATEWAY_URL") {
+            let gw = gw.trim().trim_end_matches('/');
+            if !gw.is_empty() {
+                return format!("{gw}/v1");
+            }
+        }
         self.base_url.clone()
     }
 

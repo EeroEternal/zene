@@ -5,6 +5,7 @@ pub struct TokenUsage {
     pub prompt_tokens: u64,
     pub completion_tokens: u64,
     pub total_tokens: u64,
+    /// Provider-reported prompt cache hits (OpenAI `prompt_tokens_details.cached_tokens`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cached_tokens: Option<u64>,
 }
@@ -14,6 +15,11 @@ impl TokenUsage {
         self.prompt_tokens += other.prompt_tokens;
         self.completion_tokens += other.completion_tokens;
         self.total_tokens += other.total_tokens;
+        match (self.cached_tokens, other.cached_tokens) {
+            (Some(a), Some(b)) => self.cached_tokens = Some(a + b),
+            (None, Some(b)) => self.cached_tokens = Some(b),
+            _ => {}
+        }
     }
 }
 
@@ -33,12 +39,12 @@ pub fn parse_usage_from_raw(raw: &serde_json::Value) -> Option<TokenUsage> {
         .unwrap_or(prompt_tokens + completion_tokens);
 
     let cached_tokens = usage
-        .get("cached_tokens")
-        .or_else(|| usage.get("prompt_tokens_details").and_then(|d| d.get("cached_tokens")))
+        .get("prompt_tokens_details")
+        .and_then(|d| d.get("cached_tokens"))
         .and_then(serde_json::Value::as_u64)
         .or_else(|| {
             usage
-                .get("cache_read_input_tokens")
+                .get("cached_tokens")
                 .and_then(serde_json::Value::as_u64)
         });
 
@@ -87,5 +93,6 @@ mod tests {
         assert_eq!(total.prompt_tokens, 5);
         assert_eq!(total.completion_tokens, 7);
         assert_eq!(total.total_tokens, 12);
+        assert_eq!(total.cached_tokens, Some(2));
     }
 }

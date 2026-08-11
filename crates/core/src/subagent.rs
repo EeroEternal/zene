@@ -6,16 +6,19 @@ use async_trait::async_trait;
 use tokio_util::sync::CancellationToken;
 use zene_config::ZeneConfig;
 use zene_llm::{ChatClient, ChatRequest, ChatResponse, Message, ToolCall};
-use zene_sandbox::LocalSandbox;
+use zene_sandbox::Sandbox;
 use zene_tools::{
     tools_for_profile, SubagentEnv, SubagentProfile, SubagentRunner, ToolContext,
     ToolRegistry, DEFAULT_SUBAGENT_MAX_DEPTH,
 };
 
-use crate::compaction::{compact_message_list_with_chat, should_compact, subagent_compaction_config};
-use crate::permission::PermissionGate;
-use crate::tokens::{self, TokenEstimator};
-use crate::turn;
+use zene_context::{
+    compact_message_list_with_chat, estimate_context, should_compact,
+    subagent_compaction_config, TokenEstimator,
+};
+use crate::context_config;
+use zene_permission::{PermissionGate, SharedToolPermission};
+use zene_turn::{aborted_error, max_turns_notice};
 
 #[async_trait]
 pub trait ChatBackend: Send + Sync {
@@ -73,12 +76,12 @@ impl SubagentRunner for CoreSubagentRunner {
 pub async fn run_subagent(
     prompt: &str,
     profile: SubagentProfile,
-    sandbox: Arc<LocalSandbox>,
+    sandbox: Arc<dyn Sandbox>,
     config: &ZeneConfig,
     backend: &dyn ChatBackend,
     cancel: Option<&CancellationToken>,
     parent_depth: u32,
-    permission: Option<zene_tools::SharedToolPermission>,
+    permission: Option<SharedToolPermission>,
 ) -> Result<String> {
     run_subagent_with_runner(
         prompt,
@@ -97,12 +100,12 @@ pub async fn run_subagent(
 pub(crate) async fn run_subagent_with_runner(
     prompt: &str,
     profile: SubagentProfile,
-    sandbox: Arc<LocalSandbox>,
+    sandbox: Arc<dyn Sandbox>,
     config: &ZeneConfig,
     backend: &dyn ChatBackend,
     cancel: Option<&CancellationToken>,
     parent_depth: u32,
-    permission: Option<zene_tools::SharedToolPermission>,
+    permission: Option<SharedToolPermission>,
     runner: Option<Arc<dyn SubagentRunner>>,
 ) -> Result<String> {
     let subagent_depth = parent_depth + 1;
@@ -128,7 +131,8 @@ pub(crate) async fn run_subagent_with_runner(
     let mut final_text = String::new();
     let mut completed = false;
     let mut steps_done = 0u32;
-    let compaction_config = subagent_compaction_config(&config.compaction);
+    let compaction_config =
+        subagent_compaction_config(&context_config::context_compaction_config(&config.compaction));
 
     loop {
         if max_steps > 0 && steps_done >= max_steps {
@@ -137,7 +141,7 @@ pub(crate) async fn run_subagent_with_runner(
         steps_done = steps_done.saturating_add(1);
 
         if check_cancelled(cancel)? {
-            return Err(turn::aborted_error());
+            return Err(aborted_error());
         }
 
         maybe_compact_subagent_messages(
@@ -154,7 +158,7 @@ pub(crate) async fn run_subagent_with_runner(
             messages: messages.clone(),
             tools: tools.definitions(),
             stream: false,
-            gateway: None,
+            context: None,
         };
 
         let response = backend.chat(request).await.context("subagent llm step")?;
@@ -190,7 +194,7 @@ pub(crate) async fn run_subagent_with_runner(
     }
 
     if !completed {
-        let notice = turn::max_turns_notice(max_steps);
+        let notice = max_turns_notice(max_steps);
         final_text = if final_text.trim().is_empty() {
             notice
         } else {
@@ -205,10 +209,10 @@ pub(crate) async fn run_subagent_with_runner(
 async fn run_subagent_tools(
     tools: &ToolRegistry,
     tool_calls: &[ToolCall],
-    sandbox: &Arc<LocalSandbox>,
+    sandbox: &Arc<dyn Sandbox>,
     cancel: Option<&CancellationToken>,
     subagent_env: &SubagentEnv,
-    permission: Option<zene_tools::SharedToolPermission>,
+    permission: Option<SharedToolPermission>,
     messages: &mut Vec<Message>,
 ) -> Result<()> {
     let ctx = ToolContext {
@@ -224,7 +228,7 @@ async fn run_subagent_tools(
 
     for call in tool_calls {
         if check_cancelled(cancel)? {
-            return Err(turn::aborted_error());
+            return Err(aborted_error());
         }
 
         let allowed = if let Some(ref gate) = permission {
@@ -289,9 +293,9 @@ fn subagent_system_prompt(profile: SubagentProfile, workdir: &Path) -> String {
 }
 
 fn resolve_subagent_sandbox(
-    parent: &Arc<LocalSandbox>,
+    parent: &Arc<dyn Sandbox>,
     cwd: Option<&Path>,
-) -> Result<Arc<LocalSandbox>> {
+) -> Result<Arc<dyn Sandbox>> {
     match cwd {
         None => Ok(Arc::clone(parent)),
         Some(path) => {
@@ -299,7 +303,7 @@ fn resolve_subagent_sandbox(
             if !resolved.is_dir() {
                 anyhow::bail!("Task cwd is not a directory: {}", resolved.display());
             }
-            Ok(Arc::new(parent.scoped_to(resolved)?))
+            parent.scoped_to(resolved)
         }
     }
 }
@@ -311,13 +315,13 @@ fn check_cancelled(cancel: Option<&CancellationToken>) -> Result<bool> {
 async fn maybe_compact_subagent_messages(
     messages: &mut Vec<Message>,
     tools: &ToolRegistry,
-    compaction_config: &zene_config::CompactionConfig,
+    compaction_config: &zene_context::CompactionConfig,
     model: &str,
     backend: &dyn ChatBackend,
 ) -> Result<()> {
     let tool_defs = tools.definitions();
     let estimator = TokenEstimator::default();
-    let estimated = tokens::estimate_context(messages, &tool_defs, &estimator) as u32;
+    let estimated = estimate_context(messages, &tool_defs, &estimator) as u32;
     if !should_compact(estimated, compaction_config) {
         return Ok(());
     }
@@ -359,10 +363,11 @@ mod tests {
 
     use parking_lot::Mutex;
 
-    use crate::permission::{PermissionGate, PermissionMode, PromptChoice};
+    use zene_permission::{PermissionGate, PermissionMode, PromptChoice, SharedToolPermission};
     use tempfile::tempdir;
     use zene_llm::ToolCall;
-    use zene_tools::{default_builtin_tools, SharedToolPermission};
+    use zene_sandbox::LocalSandbox;
+    use zene_tools::default_builtin_tools;
 
     fn test_permission_deny() -> SharedToolPermission {
         Arc::new(Mutex::new(PermissionGate::with_prompter(
@@ -467,7 +472,7 @@ mod tests {
             .await
             .unwrap();
 
-        let sandbox = Arc::new(LocalSandbox::new(dir.path()));
+        let sandbox = zene_sandbox::into_arc(LocalSandbox::new(dir.path()));
         let config = ZeneConfig::default();
 
         let backend = ScriptedBackend::with_first_call_check(
@@ -545,7 +550,7 @@ mod tests {
     #[tokio::test]
     async fn task_tool_rejects_nested_subagent_at_max_depth() {
         let dir = tempdir().unwrap();
-        let sandbox = Arc::new(LocalSandbox::new(dir.path()));
+        let sandbox = zene_sandbox::into_arc(LocalSandbox::new(dir.path()));
         let config = ZeneConfig::default();
         let calls = Arc::new(AtomicUsize::new(0));
         let runner = Arc::new(RecordingRunner {
@@ -586,7 +591,7 @@ mod tests {
     #[tokio::test]
     async fn coder_subagent_manual_mode_rejects_write_without_approval() {
         let dir = tempdir().unwrap();
-        let sandbox = Arc::new(LocalSandbox::new(dir.path()));
+        let sandbox = zene_sandbox::into_arc(LocalSandbox::new(dir.path()));
         let config = ZeneConfig::default();
         let permission = test_permission_deny();
 

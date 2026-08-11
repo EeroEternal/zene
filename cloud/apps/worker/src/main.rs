@@ -80,6 +80,10 @@ pub(crate) struct Cli {
     /// Supervisor scale loop interval.
     #[arg(long, env = "ZENE_CLOUD_WORKER_SCALE_INTERVAL_MS", default_value_t = 1000)]
     pub(crate) scale_interval_ms: u64,
+
+    /// Forward to zene acp for inference-gateway delta assembly (optional).
+    #[arg(long, env = "ZENE_INFERENCE_GATEWAY_URL")]
+    pub(crate) inference_gateway_url: Option<String>,
 }
 
 #[tokio::main]
@@ -724,13 +728,23 @@ fn inject_run_max_turns(env: &mut HashMap<String, String>, max_turns: u32) {
     env.insert("ZENE_MAX_TURNS".into(), max_turns.to_string());
 }
 
-fn inject_gateway_session(env: &mut HashMap<String, String>, run_id: uuid::Uuid) {
-    env.insert("ZENE_SESSION_ID".into(), run_id.to_string());
-    if std::env::var("ZENE_GATEWAY_SESSION")
-        .ok()
-        .is_none_or(|v| !matches!(v.trim(), "0" | "false" | "off" | "no"))
-    {
-        env.insert("ZENE_GATEWAY_SESSION".into(), "1".into());
+fn inject_run_context(env: &mut HashMap<String, String>, run_id: Uuid) {
+    env.insert("ZENE_RUN_ID".into(), run_id.to_string());
+}
+
+fn inject_inference_gateway(env: &mut HashMap<String, String>, url: Option<&str>) {
+    let url = url
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .or_else(|| {
+            std::env::var("ZENE_INFERENCE_GATEWAY_URL")
+                .ok()
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+        });
+    if let Some(url) = url {
+        env.insert("ZENE_INFERENCE_GATEWAY_URL".into(), url);
     }
 }
 
@@ -788,11 +802,13 @@ async fn run_with_real_acp(
         }
     };
     inject_run_max_turns(&mut llm_env, claimed.run.max_turns);
-    inject_gateway_session(&mut llm_env, run_id);
+    inject_run_context(&mut llm_env, run_id);
+    inject_inference_gateway(&mut llm_env, cli.inference_gateway_url.as_deref());
     info!(
         run_id = %run_id,
         max_turns = claimed.run.max_turns,
-        "injected ZENE_MAX_TURNS and ZENE_SESSION_ID for acp"
+        inference_gateway = cli.inference_gateway_url.is_some(),
+        "injected ZENE_MAX_TURNS, ZENE_RUN_ID, and optional inference gateway for acp"
     );
 
     let (bridge, mut msg_rx) = AcpBridge::spawn(zene_bin, workspace, yolo, &llm_env).await?;

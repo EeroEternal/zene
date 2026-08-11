@@ -1,14 +1,12 @@
-use std::fs;
-use std::path::PathBuf;
-
 use anyhow::{bail, Context, Result};
 use tracing::info;
-use zene_config::CompactionConfig;
+use crate::config::CompactionConfig;
 use zene_llm::{ChatClient, ChatRequest, ChatResponse, Message, MessageKind, Role, ToolDefinition};
-use zene_session::{session_record_dir, SessionRecord};
-use zene_tools::{BackgroundTask, BackgroundTaskStatus};
 
+use crate::hooks::ContextHooks;
+use crate::segment_store::CompactionSegmentWrite;
 use crate::input_ladder::{prepare_summary_input, InputLadderStage};
+use crate::session::ContextSession;
 use crate::prefire::PrefireCache;
 use crate::tokens::{self, TokenEstimator};
 use crate::two_pass::{
@@ -145,49 +143,17 @@ pub fn assemble_full_replace_history(
     out
 }
 
-/// Post-compaction `<system-reminder>`: todos, background tasks, memory.
+/// Post-compaction `<system-reminder>`: runtime extras (todos, background tasks) + memory.
 pub fn build_compaction_reminder(
-    session: &SessionRecord,
-    background_tasks: &[BackgroundTask],
+    extra_sections: &[&str],
     memory_block: Option<&str>,
 ) -> Option<String> {
-    let mut sections = Vec::new();
-
-    let actionable: Vec<_> = session
-        .todos
+    let mut sections: Vec<String> = extra_sections
         .iter()
-        .filter(|item| {
-            !matches!(item.status, zene_session::TodoStatus::Completed)
-        })
+        .map(|s| (*s).trim())
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
         .collect();
-    if !actionable.is_empty() {
-        let mut lines = vec!["Active todos:".to_string()];
-        for item in actionable {
-            let status = match item.status {
-                zene_session::TodoStatus::Pending => "pending",
-                zene_session::TodoStatus::InProgress => "in_progress",
-                zene_session::TodoStatus::Completed => "completed",
-            };
-            lines.push(format!("- [{status}] {}", item.content));
-        }
-        sections.push(lines.join("\n"));
-    }
-
-    let running: Vec<_> = background_tasks
-        .iter()
-        .filter(|t| t.status == BackgroundTaskStatus::Running)
-        .collect();
-    if !running.is_empty() {
-        let mut lines = vec!["Background tasks still running:".to_string()];
-        for task in running {
-            let kind = match task.kind {
-                zene_tools::BackgroundTaskKind::Bash => "bash",
-                zene_tools::BackgroundTaskKind::Subagent => "task",
-            };
-            lines.push(format!("- {} ({kind}): {}", task.id, task.label));
-        }
-        sections.push(lines.join("\n"));
-    }
 
     if let Some(memory) = memory_block {
         if !memory.trim().is_empty() {
@@ -281,7 +247,7 @@ async fn summarize_prepared_input(
             ],
             tools: Vec::<ToolDefinition>::new(),
             stream: false,
-            gateway: None,
+            context: None,
         };
 
         match client.chat(request).await {
@@ -431,23 +397,21 @@ pub async fn summarize_prefix(
 }
 
 /// Persist compacted prefix for recovery (grok CompactionMode::Segments lite).
-pub fn persist_compaction_segment(
+pub fn plan_compaction_segment(
     session_id: &str,
     prefix: &[Message],
     summary: &str,
-) -> Result<PathBuf> {
-    let dir = session_record_dir(session_id).join("compaction_segments");
-    fs::create_dir_all(&dir).context("create compaction_segments dir")?;
-    let ts = chrono::Utc::now().format("%Y%m%dT%H%M%SZ");
-    let path = dir.join(format!("{ts}.md"));
+) -> CompactionSegmentWrite {
     let mut body = String::new();
     body.push_str("# Compaction segment\n\n");
     body.push_str("## Final summary\n\n");
     body.push_str(summary);
     body.push_str("\n\n## Compacted prefix\n\n");
     body.push_str(&format_messages_for_summary(prefix));
-    fs::write(&path, body).context("write compaction segment")?;
-    Ok(path)
+    CompactionSegmentWrite {
+        session_id: session_id.to_string(),
+        body,
+    }
 }
 
 pub struct CompactionPlan {
@@ -461,10 +425,13 @@ pub struct CompactionStats {
     pub tokens_after: u32,
 }
 
+#[derive(Debug, Clone)]
 pub struct CompactionResult {
     pub reason: String,
     pub compacted_count: usize,
     pub stats: CompactionStats,
+    /// Segment payload for runtime persistence (`ContextEvent::CompactionSegment`).
+    pub segment: Option<CompactionSegmentWrite>,
 }
 
 pub fn plan_compaction(
@@ -587,16 +554,16 @@ pub fn apply_slice_keep(messages: &mut Vec<Message>, tail_start: usize) -> usize
     removed
 }
 
-fn estimate_session_tokens(
-    session: &SessionRecord,
+fn estimate_session_tokens<S: ContextSession + ?Sized>(
+    session: &S,
     tools: &[ToolDefinition],
     estimator: &TokenEstimator,
 ) -> u32 {
-    tokens::estimate_context(&session.messages, tools, estimator) as u32
+    tokens::estimate_context(session.messages(), tools, estimator) as u32
 }
 
-fn record_compaction_result(
-    session: &mut SessionRecord,
+fn record_compaction_result<S: ContextSession + ?Sized>(
+    session: &mut S,
     result: &CompactionResult,
     summary: Option<String>,
 ) {
@@ -609,17 +576,17 @@ fn record_compaction_result(
     );
 }
 
-fn try_truncate_only_compaction(
-    session: &mut SessionRecord,
+fn try_truncate_only_compaction<S: ContextSession + ?Sized>(
+    session: &mut S,
     config: &CompactionConfig,
     tools: &[ToolDefinition],
     estimator: &TokenEstimator,
 ) -> Option<CompactionResult> {
     let tokens_before = estimate_session_tokens(session, tools, estimator);
-    let plan = plan_compaction(&session.messages, config, estimator)?;
-    let prefix_start = system_prefix_start(&session.messages);
+    let plan = plan_compaction(session.messages(), config, estimator)?;
+    let prefix_start = system_prefix_start(session.messages());
     let truncated = truncate_old_message_bodies(
-        &mut session.messages,
+        session.messages_mut(),
         prefix_start,
         plan.tail_start,
         TRUNCATE_TOOL_RESULT_MAX_CHARS,
@@ -649,28 +616,29 @@ fn try_truncate_only_compaction(
             tokens_before,
             tokens_after,
         },
+        segment: None,
     };
     record_compaction_result(session, &result, None);
     Some(result)
 }
 
-fn try_slice_keep_compaction(
-    session: &mut SessionRecord,
+fn try_slice_keep_compaction<S: ContextSession + ?Sized>(
+    session: &mut S,
     config: &CompactionConfig,
     tools: &[ToolDefinition],
     estimator: &TokenEstimator,
 ) -> Option<CompactionResult> {
     let tokens_before = estimate_session_tokens(session, tools, estimator);
-    let plan = plan_compaction(&session.messages, config, estimator)?;
+    let plan = plan_compaction(session.messages(), config, estimator)?;
 
-    let sliced = build_sliced_messages(&session.messages, plan.tail_start);
+    let sliced = build_sliced_messages(session.messages(), plan.tail_start);
     let tokens_after =
         tokens::estimate_context(&sliced, tools, estimator) as u32;
     if should_compact(tokens_after, config) {
         return None;
     }
 
-    let removed = apply_slice_keep(&mut session.messages, plan.tail_start);
+    let removed = apply_slice_keep(session.messages_mut(), plan.tail_start);
     if removed == 0 {
         return None;
     }
@@ -690,23 +658,24 @@ fn try_slice_keep_compaction(
             tokens_before,
             tokens_after,
         },
+        segment: None,
     };
     record_compaction_result(session, &result, None);
     Some(result)
 }
 
 /// Overflow recovery: apply phase-1 truncation in place before a retry (no threshold check).
-pub fn apply_overflow_truncate_pass(
-    session: &mut SessionRecord,
+pub fn apply_overflow_truncate_pass<S: ContextSession + ?Sized>(
+    session: &mut S,
     config: &CompactionConfig,
     estimator: &TokenEstimator,
 ) -> bool {
-    let Some(plan) = plan_compaction(&session.messages, config, estimator) else {
+    let Some(plan) = plan_compaction(session.messages(), config, estimator) else {
         return false;
     };
-    let prefix_start = system_prefix_start(&session.messages);
+    let prefix_start = system_prefix_start(session.messages());
     truncate_old_message_bodies(
-        &mut session.messages,
+        session.messages_mut(),
         prefix_start,
         plan.tail_start,
         TRUNCATE_TOOL_RESULT_MAX_CHARS,
@@ -729,18 +698,18 @@ const STEPS_TOOL_RESULT_MAX_CHARS: usize = 200;
 
 /// Intra Steps-first lite: aggressively truncate tool results after the last
 /// user message. Returns true if any body was truncated.
-pub fn apply_steps_truncate_pass(
-    session: &mut SessionRecord,
+pub fn apply_steps_truncate_pass<S: ContextSession + ?Sized>(
+    session: &mut S,
     config: &CompactionConfig,
 ) -> bool {
     if !config.intra_steps_first {
         return false;
     }
-    let Some(user_idx) = last_user_query_index(&session.messages) else {
+    let Some(user_idx) = last_user_query_index(session.messages()) else {
         return false;
     };
     let mut changed = 0usize;
-    for message in session.messages.iter_mut().skip(user_idx + 1) {
+    for message in session.messages_mut().iter_mut().skip(user_idx + 1) {
         if message.role != Role::Tool {
             continue;
         }
@@ -759,13 +728,7 @@ pub fn apply_steps_truncate_pass(
     }
     if changed > 0 {
         info!(changed, "intra steps-first truncated tool results");
-        let _ = session.record_compaction_event(
-            "steps_truncate",
-            changed,
-            None,
-            None,
-            None,
-        );
+        session.record_compaction_event("steps_truncate", changed, None, None, None);
     }
     changed > 0
 }
@@ -842,7 +805,7 @@ where
         ],
         tools: Vec::new(),
         stream: false,
-        gateway: None,
+        context: None,
     };
     let response = chat(request).await.context("compaction summary")?;
     let summary = response
@@ -870,6 +833,7 @@ where
             tokens_before,
             tokens_after,
         },
+        segment: None,
     }))
 }
 
@@ -903,6 +867,7 @@ fn try_truncate_only_on_messages(
             tokens_before,
             tokens_after,
         },
+        segment: None,
     })
 }
 
@@ -930,6 +895,7 @@ fn try_slice_keep_on_messages(
             tokens_before,
             tokens_after,
         },
+        segment: None,
     })
 }
 
@@ -970,7 +936,7 @@ where
         ],
         tools: Vec::<ToolDefinition>::new(),
         stream: false,
-        gateway: None,
+        context: None,
     };
 
     let response = chat(request).await.context("compaction summary")?;
@@ -980,15 +946,15 @@ where
         .unwrap_or_else(|| "(empty summary)".to_string()))
 }
 
-pub async fn compact_session(
-    session: &mut SessionRecord,
+pub async fn compact_session<S: ContextSession + ?Sized>(
+    session: &mut S,
     client: &ChatClient,
     model: &str,
     config: &CompactionConfig,
     reason: &str,
     tools: &[ToolDefinition],
     estimator: &TokenEstimator,
-    background_tasks: &[BackgroundTask],
+    hooks: Option<&dyn ContextHooks>,
     prefire: Option<&PrefireCache>,
     memory_block: Option<&str>,
 ) -> Result<Option<CompactionResult>> {
@@ -1001,13 +967,13 @@ pub async fn compact_session(
     }
 
     let tokens_before = estimate_session_tokens(session, tools, estimator);
-    let plan = match plan_compaction(&session.messages, config, estimator) {
+    let plan = match plan_compaction(session.messages(), config, estimator) {
         Some(plan) => plan,
         None => return Ok(None),
     };
 
-    let prefix_start = system_prefix_start(&session.messages);
-    let prefix = session.messages[prefix_start..plan.tail_start].to_vec();
+    let prefix_start = system_prefix_start(session.messages());
+    let prefix = session.messages()[prefix_start..plan.tail_start].to_vec();
     let summary = summarize_prefix(
         client,
         model,
@@ -1019,14 +985,16 @@ pub async fn compact_session(
     )
     .await?;
 
-    if let Ok(path) = persist_compaction_segment(&session.meta.id, &prefix, &summary) {
-        info!(path = %path.display(), "wrote compaction segment");
-    }
+    let segment = Some(plan_compaction_segment(
+        session.session_id(),
+        &prefix,
+        &summary,
+    ));
 
     info!(
         reason = reason,
         compacted_messages = plan.compacted_count,
-        tail_messages = session.messages.len() - plan.tail_start,
+        tail_messages = session.messages().len() - plan.tail_start,
         summary_chars = summary.len(),
         tokens_before,
         "context compaction applying LLM summarize (full-replace)"
@@ -1039,14 +1007,12 @@ pub async fn compact_session(
         plan.compacted_count,
         reason,
         tokens_before,
-        background_tasks,
+        hooks,
         memory_block,
     );
 
     let tokens_after = estimate_session_tokens(session, tools, estimator);
-    if let Some(entry) = session.compactions.last_mut() {
-        entry.tokens_after = Some(tokens_after);
-    }
+    session.patch_last_compaction_tokens_after(tokens_after);
 
     Ok(Some(CompactionResult {
         reason: reason.to_string(),
@@ -1055,13 +1021,14 @@ pub async fn compact_session(
             tokens_before,
             tokens_after,
         },
+        segment,
     }))
 }
 
 /// Force a compaction pass (manual `/compact`), skipping truncate/slice when
 /// `force_summarize` is true.
-pub async fn compact_session_forced(
-    session: &mut SessionRecord,
+pub async fn compact_session_forced<S: ContextSession + ?Sized>(
+    session: &mut S,
     client: &ChatClient,
     model: &str,
     config: &CompactionConfig,
@@ -1070,7 +1037,7 @@ pub async fn compact_session_forced(
     estimator: &TokenEstimator,
     force_summarize: bool,
     user_hint: Option<&str>,
-    background_tasks: &[BackgroundTask],
+    hooks: Option<&dyn ContextHooks>,
     prefire: Option<&PrefireCache>,
     memory_block: Option<&str>,
 ) -> Result<Option<CompactionResult>> {
@@ -1083,7 +1050,7 @@ pub async fn compact_session_forced(
             reason,
             tools,
             estimator,
-            background_tasks,
+            hooks,
             prefire,
             memory_block,
         )
@@ -1091,18 +1058,18 @@ pub async fn compact_session_forced(
     }
 
     let tokens_before = estimate_session_tokens(session, tools, estimator);
-    let plan = match plan_compaction(&session.messages, config, estimator) {
+    let plan = match plan_compaction(session.messages(), config, estimator) {
         Some(plan) => plan,
         None => {
-            let prefix_start = system_prefix_start(&session.messages);
+            let prefix_start = system_prefix_start(session.messages());
             let min_keep = config.min_keep_messages.min(4).max(1);
-            if session.messages.len().saturating_sub(prefix_start) <= min_keep {
+            if session.messages().len().saturating_sub(prefix_start) <= min_keep {
                 return Ok(None);
             }
             CompactionPlan {
-                tail_start: session.messages.len().saturating_sub(min_keep),
+                tail_start: session.messages().len().saturating_sub(min_keep),
                 compacted_count: session
-                    .messages
+                    .messages()
                     .len()
                     .saturating_sub(prefix_start)
                     .saturating_sub(min_keep),
@@ -1110,8 +1077,8 @@ pub async fn compact_session_forced(
         }
     };
 
-    let prefix_start = system_prefix_start(&session.messages);
-    let prefix = session.messages[prefix_start..plan.tail_start].to_vec();
+    let prefix_start = system_prefix_start(session.messages());
+    let prefix = session.messages()[prefix_start..plan.tail_start].to_vec();
     let summary = summarize_prefix(
         client,
         model,
@@ -1123,9 +1090,11 @@ pub async fn compact_session_forced(
     )
     .await?;
 
-    if let Ok(path) = persist_compaction_segment(&session.meta.id, &prefix, &summary) {
-        info!(path = %path.display(), "wrote compaction segment");
-    }
+    let segment = Some(plan_compaction_segment(
+        session.session_id(),
+        &prefix,
+        &summary,
+    ));
 
     apply_full_replace_to_session(
         session,
@@ -1134,14 +1103,12 @@ pub async fn compact_session_forced(
         plan.compacted_count,
         reason,
         tokens_before,
-        background_tasks,
+        hooks,
         memory_block,
     );
 
     let tokens_after = estimate_session_tokens(session, tools, estimator);
-    if let Some(entry) = session.compactions.last_mut() {
-        entry.tokens_after = Some(tokens_after);
-    }
+    session.patch_last_compaction_tokens_after(tokens_after);
 
     Ok(Some(CompactionResult {
         reason: reason.to_string(),
@@ -1150,39 +1117,44 @@ pub async fn compact_session_forced(
             tokens_before,
             tokens_after,
         },
+        segment,
     }))
 }
 
-fn apply_full_replace_to_session(
-    session: &mut SessionRecord,
+fn apply_full_replace_to_session<S: ContextSession + ?Sized>(
+    session: &mut S,
     summary: String,
     tail_start: usize,
     compacted_count: usize,
     reason: &str,
     tokens_before: u32,
-    background_tasks: &[BackgroundTask],
+    hooks: Option<&dyn ContextHooks>,
     memory_block: Option<&str>,
 ) {
     let system = session
-        .messages
+        .messages()
         .first()
         .filter(|m| m.role == Role::System)
         .cloned();
-    let (last_user, recent) = match last_user_query_index(&session.messages) {
+    let (last_user, recent) = match last_user_query_index(session.messages()) {
         Some(idx) if idx >= tail_start => {
-            let query = session.messages[idx].clone();
-            let recent = session.messages[idx + 1..].to_vec();
+            let query = session.messages()[idx].clone();
+            let recent = session.messages()[idx + 1..].to_vec();
             (Some(query), recent)
         }
         Some(idx) => {
-            let query = session.messages[idx].clone();
-            let recent = session.messages[tail_start..].to_vec();
+            let query = session.messages()[idx].clone();
+            let recent = session.messages()[tail_start..].to_vec();
             (Some(query), recent)
         }
-        None => (None, session.messages[tail_start..].to_vec()),
+        None => (None, session.messages()[tail_start..].to_vec()),
     };
-    let reminder = build_compaction_reminder(session, background_tasks, memory_block);
-    session.messages =
+    let extra = hooks
+        .map(|h| h.compaction_reminder_sections())
+        .unwrap_or_default();
+    let extra_refs: Vec<&str> = extra.iter().map(String::as_str).collect();
+    let reminder = build_compaction_reminder(&extra_refs, memory_block);
+    *session.messages_mut() =
         assemble_full_replace_history(system, last_user, recent, summary.clone(), reminder);
     session.record_compaction_event(
         reason,
@@ -1196,8 +1168,9 @@ fn apply_full_replace_to_session(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use zene_config::CompactionConfig;
+    use crate::config::CompactionConfig;
     use zene_llm::ToolCall;
+    use zene_session::SessionRecord;
 
     fn estimator() -> TokenEstimator {
         TokenEstimator::default()

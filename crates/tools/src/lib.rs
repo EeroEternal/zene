@@ -38,6 +38,7 @@ pub use line_endings::{
 pub use permission::{SharedToolPermission, ToolPermission};
 pub use plan_mode::{shared_plan_mode, PlanModeState, SharedPlanMode};
 pub use registry::{Tool, ToolContext, ToolRegistry, ToolResult};
+pub use zene_sandbox::Sandbox;
 pub use fetch_url::FetchUrlTool;
 pub use web_search::WebSearchTool;
 pub use ask_user::AskUserQuestionTool;
