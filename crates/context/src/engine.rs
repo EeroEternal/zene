@@ -1,7 +1,6 @@
 //! Context orchestration: estimate, compact, memory, prefire, epoch.
 
 use std::future::Future;
-use std::path::Path;
 use std::pin::Pin;
 use std::sync::Arc;
 
@@ -16,6 +15,8 @@ use crate::compaction::{
 };
 use crate::config::CompactionConfig;
 use crate::context_water::ContextWaterLevel;
+use crate::event_handler::{ContextEventHandler, EventOutcome};
+use crate::events::ContextEvent;
 use crate::hooks::ContextHooks;
 #[cfg(feature = "memory")]
 use crate::memory;
@@ -28,9 +29,9 @@ use crate::prefire_stub::{self, PrefireCache, PrefireState};
 use crate::session::ContextSession;
 use crate::tokens::{self, TokenEstimator};
 #[cfg(feature = "gateway")]
-use crate::gateway::{gateway_configured, publish_prefix};
+use crate::gateway::gateway_configured;
 #[cfg(not(feature = "gateway"))]
-use crate::gateway_stub::{gateway_configured, publish_prefix};
+use crate::gateway_stub::gateway_configured;
 use crate::two_pass;
 
 /// Builds a dedicated client for prefire pass1 (runtime-provided; avoids `ZeneConfig` in this crate).
@@ -44,38 +45,6 @@ pub struct StepContext {
     pub messages: Vec<Message>,
     pub metadata: ContextMetadata,
     pub estimate_tokens: u32,
-}
-
-/// Events emitted when context state changes (for runtime hooks / observability).
-#[derive(Debug, Clone)]
-pub enum ContextEvent {
-    EpochBumped {
-        old: u64,
-        new: u64,
-        reason: &'static str,
-    },
-    PublishPrefix {
-        epoch: u64,
-        message_count: usize,
-    },
-    /// Runtime should persist a rewind checkpoint (e.g. before/after compact).
-    Checkpoint {
-        reason: &'static str,
-    },
-    /// Runtime should persist a compaction segment for recovery.
-    CompactionSegment {
-        session_id: String,
-        body: String,
-    },
-}
-
-fn push_compaction_segment_events(events: &mut Vec<ContextEvent>, result: &CompactionResult) {
-    if let Some(segment) = &result.segment {
-        events.push(ContextEvent::CompactionSegment {
-            session_id: segment.session_id.clone(),
-            body: segment.body.clone(),
-        });
-    }
 }
 
 /// Result of [`ContextEngine::prepare_step`].
@@ -106,11 +75,11 @@ pub struct ContextDeps<'a> {
     pub session: &'a mut dyn ContextSession,
     pub compaction_config: &'a CompactionConfig,
     pub model: &'a str,
-    pub workdir: &'a Path,
     pub client: &'a ChatClient,
     pub hooks: Option<&'a dyn ContextHooks>,
     pub system_prompt: &'a str,
     pub estimator: &'a TokenEstimator,
+    pub handler: &'a mut dyn ContextEventHandler,
     #[cfg(feature = "prefire")]
     pub prefire_client_factory: Option<PrefireClientFactory>,
 }
@@ -180,10 +149,7 @@ impl ContextEngine {
     }
 
     pub fn metadata(&self, session: &dyn ContextSession) -> ContextMetadata {
-        let session_id = self
-            .external_session_id
-            .clone()
-            .unwrap_or_else(|| session.session_id().to_string());
+        let session_id = self.session_id_for(session);
         ContextMetadata::new(session_id, self.epoch)
     }
 
@@ -213,41 +179,6 @@ impl ContextEngine {
         }
     }
 
-    async fn flush_pending_publish(&mut self, session: &dyn ContextSession) {
-        if !self.pending_publish {
-            return;
-        }
-        self.pending_publish = false;
-        self.gateway_prefix_len = session.messages().len();
-        let session_id = self
-            .external_session_id
-            .clone()
-            .unwrap_or_else(|| session.session_id().to_string());
-        publish_prefix(&session_id, self.epoch, session.messages()).await;
-    }
-
-    /// Publish canonical prefix once at run start when inference gateway is configured.
-    async fn ensure_initial_publish(&mut self, session: &dyn ContextSession) {
-        if self.initial_publish_done || !gateway_configured() {
-            return;
-        }
-        self.initial_publish_done = true;
-        self.gateway_prefix_len = session.messages().len();
-        let session_id = self
-            .external_session_id
-            .clone()
-            .unwrap_or_else(|| session.session_id().to_string());
-        let pinned_boundary = stable_system_boundary(session.messages());
-        info!(
-            session_id = %session_id,
-            epoch = self.epoch,
-            messages = session.messages().len(),
-            pinned_boundary,
-            "initial gateway prefix publish"
-        );
-        publish_prefix(&session_id, self.epoch, session.messages()).await;
-    }
-
     /// Re-assemble outbound view after session mutation (e.g. overflow compact).
     pub fn assemble_step(
         &self,
@@ -271,9 +202,9 @@ impl ContextEngine {
         self.water.record_estimate(estimated_tokens);
         self.water.set_window(deps.compaction_config.context_window_tokens);
 
-        self.flush_pending_publish(deps.session).await;
-        self.ensure_initial_publish(deps.session).await;
-        self.maybe_start_prefire(&deps, tools);
+        self.flush_pending_publish(deps, &mut events).await?;
+        self.ensure_initial_publish(deps, &mut events).await?;
+        self.maybe_start_prefire(deps, tools);
 
         let mut compaction_result = None;
         let preflight = self.water.exceeds_window() && !self.water.auto_compact_suppressed;
@@ -299,11 +230,16 @@ impl ContextEngine {
 
             self.prefire.await_in_flight().await;
             let prefire_cache = self.prefire_cache_for_session(deps.session);
-            let _ = self.maybe_flush_memory(&deps).await;
-            let memory_block = memory::memory_reminder(deps.workdir);
-            events.push(ContextEvent::Checkpoint {
-                reason: "pre_auto_compact",
-            });
+            self.maybe_flush_memory(deps, &mut events).await?;
+            let memory_block = deps.handler.memory_reminder();
+            Self::emit(
+                deps,
+                &mut events,
+                ContextEvent::Checkpoint {
+                    reason: "pre_auto_compact",
+                },
+            )
+            .await?;
             let reason = if preflight {
                 "preflight_overflow"
             } else {
@@ -324,20 +260,25 @@ impl ContextEngine {
             .await
             {
                 Ok(Some(result)) => {
-                    push_compaction_segment_events(&mut events, &result);
+                    Self::emit_compaction_segments(deps, &mut events, &result).await?;
                     self.prefire.clear();
                     self.water.clear_auto_compact_suppression();
-                    self.bump_epoch_and_publish("compaction", deps.session)
-                        .await;
+                    self.bump_epoch_and_publish("compaction", deps, &mut events)
+                        .await?;
                     self.sync_water_from_estimate(
                         deps.session,
                         tools,
                         deps.estimator,
                         deps.compaction_config,
                     );
-                    events.push(ContextEvent::Checkpoint {
-                        reason: "post_auto_compact",
-                    });
+                    Self::emit(
+                        deps,
+                        &mut events,
+                        ContextEvent::Checkpoint {
+                            reason: "post_auto_compact",
+                        },
+                    )
+                    .await?;
                     compaction_result = Some(result);
                 }
                 Ok(None) => {}
@@ -396,11 +337,16 @@ impl ContextEngine {
         let mut events = Vec::new();
         self.prefire.await_in_flight().await;
         let prefire_cache = self.prefire_cache_for_session(deps.session);
-        let _ = self.maybe_flush_memory(&deps).await;
-        let memory_block = memory::memory_reminder(deps.workdir);
-        events.push(ContextEvent::Checkpoint {
-            reason: "pre_manual_compact",
-        });
+        self.maybe_flush_memory(deps, &mut events).await?;
+        let memory_block = deps.handler.memory_reminder();
+        Self::emit(
+            deps,
+            &mut events,
+            ContextEvent::Checkpoint {
+                reason: "pre_manual_compact",
+            },
+        )
+        .await?;
         let result = compact_session_forced(
             deps.session,
             deps.client,
@@ -422,19 +368,24 @@ impl ContextEngine {
                 self.water.clear_auto_compact_suppression();
                 if compaction.is_some() {
                     if let Some(ref result) = compaction {
-                        push_compaction_segment_events(&mut events, result);
+                        Self::emit_compaction_segments(deps, &mut events, result).await?;
                     }
-                    self.bump_epoch_and_publish("manual_compaction", deps.session)
-                        .await;
+                    self.bump_epoch_and_publish("manual_compaction", deps, &mut events)
+                        .await?;
                     self.sync_water_from_estimate(
                         deps.session,
                         tools,
                         deps.estimator,
                         deps.compaction_config,
                     );
-                    events.push(ContextEvent::Checkpoint {
-                        reason: "post_manual_compact",
-                    });
+                    Self::emit(
+                        deps,
+                        &mut events,
+                        ContextEvent::Checkpoint {
+                            reason: "post_manual_compact",
+                        },
+                    )
+                    .await?;
                 }
                 deps.session.ensure_system_message(deps.system_prompt);
                 Ok(ForcedCompactResult {
@@ -474,11 +425,16 @@ impl ContextEngine {
             *overflow_summarized = true;
             self.prefire.await_in_flight().await;
             let prefire_cache = self.prefire_cache_for_session(deps.session);
-            let _ = self.maybe_flush_memory(&deps).await;
-            let memory_block = memory::memory_reminder(deps.workdir);
-            events.push(ContextEvent::Checkpoint {
-                reason: "pre_overflow_compact",
-            });
+            self.maybe_flush_memory(deps, &mut events).await?;
+            let memory_block = deps.handler.memory_reminder();
+            Self::emit(
+                deps,
+                &mut events,
+                ContextEvent::Checkpoint {
+                    reason: "pre_overflow_compact",
+                },
+            )
+            .await?;
             match compact_session(
                 deps.session,
                 deps.client,
@@ -494,20 +450,25 @@ impl ContextEngine {
             .await
             {
                 Ok(Some(result)) => {
-                    push_compaction_segment_events(&mut events, &result);
+                    Self::emit_compaction_segments(deps, &mut events, &result).await?;
                     self.prefire.clear();
                     self.water.clear_auto_compact_suppression();
-                    self.bump_epoch_and_publish("overflow_compaction", deps.session)
-                        .await;
+                    self.bump_epoch_and_publish("overflow_compaction", deps, &mut events)
+                        .await?;
                     self.sync_water_from_estimate(
                         deps.session,
                         tools,
                         deps.estimator,
                         deps.compaction_config,
                     );
-                    events.push(ContextEvent::Checkpoint {
-                        reason: "post_overflow_compact",
-                    });
+                    Self::emit(
+                        deps,
+                        &mut events,
+                        ContextEvent::Checkpoint {
+                            reason: "post_overflow_compact",
+                        },
+                    )
+                    .await?;
                     deps.session.ensure_system_message(deps.system_prompt);
                     return Ok(OverflowHandleResult {
                         retry: true,
@@ -573,10 +534,111 @@ impl ContextEngine {
         session.update_context_usage(estimated, compaction_config.context_window_tokens);
     }
 
-    async fn bump_epoch_and_publish(&mut self, reason: &'static str, session: &dyn ContextSession) {
+    fn session_id_for(&self, session: &dyn ContextSession) -> String {
+        self.external_session_id
+            .clone()
+            .unwrap_or_else(|| session.session_id().to_string())
+    }
+
+    async fn emit(
+        deps: &mut ContextDeps<'_>,
+        events: &mut Vec<ContextEvent>,
+        event: ContextEvent,
+    ) -> Result<EventOutcome> {
+        if let ContextEvent::Checkpoint { reason } = &event {
+            deps.session.persist_checkpoint(reason)?;
+            events.push(event);
+            return Ok(EventOutcome::Void);
+        }
+        let outcome = deps.handler.handle(&event).await?;
+        events.push(event);
+        Ok(outcome)
+    }
+
+    async fn emit_compaction_segments(
+        deps: &mut ContextDeps<'_>,
+        events: &mut Vec<ContextEvent>,
+        result: &CompactionResult,
+    ) -> Result<()> {
+        if let Some(segment) = &result.segment {
+            Self::emit(
+                deps,
+                events,
+                ContextEvent::CompactionSegment {
+                    session_id: segment.session_id.clone(),
+                    body: segment.body.clone(),
+                },
+            )
+            .await?;
+        }
+        Ok(())
+    }
+
+    async fn flush_pending_publish(
+        &mut self,
+        deps: &mut ContextDeps<'_>,
+        events: &mut Vec<ContextEvent>,
+    ) -> Result<()> {
+        if !self.pending_publish {
+            return Ok(());
+        }
+        self.pending_publish = false;
+        self.gateway_prefix_len = deps.session.messages().len();
+        let session_id = self.session_id_for(deps.session);
+        Self::emit(
+            deps,
+            events,
+            ContextEvent::PublishPrefix {
+                session_id,
+                epoch: self.epoch,
+                messages: deps.session.messages().to_vec(),
+            },
+        )
+        .await?;
+        Ok(())
+    }
+
+    async fn ensure_initial_publish(
+        &mut self,
+        deps: &mut ContextDeps<'_>,
+        events: &mut Vec<ContextEvent>,
+    ) -> Result<()> {
+        if self.initial_publish_done || !gateway_configured() {
+            return Ok(());
+        }
+        self.initial_publish_done = true;
+        self.gateway_prefix_len = deps.session.messages().len();
+        let session_id = self.session_id_for(deps.session);
+        let pinned_boundary = stable_system_boundary(deps.session.messages());
+        info!(
+            session_id = %session_id,
+            epoch = self.epoch,
+            messages = deps.session.messages().len(),
+            pinned_boundary,
+            "initial gateway prefix publish"
+        );
+        Self::emit(
+            deps,
+            events,
+            ContextEvent::PublishPrefix {
+                session_id,
+                epoch: self.epoch,
+                messages: deps.session.messages().to_vec(),
+            },
+        )
+        .await?;
+        Ok(())
+    }
+
+    async fn bump_epoch_and_publish(
+        &mut self,
+        reason: &'static str,
+        deps: &mut ContextDeps<'_>,
+        events: &mut Vec<ContextEvent>,
+    ) -> Result<()> {
         let old = self.epoch;
         self.epoch = self.epoch.saturating_add(1);
-        self.gateway_prefix_len = session.messages().len();
+        self.gateway_prefix_len = deps.session.messages().len();
         info!(
             old,
             new = self.epoch,
@@ -584,11 +646,18 @@ impl ContextEngine {
             gateway_prefix_len = self.gateway_prefix_len,
             "context epoch bumped"
         );
-        let session_id = self
-            .external_session_id
-            .clone()
-            .unwrap_or_else(|| session.session_id().to_string());
-        publish_prefix(&session_id, self.epoch, session.messages()).await;
+        let session_id = self.session_id_for(deps.session);
+        Self::emit(
+            deps,
+            events,
+            ContextEvent::PublishPrefix {
+                session_id,
+                epoch: self.epoch,
+                messages: deps.session.messages().to_vec(),
+            },
+        )
+        .await?;
+        Ok(())
     }
 
     fn prefire_cache_for_session(&self, session: &dyn ContextSession) -> Option<PrefireCache> {
@@ -694,7 +763,11 @@ impl ContextEngine {
         }
     }
 
-    async fn maybe_flush_memory(&mut self, deps: &ContextDeps<'_>) -> Result<()> {
+    async fn maybe_flush_memory(
+        &mut self,
+        deps: &mut ContextDeps<'_>,
+        events: &mut Vec<ContextEvent>,
+    ) -> Result<()> {
         let cycle = deps.session.compaction_cycle();
         let marker = cycle.saturating_add(1);
         let threshold =
@@ -706,20 +779,18 @@ impl ContextEngine {
         ) {
             return Ok(());
         }
-        match memory::run_memory_flush(
-            deps.client,
-            deps.model,
-            deps.session.messages(),
-            deps.workdir,
+        let conversation = memory::format_flush_input(deps.session.messages());
+        if conversation.trim().is_empty() {
+            return Ok(());
+        }
+        let outcome = Self::emit(
+            deps,
+            events,
+            ContextEvent::MemoryFlush { conversation },
         )
-        .await?
-        {
-            memory::FlushResult::Accepted => {
-                self.last_memory_flush_compaction = marker;
-            }
-            other => {
-                tracing::debug!(?other, "memory flush finished without write");
-            }
+        .await?;
+        if let EventOutcome::MemoryFlush(memory::FlushResult::Accepted) = outcome {
+            self.last_memory_flush_compaction = marker;
         }
         Ok(())
     }

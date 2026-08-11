@@ -3,15 +3,15 @@ mod compaction;
 mod config;
 mod context_water;
 mod engine;
+mod event_handler;
+mod events;
 mod hooks;
 mod input_ladder;
+mod memory_store;
 mod segment_store;
 mod session;
 mod tokens;
 mod two_pass;
-
-#[cfg(feature = "memory")]
-mod memory_store;
 
 #[cfg(feature = "gateway")]
 mod gateway;
@@ -45,30 +45,36 @@ pub use assemble::{
     DeliveryMode,
 };
 pub use engine::{
-    ContextDeps, ContextEngine, ContextEvent, ForcedCompactResult, OverflowHandleResult,
+    ContextDeps, ContextEngine, ForcedCompactResult, OverflowHandleResult,
     PrefireClientFactory, PrepareStepResult, StepContext,
 };
+pub use event_handler::{
+    write_compaction_segment_via, ContextEventHandler, EventOutcome,
+    NoopContextEventHandler, RecordingContextEventHandler,
+};
+pub use events::ContextEvent;
 #[cfg(feature = "gateway")]
 pub use gateway::{close_session, external_session_id_from_env, gateway_configured, publish_prefix};
 #[cfg(not(feature = "gateway"))]
 pub use gateway_stub::{close_session, external_session_id_from_env, gateway_configured, publish_prefix};
 pub use hooks::{ContextHooks, NoContextHooks};
 pub use input_ladder::{fit_messages_to_budget, prepare_summary_input, InputLadderStage};
-#[cfg(feature = "memory")]
 pub use memory_store::{FsMemoryStore, MemoryStore};
 #[cfg(feature = "memory")]
 pub use memory::{
     append_daily_log, conversation_has_memory_context, daily_log_path, ensure_memory_in_system,
-    format_memory_context_block, is_duplicate_flush, load_recent_memory, memory_enabled,
-    memory_reminder, memory_root, process_flush_response, run_memory_flush, should_flush,
-    FlushResult, MEMORY_CONTEXT_CLOSE, MEMORY_CONTEXT_OPEN,
+    format_flush_input, format_memory_context_block, is_duplicate_flush, load_recent_memory,
+    load_recent_memory_from_store, memory_enabled, memory_reminder, memory_reminder_from_store,
+    memory_root, process_flush_response, run_memory_flush, should_flush, FlushResult,
+    MEMORY_CONTEXT_CLOSE, MEMORY_CONTEXT_OPEN,
 };
 #[cfg(not(feature = "memory"))]
 pub use memory_stub::{
     append_daily_log, conversation_has_memory_context, daily_log_path, ensure_memory_in_system,
-    format_memory_context_block, is_duplicate_flush, load_recent_memory, memory_enabled,
-    memory_reminder, memory_root, process_flush_response, run_memory_flush, should_flush,
-    FlushResult, MEMORY_CONTEXT_CLOSE, MEMORY_CONTEXT_OPEN,
+    format_flush_input, format_memory_context_block, is_duplicate_flush, load_recent_memory,
+    load_recent_memory_from_store, memory_enabled, memory_reminder, memory_reminder_from_store,
+    memory_root, process_flush_response, run_memory_flush, should_flush, FlushResult,
+    MEMORY_CONTEXT_CLOSE, MEMORY_CONTEXT_OPEN,
 };
 #[cfg(feature = "prefire")]
 pub use prefire::{prefire_lead_percent, PrefireCache, PrefireState};
