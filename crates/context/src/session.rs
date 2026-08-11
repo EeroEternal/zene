@@ -2,13 +2,14 @@
 
 use anyhow::Result;
 use zene_llm::Message;
-use zene_session::{save_checkpoint, SessionRecord};
+use zene_session::{save_checkpoint, SessionEvent, SessionRecord};
 
 /// Mutable conversation state consumed by [`ContextEngine`](crate::ContextEngine).
 pub trait ContextSession: Send + Sync {
     fn session_id(&self) -> &str;
     fn messages(&self) -> &[Message];
     fn messages_mut(&mut self) -> &mut Vec<Message>;
+    fn events(&self) -> &[SessionEvent] { &[] }
     fn compaction_cycle(&self) -> u64;
     fn update_context_usage(&mut self, tokens_used: u32, context_window: u32);
     fn ensure_system_message(&mut self, content: &str);
@@ -39,6 +40,8 @@ impl ContextSession for SessionRecord {
     fn messages_mut(&mut self) -> &mut Vec<Message> {
         &mut self.messages
     }
+
+    fn events(&self) -> &[SessionEvent] { SessionRecord::events(self) }
 
     fn compaction_cycle(&self) -> u64 {
         self.compactions.len() as u64

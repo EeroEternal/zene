@@ -47,12 +47,35 @@ pub struct StepContext {
     pub estimate_tokens: u32,
 }
 
+/// Read-only decision before context mutations are committed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ContextObservation {
+    pub estimated_tokens: u32,
+    pub should_compact: bool,
+    pub preflight_overflow: bool,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ProjectionExplain {
+    pub source_message_count: usize,
+    pub projected_message_count: usize,
+    pub estimate_tokens: u32,
+    pub context_epoch: u64,
+}
+
 /// Result of [`ContextEngine::prepare_step`].
 #[derive(Debug, Clone)]
 pub struct PrepareStepResult {
     pub step: StepContext,
     pub compaction: Option<CompactionResult>,
     pub events: Vec<ContextEvent>,
+    pub explain: ProjectionExplain,
+}
+
+#[derive(Debug, Clone)]
+struct CommitResult {
+    compaction: Option<CompactionResult>,
+    events: Vec<ContextEvent>,
 }
 
 /// Result of [`ContextEngine::compact_forced`].
@@ -186,115 +209,142 @@ impl ContextEngine {
         tools: &[ToolDefinition],
         estimator: &TokenEstimator,
     ) -> StepContext {
-        self.step_context(session, tools, estimator)
+        self.project(session, tools, estimator)
     }
 
-    /// Prepare messages before an LLM step (estimate, maybe compact, return outbound view).
+    /// Observe session pressure without mutating the session.
+    pub fn observe(
+        &mut self,
+        session: &dyn ContextSession,
+        tools: &[ToolDefinition],
+        estimator: &TokenEstimator,
+        config: &CompactionConfig,
+    ) -> ContextObservation {
+        let estimated_tokens = tokens::estimate_context(session.messages(), tools, estimator) as u32;
+        self.water.record_estimate(estimated_tokens);
+        self.water.set_window(config.context_window_tokens);
+        let preflight_overflow = self.water.exceeds_window() && !self.water.auto_compact_suppressed;
+        ContextObservation {
+            estimated_tokens,
+            should_compact: self.water.should_compact(config) || preflight_overflow,
+            preflight_overflow,
+        }
+    }
+
+    /// Prepare messages before an LLM step through observe → commit → project.
     pub async fn prepare_step(
         &mut self,
         deps: &mut ContextDeps<'_>,
         tools: &[ToolDefinition],
     ) -> Result<PrepareStepResult> {
-        let mut events = Vec::new();
-        let messages = deps.session.messages().to_vec();
-        let estimated_tokens =
-            tokens::estimate_context(&messages, tools, deps.estimator) as u32;
-        self.water.record_estimate(estimated_tokens);
-        self.water.set_window(deps.compaction_config.context_window_tokens);
+        let observation = self.observe(
+            deps.session,
+            tools,
+            deps.estimator,
+            deps.compaction_config,
+        );
+        let commit = self.commit(deps, tools, &observation).await?;
+        let step = self.project(deps.session, tools, deps.estimator);
+        let explain = ProjectionExplain {
+            source_message_count: deps.session.messages().len(),
+            projected_message_count: step.messages.len(),
+            estimate_tokens: step.estimate_tokens,
+            context_epoch: step.metadata.context_epoch,
+        };
+        Ok(PrepareStepResult {
+            step,
+            compaction: commit.compaction,
+            events: commit.events,
+            explain,
+        })
+    }
 
+    async fn commit(
+        &mut self,
+        deps: &mut ContextDeps<'_>,
+        tools: &[ToolDefinition],
+        observation: &ContextObservation,
+    ) -> Result<CommitResult> {
+        let mut events = Vec::new();
         self.flush_pending_publish(deps, &mut events).await?;
         self.ensure_initial_publish(deps, &mut events).await?;
         self.maybe_start_prefire(deps, tools);
 
-        let mut compaction_result = None;
-        let preflight = self.water.exceeds_window() && !self.water.auto_compact_suppressed;
-        if self.water.should_compact(deps.compaction_config) || preflight {
-            if apply_steps_truncate_pass(deps.session, deps.compaction_config) {
+        if !observation.should_compact {
+            return Ok(CommitResult { compaction: None, events });
+        }
+        if apply_steps_truncate_pass(deps.session, deps.compaction_config) {
+            self.sync_water_from_estimate(
+                deps.session,
+                tools,
+                deps.estimator,
+                deps.compaction_config,
+            );
+            if !self.water.should_compact(deps.compaction_config)
+                && !self.water.exceeds_window()
+            {
+                return Ok(CommitResult { compaction: None, events });
+            }
+        }
+
+        self.prefire.await_in_flight().await;
+        let prefire_cache = self.prefire_cache_for_session(deps.session);
+        self.maybe_flush_memory(deps, &mut events).await?;
+        let memory_block = deps.handler.memory_reminder();
+        Self::emit(
+            deps,
+            &mut events,
+            ContextEvent::Checkpoint { reason: "pre_auto_compact" },
+        )
+        .await?;
+        let reason = if observation.preflight_overflow {
+            "preflight_overflow"
+        } else {
+            "token_threshold"
+        };
+        let compaction = match compact_session(
+            deps.session,
+            deps.client,
+            deps.model,
+            deps.compaction_config,
+            reason,
+            tools,
+            deps.estimator,
+            deps.hooks,
+            prefire_cache.as_ref(),
+            memory_block.as_deref(),
+        )
+        .await
+        {
+            Ok(Some(result)) => {
+                Self::emit_compaction_segments(deps, &mut events, &result).await?;
+                self.prefire.clear();
+                self.water.clear_auto_compact_suppression();
+                self.bump_epoch_and_publish("compaction", deps, &mut events)
+                    .await?;
                 self.sync_water_from_estimate(
                     deps.session,
                     tools,
                     deps.estimator,
                     deps.compaction_config,
                 );
-                if !self.water.should_compact(deps.compaction_config)
-                    && !self.water.exceeds_window()
-                {
-                    info!("intra steps-first truncate relieved pressure; skipping full compact");
-                    return Ok(PrepareStepResult {
-                        step: self.step_context(deps.session, tools, deps.estimator),
-                        compaction: None,
-                        events,
-                    });
-                }
+                Self::emit(
+                    deps,
+                    &mut events,
+                    ContextEvent::Checkpoint { reason: "post_auto_compact" },
+                )
+                .await?;
+                Some(result)
             }
-
-            self.prefire.await_in_flight().await;
-            let prefire_cache = self.prefire_cache_for_session(deps.session);
-            self.maybe_flush_memory(deps, &mut events).await?;
-            let memory_block = deps.handler.memory_reminder();
-            Self::emit(
-                deps,
-                &mut events,
-                ContextEvent::Checkpoint {
-                    reason: "pre_auto_compact",
-                },
-            )
-            .await?;
-            let reason = if preflight {
-                "preflight_overflow"
-            } else {
-                "token_threshold"
-            };
-            match compact_session(
-                deps.session,
-                deps.client,
-                deps.model,
-                deps.compaction_config,
-                reason,
-                tools,
-                deps.estimator,
-                deps.hooks,
-                prefire_cache.as_ref(),
-                memory_block.as_deref(),
-            )
-            .await
-            {
-                Ok(Some(result)) => {
-                    Self::emit_compaction_segments(deps, &mut events, &result).await?;
-                    self.prefire.clear();
-                    self.water.clear_auto_compact_suppression();
-                    self.bump_epoch_and_publish("compaction", deps, &mut events)
-                        .await?;
-                    self.sync_water_from_estimate(
-                        deps.session,
-                        tools,
-                        deps.estimator,
-                        deps.compaction_config,
-                    );
-                    Self::emit(
-                        deps,
-                        &mut events,
-                        ContextEvent::Checkpoint {
-                            reason: "post_auto_compact",
-                        },
-                    )
-                    .await?;
-                    compaction_result = Some(result);
-                }
-                Ok(None) => {}
-                Err(err) => {
-                    warn!(error = %err, "auto-compact failed; suppressing until /compact");
-                    self.water.suppress_auto_compact();
-                }
+            Ok(None) => None,
+            Err(err) => {
+                warn!(error = %err, "auto-compact failed; suppressing until /compact");
+                self.water.suppress_auto_compact();
+                None
             }
-            deps.session.ensure_system_message(deps.system_prompt);
-        }
-
-        Ok(PrepareStepResult {
-            step: self.step_context(deps.session, tools, deps.estimator),
-            compaction: compaction_result,
-            events,
-        })
+        };
+        deps.session.ensure_system_message(deps.system_prompt);
+        Ok(CommitResult { compaction, events })
     }
 
     pub fn record_step_usage(
@@ -502,7 +552,7 @@ impl ContextEngine {
         is_context_overflow_error(err)
     }
 
-    fn step_context(
+    fn project(
         &self,
         session: &dyn ContextSession,
         tools: &[ToolDefinition],

@@ -2,9 +2,79 @@ use std::sync::Arc;
 
 use zene_llm::TokenUsage;
 
-use zene_turn::{StepId, TurnId};
+use zene_turn::{
+    EventSequence, RuntimeEvent, RuntimeEventHandler, RuntimeEventKind, SessionId, StepId,
+    ToolCallId, TurnId,
+};
 
 pub type EventHandler = Arc<dyn Fn(AgentEvent) + Send + Sync>;
+
+/// Adapt legacy AgentEvent consumers to the shared runtime event envelope.
+pub fn runtime_event_handler(
+    session_id: SessionId,
+    legacy: Option<EventHandler>,
+    runtime: Option<RuntimeEventHandler>,
+) -> EventHandler {
+    let sequence = Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let scope = Arc::new(std::sync::Mutex::new((None, None)));
+    Arc::new(move |event| {
+        if let Ok(mut current) = scope.lock() {
+            match &event {
+                AgentEvent::TurnStart { turn_id } => {
+                    current.0 = Some(*turn_id);
+                    current.1 = None;
+                }
+                AgentEvent::StepBegin { turn_id, step_id, .. } => {
+                    current.0 = Some(*turn_id);
+                    current.1 = Some(*step_id);
+                }
+                AgentEvent::TurnEnd { .. } => current.1 = None,
+                _ => {}
+            }
+        }
+        if let Some(handler) = &legacy {
+            handler(event.clone());
+        }
+        let Some(handler) = &runtime else { return };
+        let sequence = EventSequence::new(
+            sequence.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1,
+        );
+        let (current_turn, current_step) = scope
+            .lock()
+            .map(|current| (current.0, current.1))
+            .unwrap_or((None, None));
+        let (turn_id, step_id, kind) = match &event {
+            AgentEvent::TurnStart { turn_id } => (Some(*turn_id), None, RuntimeEventKind::TurnStarted),
+            AgentEvent::StepBegin { turn_id, step_id, step } => (
+                Some(*turn_id), Some(*step_id), RuntimeEventKind::StepStarted { step: *step },
+            ),
+            AgentEvent::TextDelta { delta } => (current_turn, current_step, RuntimeEventKind::TextDelta { delta: delta.clone() }),
+            AgentEvent::ThoughtDelta { delta } => (current_turn, current_step, RuntimeEventKind::ThoughtDelta { delta: delta.clone() }),
+            AgentEvent::ToolCall { id, name, arguments } => (
+                current_turn, current_step, RuntimeEventKind::ToolCall {
+                    id: ToolCallId::from_string(id.clone()), name: name.clone(), arguments: arguments.clone(),
+                },
+            ),
+            AgentEvent::ToolResult { id, name, content, is_error, duration_ms } => (
+                current_turn, current_step, RuntimeEventKind::ToolResult {
+                    id: ToolCallId::from_string(id.clone()), name: name.clone(), content: content.clone(),
+                    is_error: *is_error, duration_ms: *duration_ms,
+                },
+            ),
+            AgentEvent::UsageUpdate { usage, context_tokens, context_window, context_percent, context_epoch } => (
+                current_turn, current_step, RuntimeEventKind::UsageUpdate {
+                    usage: *usage, context_tokens: *context_tokens, context_window: *context_window,
+                    context_percent: *context_percent, context_epoch: *context_epoch,
+                },
+            ),
+            AgentEvent::TurnEnd { turn_id, steps } => (Some(*turn_id), None, RuntimeEventKind::TurnEnded { steps: *steps }),
+            AgentEvent::Error { message } => (current_turn, current_step, RuntimeEventKind::Error { message: message.clone() }),
+            AgentEvent::SteerInput { text } => (current_turn, current_step, RuntimeEventKind::SteerInput { text: text.clone() }),
+            AgentEvent::ModeChanged { mode_id } => (current_turn, current_step, RuntimeEventKind::StateChanged { state: mode_id.clone() }),
+        };
+        handler(RuntimeEvent { sequence, session_id: session_id.clone(), turn_id, step_id, kind });
+    })
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AgentEvent {
@@ -68,6 +138,32 @@ pub fn emit_event(handler: &Option<EventHandler>, event: AgentEvent) {
 mod tests {
     use super::*;
     use std::sync::Mutex;
+
+    #[test]
+    fn runtime_adapter_assigns_sequence_and_scope() {
+        let collected = Arc::new(Mutex::new(Vec::new()));
+        let sink = Arc::clone(&collected);
+        let runtime: RuntimeEventHandler = Arc::new(move |event| {
+            sink.lock().unwrap().push(event);
+        });
+        let handler = runtime_event_handler(
+            SessionId::from_string("session"),
+            None,
+            Some(runtime),
+        );
+        let turn_id = TurnId::new();
+        let step_id = StepId::new();
+        handler(AgentEvent::TurnStart { turn_id });
+        handler(AgentEvent::StepBegin { turn_id, step_id, step: 1 });
+        handler(AgentEvent::TextDelta { delta: "hello".into() });
+
+        let events = collected.lock().unwrap();
+        assert_eq!(events.len(), 3);
+        assert_eq!(events[0].sequence.value(), 1);
+        assert_eq!(events[2].sequence.value(), 3);
+        assert_eq!(events[2].turn_id, Some(turn_id));
+        assert_eq!(events[2].step_id, Some(step_id));
+    }
 
     #[test]
     fn event_handler_collects_turn_lifecycle() {

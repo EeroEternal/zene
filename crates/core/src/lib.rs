@@ -48,7 +48,7 @@ pub use zene_context::{
 };
 
 pub use agent_builder::AgentBuilder;
-pub use events::{emit_event, AgentEvent, EventHandler};
+pub use events::{emit_event, runtime_event_handler, AgentEvent, EventHandler};
 pub use zene_hooks::{HookBlock, HookRunner, HookSpec};
 pub use zene_permission::{
     approve_tool_call, policy_denied, PermissionGate, PermissionMode, PermissionPrompter,
@@ -57,8 +57,9 @@ pub use zene_permission::{
 pub use plan_mode::PlanApprovalPrompter;
 pub use subagent::{run_subagent, ChatBackend, CoreSubagentRunner};
 pub use zene_turn::{
-    begin_turn, end_turn, max_turns_notice, aborted_error, steer_requires_active_turn,
-    SteerBuffer, StepId, TurnId, TurnState,
+    aborted_error, begin_turn, end_turn, max_turns_notice, steer_requires_active_turn,
+    EventSequence, RuntimeEvent, RuntimeEventHandler, RuntimeEventKind, SessionId, SteerBuffer,
+    StepId, ToolCallId, TurnId, TurnState,
 };
 use plan_mode::{
     build_effective_system_prompt, handle_enter_plan_mode,
@@ -96,6 +97,8 @@ pub struct PromptOptions {
     pub stream: bool,
     pub cancel: Option<CancellationToken>,
     pub event_handler: Option<EventHandler>,
+    /// Shared runtime event sink; legacy event_handler remains supported.
+    pub runtime_event_handler: Option<RuntimeEventHandler>,
     /// When true, suppress stdout/stderr tool and stream printing (for TUI).
     pub quiet: bool,
 }
@@ -106,6 +109,7 @@ impl Default for PromptOptions {
             stream: true,
             cancel: None,
             event_handler: None,
+            runtime_event_handler: None,
             quiet: false,
         }
     }
@@ -529,7 +533,12 @@ impl Agent {
             ts: chrono::Utc::now(),
         })?;
 
-        let event_handler = merge_event_handler(&self.record_writer, options.event_handler.clone());
+        let event_handler = merge_event_handler(
+            &self.record_writer,
+            self.session.meta.id.clone(),
+            options.event_handler.clone(),
+            options.runtime_event_handler.clone(),
+        );
 
         info!(turn_id = %turn_id, "turn_start");
         emit_event(
@@ -541,6 +550,7 @@ impl Agent {
             stream: options.stream,
             cancel: options.cancel,
             event_handler,
+            runtime_event_handler: None,
             quiet: options.quiet,
         };
         let result = self.run_turn(user_input, &run_options, cancel.as_ref()).await;
@@ -1190,16 +1200,21 @@ fn bound_tool_output(workdir: &std::path::Path, tool_name: &str, content: String
 
 fn merge_event_handler(
     record_writer: &AgentRecordWriter,
+    session_id: String,
     user_handler: Option<EventHandler>,
+    runtime_handler: Option<RuntimeEventHandler>,
 ) -> Option<EventHandler> {
     let record_writer = record_writer.clone();
+    let shared = runtime_event_handler(
+        SessionId::from_string(session_id),
+        user_handler,
+        runtime_handler,
+    );
     Some(Arc::new(move |event| {
         if let Some(entry) = record_entry_from_agent_event(&event) {
             let _ = record_writer.append(&entry);
         }
-        if let Some(handler) = &user_handler {
-            handler(event);
-        }
+        shared(event);
     }))
 }
 

@@ -803,6 +803,7 @@ async fn run_prompt_job(
                     stream: true,
                     cancel: Some(cancel.clone()),
                     event_handler: Some(on_event),
+                    runtime_event_handler: None,
                     quiet: true,
                 },
             )
