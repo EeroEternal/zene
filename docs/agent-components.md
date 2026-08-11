@@ -139,6 +139,11 @@ loop {
 
 拆分方向：`AgentBuilder` + trait object hooks（**已实现 builder**）；`ToolContext` 已改为 `Arc<dyn Sandbox>`；`TodoItem` / Permission 双层仍待拆。
 
+### 2026-08-11 — Phase 2 Hooks IO外移
+
+- 新增 `zene-hooks`：`HookEngine`（纯 plan）+ `HookExecutor` / `BashHookExecutor`（子进程 IO）
+- `HookRunner` 组合 plan + execute；core 继续 re-export
+
 ### 2026-08-11 — Phase 1 Permission + tool output
 
 - 新增 `zene-permission`：`ToolPermission` trait、`PermissionGate`、modes/rules 从 core 迁出

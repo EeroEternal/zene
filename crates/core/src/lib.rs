@@ -31,7 +31,6 @@ mod agent_builder;
 mod context_config;
 mod context_hooks;
 mod events;
-mod hooks;
 mod plan_mode;
 mod skills;
 mod subagent;
@@ -49,7 +48,7 @@ mod workspace;
 
 pub use agent_builder::AgentBuilder;
 pub use events::{emit_event, AgentEvent, EventHandler};
-pub use hooks::{HookBlock, HookRunner};
+pub use zene_hooks::{HookBlock, HookRunner, HookSpec};
 pub use zene_permission::{
     approve_tool_call, policy_denied, PermissionGate, PermissionMode, PermissionPrompter,
     PermissionRule, PromptChoice, RuleAction, SharedToolPermission, ToolPermission,
