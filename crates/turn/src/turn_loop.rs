@@ -2,7 +2,7 @@ use anyhow::Result;
 use async_trait::async_trait;
 use tokio_util::sync::CancellationToken;
 use tracing::debug;
-use zene_llm::{Message, TokenUsage, ToolCall};
+use zene_llm::{Message, TokenUsage, ToolCall, ToolDefinition};
 
 use crate::state::{aborted_error, is_cancelled, StepId, TurnId, TurnState};
 
@@ -24,7 +24,47 @@ pub enum ToolBatchOutcome {
     Terminate,
 }
 
-/// Runtime hooks for the generic turn loop (implemented by `zene-core::Agent`).
+/// Stable lifecycle result returned by [`TurnEngine`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TurnStatus {
+    /// The model produced a final answer.
+    Completed,
+    /// A tool batch produced the terminal result for the turn.
+    Terminated,
+    /// The step budget was exhausted before a final answer.
+    Incomplete,
+}
+
+/// Result of one turn-engine execution.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TurnOutcome {
+    pub final_text: String,
+    pub status: TurnStatus,
+    pub steps: u32,
+}
+
+/// Input boundary for one turn-engine execution.
+pub struct TurnRequest<'a, O> {
+    pub user_input: &'a str,
+    pub options: &'a O,
+    pub cancel: Option<&'a CancellationToken>,
+}
+
+impl<'a, O> TurnRequest<'a, O> {
+    pub fn new(user_input: &'a str, options: &'a O, cancel: Option<&'a CancellationToken>) -> Self {
+        Self {
+            user_input,
+            options,
+            cancel,
+        }
+    }
+}
+
+/// Runtime hooks consumed by the turn engine.
+///
+/// This is intentionally free of `Agent`, ACP, Cloud, and provider types. The
+/// existing name is retained as a compatibility contract for callers that
+/// implement the turn hooks directly.
 #[async_trait]
 pub trait TurnRuntime {
     type Options: Send + Sync;
@@ -58,95 +98,317 @@ pub trait TurnRuntime {
     async fn finish_turn(&mut self) -> Result<()>;
 }
 
-/// Multi-step turn: LLM → tools → steer until completion or max_steps.
-pub async fn run_turn_loop<R: TurnRuntime>(
+/// Session/state capabilities consumed by [`TurnEngine`].
+#[async_trait]
+pub trait TurnSessionPort<O>: Send {
+    fn max_steps(&self) -> u32;
+    fn active_turn(&mut self) -> Option<&mut TurnState>;
+    async fn prepare_turn(&mut self, user_input: &str) -> Result<()>;
+    fn inject_steer(&mut self, options: &O) -> Result<bool>;
+    fn push_assistant(&mut self, message: Message);
+    fn on_incomplete_turn(
+        &mut self,
+        max_steps: u32,
+        final_text: &mut String,
+        options: &O,
+    ) -> Result<()>;
+    async fn finish_turn(&mut self) -> Result<()>;
+}
+
+/// Context projected for one model invocation.
+#[derive(Debug, Clone, Default)]
+pub struct PreparedContext {
+    pub messages: Vec<Message>,
+    pub tools: Vec<ToolDefinition>,
+    pub context_epoch: Option<u64>,
+}
+
+/// Context projection capabilities consumed by [`TurnEngine`].
+#[async_trait]
+pub trait ContextAssemblerPort<O>: Send {
+    async fn prepare_context(
+        &mut self,
+        options: &O,
+        cancel: Option<&CancellationToken>,
+    ) -> Result<PreparedContext>;
+}
+
+/// Model invocation capabilities consumed by [`TurnEngine`].
+#[async_trait]
+pub trait ModelExecutorPort<O>: Send {
+    async fn run_model(
+        &mut self,
+        context: PreparedContext,
+        options: &O,
+        cancel: Option<&CancellationToken>,
+    ) -> Result<StepResult>;
+    async fn on_step_usage(&mut self, usage: &TokenUsage, options: &O) -> Result<()>;
+}
+
+/// Tool-batch capabilities consumed by [`TurnEngine`].
+#[async_trait]
+pub trait ToolExecutorPort<O>: Send {
+    async fn run_tools(
+        &mut self,
+        tool_calls: &[ToolCall],
+        options: &O,
+        cancel: Option<&CancellationToken>,
+    ) -> Result<ToolBatchOutcome>;
+}
+
+/// Event publication capabilities consumed by [`TurnEngine`].
+pub trait EventSinkPort<O>: Send {
+    fn on_step_begin(&self, turn_id: TurnId, step_id: StepId, step: u32, options: &O);
+}
+
+/// Stable bundle of ports required by the turn state machine.
+pub trait TurnEnginePorts:
+    TurnSessionPort<Self::Options>
+    + ContextAssemblerPort<Self::Options>
+    + ModelExecutorPort<Self::Options>
+    + ToolExecutorPort<Self::Options>
+    + EventSinkPort<Self::Options>
+{
+    type Options: Send + Sync;
+}
+
+/// Compatibility adapter for the pre-Wave 5 [`TurnRuntime`] contract.
+pub struct LegacyTurnPorts<'a, R: TurnRuntime> {
+    runtime: &'a mut R,
+}
+
+impl<'a, R: TurnRuntime> LegacyTurnPorts<'a, R> {
+    pub fn new(runtime: &'a mut R) -> Self {
+        Self { runtime }
+    }
+}
+
+impl<R: TurnRuntime + Send> TurnEnginePorts for LegacyTurnPorts<'_, R> {
+    type Options = R::Options;
+}
+
+#[async_trait]
+impl<R: TurnRuntime + Send> TurnSessionPort<R::Options> for LegacyTurnPorts<'_, R> {
+    fn max_steps(&self) -> u32 {
+        self.runtime.max_steps()
+    }
+
+    fn active_turn(&mut self) -> Option<&mut TurnState> {
+        self.runtime.active_turn()
+    }
+
+    async fn prepare_turn(&mut self, user_input: &str) -> Result<()> {
+        self.runtime.prepare_turn(user_input).await
+    }
+
+    fn inject_steer(&mut self, options: &R::Options) -> Result<bool> {
+        self.runtime.inject_steer(options)
+    }
+
+    fn push_assistant(&mut self, message: Message) {
+        self.runtime.push_assistant(message);
+    }
+
+    fn on_incomplete_turn(
+        &mut self,
+        max_steps: u32,
+        final_text: &mut String,
+        options: &R::Options,
+    ) -> Result<()> {
+        self.runtime
+            .on_incomplete_turn(max_steps, final_text, options)
+    }
+
+    async fn finish_turn(&mut self) -> Result<()> {
+        self.runtime.finish_turn().await
+    }
+}
+
+#[async_trait]
+impl<R: TurnRuntime + Send> ContextAssemblerPort<R::Options> for LegacyTurnPorts<'_, R> {
+    async fn prepare_context(
+        &mut self,
+        _options: &R::Options,
+        _cancel: Option<&CancellationToken>,
+    ) -> Result<PreparedContext> {
+        // Legacy runtimes prepare context inside `run_step`; this no-op keeps
+        // the migration adapter behaviorally compatible.
+        Ok(PreparedContext::default())
+    }
+}
+
+#[async_trait]
+impl<R: TurnRuntime + Send> ModelExecutorPort<R::Options> for LegacyTurnPorts<'_, R> {
+    async fn run_model(
+        &mut self,
+        _context: PreparedContext,
+        options: &R::Options,
+        cancel: Option<&CancellationToken>,
+    ) -> Result<StepResult> {
+        self.runtime.run_step(options, cancel).await
+    }
+
+    async fn on_step_usage(&mut self, usage: &TokenUsage, options: &R::Options) -> Result<()> {
+        self.runtime.on_step_usage(usage, options).await
+    }
+}
+
+#[async_trait]
+impl<R: TurnRuntime + Send> ToolExecutorPort<R::Options> for LegacyTurnPorts<'_, R> {
+    async fn run_tools(
+        &mut self,
+        tool_calls: &[ToolCall],
+        options: &R::Options,
+        cancel: Option<&CancellationToken>,
+    ) -> Result<ToolBatchOutcome> {
+        self.runtime.run_tools(tool_calls, options, cancel).await
+    }
+}
+
+impl<R: TurnRuntime + Send> EventSinkPort<R::Options> for LegacyTurnPorts<'_, R> {
+    fn on_step_begin(&self, turn_id: TurnId, step_id: StepId, step: u32, options: &R::Options) {
+        self.runtime.on_step_begin(turn_id, step_id, step, options);
+    }
+}
+
+/// Generic multi-step turn state machine.
+///
+/// The engine owns orchestration only. Context, model, tool, session, and
+/// event behavior is supplied through explicit ports, keeping the state
+/// machine independent from `zene-core::Agent` and all transports.
+pub struct TurnEngine<'a, P>
+where
+    P: TurnEnginePorts,
+{
+    ports: &'a mut P,
+}
+
+impl<'a, P> TurnEngine<'a, P>
+where
+    P: TurnEnginePorts,
+{
+    pub fn new(ports: &'a mut P) -> Self {
+        Self { ports }
+    }
+
+    pub async fn run<'r>(&mut self, request: TurnRequest<'r, P::Options>) -> Result<TurnOutcome> {
+        let ports = &mut *self.ports;
+        ports.prepare_turn(request.user_input).await?;
+
+        let mut final_text = String::new();
+        let max_steps = ports.max_steps();
+        let mut status = None;
+        let mut steps_done = 0u32;
+
+        loop {
+            if max_steps > 0 && steps_done >= max_steps {
+                break;
+            }
+            steps_done = steps_done.saturating_add(1);
+
+            if is_cancelled(request.cancel) {
+                return Err(aborted_error());
+            }
+
+            let (turn_id, step_id, step_num) = {
+                let turn = ports
+                    .active_turn()
+                    .expect("active turn during TurnEngine::run");
+                let step_id = turn.next_step_id();
+                (turn.turn_id, step_id, turn.step)
+            };
+
+            debug!(
+                turn_id = %turn_id,
+                step_id = %step_id,
+                step = step_num,
+                "step_begin"
+            );
+            ports.on_step_begin(turn_id, step_id, step_num, request.options);
+
+            let context = ports
+                .prepare_context(request.options, request.cancel)
+                .await?;
+            let step_result = ports
+                .run_model(context, request.options, request.cancel)
+                .await;
+            debug!(
+                turn_id = %turn_id,
+                step_id = %step_id,
+                step = step_num,
+                ok = step_result.is_ok(),
+                "step_end"
+            );
+            let StepResult {
+                message: assistant_message,
+                usage,
+                had_tool_calls,
+            } = step_result?;
+
+            if let Some(usage) = &usage {
+                ports.on_step_usage(usage, request.options).await?;
+            }
+
+            if had_tool_calls {
+                if let Some(tool_calls) = assistant_message.tool_calls.clone() {
+                    ports.push_assistant(assistant_message);
+                    let tool_outcome = ports
+                        .run_tools(&tool_calls, request.options, request.cancel)
+                        .await?;
+                    if tool_outcome == ToolBatchOutcome::Terminate {
+                        status = Some(TurnStatus::Terminated);
+                        break;
+                    }
+                    if ports.inject_steer(request.options)? {
+                        continue;
+                    }
+                    continue;
+                }
+            }
+
+            ports.push_assistant(assistant_message.clone());
+            if ports.inject_steer(request.options)? {
+                continue;
+            }
+
+            final_text = assistant_message.content.unwrap_or_default();
+            status = Some(TurnStatus::Completed);
+            break;
+        }
+
+        let status = match status {
+            Some(status) => status,
+            None => {
+                ports.on_incomplete_turn(max_steps, &mut final_text, request.options)?;
+                TurnStatus::Incomplete
+            }
+        };
+        let steps = ports
+            .active_turn()
+            .map(|turn| turn.step)
+            .unwrap_or(steps_done);
+
+        ports.finish_turn().await?;
+        Ok(TurnOutcome {
+            final_text,
+            status,
+            steps,
+        })
+    }
+}
+
+/// Backward-compatible string-returning facade for the generic turn engine.
+pub async fn run_turn_loop<R: TurnRuntime + Send>(
     runtime: &mut R,
     user_input: &str,
     options: &R::Options,
     cancel: Option<&CancellationToken>,
 ) -> Result<String> {
-    runtime.prepare_turn(user_input).await?;
-
-    let mut final_text = String::new();
-    let max_steps = runtime.max_steps();
-    let mut completed = false;
-    let mut steps_done = 0u32;
-
-    loop {
-        if max_steps > 0 && steps_done >= max_steps {
-            break;
-        }
-        steps_done = steps_done.saturating_add(1);
-
-        if is_cancelled(cancel) {
-            return Err(aborted_error());
-        }
-
-        let (turn_id, step_id, step_num) = {
-            let turn = runtime
-                .active_turn()
-                .expect("active turn during run_turn_loop");
-            let step_id = turn.next_step_id();
-            (turn.turn_id, step_id, turn.step)
-        };
-
-        debug!(
-            turn_id = %turn_id,
-            step_id = %step_id,
-            step = step_num,
-            "step_begin"
-        );
-        runtime.on_step_begin(turn_id, step_id, step_num, options);
-
-        let step_result = runtime.run_step(options, cancel).await;
-        debug!(
-            turn_id = %turn_id,
-            step_id = %step_id,
-            step = step_num,
-            ok = step_result.is_ok(),
-            "step_end"
-        );
-        let StepResult {
-            message: assistant_message,
-            usage,
-            had_tool_calls,
-        } = step_result?;
-
-        if let Some(usage) = &usage {
-            runtime.on_step_usage(usage, options).await?;
-        }
-
-        if had_tool_calls {
-            if let Some(tool_calls) = assistant_message.tool_calls.clone() {
-                runtime.push_assistant(assistant_message);
-                let tool_outcome = runtime.run_tools(&tool_calls, options, cancel).await?;
-                if tool_outcome == ToolBatchOutcome::Terminate {
-                    completed = true;
-                    break;
-                }
-                if runtime.inject_steer(options)? {
-                    continue;
-                }
-                continue;
-            }
-        }
-
-        runtime.push_assistant(assistant_message.clone());
-        if runtime.inject_steer(options)? {
-            continue;
-        }
-
-        final_text = assistant_message.content.unwrap_or_default();
-        completed = true;
-        break;
-    }
-
-    if !completed {
-        runtime.on_incomplete_turn(max_steps, &mut final_text, options)?;
-    }
-
-    runtime.finish_turn().await?;
-    Ok(final_text)
+    let mut ports = LegacyTurnPorts::new(runtime);
+    TurnEngine::new(&mut ports)
+        .run(TurnRequest::new(user_input, options, cancel))
+        .await
+        .map(|outcome| outcome.final_text)
 }
 
 #[cfg(test)]
@@ -179,6 +441,109 @@ mod tests {
         active: Option<TurnState>,
         model_calls: Arc<AtomicUsize>,
         tool_outcome: ToolBatchOutcome,
+        max_steps: u32,
+    }
+
+    struct DirectPorts {
+        active: Option<TurnState>,
+        model_calls: Arc<AtomicUsize>,
+        max_steps: u32,
+    }
+
+    impl TurnEnginePorts for DirectPorts {
+        type Options = ();
+    }
+
+    #[async_trait]
+    impl ContextAssemblerPort<()> for DirectPorts {
+        async fn prepare_context(
+            &mut self,
+            _options: &(),
+            _cancel: Option<&CancellationToken>,
+        ) -> Result<PreparedContext> {
+            Ok(PreparedContext::default())
+        }
+    }
+
+    #[async_trait]
+    impl TurnSessionPort<()> for DirectPorts {
+        fn max_steps(&self) -> u32 {
+            self.max_steps
+        }
+
+        fn active_turn(&mut self) -> Option<&mut TurnState> {
+            self.active.as_mut()
+        }
+
+        async fn prepare_turn(&mut self, _user_input: &str) -> Result<()> {
+            self.active = Some(TurnState::begin());
+            Ok(())
+        }
+
+        fn inject_steer(&mut self, _options: &()) -> Result<bool> {
+            Ok(false)
+        }
+
+        fn push_assistant(&mut self, _message: Message) {}
+
+        fn on_incomplete_turn(
+            &mut self,
+            _max_steps: u32,
+            _final_text: &mut String,
+            _options: &(),
+        ) -> Result<()> {
+            Ok(())
+        }
+
+        async fn finish_turn(&mut self) -> Result<()> {
+            self.active = None;
+            Ok(())
+        }
+    }
+
+    #[async_trait]
+    impl ModelExecutorPort<()> for DirectPorts {
+        async fn run_model(
+            &mut self,
+            _context: PreparedContext,
+            _options: &(),
+            _cancel: Option<&CancellationToken>,
+        ) -> Result<StepResult> {
+            let call = self.model_calls.fetch_add(1, Ordering::SeqCst);
+            Ok(if call == 0 {
+                StepResult {
+                    message: Message::assistant("direct"),
+                    usage: None,
+                    had_tool_calls: false,
+                }
+            } else {
+                StepResult {
+                    message: Message::assistant("unexpected"),
+                    usage: None,
+                    had_tool_calls: false,
+                }
+            })
+        }
+
+        async fn on_step_usage(&mut self, _usage: &TokenUsage, _options: &()) -> Result<()> {
+            Ok(())
+        }
+    }
+
+    #[async_trait]
+    impl ToolExecutorPort<()> for DirectPorts {
+        async fn run_tools(
+            &mut self,
+            _tool_calls: &[ToolCall],
+            _options: &(),
+            _cancel: Option<&CancellationToken>,
+        ) -> Result<ToolBatchOutcome> {
+            Ok(ToolBatchOutcome::Continue)
+        }
+    }
+
+    impl EventSinkPort<()> for DirectPorts {
+        fn on_step_begin(&self, _turn_id: TurnId, _step_id: StepId, _step: u32, _options: &()) {}
     }
 
     #[async_trait]
@@ -186,7 +551,7 @@ mod tests {
         type Options = ();
 
         fn max_steps(&self) -> u32 {
-            4
+            self.max_steps
         }
 
         fn active_turn(&mut self) -> Option<&mut TurnState> {
@@ -274,16 +639,35 @@ mod tests {
     }
 
     #[test]
+    fn engine_accepts_direct_ports_without_legacy_runtime() {
+        let model_calls = Arc::new(AtomicUsize::new(0));
+        let mut ports = DirectPorts {
+            active: None,
+            model_calls: Arc::clone(&model_calls),
+            max_steps: 4,
+        };
+
+        let outcome =
+            block_on(TurnEngine::new(&mut ports).run(TurnRequest::new("prompt", &(), None)))
+                .expect("turn completes");
+        assert_eq!(outcome.final_text, "direct");
+        assert_eq!(outcome.status, TurnStatus::Completed);
+        assert_eq!(outcome.steps, 1);
+        assert_eq!(model_calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
     fn terminate_tool_batch_skips_follow_up_model_call() {
         let model_calls = Arc::new(AtomicUsize::new(0));
         let mut runtime = FakeRuntime {
             active: None,
             model_calls: Arc::clone(&model_calls),
             tool_outcome: ToolBatchOutcome::Terminate,
+            max_steps: 4,
         };
 
-        let result = block_on(run_turn_loop(&mut runtime, "prompt", &(), None))
-            .expect("turn completes");
+        let result =
+            block_on(run_turn_loop(&mut runtime, "prompt", &(), None)).expect("turn completes");
         assert_eq!(result, "");
         assert_eq!(model_calls.load(Ordering::SeqCst), 1);
     }
@@ -295,11 +679,64 @@ mod tests {
             active: None,
             model_calls: Arc::clone(&model_calls),
             tool_outcome: ToolBatchOutcome::Continue,
+            max_steps: 4,
         };
 
-        let result = block_on(run_turn_loop(&mut runtime, "prompt", &(), None))
-            .expect("turn completes");
-        assert_eq!(result, "final");
+        let outcome = block_on(
+            TurnEngine::new(&mut LegacyTurnPorts::new(&mut runtime)).run(TurnRequest::new(
+                "prompt",
+                &(),
+                None,
+            )),
+        )
+        .expect("turn completes");
+        assert_eq!(outcome.final_text, "final");
+        assert_eq!(outcome.status, TurnStatus::Completed);
+        assert_eq!(outcome.steps, 2);
         assert_eq!(model_calls.load(Ordering::SeqCst), 2);
+    }
+
+    #[test]
+    fn engine_reports_terminated_status() {
+        let model_calls = Arc::new(AtomicUsize::new(0));
+        let mut runtime = FakeRuntime {
+            active: None,
+            model_calls,
+            tool_outcome: ToolBatchOutcome::Terminate,
+            max_steps: 4,
+        };
+
+        let outcome = block_on(
+            TurnEngine::new(&mut LegacyTurnPorts::new(&mut runtime)).run(TurnRequest::new(
+                "prompt",
+                &(),
+                None,
+            )),
+        )
+        .expect("turn completes");
+        assert_eq!(outcome.status, TurnStatus::Terminated);
+        assert_eq!(outcome.steps, 1);
+    }
+
+    #[test]
+    fn engine_reports_incomplete_status_when_step_budget_is_exhausted() {
+        let model_calls = Arc::new(AtomicUsize::new(0));
+        let mut runtime = FakeRuntime {
+            active: None,
+            model_calls,
+            tool_outcome: ToolBatchOutcome::Continue,
+            max_steps: 1,
+        };
+
+        let outcome = block_on(
+            TurnEngine::new(&mut LegacyTurnPorts::new(&mut runtime)).run(TurnRequest::new(
+                "prompt",
+                &(),
+                None,
+            )),
+        )
+        .expect("turn completes");
+        assert_eq!(outcome.status, TurnStatus::Incomplete);
+        assert_eq!(outcome.steps, 1);
     }
 }

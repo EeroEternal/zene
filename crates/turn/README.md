@@ -1,8 +1,11 @@
 # zene-turn
 
-Turn state (`TurnId`, `SteerBuffer`) and the multi-step turn loop via [`TurnRuntime`](src/turn_loop.rs).
+Turn state (`TurnId`, `SteerBuffer`) and the multi-step [`TurnEngine`](src/turn_loop.rs).
 
-Runtime implements `TurnRuntime`; `run_turn_loop` orchestrates prepare → step → tools → steer without coupling to `zene-core`.
+`TurnEngine` depends on explicit session, model, tool, and event ports. This keeps
+turn orchestration independent from `zene-core`, ACP, Cloud, and provider
+implementations. `LegacyTurnPorts` adapts the pre-Wave 5 [`TurnRuntime`] API,
+and `run_turn_loop` remains as a backward-compatible string-returning facade.
 
 ## License
 
