@@ -139,6 +139,12 @@ loop {
 
 拆分方向：`AgentBuilder` + trait object hooks（**已实现 builder**）；`ToolContext` 已改为 `Arc<dyn Sandbox>`；`TodoItem` / Permission 双层仍待拆。
 
+### 2026-08-11 — Phase 1 Permission + tool output
+
+- 新增 `zene-permission`：`ToolPermission` trait、`PermissionGate`、modes/rules 从 core 迁出
+- 新增 `zene-tool-runtime`：`plan_tool_output_bound`（纯逻辑）+ `ToolOutputStore` / `FsToolOutputStore`（IO adapter）
+- core `run_tools` 通过 `bound_tool_output` 组合 plan + spill；路线图见 [decoupling-plan.md](./decoupling-plan.md)
+
 ---
 
 ## 讨论记录
