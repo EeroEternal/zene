@@ -4,6 +4,7 @@ use anyhow::Result;
 use async_trait::async_trait;
 use futures::Stream;
 
+use crate::context::ContextMetadata;
 use crate::message::Message;
 use crate::tool::ToolDefinition;
 use crate::usage::TokenUsage;
@@ -14,6 +15,8 @@ pub struct ChatRequest {
     pub messages: Vec<Message>,
     pub tools: Vec<ToolDefinition>,
     pub stream: bool,
+    /// Optional session linkage for inference gateways (see docs/context-engine.md).
+    pub context: Option<ContextMetadata>,
 }
 
 #[derive(Debug, Clone)]

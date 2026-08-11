@@ -2,7 +2,7 @@
 
 本文档用于持续讨论：Zene（Agent 侧）调用后台模型 / 推理服务时，如何用 session 关联一轮对话，并与推理层联动做上下文管理，从而提升 Agent 效率。
 
-相关已有实现见 [ENGINE.md](./ENGINE.md)（compaction、memory、context water level 等）。
+相关已有实现见 [ENGINE.md](./ENGINE.md)（compaction、memory、context water level 等）。上下文解耦设计见 [context-engine.md](./context-engine.md)。
 
 ---
 

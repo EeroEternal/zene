@@ -2,8 +2,24 @@ use tiktoken_rs::tokenizer::{Tokenizer, get_tokenizer};
 use tiktoken_rs::{
     CoreBPE, cl100k_base_singleton, o200k_base_singleton, o200k_harmony_singleton,
 };
-use zene_config::ProviderKind;
 use zene_llm::{Message, MessageKind, Role, ToolDefinition};
+
+/// Provider family for token estimation heuristics.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum EstimateProvider {
+    #[default]
+    OpenAi,
+    Anthropic,
+}
+
+impl EstimateProvider {
+    pub fn from_name(name: &str) -> Self {
+        match name.trim().to_lowercase().as_str() {
+            "anthropic" => Self::Anthropic,
+            _ => Self::OpenAi,
+        }
+    }
+}
 
 /// Per tool-call JSON/API framing beyond argument string length.
 const TOOL_CALL_FRAME_TOKENS: u32 = 12;
@@ -88,10 +104,10 @@ impl TokenEstimator {
     ///
     /// OpenAI path: use `tiktoken-rs` when the model maps to a known encoding.
     /// Unknown openai-compatible model names and Anthropic keep the script-aware heuristic.
-    pub fn for_provider(provider: ProviderKind, model: &str, chars_per_token: f32) -> Self {
+    pub fn for_provider(provider: EstimateProvider, model: &str, chars_per_token: f32) -> Self {
         let chars_per_token = chars_per_token.max(1.0);
         match provider {
-            ProviderKind::OpenAi => {
+            EstimateProvider::OpenAi => {
                 if let Some(encoding) = TiktokenEncoding::from_model(model) {
                     Self {
                         chars_per_token,
@@ -101,7 +117,7 @@ impl TokenEstimator {
                     Self::new(chars_per_token)
                 }
             }
-            ProviderKind::Anthropic => Self::new(chars_per_token),
+            EstimateProvider::Anthropic => Self::new(chars_per_token),
         }
     }
 
@@ -398,7 +414,7 @@ mod tests {
 
     #[test]
     fn openai_gpt4o_uses_o200k_tiktoken() {
-        let est = TokenEstimator::for_provider(ProviderKind::OpenAi, "gpt-4o", 4.0);
+        let est = TokenEstimator::for_provider(EstimateProvider::OpenAi, "gpt-4o", 4.0);
         assert_eq!(est.mode, EstimateMode::Tiktoken(TiktokenEncoding::O200kBase));
         // cl100k/o200k: "hello world" → 2 tokens
         assert_eq!(est.estimate_chars_as_tokens("hello world"), 2);
@@ -406,26 +422,26 @@ mod tests {
 
     #[test]
     fn openai_gpt4_uses_cl100k_tiktoken() {
-        let est = TokenEstimator::for_provider(ProviderKind::OpenAi, "gpt-4", 4.0);
+        let est = TokenEstimator::for_provider(EstimateProvider::OpenAi, "gpt-4", 4.0);
         assert_eq!(est.mode, EstimateMode::Tiktoken(TiktokenEncoding::Cl100kBase));
         assert_eq!(est.estimate_chars_as_tokens("hello world"), 2);
     }
 
     #[test]
     fn openai_compatible_unknown_model_falls_back_to_heuristic() {
-        let est = TokenEstimator::for_provider(ProviderKind::OpenAi, "deepseek-chat", 4.0);
+        let est = TokenEstimator::for_provider(EstimateProvider::OpenAi, "deepseek-chat", 4.0);
         assert_eq!(est.mode, EstimateMode::ScriptAware);
     }
 
     #[test]
     fn anthropic_keeps_heuristic() {
-        let est = TokenEstimator::for_provider(ProviderKind::Anthropic, "claude-sonnet-4-5", 4.0);
+        let est = TokenEstimator::for_provider(EstimateProvider::Anthropic, "claude-sonnet-4-5", 4.0);
         assert_eq!(est.mode, EstimateMode::ScriptAware);
     }
 
     #[test]
     fn tiktoken_counts_cjk_higher_than_latin_run() {
-        let est = TokenEstimator::for_provider(ProviderKind::OpenAi, "gpt-4o", 4.0);
+        let est = TokenEstimator::for_provider(EstimateProvider::OpenAi, "gpt-4o", 4.0);
         let latin = est.estimate_chars_as_tokens("abcd");
         let cjk = est.estimate_chars_as_tokens("中文测试");
         assert!(cjk > latin);
@@ -433,7 +449,7 @@ mod tests {
 
     #[test]
     fn tiktoken_request_includes_reply_priming() {
-        let est = TokenEstimator::for_provider(ProviderKind::OpenAi, "gpt-4o", 4.0);
+        let est = TokenEstimator::for_provider(EstimateProvider::OpenAi, "gpt-4o", 4.0);
         let messages = vec![Message::user("hi")];
         let msg_only = est.estimate_messages_tokens(&messages);
         let request = est.estimate_request_tokens(&messages, &[]);

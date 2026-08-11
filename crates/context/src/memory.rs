@@ -266,6 +266,7 @@ pub async fn run_memory_flush(
         ],
         tools: Vec::<ToolDefinition>::new(),
         stream: false,
+        context: None,
     };
 
     let response = client.chat(request).await.context("memory flush chat")?;

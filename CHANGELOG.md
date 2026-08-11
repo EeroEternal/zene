@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+## v0.1.11 (2026-08-11)
+
+### Added
+- `zene-context` crate: ContextEngine (estimate, compact, assemble, epoch) decoupled from runtime.
+- `zene-inference-gateway`: UniGateway 2.14 session prefix store, delta assembly, optional Redis (`unigateway-session-redis`).
+- Cloud deploy: inference gateway systemd unit, VM Redis in startup, worker `ZENE_INFERENCE_GATEWAY_URL` injection.
+- Docs: `docs/context-engine.md`, agent-components cross-links; E2E test for publish + delta assembly.
+
+### Changed
+- OpenAI-compatible LLM path uses `unigateway-sdk` 2.14 with `_session_context` / fingerprint metadata.
+- Context modules moved from `zene-core` to `zene-context`; Agent wires ContextEngine on prepare/usage.
+
 ## v0.1.10 (2026-07-26)
 
 ### Added

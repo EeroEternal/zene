@@ -3,6 +3,7 @@ name = "zene-core"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+publish = false
 
 [dependencies]
 anyhow.workspace = true
@@ -15,10 +16,10 @@ serde_json.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
 tokio-util.workspace = true
-tiktoken-rs.workspace = true
 tracing.workspace = true
 uuid.workspace = true
 zene-config = { workspace = true }
+zene-context = { workspace = true }
 zene-llm = { workspace = true }
 zene-sandbox = { workspace = true }
 zene-session = { workspace = true }

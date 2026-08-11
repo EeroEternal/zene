@@ -3,6 +3,11 @@ name = "zene-config"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+description = "Configuration loading for Zene agents (~/.zene/config.toml, providers, compaction settings)"
+readme = "README.md"
+repository = "https://github.com/ParaTensor/zene"
+keywords = ["agent", "config", "llm"]
+categories = ["config", "development-tools"]
 
 [dependencies]
 anyhow.workspace = true

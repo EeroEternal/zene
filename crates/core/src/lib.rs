@@ -8,61 +8,56 @@ use parking_lot::Mutex;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
 use zene_config::ZeneConfig;
+use zene_context::{ContextDeps, ContextEngine, ContextEvent, PrefireClientFactory, StepContext};
 use zene_llm::{ChatClient, ChatRequest, Message, StreamEvent, TokenUsage, ToolCall};
-use zene_sandbox::LocalSandbox;
+use zene_sandbox::{LocalSandbox, Sandbox};
 use zene_session::{
     fork_session, latest_checkpoint_id, load_checkpoint, restore_checkpoint, save_checkpoint,
     AgentRecordWriter, RecordEntry, SessionRecord,
 };
 use zene_tools::{
-    default_ask_user_prompter, shared_background_tasks, shared_todo_store_from,
-    SharedAskUserPrompter, SharedBackgroundTasks, SharedTodoStore, shared_plan_mode, PlanModeState,
+    shared_todo_store_from,
+    SharedAskUserPrompter, SharedBackgroundTasks, SharedTodoStore, PlanModeState,
     SharedPlanMode, SharedToolPermission, SubagentEnv, ToolContext, ToolRegistry,
     DEFAULT_SUBAGENT_MAX_DEPTH,
 };
 pub use zene_tools::AskUserOption;
 use zene_mcp::McpManager;
 
-mod compaction;
-mod context_water;
+mod agent_builder;
+mod context_config;
+mod context_hooks;
 mod events;
 mod hooks;
-mod input_ladder;
-mod memory;
 mod permission;
 mod plan_mode;
-mod prefire;
 mod skills;
 mod subagent;
-mod tokens;
 mod tool_bound;
 mod tool_dedup;
 pub mod tool_scheduler;
 mod turn;
-mod two_pass;
 mod worktree;
 
-use compaction::{
-    apply_overflow_truncate_pass, apply_steps_truncate_pass, compact_session,
-    compact_session_forced, is_context_overflow_error,
+pub use zene_context::{
+    compact_session, compact_session_forced, ensure_memory_in_system, memory_enabled,
+    memory_root, CompactionResult, ContextWaterLevel, EstimateMode, EstimateProvider,
+    InputLadderStage, TiktokenEncoding, TokenEstimator, estimate_context,
 };
-pub use compaction::CompactionResult;
 mod workspace;
 
-pub use context_water::ContextWaterLevel;
+pub use agent_builder::AgentBuilder;
 pub use events::{emit_event, AgentEvent, EventHandler};
 pub use hooks::{HookBlock, HookRunner};
-pub use input_ladder::InputLadderStage;
 pub use permission::{
     approve_tool_call, policy_denied, PermissionGate, PermissionMode, PermissionPrompter,
     PermissionRule, PromptChoice, RuleAction,
 };
 pub use plan_mode::PlanApprovalPrompter;
 pub use subagent::{run_subagent, ChatBackend, CoreSubagentRunner};
-pub use tokens::{estimate_context, EstimateMode, TiktokenEncoding, TokenEstimator};
 pub use turn::{SteerBuffer, StepId, TurnId, TurnState};
 use plan_mode::{
-    build_effective_system_prompt, default_plan_approval_prompter, handle_enter_plan_mode,
+    build_effective_system_prompt, handle_enter_plan_mode,
     handle_exit_plan_mode, tool_visible_in_definitions,
 };
 pub use tool_dedup::{append_reminder, ToolDedup};
@@ -73,10 +68,10 @@ pub struct Agent {
     config: ZeneConfig,
     client: ChatClient,
     tools: Arc<ToolRegistry>,
-    sandbox: Arc<LocalSandbox>,
+    sandbox: Arc<dyn Sandbox>,
     session: SessionRecord,
     turn_usage: TokenUsage,
-    context_water: ContextWaterLevel,
+    context: ContextEngine,
     active_turn: Option<TurnState>,
     steer_buffer: Arc<Mutex<SteerBuffer>>,
     system_prompt: String,
@@ -90,9 +85,6 @@ pub struct Agent {
     record_writer: AgentRecordWriter,
     mcp: Option<McpManager>,
     background: SharedBackgroundTasks,
-    prefire: prefire::PrefireState,
-    /// Compaction cycle index of the last successful memory flush.
-    last_memory_flush_compaction: u64,
 }
 
 pub struct PromptOptions {
@@ -118,68 +110,17 @@ impl Agent {
     pub async fn new(
         config: ZeneConfig,
         sandbox: LocalSandbox,
-        mut session: SessionRecord,
+        session: SessionRecord,
         permission_mode: PermissionMode,
     ) -> Result<Self> {
-        let workdir = sandbox.workdir().to_path_buf();
-        let sandbox = Arc::new(sandbox);
-        let system_prompt =
-            workspace::build_system_prompt(&config.system_prompt, &workdir, config.include_workspace_context);
-        session.ensure_system_message(&system_prompt);
-        memory::ensure_memory_in_system(&mut session.messages, &workdir);
-        let client = ChatClient::from_config(&config).await?;
-        let record_writer = AgentRecordWriter::for_session(&session.meta.id)?;
+        AgentBuilder::new(config, sandbox, session, permission_mode)
+            .build()
+            .await
+    }
 
-        let mut tools = zene_tools::agent_tools(config.agent_profile, config.web_search.clone());
-        let (mcp, mcp_tools) =
-            McpManager::connect_with_sandbox(&workdir, sandbox.as_ref()).await?;
-        if !mcp_tools.definitions().is_empty() {
-            info!(
-                tool_count = mcp_tools.definitions().len(),
-                "registered MCP tools"
-            );
-            tools.extend(mcp_tools);
-        }
-        let mcp = if mcp.is_empty() { None } else { Some(mcp) };
-        let hook_entries = config.load_hooks().unwrap_or_else(|err| {
-            warn!(error = %err, "failed to load hooks; continuing without hooks");
-            Vec::new()
-        });
-        let hooks = HookRunner::new(hook_entries, workdir.clone());
-        let todos = shared_todo_store_from(session.todos.clone());
-        let context_water =
-            ContextWaterLevel::new(config.compaction.context_window_tokens);
-        let auto_allow_bash = config.sandbox.auto_allow_bash && sandbox.is_enforced();
-        let permission = shared_permission_with_rules(
-            permission_mode,
-            permission_rules_from_config(&config),
-            auto_allow_bash,
-        );
-
-        Ok(Self {
-            config,
-            client,
-            tools: Arc::new(tools),
-            sandbox,
-            session,
-            turn_usage: TokenUsage::default(),
-            context_water,
-            active_turn: None,
-            steer_buffer: Arc::new(Mutex::new(SteerBuffer::default())),
-            system_prompt,
-            permission,
-            plan_mode: shared_plan_mode(),
-            plan_approval: Arc::new(default_plan_approval_prompter),
-            todos,
-            ask_user: default_ask_user_prompter(),
-            tool_dedup: ToolDedup::new(),
-            hooks,
-            record_writer,
-            mcp,
-            background: shared_background_tasks(),
-            prefire: prefire::PrefireState::new(),
-            last_memory_flush_compaction: 0,
-        })
+    /// Override inference session id (e.g. Cloud run_id for gateway linkage).
+    pub fn set_external_session_id(&mut self, id: Option<String>) {
+        self.context.set_external_session_id(id);
     }
 
     pub fn is_plan_mode_active(&self) -> bool {
@@ -275,6 +216,9 @@ impl Agent {
         let active = self.is_plan_mode_active();
         let effective = build_effective_system_prompt(&self.system_prompt, active);
         self.session.set_system_message(&effective);
+        let _event = self
+            .context
+            .on_system_prefix_changed("plan_mode");
     }
 
     fn tool_definitions_for_llm(&self) -> Vec<zene_llm::ToolDefinition> {
@@ -287,6 +231,8 @@ impl Agent {
         if let Some(mcp) = self.mcp.as_mut() {
             mcp.disconnect().await?;
         }
+        let session_id = self.context.metadata(&self.session).session_id;
+        zene_context::close_session(&session_id).await;
         self.sandbox.shutdown().await?;
         Ok(())
     }
@@ -322,7 +268,7 @@ impl Agent {
         }
 
         self.config.refresh_model_context_window();
-        self.context_water
+        self.context
             .set_window(self.config.compaction.context_window_tokens);
 
         // Recreate the client
@@ -334,7 +280,7 @@ impl Agent {
     }
 
     pub fn context_water(&self) -> &ContextWaterLevel {
-        &self.context_water
+        &self.context.water()
     }
 
     /// Manually compact the conversation (`/compact [hint]`).
@@ -343,52 +289,52 @@ impl Agent {
         let tools = self.tool_definitions_for_llm();
         let estimator = self.token_estimator();
         let background_tasks = self.background.lock().list();
-        self.prefire.await_in_flight().await;
-        let prefire_cache = self.prefire_cache_for_current_prefix();
-        let _ = self.maybe_flush_memory().await;
-        let memory_block = memory::memory_reminder(self.sandbox.workdir());
-        let _ = save_checkpoint(&self.session, "pre_manual_compact");
-        let result = compact_session_forced(
-            &mut self.session,
-            &self.client,
-            &self.config.model,
-            &self.config.compaction,
-            "manual",
-            &tools,
-            &estimator,
-            true,
-            user_hint,
-            &background_tasks,
-            prefire_cache.as_ref(),
-            memory_block.as_deref(),
-        )
-        .await;
-        self.prefire.clear();
-        match result {
-            Ok(result) => {
-                self.context_water.clear_auto_compact_suppression();
-                if let Some(result) = &result {
-                    self.record_compaction(result)?;
-                    let _ = save_checkpoint(&self.session, "post_manual_compact");
-                    self.sync_context_water_from_estimate();
+        let hooks = context_hooks::ZeneContextHooks::new(&self.session, &background_tasks);
+        let compaction_config = context_config::context_compaction_config(&self.config.compaction);
+        let prefire_factory = self.prefire_client_factory();
+        let mut deps = ContextDeps {
+            session: &mut self.session,
+            compaction_config: &compaction_config,
+            model: &self.config.model,
+            workdir: self.sandbox.workdir(),
+            client: &self.client,
+            hooks: Some(&hooks),
+            system_prompt: &self.system_prompt,
+            estimator: &estimator,
+            prefire_client_factory: prefire_factory,
+        };
+        let result = self
+            .context
+            .compact_forced(&mut deps, &tools, user_hint)
+            .await;
+        match &result {
+            Ok(forced) => {
+                self.dispatch_context_events(&forced.events)?;
+                if let Some(compact_result) = &forced.compaction {
+                    self.record_compaction(compact_result)?;
                 }
-                self.session.ensure_system_message(&self.system_prompt);
                 self.session.save()?;
-                Ok(result)
+                Ok(forced.compaction.clone())
             }
-            Err(err) => {
-                self.context_water.suppress_auto_compact();
-                Err(err)
+            Err(_) => result.map(|forced| forced.compaction),
+        }
+    }
+
+    fn dispatch_context_events(&self, events: &[ContextEvent]) -> Result<()> {
+        for event in events {
+            if let ContextEvent::Checkpoint { reason } = event {
+                let _ = save_checkpoint(&self.session, reason)?;
             }
         }
+        Ok(())
     }
 
     /// Human-readable context report for `/context` (grok-aligned).
     pub fn context_report(&self) -> String {
-        let water = &self.context_water;
-        let cfg = &self.config.compaction;
-        let threshold_pct = ContextWaterLevel::auto_compact_threshold_percent(cfg);
-        let threshold_tokens = ContextWaterLevel::threshold_tokens(cfg);
+        let water = self.context.water();
+        let cfg = context_config::context_compaction_config(&self.config.compaction);
+        let threshold_pct = ContextWaterLevel::auto_compact_threshold_percent(&cfg);
+        let threshold_tokens = ContextWaterLevel::threshold_tokens(&cfg);
         let used = water.effective_tokens();
         let window = water.context_window_tokens.max(1);
         let mut lines = vec![
@@ -415,20 +361,27 @@ impl Agent {
             ),
             format!("messages: {}", self.session.messages.len()),
             format!("model: {}", self.config.model),
+            format!("context_epoch: {}", self.context.epoch()),
         ];
+        let delivery = zene_context::delivery_mode_from_env();
+        lines.push(format!(
+            "delivery: {} (gateway_prefix_len={})",
+            delivery.as_str(),
+            self.context.gateway_prefix_len()
+        ));
         if water.auto_compact_suppressed {
             lines.push(
                 "auto-compact: suppressed (last summarize failed; use /compact to retry)"
                     .to_string(),
             );
         }
-        if self.prefire.has_cache() {
+        if self.context.prefire_has_cache() {
             lines.push("prefire: NOTE₁ cached (two-pass ready)".to_string());
-        } else if self.prefire.is_in_flight() {
+        } else if self.context.prefire_in_flight() {
             lines.push("prefire: pass1 in flight".to_string());
         }
-        if memory::memory_enabled() {
-            let root = memory::memory_root(self.sandbox.workdir());
+        if memory_enabled() {
+            let root = memory_root(self.sandbox.workdir());
             lines.push(format!("memory: {} (ZENE_MEMORY)", root.display()));
         } else {
             lines.push("memory: disabled".to_string());
@@ -447,10 +400,9 @@ impl Agent {
         restore_checkpoint(&mut self.session, &checkpoint);
         self.session.ensure_system_message(&self.system_prompt);
         if let Some(tokens) = self.session.context_tokens_used {
-            self.context_water.last_prompt_tokens = Some(tokens);
-            self.context_water.last_estimate_tokens = Some(tokens);
+            self.context.restore_water_from_session(tokens);
         }
-        self.prefire.clear();
+        self.context.clear_prefire();
         self.session.save()?;
         Ok(id)
     }
@@ -465,7 +417,7 @@ impl Agent {
         self.session = forked;
         self.record_writer = AgentRecordWriter::for_session(&id)?;
         self.todos = shared_todo_store_from(self.session.todos.clone());
-        self.prefire.clear();
+        self.context.clear_prefire();
         Ok(id)
     }
 
@@ -517,14 +469,18 @@ impl Agent {
 
     fn token_estimator(&self) -> TokenEstimator {
         TokenEstimator::for_provider(
-            self.config.provider_kind(),
+            EstimateProvider::from_name(&self.config.provider),
             &self.config.model,
             self.config.chars_per_token_for_model(),
         )
     }
 
-    fn estimated_context_tokens(&self, messages: &[Message], tools: &[zene_llm::ToolDefinition]) -> usize {
-        estimate_context(messages, tools, &self.token_estimator())
+    fn prefire_client_factory(&self) -> Option<PrefireClientFactory> {
+        let config = self.config.clone();
+        Some(std::sync::Arc::new(move || {
+            let config = config.clone();
+            Box::pin(async move { ChatClient::from_config(&config).await })
+        }))
     }
 
     fn warn_if_near_context_limit(&self, estimated_tokens: usize) {
@@ -549,7 +505,7 @@ impl Agent {
     /// prompter swap does not drop sandbox-linked policy.
     pub fn set_permission_gate(&mut self, mut gate: PermissionGate) {
         gate.set_auto_allow_bash(self.config.sandbox.auto_allow_bash && self.sandbox.is_enforced());
-        gate.set_rules(permission_rules_from_config(&self.config));
+        gate.set_rules(agent_builder::permission_rules_from_config(&self.config));
         self.permission = Arc::new(Mutex::new(gate));
     }
 
@@ -690,18 +646,25 @@ impl Agent {
                     "llm response usage"
                 );
                 self.turn_usage.accumulate(&usage);
-                self.context_water.record_usage(&usage);
-                self.session.update_context_usage(
-                    self.context_water.effective_tokens(),
-                    self.config.compaction.context_window_tokens,
+                let tools = self.tool_definitions_for_llm();
+                let estimator = self.token_estimator();
+                let compaction_config =
+                    context_config::context_compaction_config(&self.config.compaction);
+                self.context.record_step_usage(
+                    &usage,
+                    &mut self.session,
+                    &tools,
+                    &estimator,
+                    &compaction_config,
                 );
                 emit_event(
                     &options.event_handler,
                     AgentEvent::UsageUpdate {
                         usage: self.turn_usage,
-                        context_tokens: self.context_water.effective_tokens(),
+                        context_tokens: self.context.water().effective_tokens(),
                         context_window: self.config.compaction.context_window_tokens,
-                        context_percent: self.context_water.usage_percent(),
+                        context_percent: self.context.water().usage_percent(),
+                        context_epoch: self.context.epoch(),
                     },
                 );
             }
@@ -710,8 +673,6 @@ impl Agent {
                 if let Some(tool_calls) = assistant_message.tool_calls.clone() {
                     self.session.push_message(assistant_message);
                     self.run_tools(&tool_calls, options, cancel).await?;
-                    // Prefight: tool results may have pushed us over the window.
-                    self.maybe_compact_before_llm().await?;
                     if self.inject_pending_steer(options)? {
                         continue;
                     }
@@ -789,11 +750,43 @@ impl Agent {
             return Err(turn::aborted_error());
         }
 
-        self.maybe_compact_before_llm().await?;
-
+        self.sync_todos_to_session();
         let tools = self.tool_definitions_for_llm();
+        let estimator = self.token_estimator();
+        let background_tasks = self.background.lock().list();
+        let hooks = context_hooks::ZeneContextHooks::new(&self.session, &background_tasks);
+        let compaction_config = context_config::context_compaction_config(&self.config.compaction);
+        let prefire_factory = self.prefire_client_factory();
+        let mut deps = ContextDeps {
+            session: &mut self.session,
+            compaction_config: &compaction_config,
+            model: &self.config.model,
+            workdir: self.sandbox.workdir(),
+            client: &self.client,
+            hooks: Some(&hooks),
+            system_prompt: &self.system_prompt,
+            estimator: &estimator,
+            prefire_client_factory: prefire_factory,
+        };
+        let prepared = self.context.prepare_step(&mut deps, &tools).await?;
+        self.dispatch_context_events(&prepared.events)?;
+        if let Some(result) = &prepared.compaction {
+            self.record_compaction(result)?;
+        }
+        let step = prepared.step;
+        debug!(
+            estimated_context_tokens = step.estimate_tokens,
+            effective_tokens = self.context.water().effective_tokens(),
+            usage_percent = self.context.water().usage_percent(),
+            message_count = step.messages.len(),
+            tool_count = tools.len(),
+            context_epoch = step.metadata.context_epoch,
+            "llm request context water level"
+        );
+        self.warn_if_near_context_limit(step.estimate_tokens as usize);
+
         let (assistant_message, usage) = self
-            .run_llm_step(&tools, options, cancel)
+            .run_llm_step(&step, &tools, options, cancel)
             .await
             .context("llm step")?;
 
@@ -805,228 +798,35 @@ impl Agent {
         Ok((assistant_message, usage, had_tool_calls))
     }
 
-    async fn maybe_compact_before_llm(&mut self) -> Result<()> {
-        let messages = self.build_messages();
-        let tools = self.tool_definitions_for_llm();
-        let estimated_tokens = self.estimated_context_tokens(&messages, &tools);
-        self.context_water.record_estimate(estimated_tokens as u32);
-        self.context_water
-            .set_window(self.config.compaction.context_window_tokens);
-        debug!(
-            estimated_context_tokens = estimated_tokens,
-            effective_tokens = self.context_water.effective_tokens(),
-            usage_percent = self.context_water.usage_percent(),
-            message_count = messages.len(),
-            tool_count = tools.len(),
-            chars_per_token = self.config.chars_per_token_for_model(),
-            estimate_mode = ?self.token_estimator().mode,
-            "llm request context water level"
-        );
-        self.warn_if_near_context_limit(self.context_water.effective_tokens() as usize);
-
-        self.maybe_start_prefire();
-
-        let preflight = self.context_water.exceeds_window()
-            && !self.context_water.auto_compact_suppressed;
-        if self.context_water.should_compact(&self.config.compaction) || preflight {
-            // Intra Steps-first: shrink current-turn tool bodies before full compact.
-            if apply_steps_truncate_pass(&mut self.session, &self.config.compaction) {
-                self.sync_context_water_from_estimate();
-                if !self.context_water.should_compact(&self.config.compaction)
-                    && !self.context_water.exceeds_window()
-                {
-                    info!("intra steps-first truncate relieved pressure; skipping full compact");
-                    return Ok(());
-                }
-            }
-            self.sync_todos_to_session();
-            self.prefire.await_in_flight().await;
-            let prefire_cache = self.prefire_cache_for_current_prefix();
-            let _ = self.maybe_flush_memory().await;
-            let memory_block = memory::memory_reminder(self.sandbox.workdir());
-            let _ = save_checkpoint(&self.session, "pre_auto_compact");
-            let estimator = self.token_estimator();
-            let background_tasks = self.background.lock().list();
-            let reason = if preflight {
-                "preflight_overflow"
-            } else {
-                "token_threshold"
-            };
-            match compact_session(
-                &mut self.session,
-                &self.client,
-                &self.config.model,
-                &self.config.compaction,
-                reason,
-                &tools,
-                &estimator,
-                &background_tasks,
-                prefire_cache.as_ref(),
-                memory_block.as_deref(),
-            )
-            .await
-            {
-                Ok(Some(result)) => {
-                    self.prefire.clear();
-                    self.context_water.clear_auto_compact_suppression();
-                    self.record_compaction(&result)?;
-                    let _ = save_checkpoint(&self.session, "post_auto_compact");
-                    self.sync_context_water_from_estimate();
-                }
-                Ok(None) => {}
-                Err(err) => {
-                    warn!(error = %err, "auto-compact failed; suppressing until /compact");
-                    self.context_water.suppress_auto_compact();
-                }
-            }
-            self.session
-                .ensure_system_message(&self.system_prompt);
-        }
-        Ok(())
-    }
-
-    fn prefire_cache_for_current_prefix(&self) -> Option<prefire::PrefireCache> {
-        let prefix_start = if self
-            .session
-            .messages
-            .first()
-            .is_some_and(|m| m.role == zene_llm::Role::System)
-        {
-            1
-        } else {
-            0
-        };
-        let body = &self.session.messages[prefix_start..];
-        self.prefire.valid_cache_for(body)
-    }
-
-    fn maybe_start_prefire(&self) {
-        let lead = prefire::prefire_lead_percent();
-        if !self
-            .context_water
-            .should_prefire(&self.config.compaction, lead)
-        {
-            return;
-        }
-        if self.prefire.is_in_flight() || self.prefire.has_cache() {
-            return;
-        }
-
-        let estimator = self.token_estimator();
-        let messages = self.session.messages.clone();
-        let prefix_start = if messages
-            .first()
-            .is_some_and(|m| m.role == zene_llm::Role::System)
-        {
-            1
-        } else {
-            0
-        };
-        if messages.len().saturating_sub(prefix_start) < 8 {
-            return;
-        }
-        let body = messages[prefix_start..].to_vec();
-        let split = two_pass::split_messages_for_two_pass(
-            &body,
-            &estimator,
-            two_pass::TWO_PASS_DEFAULT_SPLIT_FRACTION,
-        );
-        if split.split_idx == 0 || split.split_idx >= body.len() {
-            return;
-        }
-        let pass1_prefix = body[..split.split_idx].to_vec();
-        let fingerprint = two_pass::fingerprint_messages(&pass1_prefix);
-        if self.prefire.already_launched_for(fingerprint) {
-            return;
-        }
-
-        let config = self.config.clone();
-        let model = self.config.model.clone();
-        let window = self.config.compaction.context_window_tokens;
-        let split_idx = split.split_idx;
-        info!(
-            split_idx,
-            usage_percent = self.context_water.usage_percent(),
-            "starting prefire pass1"
-        );
-        let handle = tokio::spawn(async move {
-            let client = match ChatClient::from_config(&config).await {
-                Ok(c) => c,
-                Err(err) => {
-                    warn!(error = %err, "prefire: failed to create client");
-                    return None;
-                }
-            };
-            match compaction::summarize_messages_with_ladder(
-                &client,
-                &model,
-                &pass1_prefix,
-                Some(window),
-                &estimator,
-            )
-            .await
-            {
-                Ok(note1) => {
-                    if note1.trim().is_empty() {
-                        return None;
-                    }
-                    info!(note1_chars = note1.len(), "prefire pass1 cached NOTE₁");
-                    Some(prefire::PrefireCache {
-                        note1,
-                        fingerprint,
-                        split_idx,
-                    })
-                }
-                Err(err) => {
-                    warn!(error = %err, "prefire pass1 failed");
-                    None
-                }
-            }
-        });
-        self.prefire.set_handle(fingerprint, handle);
-    }
-
-    fn sync_context_water_from_estimate(&mut self) {
-        let messages = self.build_messages();
-        let tools = self.tool_definitions_for_llm();
-        let estimated = self.estimated_context_tokens(&messages, &tools) as u32;
-        self.context_water.record_estimate(estimated);
-        // After compaction, prefer the fresh estimate over stale provider usage.
-        self.context_water.last_prompt_tokens = Some(estimated);
-        self.session.update_context_usage(
-            estimated,
-            self.config.compaction.context_window_tokens,
-        );
-    }
-
     async fn run_llm_step(
         &mut self,
+        step: &StepContext,
         tools: &[zene_llm::ToolDefinition],
         options: &PromptOptions,
         cancel: Option<&CancellationToken>,
     ) -> Result<(Message, Option<TokenUsage>)> {
         let mut overflow_truncated = false;
         let mut overflow_summarized = false;
+        let mut messages = step.messages.clone();
+        let mut metadata = step.metadata.clone();
 
         loop {
             if Self::check_cancelled(cancel)? {
                 return Err(turn::aborted_error());
             }
 
-            let messages = self.build_messages();
-            let estimated_tokens = self.estimated_context_tokens(&messages, tools);
             debug!(
-                estimated_context_tokens = estimated_tokens,
+                estimated_context_tokens = step.estimate_tokens,
                 message_count = messages.len(),
                 "llm step context estimate"
             );
-            self.warn_if_near_context_limit(estimated_tokens);
 
             let request = ChatRequest {
                 model: self.config.model.clone(),
-                messages,
+                messages: messages.clone(),
                 tools: tools.to_vec(),
                 stream: options.stream,
+                context: Some(metadata.clone()),
             };
 
             let result = if options.stream {
@@ -1040,61 +840,47 @@ impl Agent {
 
             match result {
                 Ok(value) => return Ok(value),
-                Err(err) if is_context_overflow_error(&err) => {
-                    if !overflow_truncated {
-                        overflow_truncated = true;
-                        let estimator = self.token_estimator();
-                        if apply_overflow_truncate_pass(
-                            &mut self.session,
-                            &self.config.compaction,
-                            &estimator,
-                        ) {
-                            info!("context overflow: applied truncate pass before retry");
-                            self.session
-                                .ensure_system_message(&self.system_prompt);
-                            continue;
-                        }
+                Err(err) if ContextEngine::is_context_overflow_error(&err) => {
+                    self.sync_todos_to_session();
+                    let estimator = self.token_estimator();
+                    let background_tasks = self.background.lock().list();
+                    let hooks = context_hooks::ZeneContextHooks::new(&self.session, &background_tasks);
+                    let compaction_config =
+                        context_config::context_compaction_config(&self.config.compaction);
+                    let prefire_factory = self.prefire_client_factory();
+                    let overflow = {
+                        let mut deps = ContextDeps {
+                            session: &mut self.session,
+                            compaction_config: &compaction_config,
+                            model: &self.config.model,
+                            workdir: self.sandbox.workdir(),
+                            client: &self.client,
+                            hooks: Some(&hooks),
+                            system_prompt: &self.system_prompt,
+                            estimator: &estimator,
+                            prefire_client_factory: prefire_factory,
+                        };
+                        self.context
+                            .handle_overflow(
+                                &mut deps,
+                                tools,
+                                &mut overflow_truncated,
+                                &mut overflow_summarized,
+                            )
+                            .await?
+                    };
+                    self.dispatch_context_events(&overflow.events)?;
+                    if let Some(result) = &overflow.compaction {
+                        self.record_compaction(result)?;
                     }
-                    if !overflow_summarized {
-                        overflow_summarized = true;
-                        self.sync_todos_to_session();
-                        self.prefire.await_in_flight().await;
-                        let prefire_cache = self.prefire_cache_for_current_prefix();
-                        let _ = self.maybe_flush_memory().await;
-                        let memory_block = memory::memory_reminder(self.sandbox.workdir());
-                        let _ = save_checkpoint(&self.session, "pre_overflow_compact");
-                        let estimator = self.token_estimator();
-                        let background_tasks = self.background.lock().list();
-                        match compact_session(
-                            &mut self.session,
-                            &self.client,
-                            &self.config.model,
-                            &self.config.compaction,
-                            "context_overflow",
+                    if overflow.retry {
+                        let refreshed = self.context.assemble_step(
+                            &self.session,
                             tools,
                             &estimator,
-                            &background_tasks,
-                            prefire_cache.as_ref(),
-                            memory_block.as_deref(),
-                        )
-                        .await
-                        {
-                            Ok(Some(result)) => {
-                                self.prefire.clear();
-                                self.context_water.clear_auto_compact_suppression();
-                                self.record_compaction(&result)?;
-                                let _ = save_checkpoint(&self.session, "post_overflow_compact");
-                                self.sync_context_water_from_estimate();
-                            }
-                            Ok(None) => {}
-                            Err(compact_err) => {
-                                warn!(error = %compact_err, "overflow compact failed");
-                                self.context_water.suppress_auto_compact();
-                                return Err(compact_err);
-                            }
-                        }
-                        self.session
-                            .ensure_system_message(&self.system_prompt);
+                        );
+                        messages = refreshed.messages;
+                        metadata = refreshed.metadata;
                         continue;
                     }
                     return Err(err);
@@ -1102,10 +888,6 @@ impl Agent {
                 Err(err) => return Err(err),
             }
         }
-    }
-
-    fn build_messages(&self) -> Vec<Message> {
-        self.session.messages.clone()
     }
 
     fn check_cancelled(cancel: Option<&CancellationToken>) -> Result<bool> {
@@ -1480,35 +1262,6 @@ impl Agent {
             ts: chrono::Utc::now(),
         })
     }
-
-    async fn maybe_flush_memory(&mut self) -> Result<()> {
-        let cycle = self.session.compactions.len() as u64;
-        let marker = cycle.saturating_add(1);
-        let threshold = ContextWaterLevel::auto_compact_threshold_percent(&self.config.compaction);
-        if !memory::should_flush(
-            self.context_water.usage_percent(),
-            threshold,
-            self.last_memory_flush_compaction == marker,
-        ) {
-            return Ok(());
-        }
-        match memory::run_memory_flush(
-            &self.client,
-            &self.config.model,
-            &self.session.messages,
-            self.sandbox.workdir(),
-        )
-        .await?
-        {
-            memory::FlushResult::Accepted => {
-                self.last_memory_flush_compaction = marker;
-            }
-            other => {
-                debug!(?other, "memory flush finished without write");
-            }
-        }
-        Ok(())
-    }
 }
 
 #[derive(Default)]
@@ -1547,38 +1300,6 @@ fn truncate(input: &str, max: usize) -> String {
     } else {
         format!("{}...", input.chars().take(max).collect::<String>())
     }
-}
-
-fn shared_permission_with_rules(
-    mode: PermissionMode,
-    rules: Vec<PermissionRule>,
-    auto_allow_bash: bool,
-) -> SharedToolPermission {
-    Arc::new(Mutex::new(
-        PermissionGate::new(mode)
-            .with_rules(rules)
-            .with_auto_allow_bash(auto_allow_bash),
-    ))
-}
-
-fn permission_rules_from_config(config: &ZeneConfig) -> Vec<PermissionRule> {
-    config
-        .permission_rules
-        .to_flat_rules()
-        .into_iter()
-        .filter_map(|rule| {
-            let action = match rule.action.trim().to_lowercase().as_str() {
-                "allow" => RuleAction::Allow,
-                "deny" => RuleAction::Deny,
-                "ask" => RuleAction::Ask,
-                _ => return None,
-            };
-            Some(PermissionRule {
-                pattern: rule.pattern,
-                action,
-            })
-        })
-        .collect()
 }
 
 fn merge_event_handler(

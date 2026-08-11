@@ -1,0 +1,6 @@
+# Used by scripts/publish-crates.sh --verify to package crates before
+# sibling dependencies exist on crates.io.
+[patch.crates-io]
+zene-config = { path = "crates/config" }
+zene-llm = { path = "crates/llm" }
+zene-session = { path = "crates/session" }

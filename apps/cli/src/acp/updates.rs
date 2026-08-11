@@ -294,16 +294,23 @@ pub fn usage_update(
     prompt_tokens: u64,
     completion_tokens: u64,
     context_percent: u8,
+    cached_tokens: Option<u64>,
+    context_epoch: u64,
 ) -> Value {
+    let mut meta = serde_json::Map::from_iter([
+        ("promptTokens".into(), json!(prompt_tokens)),
+        ("completionTokens".into(), json!(completion_tokens)),
+        ("contextPercent".into(), json!(context_percent)),
+        ("contextEpoch".into(), json!(context_epoch)),
+    ]);
+    if let Some(cached) = cached_tokens {
+        meta.insert("cachedTokens".into(), json!(cached));
+    }
     json!({
         "sessionUpdate": "usage_update",
         "used": used,
         "size": size,
-        "_meta": {
-            "promptTokens": prompt_tokens,
-            "completionTokens": completion_tokens,
-            "contextPercent": context_percent,
-        }
+        "_meta": Value::Object(meta),
     })
 }
 

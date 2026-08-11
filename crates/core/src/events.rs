@@ -44,6 +44,7 @@ pub enum AgentEvent {
         context_tokens: u32,
         context_window: u32,
         context_percent: u8,
+        context_epoch: u64,
     },
     TurnEnd {
         turn_id: TurnId,
