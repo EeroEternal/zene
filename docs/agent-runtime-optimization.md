@@ -3,6 +3,12 @@
 > 状态：Proposal
 >
 > 本文基于当前 zene runtime 实现，描述如何将 `Agent`、`Turn`、`Step`、`Session`、Cloud `Run` 和 ACP transport 拉开，并给出渐进式迁移方案。
+>
+> **与 Session / Context 优化的关系：** 本文主攻 **控制面**（谁在跑、怎么被控制、状态归谁）；
+> [session-as-source-of-truth.md](./session-as-source-of-truth.md) 与
+> [context-engine-projection.md](./context-engine-projection.md) 主攻 **数据面**（记什么、模型看见什么）。
+> 两条线 **正交且必须合并落地**，不互相取代。合并后的 Wave 顺序见
+> [§16](#16-merged-implementation-waves)。
 
 ## 1. 背景与目标
 
@@ -347,14 +353,32 @@ pub trait ContextAssembler: Send + Sync {
 }
 ```
 
+**对外** 这是 TurnEngine 看到的 port；**对内** 实现应对齐投影三段式
+（见 [context-engine-projection.md](./context-engine-projection.md)）：
+
+```text
+observe  — 只读 SessionView，估算 token / water，提出 recommended actions
+commit   — 唯一允许写 Conversation SoT 的入口（如 CompactionApplied、memory flush）
+project  — 纯函数（或只读 cache）→ PreparedContext { messages, metadata, explain }
+```
+
+纪律：
+
+- `prepare` / `project` **不得** 隐式物理删除历史当唯一真相；
+- compaction 经 `commit` 追加事实后，再 `project`；
+- `PreparedContext` 宜带可选 `ProjectionExplain`（debug / ACP `_meta` / Console）。
+
+兼容期可继续暴露 `ContextEngine::prepare_step` 门面，内部切换为三段式。
+
 它负责：
 
 - system prompt 和 workspace context；
 - memory 注入；
 - token estimation；
-- proactive compaction；
+- proactive compaction（commit 侧）；
 - provider overflow 后的 compaction/retry；
-- external session 和 context metadata。
+- external session 和 context metadata；
+- 每步装饰（todos / bg / reminder）与 epoch 规则。
 
 ### 6.3 ToolCatalog 与 ToolExecutor
 
@@ -586,11 +610,10 @@ SubagentRunner
 
 ```text
 SessionState
-  ├── messages
-  ├── metadata
-  ├── todos
-  ├── mode
-  └── context metadata
+  ├── events / mutations   ← conversation SoT（目标）
+  ├── messages cache       ← materialized，可重建
+  ├── metadata / todos / mode
+  └── context metadata（epoch、segment 指针等）
 
 SessionStore
   ├── load
@@ -611,9 +634,26 @@ pub trait SessionStore: Send + Sync {
 
 第一阶段可以继续使用现有文件 session store，只把接口边界先建立起来。
 
-### 9.2 从 session resume 到 execution resume
+`SessionMutation` / `SessionEvent` 应能表达至少：message、tool call/result、
+`CompactionApplied`、checkpoint marker、model change、branch/fork/rewind。
+完整心智模型见 [session-as-source-of-truth.md](./session-as-source-of-truth.md)；
+compaction 不得只靠「物理删除 `messages` 前缀」充当唯一真相。
 
-当前 `session/load` 和 `session/resume` 主要恢复已经持久化的历史，不能从正在执行的 step 恢复。未来应在以下边界保存 checkpoint：
+### 9.2 三类记录，勿挤成一种
+
+| 名称 | 职责 | 例子 |
+| --- | --- | --- |
+| **Conversation SoT**（`SessionMutation` / events） | 对话与上下文事实 | message、compaction、fork |
+| **Execution record** | 运行进度与恢复 | step 边界、tool 完成、pending approval |
+| **RuntimeEvent** | 对外实时流 | text delta、tool call UI、usage |
+
+- **ID 空间统一**（`SessionId` / `TurnId` / `StepId` / `ToolCallId`）
+- **不必** 合成一个万能 enum 打天下
+- RuntimeEvent 可由前两者 **投影** 而出（带 `sequence`）
+
+### 9.3 从 session resume 到 execution resume
+
+当前 `session/load` 和 `session/resume` 主要恢复已经持久化的历史，不能从正在执行的 step 恢复。未来应在以下边界保存 **execution** checkpoint：
 
 1. turn started；
 2. context prepared；
@@ -627,7 +667,7 @@ Checkpoint 至少记录：
 
 - session / turn / step id；
 - execution state；
-- message mutations；
+- message mutations（或指向 Conversation SoT 的 offset）；
 - completed tool call ids；
 - pending approval id；
 - retry count；
@@ -636,10 +676,14 @@ Checkpoint 至少记录：
 
 工具执行需要 `execution_id`、`tool_call_id` 和幂等键，避免进程崩溃恢复时重复执行写操作。
 
+**CompactionApplied**（内容投影边界）与 **execution checkpoint**（崩溃恢复边界）生命周期不同，
+可共享 `context_epoch` / `step_id`，但不要用一个文件糊两职。
+
 第一阶段不要求完整 Event Sourcing，采用下面的最小方案即可：
 
 ```text
 session snapshot
++ append-only conversation events（双写起步）
 + append-only execution record
 + tool-call idempotency
 ```
@@ -820,11 +864,14 @@ crates/
 4. 不让 ACP 成为唯一 runtime 运行方式；
 5. 不在第一阶段引入完整 Event Sourcing；
 6. 不为了抽象而破坏当前 CLI、ACP、Cloud 行为；
-7. 不改变现有 Console IA 或 UI 视觉规范。
+7. 不改变现有 Console IA 或 UI 视觉规范；
+8. 不为「Runtime 干净」而继续把 `messages[]` 当唯一可毁历史；
+9. 不照搬外部 harness 的「砍 MCP / 砍 permission」产品哲学
+   （见 [pi-agent-harness-lessons.md](./pi-agent-harness-lessons.md)）。
 
 ## 14. 验收标准
 
-架构迁移完成后，应满足：
+### 14.1 Runtime / 控制面
 
 - Local CLI、ACP、Cloud 使用同一套 runtime command/event 语义；
 - 主 Agent 和 Subagent 使用同一个 TurnEngine；
@@ -837,13 +884,137 @@ crates/
 - 工具恢复具备幂等策略；
 - 现有 `cargo test --workspace --locked`、CLI ACP 测试和 Cloud worker 测试保持通过。
 
+### 14.2 Session / Context 数据面（与姊妹文档共用）
+
+- Conversation SoT 双写后，旧 session 仍可 load；
+- compact 产生可查询的 `CompactionApplied`（或等价 mutation），并可解释；
+- `project(events)` 与现网 materialized `messages` 有金丝雀等价测试（flag 前）；
+- fork / rewind 后两边上下文可解释、互不污染；
+- `PreparedContext` / `ProjectionExplain` 可经 RuntimeEvent 或 debug 通道观测；
+- Tool batch 的 block / error / terminate / cancel 语义在 `ToolExecutor` 层可测。
+
+场景表与 Phase 细节见
+[context-engine-projection.md](./context-engine-projection.md)、
+[session-as-source-of-truth.md](./session-as-source-of-truth.md)。
+
 ## 15. 最终判断
 
-zene 当前已经抽象出了比较可靠的 `Agent Turn`，但还没有完全抽象出独立的 `Agent Runtime`。最值得优先落地的三件事是：
+zene 当前已经抽象出了比较可靠的 `Agent Turn`，但还没有完全抽象出独立的 `Agent Runtime`；
+同时也还没有把 **Session 事件树** 升为对话事实源、把 **Context** 收成稳定投影 port。
+
+控制面最值得优先落地的三件事是：
 
 1. **主 Agent 和 Subagent 共用同一个 TurnEngine；**
 2. **外部通过 RuntimeHandle / RuntimeCommand 操作，不直接持有 Agent；**
 3. **明确拆开 Cloud Job、ACP Transport、Agent Runtime 三个生命周期。**
 
-完成这三步后，zene 才能从“以 `Agent` 为中心的 coding agent”演进为可被 CLI、ACP、Cloud、Subagent 和测试环境共同复用的 Agent Runtime。
+数据面最值得优先落地的三件事是：
+
+1. **统一 ID + RuntimeEvent 信封（与控制面共享）；**
+2. **Conversation SoT 双写（Message + CompactionApplied 起步）；**
+3. **ContextAssembler = observe / commit / project，compact 不销毁唯一历史。**
+
+两条线合成的落地顺序见下一节。完成后，zene 才能从「以 `Agent` + 可变 `messages` 为中心的 coding agent」演进为可被 CLI、ACP、Cloud、Subagent 和测试环境共同复用的 **Agent Runtime + 可投影 Session**。
+
+## 16. Merged implementation waves
+
+本节是 **Runtime（本文 §12）** 与 **Session/Context 投影** 的合并排期，避免两拨人互拆。
+细节仍以各专项文档为准；这里只定 **顺序与依赖**。
+
+```text
+Wave 0   契约对齐（文档 / 术语）
+         Runtime · Turn · Step · SessionMutation · PreparedContext · RuntimeEvent
+
+Wave 1   统一身份与事件信封                    ← 本文 Phase 1
+         SessionId / TurnId / StepId / ToolCallId
+         RuntimeEvent { sequence, ids, kind }
+         现有 AgentEvent 包装为 RuntimeEvent（行为不变）
+
+Wave 2   Conversation SoT 双写                 ← session-as-source-of-truth
+         SessionEvent：至少 Message + CompactionApplied
+         与 Record / RuntimeEvent 共享 ID；messages 仍为 cache
+         读路径暂不切换
+
+Wave 3   ContextAssembler 对齐投影             ← context-engine-projection
+         prepare_step 内 observe → commit → project
+         对外可仍叫 prepare_step / ContextEngine
+         对 Turn 只暴露 prepare / handle_overflow
+
+Wave 4   ToolExecutor + terminate 契约         ← 本文 Phase 3 + tool 协议
+         移出 Agent::run_tools；顺序 / block / terminate 可测
+
+Wave 5   TurnEngine 只依赖 ports               ← 本文 Phase 4
+         SessionView + PreparedContext 已相对稳定后再做
+
+Wave 6   RuntimeHandle 控制面                  ← 本文 Phase 6
+         ACP / Cloud 只发 Command、订 Event
+         steer / cancel / approval 单所有者
+
+Wave 7   Execution checkpoint / 幂等           ← 本文 Phase 7
+         建立在 Wave 1 ID + Wave 2/4 工具完成事实上
+
+Wave 8   Subagent = RuntimeScope               ← 本文 Phase 5（可与 5–6 交叉）
+```
+
+**对应本文原 Phase 编号：**
+
+| 本文 Phase | Merged Wave |
+| --- | --- |
+| Phase 1 ID/事件 | Wave 1 |
+| Phase 2 ModelExecutor | 可嵌在 Wave 4–5 之前或并行（不挡 Wave 2–3） |
+| Phase 3 ToolExecutor | Wave 4 |
+| Phase 4 TurnEngine ports | Wave 5 |
+| Phase 5 Subagent | Wave 8 |
+| Phase 6 Runtime actor | Wave 6 |
+| Phase 7 checkpoint | Wave 7 |
+| （数据面）SoT / 投影 | Wave 2–3 |
+
+**若只能做一件事：**
+
+| 选择 | Wave | 理由 |
+| --- | --- | --- |
+| 最小公共地基 | **Wave 1** | 控制面与 SoT 都依赖稳定 ID |
+| 数据面最大杠杆 | **Wave 2** | 没有事件双写，投影与 fork 长期假 |
+| 结构清理 | Wave 3 | 依赖 Wave 2 更干净；可先内部拆仍读 messages |
+
+推荐组合：**Wave 1 → Wave 2 → Wave 3**，再并行 ToolExecutor / ModelExecutor，然后 TurnEngine ports 与 RuntimeHandle。
+
+**不要一上来做** Wave 6 actor 全量重写或 Wave 7 完整崩溃恢复；也不要先堆新 compress phase。
+
+**PR 切片建议：** 一 PR 只动一层；Core 继续当 composition root，接口稳后再搬 crate（与 §11 一致）。
+
+## 17. 术语表（与姊妹文档共用）
+
+| 术语 | 含义 |
+| --- | --- |
+| **AgentRuntime** | 长期存在的 session 执行器；命令入口、状态所有者 |
+| **RuntimeHandle / RuntimeCommand** | 外部唯一控制 API |
+| **RuntimeEvent** | 统一实时事件信封（多 sink 映射） |
+| **TurnEngine** | 单次 turn 的 LLM↔tool 状态机 |
+| **ContextAssembler** | 准备 `PreparedContext` 的 port（内含 observe/commit/project） |
+| **PreparedContext** | 本步给模型的 messages + metadata + 可选 explain |
+| **Conversation SoT** | 对话事实（SessionMutation / events） |
+| **Execution record** | 运行进度（step/tool/approval） |
+| **SessionView** | 只读会话视图，供 project / UI |
+| **Cloud Run / Job** | 产品任务生命周期 ≠ Turn ≠ ACP session |
+| **ACP** | Transport adapter，不是 core 执行抽象 |
+
+## 相关文档
+
+- [session-as-source-of-truth.md](./session-as-source-of-truth.md) — Session 事实 vs Context 投影
+- [context-engine-projection.md](./context-engine-projection.md) — Context 投影化路线
+- [context-engine.md](./context-engine.md) — 已实现 ContextEngine
+- [pi-agent-harness-lessons.md](./pi-agent-harness-lessons.md) — Pi Harness 对照
+- [agent-components.md](./agent-components.md) — 可组装组件栈
+- [ENGINE.md](./ENGINE.md) — turn / compaction 行为
+- [decoupling-plan.md](./decoupling-plan.md) — crate 拆分历程
+
+## 讨论记录
+
+### 2026-08-11 — 并入 Session/Context 线
+
+- 自 closed PR #50 恢复本文；标明控制面 vs 数据面正交
+- §6.2 ContextAssembler 对齐 observe/commit/project
+- §9 区分 Conversation SoT / Execution record / RuntimeEvent；compact vs execution checkpoint
+- 新增 §16 Merged waves、§17 术语表；验收并入 fork/compact/explain
 

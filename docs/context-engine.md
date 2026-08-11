@@ -4,7 +4,7 @@
 
 相关实现：`crates/context/`（`zene-context`）、`crates/llm/`（协议字段）、`crates/core/`（Agent orchestrator）。
 
-可组装组件总览见 [agent-components.md](./agent-components.md)。Session 与 Context 的边界心智模型见 [session-as-source-of-truth.md](./session-as-source-of-truth.md)。下一阶段投影化优化见 [context-engine-projection.md](./context-engine-projection.md)。Pi Harness 对照见 [pi-agent-harness-lessons.md](./pi-agent-harness-lessons.md)。
+可组装组件总览见 [agent-components.md](./agent-components.md)。Session 与 Context 的边界心智模型见 [session-as-source-of-truth.md](./session-as-source-of-truth.md)。下一阶段投影化优化见 [context-engine-projection.md](./context-engine-projection.md)。Runtime / Turn 控制面与合并 Wave 见 [agent-runtime-optimization.md](./agent-runtime-optimization.md)。Pi Harness 对照见 [pi-agent-harness-lessons.md](./pi-agent-harness-lessons.md)。
 
 ---
 
