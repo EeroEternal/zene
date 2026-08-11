@@ -45,8 +45,8 @@ pub use assemble::{
     DeliveryMode,
 };
 pub use engine::{
-    ContextDeps, ContextEngine, ForcedCompactResult, OverflowHandleResult,
-    PrefireClientFactory, PrepareStepResult, StepContext,
+    ContextDeps, ContextEngine, ContextObservation, ForcedCompactResult, OverflowHandleResult,
+    PrefireClientFactory, PrepareStepResult, ProjectionExplain, StepContext,
 };
 pub use event_handler::{
     write_compaction_segment_via, ContextEventHandler, EventOutcome,

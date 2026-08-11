@@ -8,7 +8,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::{session_record_dir, CompactionEntry, SessionRecord, TodoItem};
+use crate::{session_record_dir, CompactionEntry, SessionEvent, SessionRecord, TodoItem};
 use zene_llm::Message;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -17,6 +17,8 @@ pub struct SessionCheckpoint {
     pub created_at: DateTime<Utc>,
     pub reason: String,
     pub messages: Vec<Message>,
+    #[serde(default)]
+    pub events: Vec<SessionEvent>,
     pub todos: Vec<TodoItem>,
     pub compactions: Vec<CompactionEntry>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -32,6 +34,7 @@ impl SessionCheckpoint {
             created_at: Utc::now(),
             reason: reason.to_string(),
             messages: session.messages.clone(),
+            events: session.events.clone(),
             todos: session.todos.clone(),
             compactions: session.compactions.clone(),
             context_window_usage: session.context_window_usage,
@@ -102,6 +105,7 @@ pub fn list_checkpoints(session_id: &str) -> Result<Vec<SessionCheckpoint>> {
 
 pub fn restore_checkpoint(session: &mut SessionRecord, checkpoint: &SessionCheckpoint) {
     session.messages = checkpoint.messages.clone();
+    session.events = checkpoint.events.clone();
     session.todos = checkpoint.todos.clone();
     session.compactions = checkpoint.compactions.clone();
     session.context_window_usage = checkpoint.context_window_usage;
@@ -114,6 +118,7 @@ pub fn fork_session(session: &SessionRecord, workdir: &Path) -> SessionRecord {
     let mut forked = SessionRecord::new(workdir);
     forked.meta.title = format!("{} (fork)", session.meta.title);
     forked.messages = session.messages.clone();
+    forked.events = session.events.clone();
     forked.todos = session.todos.clone();
     forked.compactions = session.compactions.clone();
     forked.context_window_usage = session.context_window_usage;

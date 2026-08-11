@@ -42,10 +42,22 @@ pub struct CompactionEntry {
     pub tokens_after: Option<u32>,
 }
 
+/// Conversation facts dual-written beside the materialized message cache.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum SessionEvent {
+    MessageAppended { id: String, created_at: DateTime<Utc>, message: Message },
+    SystemPrefixChanged { id: String, created_at: DateTime<Utc>, content: String },
+    CompactionApplied { id: String, created_at: DateTime<Utc>, entry: CompactionEntry },
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SessionRecord {
     pub meta: SessionMeta,
     pub messages: Vec<Message>,
+    /// Materialized compatibility cache; events are the future conversation SoT.
+    #[serde(default)]
+    pub events: Vec<SessionEvent>,
     #[serde(default)]
     pub compactions: Vec<CompactionEntry>,
     #[serde(default)]
@@ -70,6 +82,7 @@ impl SessionRecord {
                 updated_at: now,
             },
             messages: Vec::new(),
+            events: Vec::new(),
             compactions: Vec::new(),
             todos: Vec::new(),
             context_window_usage: None,
@@ -92,9 +105,14 @@ impl SessionRecord {
         {
             return;
         }
-        self.messages.push(message);
+        self.messages.push(message.clone());
+        self.events.push(SessionEvent::MessageAppended {
+            id: Uuid::new_v4().to_string(), created_at: Utc::now(), message,
+        });
         self.meta.updated_at = Utc::now();
     }
+
+    pub fn events(&self) -> &[SessionEvent] { &self.events }
 
     pub fn ensure_system_message(&mut self, content: &str) {
         if self
@@ -104,7 +122,11 @@ impl SessionRecord {
         {
             return;
         }
-        self.messages.insert(0, Message::system(content));
+        let message = Message::system(content);
+        self.messages.insert(0, message.clone());
+        self.events.push(SessionEvent::MessageAppended {
+            id: Uuid::new_v4().to_string(), created_at: Utc::now(), message,
+        });
         self.meta.updated_at = Utc::now();
     }
 
@@ -113,11 +135,18 @@ impl SessionRecord {
         if let Some(message) = self.messages.first_mut() {
             if message.role == zene_llm::Role::System {
                 message.content = Some(content.to_string());
+                self.events.push(SessionEvent::SystemPrefixChanged {
+                    id: Uuid::new_v4().to_string(), created_at: Utc::now(), content: content.to_string(),
+                });
                 self.meta.updated_at = Utc::now();
                 return;
             }
         }
-        self.messages.insert(0, Message::system(content));
+        let message = Message::system(content);
+        self.messages.insert(0, message.clone());
+        self.events.push(SessionEvent::MessageAppended {
+            id: Uuid::new_v4().to_string(), created_at: Utc::now(), message,
+        });
         self.meta.updated_at = Utc::now();
     }
 
@@ -157,6 +186,9 @@ impl SessionRecord {
             tokens_after,
         };
         self.compactions.push(entry.clone());
+        self.events.push(SessionEvent::CompactionApplied {
+            id: Uuid::new_v4().to_string(), created_at: entry.created_at, entry: entry.clone(),
+        });
         self.meta.updated_at = Utc::now();
         entry
     }
@@ -325,6 +357,7 @@ fn legacy_record(
             updated_at: now,
         },
         messages,
+        events: Vec::new(),
         compactions: Vec::new(),
         todos: Vec::new(),
         context_window_usage: None,
@@ -446,6 +479,37 @@ mod tests {
         let loaded: SessionRecord = serde_json::from_str(&raw).expect("deserialize");
         assert_eq!(loaded.compactions.len(), 1);
         assert_eq!(loaded.compactions[0].summary, "summary");
+        assert_eq!(loaded.events.len(), 2);
+        assert!(matches!(loaded.events[0], SessionEvent::MessageAppended { .. }));
+        assert!(matches!(loaded.events[1], SessionEvent::CompactionApplied { .. }));
+    }
+
+    #[test]
+    fn session_messages_dual_write_conversation_events() {
+        let mut session = SessionRecord::new(Path::new("."));
+        session.ensure_system_message("sys");
+        session.push_message(Message::user("hello"));
+
+        assert_eq!(session.messages.len(), 2);
+        assert_eq!(session.events.len(), 2);
+        assert!(matches!(session.events[0], SessionEvent::MessageAppended { .. }));
+        assert!(matches!(session.events[1], SessionEvent::MessageAppended { .. }));
+    }
+
+    #[test]
+    fn old_session_without_events_remains_compatible() {
+        let raw = r#"{
+            "meta": {
+                "id": "legacy-events",
+                "title": "Legacy",
+                "workdir": ".",
+                "created_at": "2026-01-01T00:00:00Z",
+                "updated_at": "2026-01-01T00:00:00Z"
+            },
+            "messages": []
+        }"#;
+        let loaded: SessionRecord = serde_json::from_str(raw).expect("deserialize legacy");
+        assert!(loaded.events.is_empty());
     }
 
     #[test]

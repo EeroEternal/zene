@@ -1,10 +1,12 @@
 //! Turn state and multi-step turn loop orchestration.
 
+mod events;
 mod state;
 mod turn_loop;
 
+pub use events::{EventSequence, RuntimeEvent, RuntimeEventHandler, RuntimeEventKind};
 pub use turn_loop::{run_turn_loop, StepResult, TurnRuntime};
 pub use state::{
-    agent_busy_error, begin_turn, end_turn, is_cancelled, max_turns_notice, aborted_error,
-    steer_requires_active_turn, SteerBuffer, StepId, TurnId, TurnState,
+    aborted_error, agent_busy_error, begin_turn, end_turn, is_cancelled, max_turns_notice,
+    steer_requires_active_turn, SessionId, SteerBuffer, StepId, ToolCallId, TurnId, TurnState,
 };
