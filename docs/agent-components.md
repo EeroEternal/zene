@@ -139,6 +139,11 @@ loop {
 
 拆分方向：`AgentBuilder` + trait object hooks（**已实现 builder**）；`ToolContext` 已改为 `Arc<dyn Sandbox>`；`TodoItem` / Permission 双层仍待拆。
 
+### 2026-08-11 — Phase 3 WorkspaceProvider
+
+- 新增 `zene-workspace`：`WorkspaceProvider`、`FsWorkspaceProvider`、`build_system_prompt`
+- core 删除 `workspace.rs` / `skills.rs`
+
 ### 2026-08-11 — Phase 2 Hooks IO外移
 
 - 新增 `zene-hooks`：`HookEngine`（纯 plan）+ `HookExecutor` / `BashHookExecutor`（子进程 IO）
