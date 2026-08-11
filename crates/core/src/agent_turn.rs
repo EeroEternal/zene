@@ -3,7 +3,7 @@
 use async_trait::async_trait;
 use tokio_util::sync::CancellationToken;
 use zene_llm::{Message, TokenUsage, ToolCall};
-use zene_turn::{max_turns_notice, StepResult, TurnRuntime};
+use zene_turn::{max_turns_notice, StepResult, ToolBatchOutcome, TurnRuntime};
 
 use crate::events::{emit_event, AgentEvent};
 use crate::Agent;
@@ -94,7 +94,7 @@ impl TurnRuntime for Agent {
         tool_calls: &[ToolCall],
         options: &Self::Options,
         cancel: Option<&CancellationToken>,
-    ) -> Result<(), anyhow::Error> {
+    ) -> Result<ToolBatchOutcome, anyhow::Error> {
         Agent::run_tools(self, tool_calls, options, cancel).await
     }
 

@@ -65,6 +65,12 @@ pub trait Tool: Send + Sync {
     fn name(&self) -> &str;
     fn definition(&self) -> ToolDefinition;
     async fn execute(&self, arguments: &str, ctx: &ToolContext) -> Result<ToolResult>;
+
+    /// Whether a successful execution is terminal for the current tool batch.
+    /// Existing tools continue the normal model loop by default.
+    fn terminate_batch(&self) -> bool {
+        false
+    }
 }
 
 pub struct ToolRegistry {
@@ -106,6 +112,13 @@ impl ToolRegistry {
         }
 
         tool.execute(arguments, ctx).await
+    }
+
+    pub fn terminates_batch(&self, name: &str) -> bool {
+        self.tools
+            .iter()
+            .find(|tool| tool.name() == name)
+            .is_some_and(|tool| tool.terminate_batch())
     }
 }
 
@@ -158,6 +171,41 @@ fn validate_tool_arguments(definition: &ToolDefinition, arguments: &str) -> Opti
 mod tests {
     use super::*;
     use serde_json::json;
+
+    struct TerminalTool;
+
+    #[async_trait]
+    impl Tool for TerminalTool {
+        fn name(&self) -> &str {
+            "Terminal"
+        }
+
+        fn definition(&self) -> ToolDefinition {
+            ToolDefinition {
+                name: self.name().to_string(),
+                description: "terminal test tool".to_string(),
+                parameters: json!({"type": "object"}),
+            }
+        }
+
+        async fn execute(&self, _arguments: &str, _ctx: &ToolContext) -> Result<ToolResult> {
+            Ok(ToolResult {
+                content: "done".to_string(),
+                is_error: false,
+            })
+        }
+
+        fn terminate_batch(&self) -> bool {
+            true
+        }
+    }
+
+    #[test]
+    fn default_tools_do_not_terminate_batches() {
+        let registry = ToolRegistry::new(vec![Box::new(TerminalTool)]);
+        assert!(registry.terminates_batch("Terminal"));
+        assert!(!registry.terminates_batch("missing"));
+    }
 
     #[test]
     fn rejects_invalid_json_arguments() {
