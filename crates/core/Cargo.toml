@@ -28,6 +28,7 @@ zene-tools = { workspace = true }
 zene-mcp = { workspace = true }
 zene-permission = { workspace = true }
 zene-tool-runtime = { workspace = true }
+zene-turn = { workspace = true }
 zene-workspace = { workspace = true }
 
 [dev-dependencies]

@@ -13,6 +13,7 @@ members = [
     "crates/hooks",
     "crates/permission",
     "crates/tool-runtime",
+    "crates/turn",
     "crates/workspace",
 ]
 resolver = "2"
@@ -58,6 +59,7 @@ zene-mcp = { path = "crates/mcp" }
 zene-hooks = { path = "crates/hooks" }
 zene-permission = { version = "0.1.11", path = "crates/permission" }
 zene-tool-runtime = { path = "crates/tool-runtime" }
+zene-turn = { path = "crates/turn" }
 zene-workspace = { path = "crates/workspace" }
 unigateway-sdk = { version = "2.14", default-features = false, features = ["core"] }
 llm_providers = "0.12.0"

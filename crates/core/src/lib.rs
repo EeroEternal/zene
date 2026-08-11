@@ -31,6 +31,7 @@ pub use zene_tools::AskUserOption;
 use zene_mcp::McpManager;
 
 mod agent_builder;
+mod agent_turn;
 mod context_config;
 mod context_hooks;
 mod events;
@@ -38,7 +39,6 @@ mod plan_mode;
 mod subagent;
 mod tool_dedup;
 pub mod tool_scheduler;
-mod turn;
 mod worktree;
 
 pub use zene_context::{
@@ -56,7 +56,10 @@ pub use zene_permission::{
 };
 pub use plan_mode::PlanApprovalPrompter;
 pub use subagent::{run_subagent, ChatBackend, CoreSubagentRunner};
-pub use turn::{SteerBuffer, StepId, TurnId, TurnState};
+pub use zene_turn::{
+    begin_turn, end_turn, max_turns_notice, aborted_error, steer_requires_active_turn,
+    SteerBuffer, StepId, TurnId, TurnState,
+};
 use plan_mode::{
     build_effective_system_prompt, handle_enter_plan_mode,
     handle_exit_plan_mode, tool_visible_in_definitions,
@@ -471,7 +474,7 @@ impl Agent {
     /// Queue follow-up user guidance for the active turn (injected between steps).
     pub fn queue_steer(&self, text: &str) -> Result<()> {
         if !self.is_turn_active() {
-            return Err(turn::steer_requires_active_turn());
+            return Err(zene_turn::steer_requires_active_turn());
         }
         let text = text.trim();
         if text.is_empty() {
@@ -536,7 +539,7 @@ impl Agent {
     }
 
     pub async fn prompt(&mut self, user_input: &str, options: PromptOptions) -> Result<String> {
-        turn::begin_turn(&mut self.active_turn)?;
+        zene_turn::begin_turn(&mut self.active_turn)?;
         let cancel = options.cancel.clone();
         let turn_id = self
             .active_turn
@@ -594,7 +597,7 @@ impl Agent {
             }
         }
 
-        turn::end_turn(&mut self.active_turn);
+        zene_turn::end_turn(&mut self.active_turn);
         result
     }
 
@@ -604,136 +607,7 @@ impl Agent {
         options: &PromptOptions,
         cancel: Option<&CancellationToken>,
     ) -> Result<String> {
-        self.turn_usage = TokenUsage::default();
-        self.tool_dedup.reset();
-        self.session.ensure_system_message(&self.system_prompt);
-        self.session.set_title_from_prompt(user_input);
-        self.session.push_message(Message::user(user_input));
-
-        let mut final_text = String::new();
-        // 0 = unlimited (do not use `for _ in 0..0`).
-        let max_steps = self.config.max_turns;
-        let mut completed = false;
-        let mut steps_done = 0u32;
-
-        loop {
-            if max_steps > 0 && steps_done >= max_steps {
-                break;
-            }
-            steps_done = steps_done.saturating_add(1);
-
-            if Self::check_cancelled(cancel)? {
-                return Err(turn::aborted_error());
-            }
-
-            let (turn_id, step_id, step_num) = {
-                let turn = self
-                    .active_turn
-                    .as_mut()
-                    .expect("active turn during run_turn");
-                let step_id = turn.next_step_id();
-                (turn.turn_id, step_id, turn.step)
-            };
-            debug!(
-                turn_id = %turn_id,
-                step_id = %step_id,
-                step = step_num,
-                "step_begin"
-            );
-            emit_event(
-                &options.event_handler,
-                AgentEvent::StepBegin {
-                    turn_id,
-                    step_id,
-                    step: step_num,
-                },
-            );
-
-            let step_result = self.run_step(options, cancel).await;
-            debug!(
-                turn_id = %turn_id,
-                step_id = %step_id,
-                step = step_num,
-                ok = step_result.is_ok(),
-                "step_end"
-            );
-            let (assistant_message, usage, had_tool_calls) = step_result?;
-
-            if let Some(usage) = usage {
-                debug!(
-                    prompt_tokens = usage.prompt_tokens,
-                    completion_tokens = usage.completion_tokens,
-                    total_tokens = usage.total_tokens,
-                    "llm response usage"
-                );
-                self.turn_usage.accumulate(&usage);
-                let tools = self.tool_definitions_for_llm();
-                let estimator = self.token_estimator();
-                let compaction_config =
-                    context_config::context_compaction_config(&self.config.compaction);
-                self.context.record_step_usage(
-                    &usage,
-                    &mut self.session,
-                    &tools,
-                    &estimator,
-                    &compaction_config,
-                );
-                emit_event(
-                    &options.event_handler,
-                    AgentEvent::UsageUpdate {
-                        usage: self.turn_usage,
-                        context_tokens: self.context.water().effective_tokens(),
-                        context_window: self.config.compaction.context_window_tokens,
-                        context_percent: self.context.water().usage_percent(),
-                        context_epoch: self.context.epoch(),
-                    },
-                );
-            }
-
-            if had_tool_calls {
-                if let Some(tool_calls) = assistant_message.tool_calls.clone() {
-                    self.session.push_message(assistant_message);
-                    self.run_tools(&tool_calls, options, cancel).await?;
-                    if self.inject_pending_steer(options)? {
-                        continue;
-                    }
-                    continue;
-                }
-            }
-
-            self.session.push_message(assistant_message.clone());
-            if self.inject_pending_steer(options)? {
-                continue;
-            }
-
-            final_text = assistant_message.content.unwrap_or_default();
-            completed = true;
-            break;
-        }
-
-        if !completed {
-            // Soft-stop: leave the session usable for a follow-up instead of failing the run.
-            let notice = turn::max_turns_notice(max_steps);
-            let delta = if final_text.trim().is_empty() {
-                format!("\n{notice}\n")
-            } else {
-                format!("\n\n{notice}")
-            };
-            final_text = if final_text.trim().is_empty() {
-                notice
-            } else {
-                format!("{final_text}\n\n{notice}")
-            };
-            self.session.push_message(Message::assistant(&final_text));
-            emit_event(
-                &options.event_handler,
-                AgentEvent::TextDelta { delta },
-            );
-        }
-
-        self.sync_todos_to_session();
-        self.session.save()?;
-        Ok(final_text)
+        zene_turn::run_turn_loop(self, user_input, options, cancel).await
     }
 
     fn sync_todos_to_session(&mut self) {
@@ -768,7 +642,7 @@ impl Agent {
         cancel: Option<&CancellationToken>,
     ) -> Result<(Message, Option<TokenUsage>, bool)> {
         if Self::check_cancelled(cancel)? {
-            return Err(turn::aborted_error());
+            return Err(zene_turn::aborted_error());
         }
 
         self.sync_todos_to_session();
@@ -833,7 +707,7 @@ impl Agent {
 
         loop {
             if Self::check_cancelled(cancel)? {
-                return Err(turn::aborted_error());
+                return Err(zene_turn::aborted_error());
             }
 
             debug!(
@@ -912,7 +786,7 @@ impl Agent {
     }
 
     fn check_cancelled(cancel: Option<&CancellationToken>) -> Result<bool> {
-        Ok(cancel.is_some_and(CancellationToken::is_cancelled))
+        Ok(zene_turn::is_cancelled(cancel))
     }
 
     async fn run_streaming_step(
@@ -922,7 +796,7 @@ impl Agent {
         cancel: Option<&CancellationToken>,
     ) -> Result<(Message, Option<TokenUsage>)> {
         if Self::check_cancelled(cancel)? {
-            return Err(turn::aborted_error());
+            return Err(zene_turn::aborted_error());
         }
 
         let mut stream = self.client.chat_stream(request).await?;
@@ -932,7 +806,7 @@ impl Agent {
 
         while let Some(event) = stream.next().await {
             if Self::check_cancelled(cancel)? {
-                return Err(turn::aborted_error());
+                return Err(zene_turn::aborted_error());
             }
             match event.context("stream event")? {
                 StreamEvent::TextDelta(delta) => {
@@ -1048,7 +922,7 @@ impl Agent {
 
         for call in tool_calls {
             if Self::check_cancelled(cancel)? {
-                return Err(turn::aborted_error());
+                return Err(zene_turn::aborted_error());
             }
 
             if !options.quiet {
