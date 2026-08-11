@@ -48,7 +48,7 @@ assemble/epoch        内置 + MCP 工具         checkpoint/fork
 
 ## 组合原则
 
-1. **引擎不做 IO**：compaction、checkpoint、record、gateway publish 通过 `ContextEvent` 交给 runtime。
+1. **引擎不做 IO**：compaction segment、gateway publish、memory flush 通过 [`ContextEventHandler`](../../crates/context/src/event_handler.rs) 交给 runtime；checkpoint 通过 [`ContextSession::persist_checkpoint`](../../crates/context/src/session.rs)。
 2. **trait 边界**：Session、Hooks、Sandbox、Tool 用 trait；Zene 类型提供 adapter，不强制 adopt。
 3. **feature 可选**：`memory`、`gateway`、`prefire` 为 `zene-context` 的 cargo feature，轻量集成可关闭。
 4. **core 是 composition root，不是唯一入口**：CLI / Cloud / 第三方只依赖需要的 crate。
@@ -138,6 +138,14 @@ loop {
 - Permission 双层：`ToolPermission` vs `PermissionGate`
 
 拆分方向：`AgentBuilder` + trait object hooks（**已实现 builder**）；`ToolContext` 已改为 `Arc<dyn Sandbox>`；`TodoItem` / Permission 双层仍待拆。
+
+### 2026-08-11 — Phase 6 Context runtime boundary
+
+- **`ContextEventHandler`** trait + `EventOutcome`；引擎 inline 调用 handler 完成需 await 的 IO
+- **`ContextEvent::MemoryFlush`**、扩展 **`PublishPrefix`**；gateway HTTP 与 memory flush LLM 移出 engine
+- **`ContextSession::persist_checkpoint`**：checkpoint 经 session trait 落盘
+- **`ContextDeps`** 移除 `workdir`；memory reminder 经 handler + `MemoryStore`
+- core：`AgentContextHandler`（`context_events.rs`）替代 `dispatch_context_events`
 
 ### 2026-08-11 — Phase 5 Turn loop
 

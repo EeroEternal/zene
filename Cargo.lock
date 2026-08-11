@@ -4023,6 +4023,7 @@ name = "zene-context"
 version = "0.1.11"
 dependencies = [
  "anyhow",
+ "async-trait",
  "chrono",
  "parking_lot",
  "reqwest 0.12.28",

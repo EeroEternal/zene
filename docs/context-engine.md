@@ -52,21 +52,22 @@ pub struct ContextMetadata {
 
 pub enum ContextEvent {
     EpochBumped { old: u64, new: u64, reason: &'static str },
-    PublishPrefix { epoch: u64, message_count: usize },
+    PublishPrefix { session_id: String, epoch: u64, messages: Vec<Message> },
     Checkpoint { reason: &'static str },
-    CompactionCompleted(CompactionResult),
+    CompactionSegment { session_id: String, body: String },
+    MemoryFlush { conversation: String },
 }
 
 pub struct ContextDeps<'a> {
-    pub session: &'a mut SessionRecord,
+    pub session: &'a mut dyn ContextSession,
     pub compaction_config: &'a CompactionConfig,
     pub model: &'a str,
-    pub workdir: &'a Path,
     pub client: &'a ChatClient,
-    pub background_tasks: &'a [BackgroundTask],
+    pub hooks: Option<&'a dyn ContextHooks>,
     pub system_prompt: &'a str,
     pub estimator: &'a TokenEstimator,
-    pub full_config: &'a ZeneConfig,  // prefire 旁路 LLM 建 client
+    pub handler: &'a mut dyn ContextEventHandler,
+    pub prefire_client_factory: Option<PrefireClientFactory>,
 }
 ```
 

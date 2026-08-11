@@ -17,6 +17,7 @@ prefire = []
 
 [dependencies]
 anyhow.workspace = true
+async-trait.workspace = true
 chrono.workspace = true
 parking_lot.workspace = true
 serde.workspace = true

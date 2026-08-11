@@ -9,8 +9,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
 use zene_config::ZeneConfig;
 use zene_context::{
-    CompactionSegmentStore, CompactionSegmentWrite, ContextDeps, ContextEngine, ContextEvent,
-    FsCompactionSegmentStore, PrefireClientFactory, StepContext,
+    ContextDeps, ContextEngine, FsMemoryStore, PrefireClientFactory, StepContext,
 };
 use zene_llm::{ChatClient, ChatRequest, Message, StreamEvent, TokenUsage, ToolCall};
 use zene_sandbox::{LocalSandbox, Sandbox};
@@ -33,6 +32,7 @@ use zene_mcp::McpManager;
 mod agent_builder;
 mod agent_turn;
 mod context_config;
+mod context_events;
 mod context_hooks;
 mod events;
 mod plan_mode;
@@ -296,16 +296,21 @@ impl Agent {
         let background_tasks = self.background.lock().list();
         let hooks = context_hooks::ZeneContextHooks::new(&self.session, &background_tasks);
         let compaction_config = context_config::context_compaction_config(&self.config.compaction);
+        let mut handler = context_events::AgentContextHandler::new(
+            &self.client,
+            &self.config.model,
+            self.sandbox.workdir(),
+        );
         let prefire_factory = self.prefire_client_factory();
         let mut deps = ContextDeps {
             session: &mut self.session,
             compaction_config: &compaction_config,
             model: &self.config.model,
-            workdir: self.sandbox.workdir(),
             client: &self.client,
             hooks: Some(&hooks),
             system_prompt: &self.system_prompt,
             estimator: &estimator,
+            handler: &mut handler,
             prefire_client_factory: prefire_factory,
         };
         let result = self
@@ -314,7 +319,6 @@ impl Agent {
             .await;
         match &result {
             Ok(forced) => {
-                self.dispatch_context_events(&forced.events)?;
                 if let Some(compact_result) = &forced.compaction {
                     self.record_compaction(compact_result)?;
                 }
@@ -323,34 +327,6 @@ impl Agent {
             }
             Err(_) => result.map(|forced| forced.compaction),
         }
-    }
-
-    fn dispatch_context_events(&self, events: &[ContextEvent]) -> Result<()> {
-        let segment_store = FsCompactionSegmentStore::new();
-        for event in events {
-            match event {
-                ContextEvent::Checkpoint { reason } => {
-                    let _ = save_checkpoint(&self.session, reason)?;
-                }
-                ContextEvent::CompactionSegment { session_id, body } => {
-                    let write = CompactionSegmentWrite {
-                        session_id: session_id.clone(),
-                        body: body.clone(),
-                    };
-                    match segment_store.write_segment(&write) {
-                        Ok(path) => {
-                            info!(path = %path.display(), "wrote compaction segment");
-                        }
-                        Err(err) => {
-                            warn!(error = %err, "failed to write compaction segment");
-                        }
-                    }
-                }
-                ContextEvent::EpochBumped { .. }
-                | ContextEvent::PublishPrefix { .. } => {}
-            }
-        }
-        Ok(())
     }
 
     /// Human-readable context report for `/context` (grok-aligned).
@@ -651,20 +627,24 @@ impl Agent {
         let background_tasks = self.background.lock().list();
         let hooks = context_hooks::ZeneContextHooks::new(&self.session, &background_tasks);
         let compaction_config = context_config::context_compaction_config(&self.config.compaction);
+        let mut handler = context_events::AgentContextHandler::new(
+            &self.client,
+            &self.config.model,
+            self.sandbox.workdir(),
+        );
         let prefire_factory = self.prefire_client_factory();
         let mut deps = ContextDeps {
             session: &mut self.session,
             compaction_config: &compaction_config,
             model: &self.config.model,
-            workdir: self.sandbox.workdir(),
             client: &self.client,
             hooks: Some(&hooks),
             system_prompt: &self.system_prompt,
             estimator: &estimator,
+            handler: &mut handler,
             prefire_client_factory: prefire_factory,
         };
         let prepared = self.context.prepare_step(&mut deps, &tools).await?;
-        self.dispatch_context_events(&prepared.events)?;
         if let Some(result) = &prepared.compaction {
             self.record_compaction(result)?;
         }
@@ -742,17 +722,22 @@ impl Agent {
                     let hooks = context_hooks::ZeneContextHooks::new(&self.session, &background_tasks);
                     let compaction_config =
                         context_config::context_compaction_config(&self.config.compaction);
+                    let mut handler = context_events::AgentContextHandler::new(
+                        &self.client,
+                        &self.config.model,
+                        self.sandbox.workdir(),
+                    );
                     let prefire_factory = self.prefire_client_factory();
                     let overflow = {
                         let mut deps = ContextDeps {
                             session: &mut self.session,
                             compaction_config: &compaction_config,
                             model: &self.config.model,
-                            workdir: self.sandbox.workdir(),
                             client: &self.client,
                             hooks: Some(&hooks),
                             system_prompt: &self.system_prompt,
                             estimator: &estimator,
+                            handler: &mut handler,
                             prefire_client_factory: prefire_factory,
                         };
                         self.context
@@ -764,7 +749,6 @@ impl Agent {
                             )
                             .await?
                     };
-                    self.dispatch_context_events(&overflow.events)?;
                     if let Some(result) = &overflow.compaction {
                         self.record_compaction(result)?;
                     }

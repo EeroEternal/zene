@@ -1,10 +1,9 @@
 //! Session memory flush + post-compact injection (grok-aligned subset).
 //!
 //! Before compaction, optionally ask the model to extract durable lessons into
-//! `{workdir}/.zene/memory/daily/YYYY-MM-DD.md`. After compaction (and at
-//! session start), recent memory is re-injected as a stable `<memory-context>`
-//! block so work survives history loss without reshuffling the system prefix
-//! every turn.
+//! daily memory logs. After compaction (and at session start), recent memory is
+//! re-injected as a stable `<memory-context>` block so work survives history loss
+//! without reshuffling the system prefix every turn.
 
 use std::path::{Path, PathBuf};
 
@@ -108,6 +107,10 @@ pub fn load_recent_memory(workdir: &Path) -> Option<String> {
     FsMemoryStore::new(workdir).load_recent()
 }
 
+pub fn load_recent_memory_from_store(store: &dyn MemoryStore) -> Option<String> {
+    store.load_recent()
+}
+
 pub fn format_memory_context_block(body: &str) -> String {
     format!(
         "{MEMORY_CONTEXT_OPEN}\n## Relevant Memory from Past Sessions\n\n{body}\n{MEMORY_CONTEXT_CLOSE}"
@@ -115,11 +118,11 @@ pub fn format_memory_context_block(body: &str) -> String {
 }
 
 /// Append memory context to the system message once (KV-stable for the session).
-pub fn ensure_memory_in_system(messages: &mut [Message], workdir: &Path) {
+pub fn ensure_memory_in_system(messages: &mut [Message], store: &dyn MemoryStore) {
     if !memory_enabled() || conversation_has_memory_context(messages) {
         return;
     }
-    let Some(body) = load_recent_memory(workdir) else {
+    let Some(body) = store.load_recent() else {
         return;
     };
     let block = format_memory_context_block(&body);
@@ -132,15 +135,21 @@ pub fn ensure_memory_in_system(messages: &mut [Message], workdir: &Path) {
 }
 
 /// Reminder fragment for post-compaction reinjection.
-pub fn memory_reminder(workdir: &Path) -> Option<String> {
+pub fn memory_reminder_from_store(store: &dyn MemoryStore) -> Option<String> {
     if !memory_enabled() {
         return None;
     }
-    let body = load_recent_memory(workdir)?;
+    let body = store.load_recent()?;
     Some(format_memory_context_block(&body))
 }
 
-fn format_flush_input(messages: &[Message]) -> String {
+/// Reminder fragment using filesystem store (convenience for callers with a workdir).
+pub fn memory_reminder(workdir: &Path) -> Option<String> {
+    memory_reminder_from_store(&FsMemoryStore::new(workdir))
+}
+
+/// Format recent messages for memory flush LLM input.
+pub fn format_flush_input(messages: &[Message]) -> String {
     let start = messages.len().saturating_sub(FLUSH_INPUT_MSG_CAP);
     let mut out = String::new();
     for message in &messages[start..] {
@@ -164,14 +173,12 @@ fn format_flush_input(messages: &[Message]) -> String {
 pub async fn run_memory_flush(
     client: &ChatClient,
     model: &str,
-    messages: &[Message],
-    workdir: &Path,
+    conversation: &str,
+    store: &dyn MemoryStore,
 ) -> Result<FlushResult> {
     if !memory_enabled() {
         return Ok(FlushResult::NothingToStore);
     }
-    let store = FsMemoryStore::new(workdir);
-    let conversation = format_flush_input(messages);
     if conversation.trim().is_empty() {
         return Ok(FlushResult::NothingToStore);
     }
@@ -190,10 +197,7 @@ pub async fn run_memory_flush(
     };
 
     let response = client.chat(request).await.context("memory flush chat")?;
-    let text = response
-        .message
-        .content
-        .unwrap_or_default();
+    let text = response.message.content.unwrap_or_default();
 
     match process_flush_response(&text) {
         Ok(Some(content)) => {

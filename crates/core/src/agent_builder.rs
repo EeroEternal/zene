@@ -7,7 +7,7 @@ use anyhow::Result;
 use parking_lot::Mutex;
 use tracing::{info, warn};
 use zene_config::ZeneConfig;
-use zene_context::{ensure_memory_in_system, ContextEngine};
+use zene_context::{ensure_memory_in_system, ContextEngine, FsMemoryStore};
 use zene_llm::ChatClient;
 use zene_sandbox::{LocalSandbox, Sandbox};
 use zene_session::{AgentRecordWriter, SessionRecord};
@@ -195,7 +195,10 @@ impl AgentBuilder {
             include_workspace,
         );
         self.session.ensure_system_message(&system_prompt);
-        ensure_memory_in_system(&mut self.session.messages, &workdir);
+        ensure_memory_in_system(
+            &mut self.session.messages,
+            &FsMemoryStore::new(&workdir),
+        );
 
         let client = match self.client {
             Some(client) => client,
