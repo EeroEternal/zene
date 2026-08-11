@@ -23,7 +23,7 @@ use zene_permission::{PermissionGate, PermissionMode, PermissionRule, RuleAction
 use crate::plan_mode::{default_plan_approval_prompter, PlanApprovalPrompter};
 use crate::tool_dedup::ToolDedup;
 use crate::turn::SteerBuffer;
-use crate::workspace;
+use zene_workspace::{build_system_prompt, FsWorkspaceProvider};
 use crate::Agent;
 
 /// How MCP servers are attached when building an [`Agent`].
@@ -188,9 +188,10 @@ impl AgentBuilder {
         let include_workspace = self
             .include_workspace_context
             .unwrap_or(self.config.include_workspace_context);
-        let system_prompt = workspace::build_system_prompt(
+        let workspace_provider = FsWorkspaceProvider::new(workdir.clone());
+        let system_prompt = build_system_prompt(
             &self.config.system_prompt,
-            &workdir,
+            &workspace_provider,
             include_workspace,
         );
         self.session.ensure_system_message(&system_prompt);

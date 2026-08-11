@@ -33,7 +33,6 @@ mod context_hooks;
 mod events;
 mod hooks;
 mod plan_mode;
-mod skills;
 mod subagent;
 mod tool_dedup;
 pub mod tool_scheduler;
@@ -45,7 +44,6 @@ pub use zene_context::{
     memory_root, CompactionResult, ContextWaterLevel, EstimateMode, EstimateProvider,
     InputLadderStage, TiktokenEncoding, TokenEstimator, estimate_context,
 };
-mod workspace;
 
 pub use agent_builder::AgentBuilder;
 pub use events::{emit_event, AgentEvent, EventHandler};
@@ -63,6 +61,7 @@ use plan_mode::{
 };
 pub use tool_dedup::{append_reminder, ToolDedup};
 pub use tool_scheduler::{classify_tool_accesses, ToolScheduler};
+pub use zene_workspace::{build_system_prompt, FsWorkspaceProvider, WorkspaceProvider};
 pub use worktree::ensure_session_worktree;
 
 pub struct Agent {

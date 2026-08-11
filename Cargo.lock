@@ -4062,6 +4062,7 @@ dependencies = [
  "zene-session",
  "zene-tool-runtime",
  "zene-tools",
+ "zene-workspace",
 ]
 
 [[package]]
@@ -4195,6 +4196,14 @@ dependencies = [
  "zene-permission",
  "zene-sandbox",
  "zene-session",
+]
+
+[[package]]
+name = "zene-workspace"
+version = "0.1.11"
+dependencies = [
+ "tempfile",
+ "tracing",
 ]
 
 [[package]]
