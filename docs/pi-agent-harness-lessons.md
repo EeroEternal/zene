@@ -275,6 +275,9 @@ Zene：ACP + Cloud worker + Console 更适合远程产品。
 
 ### P0
 
+0. **统一 ID + RuntimeEvent 信封**（与控制面共用地基）  
+   细节与 Wave 顺序：[agent-runtime-optimization.md §16](./agent-runtime-optimization.md#16-merged-implementation-waves)。
+
 1. **统一 Session Event Model**  
    逻辑事件：message、tool、permission、model change、compaction、branch/fork/rewind、checkpoint、custom state…  
    投影：LLM / UI / replay / analytics / export。  
@@ -282,23 +285,33 @@ Zene：ACP + Cloud worker + Console 更适合远程产品。
 
 2. **明确 Context Projection 契约**  
    `observe` / `commit` / `project`；compaction 追加事件；注入物分类。  
+   对外 port 名对齐 `ContextAssembler`。  
    细节：[context-engine-projection.md](./context-engine-projection.md)。
 
-3. **固定 Tool Batch 终止协议**  
+3. **固定 Tool Batch 终止协议**（落在 `ToolExecutor`，非 Agent 私货）  
    block / error / terminate / cancel / retry 及批量、顺序、ACP 表达。
 
 ### P1
 
-4. **Skill / Capability Manifest + trust**（可先 `SKILL.md`，后包管理）  
-5. **Readiness check**（auth 只是子集）  
-6. **Agent 生命周期状态契约**（reset / model / tools / compact / fork 何时允许）  
-7. **ProjectionExplain + `/context` 可视化**
+4. **RuntimeHandle 控制面**（cancel/steer/approval 单一状态所有者）  
+5. **Skill / Capability Manifest + trust**（可先 `SKILL.md`，后包管理）  
+6. **Readiness check**（auth 只是子集）  
+7. **Agent 生命周期状态契约**（reset / model / tools / compact / fork 何时允许）  
+8. **ProjectionExplain + `/context` 可视化**
 
 ### P2
 
-8. 统一 RPC/ACP/SDK/Cloud 事件语义文档化  
-9. Branch summary、summary 内 file-ops 累积  
-10. Capability 分发（git/npm 类）—— 先 manifest，后安装器  
+9. 统一 RPC/ACP/SDK/Cloud 事件语义（一种 RuntimeEvent，多种 sink）  
+10. Branch summary、summary 内 file-ops 累积  
+11. Capability 分发（git/npm 类）—— 先 manifest，后安装器  
+12. Execution checkpoint / tool 幂等恢复  
+
+### 6.1 与 AgentRuntime 文档的关系
+
+Pi 启发的 **数据面**（Session 树、投影、可观察）与
+[agent-runtime-optimization.md](./agent-runtime-optimization.md) 的 **控制面**
+（Runtime actor、TurnEngine ports、Cloud/ACP 拆分）正交。
+**合并落地以该文 §16 Waves 为准**，避免「只拆 Runtime 仍毁 messages」或「只双写事件仍多处 queue」。
 
 ---
 
@@ -337,3 +350,8 @@ Zene：ACP + Cloud worker + Console 更适合远程产品。
 
 - 基于 Pi v0.84.1 release、coding-agent / agent-core 文档与源码树，对照 Zene crates 与 ENGINE/context 文档  
 - 抽出 P0–P2 与「不照搬」清单；Session/Context 细节外链至专项文档
+
+### 2026-08-11 — 对齐 AgentRuntime
+
+- P0 增加 RuntimeEvent/ID；Tool 协议归属 ToolExecutor；P1 增加 RuntimeHandle
+- 指向 [agent-runtime-optimization.md](./agent-runtime-optimization.md) Merged Waves

@@ -5,6 +5,7 @@
 > 两者相关，但不是同一件事；也绝不能反过来让 Context 变成事实来源。
 
 本文是架构心智模型，不是实现清单。对照实现见 [ENGINE.md](./ENGINE.md)、[context-engine.md](./context-engine.md)、[agent-inference-context.md](./agent-inference-context.md)、[agent-components.md](./agent-components.md)。  
+控制面（谁在跑、命令与状态归谁）见 [agent-runtime-optimization.md](./agent-runtime-optimization.md)；Context 投影落地见 [context-engine-projection.md](./context-engine-projection.md)。  
 灵感来源：Pi Session Tree（JSONL event tree + `buildSessionContext` 投影）；Zene 不必照搬其格式。更完整的 Pi→Zene 对照见 [pi-agent-harness-lessons.md](./pi-agent-harness-lessons.md)。
 
 ---
@@ -312,6 +313,20 @@ session.messages_for_llm = 从 events 投影出来的视图
 
 它们都应订阅或读取同一 session event 流，再各自渲染。
 
+对外实时流优先走统一 **RuntimeEvent**（见
+[agent-runtime-optimization.md](./agent-runtime-optimization.md)），
+由 Conversation SoT / Execution record **投影** 而来，而不是 ACP / Cloud 各自再记一份对话真相。
+
+### E. Conversation SoT ≠ Execution record ≠ RuntimeEvent
+
+| 名称 | 职责 |
+|------|------|
+| **Conversation SoT** | message、compaction、fork…（内容真相） |
+| **Execution record** | step/tool/approval 进度（运行真相，可恢复） |
+| **RuntimeEvent** | 带 sequence 的对外实时流 |
+
+三者 **ID 空间统一**，职责不合并成一个万能日志。控制面（cancel/steer/approval）的单所有者是 **AgentRuntime**，不是 ContextEngine。
+
 ---
 
 ## 9. 最小心智模型
@@ -339,11 +354,29 @@ session.messages_for_llm = 从 events 投影出来的视图
 
 ---
 
+## 10. 落地顺序（与 Runtime 合并）
+
+数据面不要单独空转；与控制面合并 Wave 见
+[agent-runtime-optimization.md §16](./agent-runtime-optimization.md#16-merged-implementation-waves)：
+
+```text
+Wave 1  统一 ID + RuntimeEvent 信封
+Wave 2  Conversation SoT 双写（本文主场）
+Wave 3  Context observe/commit/project
+…
+```
+
+第一期：双写、兼容旧 load、**不**切换默认读路径。
+控制类事实（steer/cancel/approval）预留事件或 execution record 挂钩，避免日后 Runtime actor 无法对齐。
+
+---
+
 ## 相关文档
 
 - [ENGINE.md](./ENGINE.md) — turn / steer / compaction 行为
 - [context-engine.md](./context-engine.md) — ContextEngine 边界
 - [context-engine-projection.md](./context-engine-projection.md) — Context 投影化优化路线
+- [agent-runtime-optimization.md](./agent-runtime-optimization.md) — AgentRuntime / Turn / ports（控制面）
 - [agent-inference-context.md](./agent-inference-context.md) — 推理上下文装配
 - [agent-components.md](./agent-components.md) — 可组装组件栈
 - [pi-agent-harness-lessons.md](./pi-agent-harness-lessons.md) — Pi Agent Harness 对照与启发总览

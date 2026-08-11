@@ -2,7 +2,7 @@
 
 > **目标定位**：Context Engine 不再「管理并改写历史」，只「根据策略从 Session 事实算出本次请求视图」。
 
-本文是 [session-as-source-of-truth.md](./session-as-source-of-truth.md) 在 Context 侧的落地规划，衔接 [context-engine.md](./context-engine.md)（现状与 API）、[agent-inference-context.md](./agent-inference-context.md)（推理协议）、[ENGINE.md](./ENGINE.md)（turn / compaction 行为）。Pi 侧整体对照见 [pi-agent-harness-lessons.md](./pi-agent-harness-lessons.md)。
+本文是 [session-as-source-of-truth.md](./session-as-source-of-truth.md) 在 Context 侧的落地规划，衔接 [context-engine.md](./context-engine.md)（现状与 API）、[agent-inference-context.md](./agent-inference-context.md)（推理协议）、[ENGINE.md](./ENGINE.md)（turn / compaction 行为）。控制面（Runtime / Turn / ports）见 [agent-runtime-optimization.md](./agent-runtime-optimization.md)。Pi 侧整体对照见 [pi-agent-harness-lessons.md](./pi-agent-harness-lessons.md)。
 
 **不在本文范围**：再堆一种全新 compress 算法；为对齐 Pi 而改成 JSONL 文件格式；把 permission / MCP 塞进 ContextEngine。
 
@@ -397,11 +397,30 @@ engine.record_step_usage(usage, /* … */)?;
 | **P2** | `messages` 降级为 materialized cache | 兼容旧 API，内部切 SoT |
 | **P3** | UI / replay 与 LLM 共享同一 active path 查询 | 统一 ACP / Cloud / CLI |
 
+### 6.1 与 AgentRuntime 合并后的 Wave 映射
+
+全文落地顺序以
+[agent-runtime-optimization.md §16](./agent-runtime-optimization.md#16-merged-implementation-waves)
+为准。本文 Phase 嵌入位置：
+
+| 本文 | Merged Wave | 说明 |
+|------|-------------|------|
+| Phase A Session 事实 | **Wave 2** | 前依赖 Wave 1（统一 ID / RuntimeEvent） |
+| Phase B observe/commit/project | **Wave 3** | 对外 port 名对齐 `ContextAssembler` |
+| Phase C compact 事件化 | Wave 2–3 内完成 4a→4c | flag 切换读路径 |
+| Phase D 注入 / epoch | Wave 3–5 | 与 Turn 消费 `PreparedContext` 一起收 |
+| Phase E explain | 可与 Wave 3 并行 | 最终经 RuntimeEvent / debug sink |
+
+**API 造型：** TurnEngine 只依赖 `ContextAssembler::prepare` /
+`handle_overflow`；三段式是 `ContextEngine` **内部** 实现，
+不是再暴露第三套全局回调。
+
 **暂不必优先：**
 
 - 再引入全新 compress phase
 - 为像 Pi 而改存储格式
 - 把 permission / MCP 逻辑迁入 `zene-context`
+- 先于 Wave 1–2 上 Runtime actor 全量重写
 
 ---
 
@@ -436,6 +455,7 @@ engine.record_step_usage(usage, /* … */)?;
 | [agent-inference-context.md](./agent-inference-context.md) | epoch、delta、与推理层协议 |
 | [ENGINE.md](./ENGINE.md) | compaction 阶段、water、steer 等运行时行为 |
 | [agent-components.md](./agent-components.md) | 可组装组件栈与发布边界 |
+| [agent-runtime-optimization.md](./agent-runtime-optimization.md) | Runtime / Turn / ports；Merged Wave |
 | [pi-agent-harness-lessons.md](./pi-agent-harness-lessons.md) | Pi Harness 对照与启发总览 |
 
 本文 **不替代** `context-engine.md` 的实现说明，只定义 **下一阶段语义优化方向**。
@@ -456,3 +476,9 @@ engine.record_step_usage(usage, /* … */)?;
 
 - 自 Pi Session Tree 与 Zene 现状对照引出：SoT / 投影四层、`observe|commit|project`、compaction 事件化、注入与 epoch、ProjectionExplain
 - 明确不照搬 Pi 格式；优先双写与 `prepare_step` 门面兼容
+
+### 2026-08-11 — 对齐 AgentRuntime
+
+- 优先级表增加 Merged Wave 映射（Wave 1→3 优先）
+- `ContextAssembler` 为对外 port，三段式为对内实现
+- 交叉引用 [agent-runtime-optimization.md](./agent-runtime-optimization.md)
