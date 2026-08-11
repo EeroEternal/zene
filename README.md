@@ -1,13 +1,25 @@
 # Zene
 
-Zene is a local coding agent CLI written in Rust. It runs in your project directory, reads and edits files, executes shell commands, and keeps conversation sessions on disk.
+Zene is a coding-agent product. The product UI is **Cloud Console** (`cloud/`); the `zene` binary speaks Agent Client Protocol (`zene acp`) for Cloud workers and editors.
 
-## Install
-
-From the repo:
+## Local development (Cloud Console)
 
 ```bash
-./install.sh
+cd cloud && ./scripts/dev.sh
+# open http://127.0.0.1:8788/
+# Register → Settings (LLM BYOK) → Connect GitHub → New Agent
+```
+
+`dev.sh` builds or locates the repo-root `zene` binary and starts the API + worker with real ACP.
+
+See [`cloud/README.md`](cloud/README.md) for env vars and demo path. Production: [https://zene.run](https://zene.run) — deploy notes in [`cloud/deploy/README.md`](cloud/deploy/README.md).
+
+## Install `zene` (ACP binary)
+
+Needed for Cloud workers / editors. From the repo:
+
+```bash
+./scripts/install.sh
 ```
 
 Or manually:
@@ -16,21 +28,22 @@ Or manually:
 cargo install --path apps/cli --locked
 ```
 
-Pre-built binaries are published on [GitHub Releases](https://github.com/ParaTensor/zene/releases) when a version tag (`v*`) is pushed. Each release includes `zene` and `zene-gateway` for Linux and macOS (x86_64 + Apple Silicon). Download install (no compile):
+Pre-built binaries are published on [GitHub Releases](https://github.com/ParaTensor/zene/releases) when a version tag (`v*`) is pushed. Each release includes `zene` for Linux and macOS (x86_64 + Apple Silicon). Download install (no compile):
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/ParaTensor/zene/main/www/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/ParaTensor/zene/main/scripts/install-release.sh | bash
 ```
 
-Or run directly without installing:
+Or build without installing:
 
 ```bash
-cargo run -p zene-cli
+cargo build -p zene-cli
+# ./target/debug/zene acp
 ```
 
-## Configure
+## Configure (ACP / agent runtime)
 
-On first run, Zene creates `~/.zene/config.toml`. Set your API key there or via environment variables:
+On first run, Zene creates `~/.zene/config.toml`. Cloud Console users normally set LLM keys in **Settings** (BYOK). For local ACP / env overrides:
 
 ```bash
 # OpenAI-compatible (default provider)
@@ -66,7 +79,7 @@ profile = "workspace"          # off | workspace | read-only | strict | custom
 # auto_allow_bash = false      # skip Bash prompts when sandbox is active
 ```
 
-Custom Keel profiles can also live in `~/.zene/sandbox.toml` / `.zene/sandbox.toml` (same shape as Keel `[profiles.*]`). CLI `--sandbox` and `ZENE_SANDBOX` override config. Explore agent profile defaults to `read-only` when sandbox profile is unset.
+Custom Keel profiles can also live in `~/.zene/sandbox.toml` / `.zene/sandbox.toml` (same shape as Keel `[profiles.*]`). `ZENE_SANDBOX` overrides config. Explore agent profile defaults to `read-only` when sandbox profile is unset.
 
 Per-project overrides in `.zene/config.toml` (merged over global; project wins on key collision):
 
@@ -108,39 +121,27 @@ Skills live under `.agents/skills/*/SKILL.md`. Zene lists discovered skills in t
 
 **Web search:** Configure `[web_search]` in `~/.zene/config.toml`. With `provider = "tavily"` and an API key ([Tavily](https://tavily.com/) — simple REST API), results include title, URL, and snippet. Without a key, `provider = "duckduckgo"` scrapes DuckDuckGo HTML (fragile, fewer results, may break if markup changes).
 
-## Usage
+## `zene` commands
+
+The interactive local REPL and headless `-p` were removed. Product UI is Cloud Console.
 
 ```bash
-cd your-project
-zene                   # opens local Web Agent UI (zene-gateway)
-```
-
-CLI commands:
-
-```bash
+zene acp               # Agent Client Protocol over stdio (Cloud workers / editors)
+zene acp --yolo        # auto-approve Write / Edit / Bash
 zene sessions          # list saved sessions for current workdir
 zene config            # show config paths
-zene -p "prompt"       # headless single prompt
-zene --yolo            # auto-approve Write / Edit / Bash (also forwarded to web)
-zene --sandbox strict  # Keel profile: off | workspace | read-only | strict | custom
-zene acp               # Agent Client Protocol over stdio (for editors / gateway)
-zene web --yolo --sandbox-off   # explicit Web Agent launch
-zene --repl            # debug line REPL (not the default UI)
+zene export --session <id> --output out.zip
+zene mcp doctor        # probe configured MCP servers
 ```
 
-```bash
-cargo run -p zene-cli -- --yolo --sandbox-off
-# open the printed http://127.0.0.1:8787/#token=... URL
-```
-
-`zene-gateway` is a thin local HTTP bridge: the Web UI prefers SSE and falls back to long-polling; the gateway speaks ACP NDJSON to a `zene acp` child process. Journals persist under `~/.zene/gateway` for restart/attach recovery. UI sources live in `apps/web-agent/`. See [docs/WEB_AGENT_GATEWAY.md](docs/WEB_AGENT_GATEWAY.md), [docs/GATEWAY_OPS.md](docs/GATEWAY_OPS.md), and [docs/TUI_MIGRATION.md](docs/TUI_MIGRATION.md).
+See [docs/TUI_MIGRATION.md](docs/TUI_MIGRATION.md) for the move away from TUI / local Web Agent / REPL.
 
 ## Architecture
 
 ```
 zene/
-├── apps/cli/          # web / headless / ACP / debug REPL entrypoint
-├── apps/gateway/      # local HTTP gateway for Web Agent UI
+├── apps/cli/          # zene binary: ACP + utility subcommands
+├── cloud/apps/web/    # Cloud Console UI
 └── crates/
     ├── core/          # agent turn loop, hooks
     ├── llm/           # OpenAI-compatible (unigateway-sdk from crates.io) + Anthropic clients

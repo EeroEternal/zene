@@ -16,7 +16,7 @@ use globset::GlobBuilder;
 #[cfg(not(any(target_os = "linux", target_os = "macos")))]
 use keel_core::backend_process_guard;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
-use keel_core::{backend_local_process, LocalProcessOptions};
+use keel_core::backend_local_process;
 use keel_core::{
     check_egress, ManagedProcess, NetworkPolicy, Space, SpaceHandle, SpawnRequest, StdioMode,
     TerminationReason,
@@ -178,11 +178,12 @@ impl LocalSandbox {
             });
         }
 
-        let policy = options::resolve_policy(&workdir, &opts)?;
+        let mut policy = options::resolve_policy(&workdir, &opts)?;
+        options::adapt_policy_for_keel_spawn(&mut policy);
         let network = policy.network.clone();
 
         #[cfg(any(target_os = "linux", target_os = "macos"))]
-        let backend = backend_local_process(LocalProcessOptions::default());
+        let backend = backend_local_process(options::local_process_options());
         #[cfg(not(any(target_os = "linux", target_os = "macos")))]
         let backend = backend_process_guard();
 
@@ -870,20 +871,77 @@ async fn read_limited(reader: &mut (impl AsyncReadExt + Unpin), limit: usize) ->
 
 #[async_trait]
 pub trait Sandbox: Send + Sync {
+    fn workdir(&self) -> &Path;
+
+    fn resolve(&self, path: &str) -> Result<PathBuf>;
+
     async fn read_text(&self, path: &str) -> Result<String>;
+
+    async fn read_file_bytes(&self, path: &str, hint_max: usize) -> Result<Vec<u8>>;
+
     async fn write_text(&self, path: &str, content: &str) -> Result<()>;
+
     async fn exec(
         &self,
         command: &str,
         cwd: Option<&str>,
         cancel: Option<&CancellationToken>,
     ) -> Result<ExecResult>;
+
+    async fn exec_with_timeout(
+        &self,
+        command: &str,
+        cwd: Option<&str>,
+        cancel: Option<&CancellationToken>,
+        timeout: Duration,
+    ) -> Result<ExecResult> {
+        let _ = timeout;
+        self.exec(command, cwd, cancel).await
+    }
+
+    fn glob(&self, pattern: &str) -> Result<Vec<String>>;
+
+    async fn grep(
+        &self,
+        pattern: &str,
+        path: Option<&str>,
+        case_insensitive: bool,
+    ) -> Result<Vec<GrepMatch>>;
+
+    /// No-op by default; Keel-backed sandboxes enforce network policy.
+    async fn authorize_egress(&self, url: &str) -> Result<()> {
+        let _ = url;
+        Ok(())
+    }
+
+    /// Narrow execution to a subdirectory (same policy as parent when supported).
+    fn scoped_to(&self, workdir: PathBuf) -> Result<Arc<dyn Sandbox>>;
+
+    fn is_enforced(&self) -> bool {
+        false
+    }
+
+    async fn shutdown(&self) -> Result<()> {
+        Ok(())
+    }
 }
 
 #[async_trait]
 impl Sandbox for LocalSandbox {
+    fn workdir(&self) -> &Path {
+        LocalSandbox::workdir(self)
+    }
+
+    fn resolve(&self, path: &str) -> Result<PathBuf> {
+        LocalSandbox::resolve(self, path)
+    }
+
     async fn read_text(&self, path: &str) -> Result<String> {
         LocalSandbox::read_text(self, path).await
+    }
+
+    async fn read_file_bytes(&self, path: &str, hint_max: usize) -> Result<Vec<u8>> {
+        LocalSandbox::read_file_bytes(self, path, hint_max).await
     }
 
     async fn write_text(&self, path: &str, content: &str) -> Result<()> {
@@ -898,6 +956,50 @@ impl Sandbox for LocalSandbox {
     ) -> Result<ExecResult> {
         LocalSandbox::exec(self, command, cwd, cancel).await
     }
+
+    async fn exec_with_timeout(
+        &self,
+        command: &str,
+        cwd: Option<&str>,
+        cancel: Option<&CancellationToken>,
+        timeout: Duration,
+    ) -> Result<ExecResult> {
+        LocalSandbox::exec_with_timeout(self, command, cwd, cancel, timeout).await
+    }
+
+    fn glob(&self, pattern: &str) -> Result<Vec<String>> {
+        LocalSandbox::glob(self, pattern)
+    }
+
+    async fn grep(
+        &self,
+        pattern: &str,
+        path: Option<&str>,
+        case_insensitive: bool,
+    ) -> Result<Vec<GrepMatch>> {
+        LocalSandbox::grep(self, pattern, path, case_insensitive).await
+    }
+
+    async fn authorize_egress(&self, url: &str) -> Result<()> {
+        LocalSandbox::authorize_egress(self, url).await
+    }
+
+    fn scoped_to(&self, workdir: PathBuf) -> Result<Arc<dyn Sandbox>> {
+        Ok(Arc::new(LocalSandbox::scoped_to(self, workdir)?))
+    }
+
+    fn is_enforced(&self) -> bool {
+        LocalSandbox::is_enforced(self)
+    }
+
+    async fn shutdown(&self) -> Result<()> {
+        LocalSandbox::shutdown(self).await
+    }
+}
+
+/// Wrap a concrete sandbox for tool / agent wiring.
+pub fn into_arc(local: LocalSandbox) -> Arc<dyn Sandbox> {
+    Arc::new(local)
 }
 
 #[cfg(test)]

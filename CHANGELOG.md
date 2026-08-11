@@ -2,6 +2,44 @@
 
 ## Unreleased
 
+## v0.1.11 (2026-08-11)
+
+### Added
+- `zene-context` crate: ContextEngine (estimate, compact, assemble, epoch) decoupled from runtime.
+- `zene-inference-gateway`: UniGateway 2.14 session prefix store, delta assembly, optional Redis (`unigateway-session-redis`).
+- Cloud deploy: inference gateway systemd unit, VM Redis in startup, worker `ZENE_INFERENCE_GATEWAY_URL` injection.
+- Docs: `docs/context-engine.md`, agent-components cross-links; E2E test for publish + delta assembly.
+
+### Changed
+- OpenAI-compatible LLM path uses `unigateway-sdk` 2.14 with `_session_context` / fingerprint metadata.
+- Context modules moved from `zene-core` to `zene-context`; Agent wires ContextEngine on prepare/usage.
+
+## v0.1.10 (2026-07-26)
+
+### Added
+- Configurable run max turns (`ZENE_MAX_TURNS` / New Agent picker); `0` = unlimited, soft-stop instead of failing the run.
+- Cloud worker supervisor scaling and run archive migration.
+- Cloud Console markdown rendering and Cursor-style tool/activity summaries in Run view.
+
+### Changed
+- CLI focuses on `zene acp` (interactive REPL / headless `-p` removed).
+- Opening a past run drains all event pages offline and commits the timeline once (no chunked replay).
+
+### Fixed
+- Run history reopen no longer appears to stream in slowly when events exceed the 500-per-page API limit.
+
+## v0.1.8 (2026-07-25)
+
+### Added
+- Cloud Console: per-user BYOK LLM settings required before starting agents; worker injects credentials into `zene acp`.
+- Cloud: reclaim stale worker leases and re-queue abandoned runs; ACP idle session hold for follow-ups.
+- Cloud web design samples under `cloud/apps/web/sample/`.
+
+### Changed
+- Bump Keel sandbox stack to `eero-keel-core` 0.0.15 (baseline credential denies, audit hash chain, Windows Job/AppContainer). On Linux, Zene strips Keel FS deny rules before `Space::create` to avoid Keel 0.0.15’s outer-`bwrap` + Landlock `pre_exec` userns failure; host `path_policy` still blocks credential reads.
+- Cloud Console UI: Changes / Diff / Git / Run / New Agent panels refined toward Cursor-style review workflow.
+- `cloud/scripts/dev.sh` auto-builds or locates `zene` and prefers real ACP (mock only when allowed).
+
 ## v0.1.7 (2026-07-20)
 
 Headless **Web Agent** becomes the default UI: local `zene-gateway` serves the browser UI over HTTP (long-polling + optional SSE), with `zene` / `zene web` as the launch entry. Releases and `www/install.sh` now ship both `zene` and `zene-gateway` binaries.

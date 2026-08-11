@@ -1,0 +1,22 @@
+[package]
+name = "zene-hooks"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Lifecycle hook planning and execution adapters for Zene agents"
+readme = "README.md"
+repository = "https://github.com/ParaTensor/zene"
+keywords = ["agent", "hooks"]
+categories = ["development-tools"]
+publish = false
+
+[dependencies]
+anyhow.workspace = true
+async-trait.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+tempfile = "3"

@@ -1,13 +1,13 @@
 # Zene Engine Notes
 
-Core agent loop lives in `crates/core`. This document tracks engine-level behaviors (turn flow, context, permissions) beyond the milestone checklist in [ROADMAP.md](./ROADMAP.md).
+Core agent loop lives in `crates/core`. This document tracks engine-level behaviors (turn flow, context, permissions) beyond the milestone checklist in [ROADMAP.md](./ROADMAP.md). For the Session-vs-Context architecture model, see [session-as-source-of-truth.md](./session-as-source-of-truth.md). For Context Engine projection-oriented next steps, see [context-engine-projection.md](./context-engine-projection.md). For Pi agent-harness comparisons, see [pi-agent-harness-lessons.md](./pi-agent-harness-lessons.md).
 
 ## Turn flow & steer
 
 - One **active turn** per `Agent` (`TurnState` in `turn.rs`).
 - `Agent::prompt()` starts a turn; concurrent `prompt()` calls fail with an error that suggests `steer()`.
 - **`Agent::steer(text)`** queues follow-up user guidance in `SteerBuffer` (kimi `steerBuffer` analogue). Messages are injected as `Message::user` **after the current step completes** (post-tool or post-assistant), not as a new turn.
-- CLI REPL: `/steer <message>` when a turn is active (typically from Web/async callers; blocking `--repl` waits on `prompt()`).
+- Steer is typically used from Cloud / ACP / async callers (the interactive local REPL was removed).
 - Event: `AgentEvent::SteerInput { text }` for UI/replay hooks.
 
 ## Token estimation
@@ -79,7 +79,7 @@ Avoids paying for LLM summarize when truncation alone fixes the overflow.
 
 ### Usage-driven water level
 
-`ContextWaterLevel` (`context_water.rs`) tracks the last provider `prompt_tokens` and the heuristic estimate. Auto-compact triggers on `max(usage, estimate)` vs `context_window * trigger_ratio` (default 85%). After tool results, a preflight pass also compacts when the estimate exceeds the hard window. Failed summarize sets sticky suppression until a successful `/compact`. Session persists `context_window_usage` / `context_tokens_used`; Web UI shows usage/context; `/context` (alias `/tokens`) prints the report in `--repl`.
+`ContextWaterLevel` (`context_water.rs`) tracks the last provider `prompt_tokens` and the heuristic estimate. Auto-compact triggers on `max(usage, estimate)` vs `context_window * trigger_ratio` (default 85%). After tool results, a preflight pass also compacts when the estimate exceeds the hard window. Failed summarize sets sticky suppression until a successful `/compact`. Session persists `context_window_usage` / `context_tokens_used`; Cloud Console shows usage/context.
 
 ### Full-replace assemble + input ladder
 
@@ -121,7 +121,7 @@ Production entry points build `LocalSandbox::with_options` from config / CLI:
 | `strict` | workspace + system paths only | deny-all | Untrusted repos |
 | custom | from `~/.zene/sandbox.toml` | per profile | Keel `SandboxConfig` loader |
 
-Overrides: CLI `--sandbox` > `ZENE_SANDBOX` > `[sandbox] profile` in config. `allow_hosts` (config / `ZENE_SANDBOX_ALLOW_HOSTS`) turns network into an allowlist and is enforced for Bash children (Keel egress proxy) plus host tools (`FetchUrl`, `WebSearch`, HTTP MCP) via `LocalSandbox::authorize_egress`. Default credential denies (`~/.ssh`, `~/.gnupg`, `~/.aws`, `**/.env*`, `**/*.pem`, …) are injected into every non-`off` policy; host Read also uses `check_read_allowed`. File I/O prefers Keel `SpaceFs` when a space is active. `[sandbox] auto_allow_bash = true` skips Bash permission prompts while enforcement is on.
+Overrides: CLI `--sandbox` > `ZENE_SANDBOX` > `[sandbox] profile` in config. `allow_hosts` (config / `ZENE_SANDBOX_ALLOW_HOSTS`) turns network into an allowlist and is enforced for Bash children (Keel egress proxy) plus host tools (`FetchUrl`, `WebSearch`, HTTP MCP) via `LocalSandbox::authorize_egress`. Keel ≥0.0.12 baseline credential denies apply on macOS/Windows; on Linux Zene strips those FS denies before creating the space (Keel 0.0.15 outer-`bwrap` + Landlock `pre_exec` breaks userns) and relies on host `path_policy` / `check_read_allowed` for credential gating, with Landlock still isolating child writes. File I/O prefers Keel `SpaceFs` when a space is active. `[sandbox] auto_allow_bash = true` skips Bash permission prompts while enforcement is on.
 
 ## Permission modes (grok-aligned)
 
@@ -171,18 +171,9 @@ Before/after compaction, checkpoints are saved under `~/.zene/sessions/<id>/comp
 
 Stdout is reserved for protocol frames; logs go to stderr.
 
-## HTTP Gateway (Web Agent)
+## Cloud ACP bridge
 
-`zene-gateway` is a thin local HTTP adapter in front of `zene acp` (see `docs/WEB_AGENT_GATEWAY.md`):
-
-- Default bind: `127.0.0.1` with a generated `X-Zene-Token`
-- `POST /api/v1/agents/{id}/messages` forwards raw ACP JSON-RPC frames to the child stdin
-- `GET /api/v1/agents/{id}/events?cursor=&waitMs=` long-polls a cursored event journal fed by child stdout
-- `GET /api/v1/agents/{id}/events/stream` is optional SSE; clients must fall back to long-polling
-- Controller lease (`/lease`, heartbeat, release) serializes multi-tab writes via `X-Zene-Client-Id`
-- When the Web client advertises `terminal`, the gateway hosts ACP `terminal/*` locally and mirrors output as `gateway.terminal` events
-- WebSocket is intentionally not required
-- The gateway does not own Agent loop / tools / sessions — those stay in Zene
+Cloud workers speak ACP to a `zene acp` child via `cloud/crates/acp-bridge`. There is no local browser gateway; the product UI is Cloud Console (`cloud/apps/web`).
 
 ## LLM layer
 

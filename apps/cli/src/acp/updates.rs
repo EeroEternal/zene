@@ -16,13 +16,194 @@ pub fn tool_kind(name: &str) -> &'static str {
     }
 }
 
+/// Friendly one-line label for ACP clients. Prefer intent over raw commands/paths;
+/// the full command stays in `rawInput` for expand-to-inspect.
 pub fn tool_title(name: &str, arguments: &str) -> String {
-    let preview = truncate(arguments, 80);
-    if preview.is_empty() {
-        format!("Run tool `{name}`")
-    } else {
-        format!("{name}({preview})")
+    let args: Value = serde_json::from_str(arguments).unwrap_or(Value::Null);
+    let field = |key: &str| -> Option<&str> { args.get(key).and_then(|v| v.as_str()) };
+
+    match name {
+        "Read" => format!("Read {}", display_path(field("path").unwrap_or("file"))),
+        "Write" => format!("Wrote {}", display_path(field("path").unwrap_or("file"))),
+        "Edit" => format!("Edited {}", display_path(field("path").unwrap_or("file"))),
+        "Bash" => bash_title(field("command").unwrap_or("")),
+        "Grep" => format!(
+            "Searched code for {}",
+            truncate(field("pattern").or_else(|| field("regex")).unwrap_or("…"), 40)
+        ),
+        "Glob" => format!(
+            "Found files matching {}",
+            truncate(
+                field("pattern")
+                    .or_else(|| field("glob_pattern"))
+                    .or_else(|| field("glob"))
+                    .unwrap_or("*"),
+                40
+            )
+        ),
+        "WebSearch" => format!(
+            "Searched the web for \"{}\"",
+            truncate(field("query").unwrap_or("…"), 40)
+        ),
+        "FetchUrl" => "Fetched a web page".to_string(),
+        "TodoWrite" => "Updated todos".to_string(),
+        "Task" => "Ran a subtask".to_string(),
+        "TaskOutput" => "Checked task output".to_string(),
+        "AskUser" => "Asked a question".to_string(),
+        "EnterPlanMode" => "Entered plan mode".to_string(),
+        "ExitPlanMode" => "Exited plan mode".to_string(),
+        "Skill" => format!(
+            "Used skill {}",
+            field("skill").or_else(|| field("name")).unwrap_or("skill")
+        ),
+        _ => {
+            if name.starts_with("mcp__") {
+                format!("Used {}", name.rsplit("__").next().unwrap_or(name))
+            } else {
+                format!("Used {name}")
+            }
+        }
     }
+}
+
+fn bash_title(command: &str) -> String {
+    let first = command
+        .lines()
+        .map(str::trim)
+        .find(|l| !l.is_empty())
+        .unwrap_or("")
+        .replace('\t', " ");
+    let collapsed = first.split_whitespace().collect::<Vec<_>>().join(" ");
+    if collapsed.is_empty() {
+        return "Ran a command".to_string();
+    }
+    let cmd = strip_leading_cd(&collapsed);
+    bash_intent(cmd)
+}
+
+fn strip_leading_cd(cmd: &str) -> &str {
+    cmd.strip_prefix("cd ")
+        .and_then(|rest| {
+            rest.find(" && ")
+                .map(|i| rest[i + 4..].trim())
+                .filter(|s| !s.is_empty())
+        })
+        .unwrap_or(cmd)
+}
+
+/// Map shell to a short intent phrase — never echo the raw command line.
+fn bash_intent(cmd: &str) -> String {
+    let lower = cmd.to_ascii_lowercase();
+    let head = lower.split_whitespace().next().unwrap_or("");
+    let rest = lower.split_whitespace().skip(1).collect::<Vec<_>>().join(" ");
+
+    match head {
+        "mkdir" | "mktemp" => "Created directories".into(),
+        "rm" | "rmdir" => "Removed files".into(),
+        "cp" | "mv" | "install" => "Moved or copied files".into(),
+        "touch" => "Created files".into(),
+        "chmod" | "chown" => "Changed file permissions".into(),
+        "ls" | "tree" | "find" | "du" | "stat" | "file" => "Listed files".into(),
+        "cat" | "head" | "tail" | "less" | "more" | "bat" => "Inspected file contents".into(),
+        "rg" | "grep" | "ag" | "ack" => "Searched files".into(),
+        "curl" | "wget" | "http" => "Fetched from the network".into(),
+        "echo" | "printf" => "Printed output".into(),
+        "which" | "type" | "command" | "whereis" => "Checked available tools".into(),
+        "uname" | "sw_vers" | "sysctl" => "Checked system info".into(),
+        "pwd" => "Checked working directory".into(),
+        "export" | "unset" | "env" | "printenv" => "Updated environment".into(),
+        "cargo" => cargo_intent(&rest),
+        "rustc" | "rustup" => "Checked Rust toolchain".into(),
+        "npm" | "pnpm" | "yarn" | "bun" => node_intent(head, &rest),
+        "python" | "python3" | "pip" | "pip3" | "uv" => "Ran Python tooling".into(),
+        "go" => "Ran Go tooling".into(),
+        "make" | "cmake" | "ninja" => "Ran a build".into(),
+        "docker" | "podman" => "Ran a container command".into(),
+        "gh" => gh_intent(&rest),
+        "git" => git_intent(&rest),
+        "tar" | "zip" | "unzip" | "gzip" => "Archived files".into(),
+        "sed" | "awk" | "cut" | "sort" | "uniq" | "tr" | "jq" | "xargs" => {
+            "Processed text".into()
+        }
+        "test" | "[" => "Ran a shell check".into(),
+        "bash" | "sh" | "zsh" => "Ran a shell script".into(),
+        _ if lower.contains("&&") || lower.contains(';') || lower.contains('|') => {
+            "Ran a shell script".into()
+        }
+        _ => "Ran a command".into(),
+    }
+}
+
+fn cargo_intent(rest: &str) -> String {
+    let sub = rest.split_whitespace().next().unwrap_or("");
+    match sub {
+        "build" | "b" => "Built with Cargo".into(),
+        "check" | "c" | "clippy" => "Checked with Cargo".into(),
+        "test" | "t" => "Ran Cargo tests".into(),
+        "run" | "r" => "Ran a Cargo binary".into(),
+        "init" | "new" => "Created a Cargo project".into(),
+        "add" => "Added a Cargo dependency".into(),
+        "fmt" => "Formatted Rust code".into(),
+        "update" | "fetch" => "Updated Cargo dependencies".into(),
+        "--version" | "-V" | "version" => "Checked Cargo version".into(),
+        _ => "Ran Cargo".into(),
+    }
+}
+
+fn node_intent(bin: &str, rest: &str) -> String {
+    let sub = rest.split_whitespace().next().unwrap_or("");
+    match sub {
+        "install" | "i" | "ci" | "add" => format!("Installed {bin} packages"),
+        "run" | "test" | "build" | "start" | "dev" => format!("Ran {bin} {sub}"),
+        _ => format!("Ran {bin}"),
+    }
+}
+
+fn git_intent(rest: &str) -> String {
+    let sub = rest.split_whitespace().next().unwrap_or("");
+    match sub {
+        "status" | "diff" | "log" | "show" | "blame" => "Inspected git state".into(),
+        "branch" | "switch" | "checkout" => "Changed git branch".into(),
+        "clone" | "fetch" | "pull" => "Synced git remotes".into(),
+        "push" => "Pushed to remote".into(),
+        "add" | "commit" | "stash" => "Recorded git changes".into(),
+        "merge" | "rebase" | "cherry-pick" => "Merged git history".into(),
+        "remote" | "tag" => "Updated git refs".into(),
+        _ => "Ran a git command".into(),
+    }
+}
+
+fn gh_intent(rest: &str) -> String {
+    let sub = rest.split_whitespace().next().unwrap_or("");
+    match sub {
+        "pr" => "Checked pull requests".into(),
+        "issue" => "Checked issues".into(),
+        "api" | "repo" => "Queried GitHub".into(),
+        _ => "Ran GitHub CLI".into(),
+    }
+}
+
+/// Prefer a short relative/basename path (hide workspace UUID prefixes).
+fn display_path(path: &str) -> String {
+    let p = path.trim().replace('\\', "/");
+    let stripped = if let Some(idx) = p.find("/workspaces/") {
+        let after = &p[idx + "/workspaces/".len()..];
+        after
+            .find('/')
+            .map(|i| after[i + 1..].to_string())
+            .unwrap_or_else(|| after.to_string())
+    } else {
+        p.clone()
+    };
+    let shown = if stripped.is_empty() { p } else { stripped };
+    // Keep last 2 segments when still long.
+    if shown.chars().count() > 42 {
+        let parts: Vec<&str> = shown.split('/').filter(|s| !s.is_empty()).collect();
+        if parts.len() >= 2 {
+            return truncate(&format!("{}/{}", parts[parts.len() - 2], parts[parts.len() - 1]), 42);
+        }
+    }
+    truncate(&shown, 42)
 }
 
 fn truncate(input: &str, max: usize) -> String {
@@ -30,7 +211,7 @@ fn truncate(input: &str, max: usize) -> String {
     if trimmed.chars().count() <= max {
         trimmed.to_string()
     } else {
-        format!("{}...", trimmed.chars().take(max).collect::<String>())
+        format!("{}…", trimmed.chars().take(max).collect::<String>())
     }
 }
 
@@ -113,16 +294,23 @@ pub fn usage_update(
     prompt_tokens: u64,
     completion_tokens: u64,
     context_percent: u8,
+    cached_tokens: Option<u64>,
+    context_epoch: u64,
 ) -> Value {
+    let mut meta = serde_json::Map::from_iter([
+        ("promptTokens".into(), json!(prompt_tokens)),
+        ("completionTokens".into(), json!(completion_tokens)),
+        ("contextPercent".into(), json!(context_percent)),
+        ("contextEpoch".into(), json!(context_epoch)),
+    ]);
+    if let Some(cached) = cached_tokens {
+        meta.insert("cachedTokens".into(), json!(cached));
+    }
     json!({
         "sessionUpdate": "usage_update",
         "used": used,
         "size": size,
-        "_meta": {
-            "promptTokens": prompt_tokens,
-            "completionTokens": completion_tokens,
-            "contextPercent": context_percent,
-        }
+        "_meta": Value::Object(meta),
     })
 }
 
@@ -258,6 +446,43 @@ mod tests {
         assert_eq!(tool_kind("Bash"), "execute");
         assert_eq!(tool_kind("TodoWrite"), "think");
         assert_eq!(tool_kind("mcp__git__status"), "execute");
+    }
+
+    #[test]
+    fn human_tool_titles() {
+        assert_eq!(
+            tool_title("Read", r#"{"path":"src/main.rs"}"#),
+            "Read src/main.rs"
+        );
+        assert_eq!(
+            tool_title("Write", r#"{"path":"Cargo.toml","contents":"[package]"}"#),
+            "Wrote Cargo.toml"
+        );
+        assert_eq!(
+            tool_title(
+                "Write",
+                r#"{"path":"/Users/x/cloud/data/workspaces/abc-123/crates/axon/src/lib.rs"}"#
+            ),
+            "Wrote crates/axon/src/lib.rs"
+        );
+        assert_eq!(
+            tool_title("Bash", r#"{"command":"cd /tmp && cargo test -q"}"#),
+            "Ran Cargo tests"
+        );
+        assert_eq!(
+            tool_title("Bash", r#"{"command":"mkdir -p crates/foo/src"}"#),
+            "Created directories"
+        );
+        assert_eq!(
+            tool_title("Bash", r#"{"command":"ls -la && find . -name '*.rs'"}"#),
+            "Listed files"
+        );
+        assert_eq!(
+            tool_title("Grep", r#"{"pattern":"tool_title"}"#),
+            "Searched code for tool_title"
+        );
+        assert_eq!(tool_title("TodoWrite", r#"{"todos":[]}"#), "Updated todos");
+        assert!(!tool_title("Bash", r#"{"command":"ls -la /tmp/foo"}"#).contains('/'));
     }
 
     #[test]

@@ -770,6 +770,7 @@ async fn run_prompt_job(
                     context_tokens,
                     context_window,
                     context_percent,
+                    context_epoch,
                 } => {
                     let mut update = usage_update(
                         u64::from(context_tokens),
@@ -777,6 +778,8 @@ async fn run_prompt_job(
                         usage.prompt_tokens,
                         usage.completion_tokens,
                         context_percent,
+                        usage.cached_tokens,
+                        context_epoch,
                     );
                     attach_meta(&mut update, meta);
                     let _ = writer.session_update(&session_id, update);

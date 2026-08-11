@@ -1,0 +1,8 @@
+/target
+/data
+**/*.db
+**/*.db-*
+.DS_Store
+.env
+github.env
+node_modules/

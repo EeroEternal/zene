@@ -6,7 +6,7 @@ use jsonschema::Validator;
 use serde_json::Value;
 use tokio_util::sync::CancellationToken;
 use zene_llm::ToolDefinition;
-use zene_sandbox::LocalSandbox;
+use zene_sandbox::Sandbox;
 
 use crate::ask_user::SharedAskUserPrompter;
 use crate::background::SharedBackgroundTasks;
@@ -16,7 +16,7 @@ use crate::subagent::SubagentEnv;
 use crate::todo_store::SharedTodoStore;
 
 pub struct ToolContext {
-    pub sandbox: Arc<LocalSandbox>,
+    pub sandbox: Arc<dyn Sandbox>,
     pub cancel: Option<CancellationToken>,
     pub subagent: Option<SubagentEnv>,
     pub permission: Option<SharedToolPermission>,
@@ -27,7 +27,7 @@ pub struct ToolContext {
 }
 
 impl ToolContext {
-    pub fn without_subagent(sandbox: Arc<LocalSandbox>) -> Self {
+    pub fn without_subagent(sandbox: Arc<dyn Sandbox>) -> Self {
         Self {
             sandbox,
             cancel: None,
