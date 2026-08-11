@@ -18,7 +18,6 @@ use crate::context::{
     HEADER_TAIL_START, SESSION_GATEWAY_FIELD,
 };
 use crate::message::{Message, Role, ToolCall};
-use crate::openai_direct::OpenAiDirectClient;
 use crate::provider::{ChatRequest, ChatResponse, Provider, StreamEvent};
 use crate::retry::with_llm_retry;
 use crate::tool::ToolDefinition;
@@ -29,12 +28,10 @@ const DEFAULT_ENDPOINT_ID: &str = "zene-default";
 
 pub struct OpenAiCompatibleProvider {
     engine: UniGatewayEngine,
-    direct: OpenAiDirectClient,
 }
 
 impl OpenAiCompatibleProvider {
     pub async fn from_config(config: &ZeneConfig) -> Result<Self> {
-        let direct = OpenAiDirectClient::from_config(config)?;
         let engine = UniGatewayEngine::builder()
             .with_builtin_http_drivers()
             .build()
@@ -87,7 +84,7 @@ impl OpenAiCompatibleProvider {
             .await
             .map_err(|err| anyhow!("{err}"))?;
 
-        Ok(Self { engine, direct })
+        Ok(Self { engine })
     }
 }
 
@@ -107,9 +104,6 @@ impl Provider for OpenAiCompatibleProvider {
 
 impl OpenAiCompatibleProvider {
     async fn chat_once(&self, request: ChatRequest) -> Result<ChatResponse> {
-        if request.gateway.is_some() {
-            return self.direct.chat(request).await;
-        }
         let proxy_request = to_proxy_request(&request, false)?;
         let target = ExecutionTarget::Pool {
             pool_id: DEFAULT_POOL_ID.to_string(),
@@ -146,9 +140,6 @@ impl OpenAiCompatibleProvider {
         &self,
         request: ChatRequest,
     ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamEvent>> + Send>>> {
-        if request.gateway.is_some() {
-            return self.direct.chat_stream(request).await;
-        }
         let proxy_request = to_proxy_request(&request, true)?;
         let target = ExecutionTarget::Pool {
             pool_id: DEFAULT_POOL_ID.to_string(),
@@ -400,57 +391,6 @@ fn parse_message_from_raw(raw: &Value) -> Option<Message> {
         is_error: None,
         kind: None,
     })
-}
-
-pub fn chunk_to_events_from_raw(raw: &Value) -> Vec<StreamEvent> {
-    let mut events = Vec::new();
-
-    let delta_obj = raw
-        .get("choices")
-        .and_then(Value::as_array)
-        .and_then(|choices| choices.first())
-        .and_then(|choice| choice.get("delta"));
-
-    if let Some(delta) = delta_obj {
-        if let Some(reasoning) = delta
-            .get("reasoning_content")
-            .or_else(|| delta.get("reasoning"))
-            .and_then(Value::as_str)
-        {
-            if !reasoning.is_empty() {
-                events.push(StreamEvent::ThoughtDelta(reasoning.to_string()));
-            }
-        }
-        if let Some(content) = delta.get("content").and_then(Value::as_str) {
-            if !content.is_empty() {
-                events.push(StreamEvent::TextDelta(content.to_string()));
-            }
-        }
-    }
-
-    if let Some(tool_calls) = delta_obj
-        .and_then(|delta| delta.get("tool_calls"))
-        .and_then(Value::as_array)
-    {
-        for call in tool_calls {
-            events.push(StreamEvent::ToolCallDelta {
-                index: call.get("index").and_then(Value::as_u64).unwrap_or(0) as usize,
-                id: call.get("id").and_then(Value::as_str).map(str::to_string),
-                name: call
-                    .get("function")
-                    .and_then(|f| f.get("name"))
-                    .and_then(Value::as_str)
-                    .map(str::to_string),
-                arguments: call
-                    .get("function")
-                    .and_then(|f| f.get("arguments"))
-                    .and_then(Value::as_str)
-                    .map(str::to_string),
-            });
-        }
-    }
-
-    events
 }
 
 fn chunk_to_events(chunk: &ChatResponseChunk) -> Vec<StreamEvent> {
