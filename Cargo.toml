@@ -10,6 +10,8 @@ members = [
     "crates/context",
     "crates/core",
     "crates/mcp",
+    "crates/permission",
+    "crates/tool-runtime",
 ]
 resolver = "2"
 
@@ -51,6 +53,8 @@ zene-sandbox = { path = "crates/sandbox" }
 zene-session = { version = "0.1.11", path = "crates/session" }
 zene-tools = { path = "crates/tools" }
 zene-mcp = { path = "crates/mcp" }
+zene-permission = { version = "0.1.11", path = "crates/permission" }
+zene-tool-runtime = { path = "crates/tool-runtime" }
 unigateway-sdk = { version = "2.14", default-features = false, features = ["core"] }
 llm_providers = "0.12.0"
 tiktoken-rs = "0.12"

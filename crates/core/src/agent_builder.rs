@@ -19,7 +19,7 @@ use zene_tools::{
 use zene_mcp::McpManager;
 
 use crate::hooks::HookRunner;
-use crate::permission::{PermissionGate, PermissionMode, PermissionRule, RuleAction};
+use zene_permission::{PermissionGate, PermissionMode, PermissionRule, RuleAction, SharedToolPermission};
 use crate::plan_mode::{default_plan_approval_prompter, PlanApprovalPrompter};
 use crate::tool_dedup::ToolDedup;
 use crate::turn::SteerBuffer;
@@ -52,7 +52,7 @@ pub struct AgentBuilder {
     context: Option<ContextEngine>,
     hooks: Option<HookRunner>,
     load_hooks_from_config: bool,
-    permission: Option<zene_tools::SharedToolPermission>,
+    permission: Option<SharedToolPermission>,
     plan_mode: Option<SharedPlanMode>,
     plan_approval: Option<PlanApprovalPrompter>,
     todos: Option<SharedTodoStore>,
@@ -146,7 +146,7 @@ impl AgentBuilder {
         self
     }
 
-    pub fn permission(mut self, permission: zene_tools::SharedToolPermission) -> Self {
+    pub fn permission(mut self, permission: SharedToolPermission) -> Self {
         self.permission = Some(permission);
         self
     }
@@ -320,7 +320,7 @@ pub(crate) fn shared_permission_with_rules(
     mode: PermissionMode,
     rules: Vec<PermissionRule>,
     auto_allow_bash: bool,
-) -> zene_tools::SharedToolPermission {
+) -> SharedToolPermission {
     Arc::new(Mutex::new(
         PermissionGate::new(mode)
             .with_rules(rules)

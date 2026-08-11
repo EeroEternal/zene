@@ -15,10 +15,13 @@ use zene_session::{
     fork_session, latest_checkpoint_id, load_checkpoint, restore_checkpoint, save_checkpoint,
     AgentRecordWriter, RecordEntry, SessionRecord,
 };
+use zene_tool_runtime::{
+    apply_tool_bound_plan, plan_tool_output_bound, FsToolOutputStore,
+};
 use zene_tools::{
     shared_todo_store_from,
     SharedAskUserPrompter, SharedBackgroundTasks, SharedTodoStore, PlanModeState,
-    SharedPlanMode, SharedToolPermission, SubagentEnv, ToolContext, ToolRegistry,
+    SharedPlanMode, SubagentEnv, ToolContext, ToolRegistry,
     DEFAULT_SUBAGENT_MAX_DEPTH,
 };
 pub use zene_tools::AskUserOption;
@@ -29,11 +32,9 @@ mod context_config;
 mod context_hooks;
 mod events;
 mod hooks;
-mod permission;
 mod plan_mode;
 mod skills;
 mod subagent;
-mod tool_bound;
 mod tool_dedup;
 pub mod tool_scheduler;
 mod turn;
@@ -49,9 +50,9 @@ mod workspace;
 pub use agent_builder::AgentBuilder;
 pub use events::{emit_event, AgentEvent, EventHandler};
 pub use hooks::{HookBlock, HookRunner};
-pub use permission::{
+pub use zene_permission::{
     approve_tool_call, policy_denied, PermissionGate, PermissionMode, PermissionPrompter,
-    PermissionRule, PromptChoice, RuleAction,
+    PermissionRule, PromptChoice, RuleAction, SharedToolPermission, ToolPermission,
 };
 pub use plan_mode::PlanApprovalPrompter;
 pub use subagent::{run_subagent, ChatBackend, CoreSubagentRunner};
@@ -1224,7 +1225,7 @@ impl Agent {
                     "(tool returned no output)".to_string()
                 }
             } else {
-                tool_bound::bound_tool_result(result.content, &workdir, &call.name)
+                bound_tool_output(&workdir, &call.name, result.content)
             };
 
             if let Some(reminder) = self.tool_dedup.on_call(&call.name, &call.arguments) {
@@ -1300,6 +1301,13 @@ fn truncate(input: &str, max: usize) -> String {
     } else {
         format!("{}...", input.chars().take(max).collect::<String>())
     }
+}
+
+/// Plan output bounds (pure) then spill via filesystem store (runtime IO).
+fn bound_tool_output(workdir: &std::path::Path, tool_name: &str, content: String) -> String {
+    let plan = plan_tool_output_bound(content, tool_name);
+    let store = FsToolOutputStore::new(workdir);
+    apply_tool_bound_plan(plan, &store)
 }
 
 fn merge_event_handler(

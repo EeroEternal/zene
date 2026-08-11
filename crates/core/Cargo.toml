@@ -25,6 +25,8 @@ zene-sandbox = { workspace = true }
 zene-session = { workspace = true }
 zene-tools = { workspace = true }
 zene-mcp = { workspace = true }
+zene-permission = { workspace = true }
+zene-tool-runtime = { workspace = true }
 
 [dev-dependencies]
 tempfile = "3"

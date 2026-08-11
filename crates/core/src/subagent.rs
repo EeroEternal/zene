@@ -17,7 +17,7 @@ use zene_context::{
     subagent_compaction_config, TokenEstimator,
 };
 use crate::context_config;
-use crate::permission::PermissionGate;
+use zene_permission::{PermissionGate, SharedToolPermission};
 use crate::turn;
 
 #[async_trait]
@@ -81,7 +81,7 @@ pub async fn run_subagent(
     backend: &dyn ChatBackend,
     cancel: Option<&CancellationToken>,
     parent_depth: u32,
-    permission: Option<zene_tools::SharedToolPermission>,
+    permission: Option<SharedToolPermission>,
 ) -> Result<String> {
     run_subagent_with_runner(
         prompt,
@@ -105,7 +105,7 @@ pub(crate) async fn run_subagent_with_runner(
     backend: &dyn ChatBackend,
     cancel: Option<&CancellationToken>,
     parent_depth: u32,
-    permission: Option<zene_tools::SharedToolPermission>,
+    permission: Option<SharedToolPermission>,
     runner: Option<Arc<dyn SubagentRunner>>,
 ) -> Result<String> {
     let subagent_depth = parent_depth + 1;
@@ -212,7 +212,7 @@ async fn run_subagent_tools(
     sandbox: &Arc<dyn Sandbox>,
     cancel: Option<&CancellationToken>,
     subagent_env: &SubagentEnv,
-    permission: Option<zene_tools::SharedToolPermission>,
+    permission: Option<SharedToolPermission>,
     messages: &mut Vec<Message>,
 ) -> Result<()> {
     let ctx = ToolContext {
@@ -363,11 +363,11 @@ mod tests {
 
     use parking_lot::Mutex;
 
-    use crate::permission::{PermissionGate, PermissionMode, PromptChoice};
+    use zene_permission::{PermissionGate, PermissionMode, PromptChoice, SharedToolPermission};
     use tempfile::tempdir;
     use zene_llm::ToolCall;
     use zene_sandbox::LocalSandbox;
-    use zene_tools::{default_builtin_tools, SharedToolPermission};
+    use zene_tools::default_builtin_tools;
 
     fn test_permission_deny() -> SharedToolPermission {
         Arc::new(Mutex::new(PermissionGate::with_prompter(

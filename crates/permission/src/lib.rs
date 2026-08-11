@@ -1,8 +1,20 @@
+//! Tool permission gate: modes, rules, and interactive approval for gated tools.
+
 use std::collections::HashSet;
 use std::io::{self, Write};
+use std::sync::Arc;
 
 use serde_json::Value;
-use zene_tools::ToolPermission;
+
+/// Shared permission gate used by main agent and subagents.
+pub trait ToolPermission: Send + Sync {
+    fn approve_tool_call(&mut self, tool_name: &str, arguments: &str) -> io::Result<bool>;
+    fn denied_message(tool_name: &str) -> String
+    where
+        Self: Sized;
+}
+
+pub type SharedToolPermission = Arc<parking_lot::Mutex<dyn ToolPermission>>;
 
 /// Permission modes aligned with grok-style agent safety.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -29,7 +41,7 @@ impl PermissionMode {
             }
             "accept_edits" | "acceptedits" | "accept-edits" => Self::AcceptEdits,
             "dont_ask" | "dontask" | "dont-ask" => Self::DontAsk,
-            "plan" => Self::Default, // plan mode is orthogonal; treat as default ask
+            "plan" => Self::Default,
             "manual" | "default" | "" => Self::Default,
             _ => Self::Default,
         }
@@ -105,8 +117,6 @@ pub struct PermissionGate {
     approved_session: HashSet<String>,
     rules: Vec<PermissionRule>,
     prompter: Box<PermissionPrompter>,
-    /// When true and a sandbox profile is active, Bash is auto-approved
-    /// (aligned with grok `GROK_SANDBOX_AUTO_ALLOW_BASH`).
     auto_allow_bash: bool,
 }
 
@@ -157,8 +167,6 @@ impl PermissionGate {
         self.prompter = prompter;
     }
 
-    /// Copy sandbox/session policy knobs from an existing gate (used when the TUI
-    /// swaps in a custom prompter without resetting rules).
     pub fn inherit_policy_from(&mut self, other: &Self) {
         self.auto_allow_bash = other.auto_allow_bash;
         self.rules = other.rules.clone();
@@ -166,7 +174,6 @@ impl PermissionGate {
     }
 
     pub fn mode(&self) -> PermissionMode {
-        // Normalize legacy aliases for display.
         match self.mode {
             PermissionMode::Manual => PermissionMode::Default,
             PermissionMode::Yolo => PermissionMode::BypassPermissions,
@@ -269,24 +276,6 @@ pub fn policy_denied(tool_name: &str, arguments: &str) -> Option<String> {
     }
 }
 
-fn extract_tool_path(arguments: &str) -> Option<String> {
-    let value: Value = serde_json::from_str(arguments).ok()?;
-    value
-        .get("path")
-        .and_then(|p| p.as_str())
-        .map(str::to_string)
-}
-
-fn is_protected_write_path(path: &str) -> bool {
-    let normalized = path.replace('\\', "/");
-    let trimmed = normalized.trim_start_matches("./");
-    path_has_segment(trimmed, "node_modules") || path_has_segment(trimmed, ".git")
-}
-
-fn path_has_segment(path: &str, segment: &str) -> bool {
-    path.split('/').any(|part| part == segment)
-}
-
 pub fn approve_tool_call(
     gate: &mut PermissionGate,
     tool_name: &str,
@@ -303,6 +292,24 @@ impl ToolPermission for PermissionGate {
     fn denied_message(tool_name: &str) -> String {
         PermissionGate::denied_message(tool_name)
     }
+}
+
+fn extract_tool_path(arguments: &str) -> Option<String> {
+    let value: Value = serde_json::from_str(arguments).ok()?;
+    value
+        .get("path")
+        .and_then(|p| p.as_str())
+        .map(str::to_string)
+}
+
+fn is_protected_write_path(path: &str) -> bool {
+    let normalized = path.replace('\\', "/");
+    let trimmed = normalized.trim_start_matches("./");
+    path_has_segment(trimmed, "node_modules") || path_has_segment(trimmed, ".git")
+}
+
+fn path_has_segment(path: &str, segment: &str) -> bool {
+    path.split('/').any(|part| part == segment)
 }
 
 fn default_prompter(tool_name: &str, args_preview: &str) -> io::Result<PromptChoice> {
