@@ -95,8 +95,8 @@ function TreeItem({
       <div>
         <button
           type="button"
-          className="flex w-full items-center gap-1 rounded-md px-1.5 py-1 text-left text-[11px] text-muted hover:bg-secondary hover:text-ink"
-          style={{ paddingLeft: 6 + depth * 12 }}
+          className="flex w-full items-center gap-1 rounded-md py-1 pr-1.5 text-left text-[12.5px] text-muted hover:bg-secondary hover:text-ink"
+          style={{ paddingLeft: 4 + depth * 10 }}
           onClick={() => toggle(node.path)}
         >
           {isOpen ? (
@@ -130,10 +130,10 @@ function TreeItem({
     <button
       type="button"
       className={[
-        "flex w-full items-center gap-1 rounded-md py-1 pr-1.5 text-left font-mono text-[11px] hover:bg-secondary",
+        "flex w-full items-center gap-1 rounded-md py-1 pr-1.5 text-left font-mono text-[12.5px] hover:bg-secondary",
         selected === node.path ? "bg-secondary text-ink" : "text-muted hover:text-ink",
       ].join(" ")}
-      style={{ paddingLeft: 6 + depth * 12 + 14 }}
+      style={{ paddingLeft: 4 + depth * 10 + 14 }}
       onClick={() => onSelect(node.path)}
       title={node.path}
     >
@@ -192,7 +192,7 @@ export function FileTree({
   }
 
   return (
-    <div className="min-h-0 flex-1 overflow-auto px-1 py-1">
+    <div className="min-h-0 flex-1 overflow-auto py-0.5">
       {tree.map((n) => (
         <TreeItem
           key={n.path}

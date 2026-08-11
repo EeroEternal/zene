@@ -2,90 +2,28 @@ use std::path::PathBuf;
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
-use parking_lot::Mutex;
-use tokio_util::sync::CancellationToken;
 use zene_config::{ensure_home, ZeneConfig};
-use zene_core::{ensure_session_worktree, Agent, AgentEvent, PermissionMode, PromptOptions};
-use zene_sandbox::LocalSandbox;
-use zene_session::{export_session, list_sessions_for_workdir, SessionRecord};
-use std::sync::Arc;
+use zene_session::{export_session, list_sessions_for_workdir};
 
 mod acp;
-mod model_config;
-mod repl;
-mod sandbox_opts;
-
-/// Shared cancel token for the in-flight REPL turn (Ctrl+C or `/cancel`).
-static ACTIVE_CANCEL: Mutex<Option<CancellationToken>> = Mutex::new(None);
-
-pub(crate) fn set_active_cancel(token: Option<CancellationToken>) {
-    *ACTIVE_CANCEL.lock() = token;
-}
-
-pub(crate) fn cancel_active_turn() -> bool {
-    let mut guard = ACTIVE_CANCEL.lock();
-    if let Some(token) = guard.take() {
-        token.cancel();
-        true
-    } else {
-        false
-    }
-}
 
 #[derive(Parser)]
-#[command(name = "zene", about = "Local coding agent CLI", version)]
-pub struct Cli {
+#[command(
+    name = "zene",
+    about = "Zene agent binary (ACP for Cloud workers / editors)",
+    version
+)]
+struct Cli {
     #[command(subcommand)]
     command: Option<Commands>,
 
     /// Working directory for the agent session
-    #[arg(long, default_value = ".")]
+    #[arg(long, default_value = ".", global = true)]
     workdir: PathBuf,
 
-    /// Resume a previous session by id
-    #[arg(long)]
-    session: Option<String>,
-
-    /// Disable streaming output
-    #[arg(long)]
-    no_stream: bool,
-
-    /// Auto-approve Write / Edit / Bash (yolo permission mode)
-    #[arg(long)]
+    /// Auto-approve Write / Edit / Bash (yolo permission mode; used by `zene acp`)
+    #[arg(long, global = true)]
     yolo: bool,
-
-    /// Removed: ratatui TUI. Use `zene` / `zene --repl` instead.
-    #[arg(long, hide = true)]
-    tui: bool,
-
-    /// Launch the interactive line REPL
-    #[arg(long)]
-    repl: bool,
-
-    /// Print tool_call / tool_result events to stderr
-    #[arg(long)]
-    verbose_events: bool,
-
-    /// Hide per-turn token usage line
-    #[arg(long)]
-    quiet_usage: bool,
-
-    /// Run a single prompt headlessly and exit
-    #[arg(short = 'p', long = "prompt")]
-    prompt: Option<String>,
-
-    /// Headless output format: `text` (default) or `json`
-    #[arg(long, default_value = "text")]
-    output_format: String,
-
-    /// Run the session inside a dedicated git worktree under `.zene/worktrees/`
-    #[arg(long)]
-    worktree: bool,
-
-    /// Keel sandbox profile: `off`, `workspace`, `read-only`, `strict`, or a custom
-    /// name from `~/.zene/sandbox.toml` / `.zene/sandbox.toml`
-    #[arg(long)]
-    sandbox: Option<String>,
 }
 
 #[derive(Subcommand)]
@@ -129,7 +67,6 @@ fn init_tracing() {
 async fn main() -> Result<()> {
     let cli_args: Vec<String> = std::env::args().collect();
     let is_acp = cli_args.iter().any(|a| a == "acp");
-    let is_headless = cli_args.iter().any(|a| a == "-p" || a == "--prompt");
     if is_acp {
         // Keep ACP stdout reserved for NDJSON; send logs to stderr.
         tracing_subscriber::fmt()
@@ -144,23 +81,8 @@ async fn main() -> Result<()> {
         init_tracing();
     }
 
-    if !is_acp && !is_headless {
-        ctrlc::set_handler(|| {
-            if cancel_active_turn() {
-                eprintln!("\n[cancelled]");
-            }
-        })
-        .context("install Ctrl+C handler")?;
-    }
-
     ensure_home().map_err(|err| anyhow::anyhow!(err.to_string()))?;
     let cli = Cli::parse();
-    if cli.tui {
-        anyhow::bail!(
-            "the ratatui TUI was removed; run `zene` or `zene --repl` for the interactive REPL, \
-             or `zene -p` for headless prompts. Cloud Console lives at cloud/apps/web."
-        );
-    }
     let workdir = std::env::current_dir().context("resolve current directory")?;
     let workdir = if cli.workdir.as_os_str() == std::ffi::OsStr::new(".") {
         workdir
@@ -186,7 +108,7 @@ async fn main() -> Result<()> {
                     );
                 }
             }
-            return Ok(());
+            Ok(())
         }
         Some(Commands::Config) => {
             let config = ZeneConfig::load(&workdir).map_err(|err| anyhow::anyhow!(err.to_string()))?;
@@ -209,12 +131,12 @@ async fn main() -> Result<()> {
                 println!("sandbox.allow_hosts: {:?}", config.sandbox.allow_hosts);
             }
             println!("sandbox.auto_allow_bash: {}", config.sandbox.auto_allow_bash);
-            return Ok(());
+            Ok(())
         }
         Some(Commands::Export { session, output }) => {
             export_session(&session, &output).context("export session")?;
             println!("Exported session {} to {}", session, output.display());
-            return Ok(());
+            Ok(())
         }
         Some(Commands::Mcp { command }) => {
             match command {
@@ -222,151 +144,19 @@ async fn main() -> Result<()> {
                     run_mcp_doctor(&workdir).await?;
                 }
             }
-            return Ok(());
+            Ok(())
         }
         Some(Commands::Acp) => {
             acp::run_acp(workdir, cli.yolo).await?;
-            return Ok(());
+            Ok(())
         }
-        None => {}
-    }
-
-    // Default interactive entry is the line REPL.
-    let config = ZeneConfig::load(&workdir).map_err(|err| anyhow::anyhow!(err.to_string()))?;
-    let mut session = if let Some(ref id) = cli.session {
-        SessionRecord::load(id).context("load session")?
-    } else {
-        SessionRecord::new(&workdir)
-    };
-
-    let agent_workdir = if cli.worktree {
-        let wt = ensure_session_worktree(&workdir, &session.meta.id)
-            .context("create session git worktree")?;
-        eprintln!("Using git worktree: {}", wt.display());
-        session.meta.workdir = wt.display().to_string();
-        wt
-    } else {
-        workdir.clone()
-    };
-
-    let permission_mode = if cli.yolo {
-        PermissionMode::BypassPermissions
-    } else {
-        PermissionMode::parse(&config.permission_mode)
-    };
-
-    let sandbox_opts = sandbox_opts::build_sandbox_options(&config, cli.sandbox.as_deref());
-    eprintln!(
-        "Sandbox profile: {}{}",
-        sandbox_opts.profile,
-        if sandbox_opts.is_off() {
-            " (no Keel enforcement)"
-        } else {
-            ""
+        None => {
+            anyhow::bail!(
+                "the interactive local REPL was removed. Use Cloud Console \
+                 (`cd cloud && ./scripts/dev.sh`) for the product UI, or `zene acp` \
+                 for Agent Client Protocol (Cloud workers / editors)."
+            );
         }
-    );
-    let sandbox = LocalSandbox::with_options(&agent_workdir, sandbox_opts)
-        .await
-        .context("initialize Keel execution layer")?;
-    let mut agent = Agent::new(config.clone(), sandbox, session, permission_mode).await?;
-
-    if let Some(prompt) = cli.prompt.as_deref() {
-        run_headless(&mut agent, prompt, &cli).await?;
-        agent.shutdown().await?;
-        return Ok(());
-    }
-
-    repl::run_repl(&mut agent, &cli).await?;
-    agent.shutdown().await?;
-
-    Ok(())
-}
-
-async fn run_headless(agent: &mut Agent, prompt: &str, cli: &Cli) -> Result<()> {
-    let json_mode = cli.output_format.eq_ignore_ascii_case("json");
-    let events: Arc<Mutex<Vec<serde_json::Value>>> = Arc::new(Mutex::new(Vec::new()));
-    let events_for_handler = Arc::clone(&events);
-    let event_handler: Option<zene_core::EventHandler> = if json_mode {
-        Some(Arc::new(move |event: AgentEvent| {
-            if let Some(value) = headless_event_json(&event) {
-                events_for_handler.lock().push(value);
-            }
-        }))
-    } else {
-        None
-    };
-
-    let text = agent
-        .prompt(
-            prompt,
-            PromptOptions {
-                stream: !cli.no_stream && !json_mode,
-                cancel: None,
-                event_handler,
-                quiet: json_mode,
-            },
-        )
-        .await?;
-
-    if json_mode {
-        let payload = serde_json::json!({
-            "sessionId": agent.session().meta.id,
-            "model": agent.config().model,
-            "text": text,
-            "usage": {
-                "prompt_tokens": agent.turn_usage().prompt_tokens,
-                "completion_tokens": agent.turn_usage().completion_tokens,
-                "total_tokens": agent.turn_usage().total_tokens,
-            },
-            "context": {
-                "percent": agent.context_water().usage_percent(),
-                "window": agent.config().compaction.context_window_tokens,
-            },
-            "events": *events.lock(),
-        });
-        println!("{}", serde_json::to_string_pretty(&payload)?);
-    } else if cli.no_stream {
-        println!("{text}");
-    } else if !cli.quiet_usage {
-        let usage = agent.turn_usage();
-        eprintln!(
-            "tokens: input {} / output {} ({}) | ctx {}%",
-            usage.prompt_tokens,
-            usage.completion_tokens,
-            usage.total_tokens,
-            agent.context_water().usage_percent()
-        );
-    }
-    Ok(())
-}
-
-fn headless_event_json(event: &AgentEvent) -> Option<serde_json::Value> {
-    match event {
-        AgentEvent::ToolCall { id, name, arguments } => Some(serde_json::json!({
-            "type": "tool_call",
-            "id": id,
-            "name": name,
-            "arguments": arguments,
-        })),
-        AgentEvent::ToolResult {
-            id,
-            name,
-            content,
-            is_error,
-            duration_ms,
-        } => Some(serde_json::json!({
-            "type": "tool_result",
-            "id": id,
-            "name": name,
-            "content": content,
-            "is_error": is_error,
-            "duration_ms": duration_ms,
-        })),
-        AgentEvent::Error { message } => Some(serde_json::json!({
-            "type": "error",
-            "message": message,
-        })),
-        _ => None,
     }
 }
 
@@ -389,4 +179,3 @@ async fn run_mcp_doctor(workdir: &std::path::Path) -> Result<()> {
     }
     Ok(())
 }
-

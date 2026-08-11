@@ -1,6 +1,10 @@
+mod supervisor;
+
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
@@ -17,45 +21,69 @@ use zene_cloud_acp_bridge::{
 use zene_cloud_domain::{
     ApprovalRequest, ApprovalStatus, ClaimedRun, CloneAuthResponse, CreateApprovalRequest,
     LlmAuthResponse, RunStatus, WorkerCommand, WorkerCommandsResponse, WorkerEventRequest,
-    WorkerStatusRequest,
+    WorkerStatusRequest, WorkerTitleRequest,
 };
 
-#[derive(Debug, Parser)]
+#[derive(Debug, Clone, Parser)]
 #[command(name = "zene-cloud-worker")]
-struct Cli {
+pub(crate) struct Cli {
     #[arg(long, env = "ZENE_CLOUD_API_URL", default_value = "http://127.0.0.1:8788")]
-    api_url: String,
+    pub(crate) api_url: String,
 
     #[arg(long, env = "ZENE_CLOUD_WORKER_TOKEN", default_value = "dev-worker-token")]
-    worker_token: String,
+    pub(crate) worker_token: String,
 
     #[arg(long, env = "ZENE_CLOUD_WORKER_ID")]
-    worker_id: Option<String>,
+    pub(crate) worker_id: Option<String>,
 
     #[arg(long, env = "ZENE_CLOUD_WORKSPACE_ROOT", default_value = "./data/workspaces")]
-    workspace_root: PathBuf,
+    pub(crate) workspace_root: PathBuf,
 
     #[arg(long, env = "ZENE_BIN")]
-    zene_bin: Option<PathBuf>,
+    pub(crate) zene_bin: Option<PathBuf>,
 
     /// Pass `--yolo` to real `zene acp` (auto-approve tools locally).
     #[arg(long, env = "ZENE_CLOUD_ACP_YOLO", default_value_t = false)]
-    acp_yolo: bool,
+    pub(crate) acp_yolo: bool,
 
     /// Idle seconds after a prompt returns before ending the ACP session (follow-ups reset idle).
     #[arg(long, env = "ZENE_CLOUD_ACP_IDLE_SECS", default_value_t = 600)]
-    acp_idle_secs: u64,
+    pub(crate) acp_idle_secs: u64,
 
     /// Allow in-process MockAgent when no zene binary is available.
     #[arg(long, env = "ZENE_CLOUD_ALLOW_MOCK", default_value_t = false)]
-    allow_mock: bool,
+    pub(crate) allow_mock: bool,
 
     #[arg(long, default_value_t = 2)]
-    poll_seconds: u64,
+    pub(crate) poll_seconds: u64,
 
     /// Call push/PR endpoints after commit (mock Git Broker by default).
     #[arg(long, env = "ZENE_CLOUD_PUSH_PR", default_value_t = true)]
-    push_pr: bool,
+    pub(crate) push_pr: bool,
+
+    /// Run as process supervisor (spawn/scale executor children). Mutually exclusive with executor loop.
+    #[arg(long, env = "ZENE_CLOUD_WORKER_SUPERVISOR", default_value_t = false)]
+    pub(crate) supervisor: bool,
+
+    /// Always-on idle claimer processes under supervisor mode.
+    #[arg(long, env = "ZENE_CLOUD_WORKER_MIN_WARM", default_value_t = 1)]
+    pub(crate) min_warm: u64,
+
+    /// Max concurrent provisioning/starting/cloning/running runs (supervisor).
+    #[arg(long, env = "ZENE_CLOUD_WORKER_MAX_ACTIVE", default_value_t = 4)]
+    pub(crate) max_active: u64,
+
+    /// Max concurrent waiting_for_user/approval warm holds (supervisor).
+    #[arg(long, env = "ZENE_CLOUD_WORKER_MAX_HOLD", default_value_t = 8)]
+    pub(crate) max_hold: u64,
+
+    /// Supervisor scale loop interval.
+    #[arg(long, env = "ZENE_CLOUD_WORKER_SCALE_INTERVAL_MS", default_value_t = 1000)]
+    pub(crate) scale_interval_ms: u64,
+
+    /// Forward to zene acp for inference-gateway delta assembly (optional).
+    #[arg(long, env = "ZENE_INFERENCE_GATEWAY_URL")]
+    pub(crate) inference_gateway_url: Option<String>,
 }
 
 #[tokio::main]
@@ -65,6 +93,13 @@ async fn main() -> Result<()> {
         .init();
 
     let cli = Cli::parse();
+    if cli.supervisor {
+        return supervisor::run_supervisor(cli).await;
+    }
+    run_executor(cli).await
+}
+
+async fn run_executor(cli: Cli) -> Result<()> {
     let worker_id = cli
         .worker_id
         .clone()
@@ -97,12 +132,26 @@ async fn main() -> Result<()> {
         );
     }
 
-    info!(%worker_id, api = %cli.api_url, "zene-cloud-worker started");
+    let shutdown = Arc::new(AtomicBool::new(false));
+    spawn_shutdown_listener(shutdown.clone());
+
+    info!(%worker_id, api = %cli.api_url, "zene-cloud-worker executor started");
     loop {
+        if shutdown.load(Ordering::SeqCst) {
+            info!(%worker_id, "executor shutting down (idle)");
+            break;
+        }
         match claim_run(&client, &cli, &worker_id).await {
             Ok(Some(claimed)) => {
-                if let Err(err) =
-                    execute_run(&client, &cli, &worker_id, &claimed, zene_bin.as_ref()).await
+                if let Err(err) = execute_run(
+                    &client,
+                    &cli,
+                    &worker_id,
+                    &claimed,
+                    zene_bin.as_ref(),
+                    shutdown.clone(),
+                )
+                .await
                 {
                     error!(error = %err, run_id = %claimed.run.id, "run failed");
                     let _ = set_status(
@@ -115,15 +164,76 @@ async fn main() -> Result<()> {
                     )
                     .await;
                 }
+                if shutdown.load(Ordering::SeqCst) {
+                    info!(%worker_id, "executor shutting down after run");
+                    break;
+                }
             }
             Ok(None) => {
-                tokio::time::sleep(Duration::from_secs(cli.poll_seconds)).await;
+                sleep_interruptible(Duration::from_secs(cli.poll_seconds), &shutdown).await;
             }
             Err(err) => {
                 warn!(error = %err, "claim failed");
-                tokio::time::sleep(Duration::from_secs(cli.poll_seconds)).await;
+                sleep_interruptible(Duration::from_secs(cli.poll_seconds), &shutdown).await;
             }
         }
+    }
+    Ok(())
+}
+
+fn spawn_shutdown_listener(shutdown: Arc<AtomicBool>) {
+    tokio::spawn(async move {
+        #[cfg(unix)]
+        {
+            use tokio::signal::unix::{signal, SignalKind};
+            let mut sigterm =
+                match signal(SignalKind::terminate()) {
+                    Ok(s) => s,
+                    Err(err) => {
+                        warn!(error = %err, "failed to install SIGTERM handler");
+                        return;
+                    }
+                };
+            let mut sigint = match signal(SignalKind::interrupt()) {
+                Ok(s) => s,
+                Err(err) => {
+                    warn!(error = %err, "failed to install SIGINT handler");
+                    return;
+                }
+            };
+            tokio::select! {
+                _ = sigterm.recv() => {
+                    info!("received SIGTERM");
+                    shutdown.store(true, Ordering::SeqCst);
+                }
+                _ = sigint.recv() => {
+                    info!("received SIGINT");
+                    shutdown.store(true, Ordering::SeqCst);
+                }
+            }
+        }
+        #[cfg(not(unix))]
+        {
+            if let Err(err) = tokio::signal::ctrl_c().await {
+                warn!(error = %err, "failed to install ctrl_c handler");
+                return;
+            }
+            info!("received ctrl_c");
+            shutdown.store(true, Ordering::SeqCst);
+        }
+    });
+}
+
+async fn sleep_interruptible(total: Duration, shutdown: &AtomicBool) {
+    let step = Duration::from_millis(200);
+    let mut left = total;
+    while left > Duration::ZERO {
+        if shutdown.load(Ordering::SeqCst) {
+            return;
+        }
+        let slice = step.min(left);
+        tokio::time::sleep(slice).await;
+        left = left.saturating_sub(slice);
     }
 }
 
@@ -151,6 +261,7 @@ async fn execute_run(
     worker_id: &str,
     claimed: &ClaimedRun,
     zene_bin: Option<&PathBuf>,
+    shutdown: Arc<AtomicBool>,
 ) -> Result<()> {
     let run_id = claimed.run.id;
     info!(%run_id, workspace = %claimed.workspace_dir, "claimed run");
@@ -171,19 +282,13 @@ async fn execute_run(
 
     // b) clone or mock workspace
     set_status(client, cli, run_id, RunStatus::Cloning, None, None).await?;
-    prepare_workspace(&workspace, &clone_auth).await?;
-    // ACP `session/new` validates cwd as an absolute filesystem path. Relative
-    // workspace roots (e.g. `./data/workspaces/<id>`) fail after `current_dir`
-    // is already set to that workspace.
-    let workspace = workspace
-        .canonicalize()
-        .with_context(|| format!("canonicalize workspace {}", workspace.display()))?;
+    prepare_workspace(&cli.workspace_root, &workspace, &clone_auth).await?;
 
     set_status(client, cli, run_id, RunStatus::Running, None, None).await?;
 
     let result = if let Some(bin) = zene_bin {
         info!(run_id = %run_id, agent_mode = "real", "starting agent");
-        run_with_real_acp(client, cli, claimed, &workspace, bin).await
+        run_with_real_acp(client, cli, claimed, &workspace, bin, shutdown).await
     } else if cli.allow_mock {
         info!(run_id = %run_id, agent_mode = "mock", "starting agent");
         run_with_mock(client, cli, claimed, &workspace).await
@@ -249,6 +354,17 @@ async fn workspace_ready(workspace: &Path) -> bool {
     }
 }
 
+async fn bare_cache_ready(cache: &Path) -> bool {
+    // A bare repo has HEAD at the root (no nested .git).
+    if !cache.join("HEAD").exists() {
+        return false;
+    }
+    match run_git_output(cache, &["rev-parse", "--verify", "HEAD"]).await {
+        Ok(sha) => !sha.trim().is_empty(),
+        Err(_) => false,
+    }
+}
+
 fn git_command() -> Command {
     let mut cmd = Command::new("git");
     // Developer proxies often throttle or stall github.com clones.
@@ -265,7 +381,90 @@ fn git_command() -> Command {
     cmd
 }
 
-async fn prepare_workspace(workspace: &Path, auth: &CloneAuthResponse) -> Result<()> {
+fn authenticated_clone_url(auth: &CloneAuthResponse) -> String {
+    let mut clone_url = auth.clone_url.clone();
+    if let Some(token) = &auth.token {
+        if let Some(rest) = clone_url.strip_prefix("https://") {
+            let user = auth.username.as_deref().unwrap_or("x-access-token");
+            clone_url = format!("https://{user}:{token}@{rest}");
+        }
+    }
+    clone_url
+}
+
+async fn ensure_repo_cache(cache: &Path, auth: &CloneAuthResponse) -> Result<()> {
+    let clone_url = authenticated_clone_url(auth);
+
+    if bare_cache_ready(cache).await {
+        info!(
+            path = %cache.display(),
+            repository_id = %auth.repository_id,
+            "updating repo cache"
+        );
+        // Tokens are short-lived; refresh the remote URL before fetch.
+        if let Err(err) = run_git(cache, &["remote", "set-url", "origin", &clone_url]).await {
+            warn!(error = %err, "failed to set cache remote url; recloning");
+            let _ = tokio::fs::remove_dir_all(cache).await;
+        } else {
+            let refspec = format!(
+                "+refs/heads/{}:refs/heads/{}",
+                auth.base_ref, auth.base_ref
+            );
+            match run_git(
+                cache,
+                &["fetch", "--depth", "1", "origin", &refspec],
+            )
+            .await
+            {
+                Ok(()) => return Ok(()),
+                Err(err) => {
+                    warn!(
+                        error = %err,
+                        path = %cache.display(),
+                        "cache fetch failed; recloning"
+                    );
+                    let _ = tokio::fs::remove_dir_all(cache).await;
+                }
+            }
+        }
+    } else if cache.exists() {
+        warn!(path = %cache.display(), "removing incomplete repo cache");
+        let _ = tokio::fs::remove_dir_all(cache).await;
+    }
+
+    std::fs::create_dir_all(cache.parent().unwrap_or_else(|| Path::new(".")))?;
+    info!(
+        url = %auth.clone_url,
+        path = %cache.display(),
+        repository_id = %auth.repository_id,
+        "cloning repository into cache (shallow bare)"
+    );
+    let status = git_command()
+        .args([
+            "clone",
+            "--bare",
+            "--depth",
+            "1",
+            "--single-branch",
+            "--branch",
+            &auth.base_ref,
+            &clone_url,
+            &cache.display().to_string(),
+        ])
+        .status()
+        .await
+        .context("git clone --bare")?;
+    if !status.success() {
+        bail!("git bare clone failed with {status}");
+    }
+    Ok(())
+}
+
+async fn prepare_workspace(
+    workspace_root: &Path,
+    workspace: &Path,
+    auth: &CloneAuthResponse,
+) -> Result<()> {
     if workspace_ready(workspace).await {
         info!(path = %workspace.display(), "workspace already initialized");
         return Ok(());
@@ -274,9 +473,9 @@ async fn prepare_workspace(workspace: &Path, auth: &CloneAuthResponse) -> Result
         warn!(path = %workspace.display(), "removing incomplete workspace before clone");
         let _ = tokio::fs::remove_dir_all(workspace).await;
     }
-    std::fs::create_dir_all(workspace)?;
 
     if auth.mock {
+        std::fs::create_dir_all(workspace)?;
         info!(path = %workspace.display(), "preparing mock git workspace");
         run_git(workspace, &["init"]).await?;
         if run_git(workspace, &["checkout", "-b", &auth.head_branch])
@@ -317,39 +516,39 @@ async fn prepare_workspace(workspace: &Path, auth: &CloneAuthResponse) -> Result
         return Ok(());
     }
 
-    info!(url = %auth.clone_url, "cloning repository (shallow)");
+    let cache = workspace_root
+        .join(".repo-cache")
+        .join(auth.repository_id.to_string());
+    ensure_repo_cache(&cache, auth).await?;
+
     std::fs::create_dir_all(
         workspace
             .parent()
             .unwrap_or_else(|| Path::new(".")),
     )?;
-
-    let mut clone_url = auth.clone_url.clone();
-    if let Some(token) = &auth.token {
-        if let Some(rest) = clone_url.strip_prefix("https://") {
-            let user = auth.username.as_deref().unwrap_or("x-access-token");
-            clone_url = format!("https://{user}:{token}@{rest}");
-        }
-    }
-
+    info!(
+        cache = %cache.display(),
+        path = %workspace.display(),
+        "cloning workspace from local cache"
+    );
     let status = git_command()
         .args([
             "clone",
-            "--depth",
-            "1",
-            "--branch",
-            &auth.base_ref,
-            "--single-branch",
-            &clone_url,
+            "--local",
+            &cache.display().to_string(),
             &workspace.display().to_string(),
         ])
         .status()
         .await
-        .context("git clone")?;
+        .context("git clone --local")?;
     if !status.success() {
-        bail!("git clone failed with {status}");
+        bail!("git local clone failed with {status}");
     }
-    let _ = run_git(workspace, &["checkout", "-B", &auth.head_branch]).await;
+    let _ = run_git(
+        workspace,
+        &["checkout", "-B", &auth.head_branch, &auth.base_ref],
+    )
+    .await;
     Ok(())
 }
 
@@ -525,6 +724,30 @@ fn llm_env_from_auth(auth: &LlmAuthResponse) -> HashMap<String, String> {
     env
 }
 
+fn inject_run_max_turns(env: &mut HashMap<String, String>, max_turns: u32) {
+    env.insert("ZENE_MAX_TURNS".into(), max_turns.to_string());
+}
+
+fn inject_run_context(env: &mut HashMap<String, String>, run_id: Uuid) {
+    env.insert("ZENE_RUN_ID".into(), run_id.to_string());
+}
+
+fn inject_inference_gateway(env: &mut HashMap<String, String>, url: Option<&str>) {
+    let url = url
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .or_else(|| {
+            std::env::var("ZENE_INFERENCE_GATEWAY_URL")
+                .ok()
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+        });
+    if let Some(url) = url {
+        env.insert("ZENE_INFERENCE_GATEWAY_URL".into(), url);
+    }
+}
+
 fn has_process_llm_credentials() -> bool {
     std::env::var("ZENE_API_KEY").is_ok()
         || std::env::var("OPENAI_API_KEY").is_ok()
@@ -538,13 +761,14 @@ async fn run_with_real_acp(
     claimed: &ClaimedRun,
     workspace: &Path,
     zene_bin: &Path,
+    shutdown: Arc<AtomicBool>,
 ) -> Result<()> {
     let run_id = claimed.run.id;
     let yolo = cli.acp_yolo
         || claimed.run.permission_mode == "yolo"
         || std::env::var("ZENE_YOLO").ok().as_deref() == Some("1");
 
-    let llm_env = match fetch_llm_auth(client, cli, run_id).await {
+    let mut llm_env = match fetch_llm_auth(client, cli, run_id).await {
         Ok(Some(auth)) => {
             info!(
                 run_id = %run_id,
@@ -577,6 +801,15 @@ async fn run_with_real_acp(
             }
         }
     };
+    inject_run_max_turns(&mut llm_env, claimed.run.max_turns);
+    inject_run_context(&mut llm_env, run_id);
+    inject_inference_gateway(&mut llm_env, cli.inference_gateway_url.as_deref());
+    info!(
+        run_id = %run_id,
+        max_turns = claimed.run.max_turns,
+        inference_gateway = cli.inference_gateway_url.is_some(),
+        "injected ZENE_MAX_TURNS, ZENE_RUN_ID, and optional inference gateway for acp"
+    );
 
     let (bridge, mut msg_rx) = AcpBridge::spawn(zene_bin, workspace, yolo, &llm_env).await?;
     let bridge = std::sync::Arc::new(tokio::sync::Mutex::new(Some(bridge)));
@@ -691,6 +924,14 @@ async fn run_with_real_acp(
                                     let mut ts = activity_cmd.lock().await;
                                     *ts = tokio::time::Instant::now();
                                 }
+                                let _ = set_status_raw(
+                                    &client_cmd,
+                                    &cli_cmd,
+                                    &token_cmd,
+                                    run_id,
+                                    RunStatus::Running,
+                                )
+                                .await;
                                 let mut guard = bridge_cancel.lock().await;
                                 if let Some(b) = guard.as_mut() {
                                     if let Err(err) = b.prompt(&session_for_cancel, &text).await {
@@ -700,6 +941,16 @@ async fn run_with_real_acp(
                                 {
                                     let mut ts = activity_cmd.lock().await;
                                     *ts = tokio::time::Instant::now();
+                                }
+                                if !cancel_flag.load(std::sync::atomic::Ordering::SeqCst) {
+                                    let _ = set_status_raw(
+                                        &client_cmd,
+                                        &cli_cmd,
+                                        &token_cmd,
+                                        run_id,
+                                        RunStatus::WaitingForUser,
+                                    )
+                                    .await;
                                 }
                             }
                         }
@@ -722,11 +973,24 @@ async fn run_with_real_acp(
         let mut ts = last_activity.lock().await;
         *ts = tokio::time::Instant::now();
     }
+    // Turn finished — free the UI for follow-ups while ACP session stays warm.
+    if !cancelled.load(std::sync::atomic::Ordering::SeqCst) {
+        set_status(client, cli, run_id, RunStatus::WaitingForUser, None, None).await?;
+        if let Err(err) =
+            maybe_refresh_run_title(client, cli, run_id, &claimed.run.prompt, &llm_env).await
+        {
+            warn!(run_id = %run_id, error = %err, "run title refresh failed");
+        }
+    }
 
-    // Keep the session alive for follow-ups until idle timeout, cancel, or child exit.
+    // Keep the session alive for follow-ups until idle timeout, cancel, SIGTERM, or child exit.
     let idle = Duration::from_secs(cli.acp_idle_secs.max(1));
     loop {
-        if cancelled.load(std::sync::atomic::Ordering::SeqCst) {
+        if cancelled.load(Ordering::SeqCst) {
+            break;
+        }
+        if shutdown.load(Ordering::SeqCst) {
+            info!(run_id = %run_id, "ending hold due to shutdown signal");
             break;
         }
         {
@@ -923,9 +1187,172 @@ async fn post_event_raw(
     Ok(())
 }
 
+fn chat_completions_url(base_url: &str) -> String {
+    let base = base_url.trim().trim_end_matches('/');
+    if base.ends_with("/chat/completions") {
+        base.to_string()
+    } else {
+        // Presets already include the API root (/v1, /compatible-mode/v1, /paas/v4, …).
+        format!("{base}/chat/completions")
+    }
+}
+
+fn sanitize_run_title(raw: &str) -> String {
+    let cleaned = raw
+        .trim()
+        .trim_matches(|c| c == '"' || c == '\'' || c == '`' || c == '「' || c == '」')
+        .lines()
+        .next()
+        .unwrap_or("")
+        .trim()
+        .trim_start_matches(['#', '-', '*', ' '])
+        .trim();
+    cleaned.chars().take(56).collect()
+}
+
+async fn maybe_refresh_run_title(
+    client: &reqwest::Client,
+    cli: &Cli,
+    run_id: Uuid,
+    prompt: &str,
+    llm_env: &HashMap<String, String>,
+) -> Result<()> {
+    let api_key = llm_env
+        .get("ZENE_API_KEY")
+        .cloned()
+        .or_else(|| llm_env.get("OPENAI_API_KEY").cloned())
+        .or_else(|| std::env::var("ZENE_API_KEY").ok())
+        .or_else(|| std::env::var("OPENAI_API_KEY").ok())
+        .unwrap_or_default();
+    let base_url = llm_env
+        .get("ZENE_BASE_URL")
+        .cloned()
+        .or_else(|| std::env::var("ZENE_BASE_URL").ok())
+        .unwrap_or_else(|| "https://api.openai.com/v1".into());
+    let model = llm_env
+        .get("ZENE_MODEL")
+        .cloned()
+        .or_else(|| std::env::var("ZENE_MODEL").ok())
+        .unwrap_or_else(|| "gpt-4o-mini".into());
+    if api_key.trim().is_empty() {
+        return Ok(());
+    }
+    let url = chat_completions_url(&base_url);
+    let snippet: String = prompt.chars().take(800).collect();
+    // DeepSeek V4 (and similar) enable thinking by default; with a tiny max_tokens budget
+    // all tokens go to reasoning_content and message.content stays empty.
+    let mut body = serde_json::json!({
+        "model": model,
+        "temperature": 0.2,
+        "max_tokens": 64,
+        "thinking": { "type": "disabled" },
+        "messages": [
+            {
+                "role": "system",
+                "content": "Return only a concise agent session title in the user's language. Max 8 words. No quotes or punctuation wrapping."
+            },
+            {
+                "role": "user",
+                "content": format!("Task:\n{snippet}")
+            }
+        ]
+    });
+    let mut resp = client
+        .post(&url)
+        .bearer_auth(&api_key)
+        .json(&body)
+        .timeout(Duration::from_secs(20))
+        .send()
+        .await
+        .context("title llm request")?;
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let err_body = resp.text().await.unwrap_or_default();
+        // Providers that reject unknown `thinking` get one retry without it.
+        let thinking_rejected = status.as_u16() == 400
+            && (err_body.contains("thinking")
+                || err_body.contains("unknown")
+                || err_body.contains("Unrecognized"));
+        if thinking_rejected {
+            body.as_object_mut().map(|o| o.remove("thinking"));
+            // Give thinking models enough room if disable isn't supported.
+            body["max_tokens"] = serde_json::json!(256);
+            resp = client
+                .post(&url)
+                .bearer_auth(&api_key)
+                .json(&body)
+                .timeout(Duration::from_secs(20))
+                .send()
+                .await
+                .context("title llm retry")?;
+        } else {
+            warn!(%status, body = %err_body.chars().take(240).collect::<String>(), "title llm failed");
+            return Ok(());
+        }
+    }
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let err_body = resp.text().await.unwrap_or_default();
+        warn!(%status, body = %err_body.chars().take(240).collect::<String>(), "title llm failed");
+        return Ok(());
+    }
+    let value: serde_json::Value = resp.json().await.context("title llm json")?;
+    let title = value
+        .pointer("/choices/0/message/content")
+        .and_then(|v| v.as_str())
+        .map(sanitize_run_title)
+        .unwrap_or_default();
+    if title.is_empty() {
+        warn!(run_id = %run_id, "title llm returned empty content");
+        return Ok(());
+    }
+    let req = WorkerTitleRequest { title: title.clone() };
+    client
+        .post(format!("{}/internal/v1/runs/{run_id}/title", cli.api_url))
+        .bearer_auth(&cli.worker_token)
+        .json(&req)
+        .send()
+        .await?
+        .error_for_status()
+        .context("post title")?;
+    info!(run_id = %run_id, %title, "refreshed run title");
+    Ok(())
+}
+
 async fn set_status(
     client: &reqwest::Client,
     cli: &Cli,
+    run_id: Uuid,
+    status: RunStatus,
+    head_sha: Option<String>,
+    failure_code: Option<String>,
+) -> Result<()> {
+    post_run_status(
+        client,
+        &cli.api_url,
+        &cli.worker_token,
+        run_id,
+        status,
+        head_sha,
+        failure_code,
+    )
+    .await
+}
+
+async fn set_status_raw(
+    client: &reqwest::Client,
+    api_url: &str,
+    token: &str,
+    run_id: Uuid,
+    status: RunStatus,
+) -> Result<()> {
+    post_run_status(client, api_url, token, run_id, status, None, None).await
+}
+
+async fn post_run_status(
+    client: &reqwest::Client,
+    api_url: &str,
+    token: &str,
     run_id: Uuid,
     status: RunStatus,
     head_sha: Option<String>,
@@ -937,11 +1364,8 @@ async fn set_status(
         failure_code,
     };
     client
-        .post(format!(
-            "{}/internal/v1/runs/{run_id}/status",
-            cli.api_url
-        ))
-        .bearer_auth(&cli.worker_token)
+        .post(format!("{api_url}/internal/v1/runs/{run_id}/status"))
+        .bearer_auth(token)
         .json(&body)
         .send()
         .await?
@@ -1059,5 +1483,32 @@ async fn drain_stderr_lines(stderr: tokio::process::ChildStderr) {
             Ok(_) => {}
             Err(_) => break,
         }
+    }
+}
+
+#[cfg(test)]
+mod title_tests {
+    use super::{chat_completions_url, sanitize_run_title};
+
+    #[test]
+    fn completions_url_appends_path() {
+        assert_eq!(
+            chat_completions_url("https://api.deepseek.com/v1"),
+            "https://api.deepseek.com/v1/chat/completions"
+        );
+        assert_eq!(
+            chat_completions_url("https://open.bigmodel.cn/api/paas/v4/"),
+            "https://open.bigmodel.cn/api/paas/v4/chat/completions"
+        );
+        assert_eq!(
+            chat_completions_url("https://api.openai.com/v1/chat/completions"),
+            "https://api.openai.com/v1/chat/completions"
+        );
+    }
+
+    #[test]
+    fn sanitize_strips_wrapping() {
+        assert_eq!(sanitize_run_title("  \"项目总结\"  "), "项目总结");
+        assert_eq!(sanitize_run_title("# Fix login bug\nmore"), "Fix login bug");
     }
 }

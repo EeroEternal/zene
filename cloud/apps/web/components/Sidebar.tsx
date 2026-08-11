@@ -1,7 +1,19 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { IconCheck, IconChevronRight, IconDots, IconFilter, IconHelp, IconLogout, IconSettings } from "@/lib/icons";
+import {
+  IconArchive,
+  IconCheck,
+  IconChevronRight,
+  IconDots,
+  IconFilter,
+  IconHelp,
+  IconLogout,
+  IconPanelLeftClose,
+  IconPencil,
+  IconSettings,
+  IconTrash,
+} from "@/lib/icons";
 import type { ListFilter, ListGroup, Organization, Repo, Run, User } from "@/lib/types";
 import { StatusDot } from "./StatusPill";
 
@@ -83,20 +95,28 @@ interface SidebarProps {
   runs: Run[];
   repos: Repo[];
   currentRunId: string | null;
+  newAgentActive?: boolean;
   selectedRepoId: string;
   listGroup: ListGroup;
   listFilter: ListFilter;
   listRepoFilter: string;
   listCompact: boolean;
   drawerOpen: boolean;
+  collapsed?: boolean;
+  onCollapse?: () => void;
   onSetListGroup: (group: ListGroup) => void;
   onSetListFilter: (filter: ListFilter, repoFilter?: string) => void;
   onSetListCompact: (compact: boolean) => void;
   onNewAgent: () => void;
   onOpenRun: (runId: string) => void;
+  onRenameRun: (runId: string, title: string) => Promise<void> | void;
+  onArchiveRun: (runId: string) => Promise<void> | void;
+  onDeleteRun: (runId: string) => Promise<void> | void;
   onSettings: () => void;
   onLogout: () => void;
 }
+
+type CtxMenu = { runId: string; x: number; y: number };
 
 export function Sidebar(props: SidebarProps) {
   const {
@@ -105,16 +125,22 @@ export function Sidebar(props: SidebarProps) {
     runs,
     repos,
     currentRunId,
+    newAgentActive = false,
     selectedRepoId,
     listGroup,
     listFilter,
     listRepoFilter,
     listCompact,
     drawerOpen,
+    collapsed = false,
   } = props;
   const [menu, setMenu] = useState<"account" | "list" | null>(null);
   const [filterOpen, setFilterOpen] = useState(false);
+  const [ctx, setCtx] = useState<CtxMenu | null>(null);
+  const [renamingId, setRenamingId] = useState<string | null>(null);
+  const [renameDraft, setRenameDraft] = useState("");
   const footRef = useRef<HTMLDivElement>(null);
+  const ctxRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     const onDoc = (e: MouseEvent) => {
@@ -122,11 +148,16 @@ export function Sidebar(props: SidebarProps) {
         setMenu(null);
         setFilterOpen(false);
       }
+      if (ctxRef.current && !ctxRef.current.contains(e.target as Node)) {
+        setCtx(null);
+      }
     };
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") {
         setMenu(null);
         setFilterOpen(false);
+        setCtx(null);
+        setRenamingId(null);
       }
     };
     document.addEventListener("click", onDoc);
@@ -171,72 +202,182 @@ export function Sidebar(props: SidebarProps) {
   return (
     <aside
       className={[
-        "flex min-h-0 select-none flex-col border-r border-line bg-canvas",
-        "max-[980px]:fixed max-[980px]:bottom-0 max-[980px]:left-0 max-[980px]:top-0 max-[980px]:z-40 max-[980px]:w-[min(272px,86vw)] max-[980px]:shadow-card max-[980px]:transition-transform",
+        "flex min-h-0 w-[272px] select-none flex-col border-r border-line bg-secondary",
+        "max-[980px]:fixed max-[980px]:bottom-0 max-[980px]:left-0 max-[980px]:top-0 max-[980px]:z-40 max-[980px]:shadow-card max-[980px]:transition-transform",
         drawerOpen ? "max-[980px]:translate-x-0" : "max-[980px]:-translate-x-[105%]",
+        collapsed ? "min-[981px]:hidden" : "",
       ].join(" ")}
     >
-      <div className="border-b border-line p-2">
-        <div className="flex items-center gap-2.5 px-2.5 pb-3 pt-2">
-          <div className="grid h-7 w-7 place-items-center rounded-sm bg-ink text-[13px] font-bold text-white">Z</div>
-          <div>
-            <strong className="text-sm tracking-[-0.01em] text-ink">Zene Cloud</strong>
-            <span className="block text-[11px] font-normal text-placeholder">Cloud Agents</span>
+      <div className="px-2.5 pb-1 pt-3">
+        <div className="mb-3 flex items-center gap-2.5 px-1.5">
+          <div className="grid h-7 w-7 shrink-0 place-items-center rounded-md bg-ink text-[13px] font-bold text-white">Z</div>
+          <div className="min-w-0 flex-1">
+            <strong className="block truncate text-sm tracking-[-0.01em] text-ink">Zene Cloud</strong>
           </div>
+          <button
+            type="button"
+            className="hidden h-7 w-7 shrink-0 items-center justify-center rounded-md text-muted hover:bg-active hover:text-ink min-[981px]:inline-flex"
+            title="Hide sidebar"
+            aria-label="Hide sidebar"
+            onClick={props.onCollapse}
+          >
+            <IconPanelLeftClose className="h-4 w-4" />
+          </button>
         </div>
         <button
           type="button"
-          className="btn-primary mb-1 w-full rounded-sm px-2.5 py-2 text-left text-[13px] font-semibold"
+          className={[
+            "w-full px-2.5 py-2 text-left text-[13px] font-medium transition-colors",
+            newAgentActive ? "text-ink" : "text-ink hover:text-primary",
+          ].join(" ")}
           onClick={props.onNewAgent}
         >
           New Agent
         </button>
-        <div className="px-2.5 pb-1 pt-2.5 text-xs font-medium text-placeholder">Agents</div>
       </div>
-      <div className="min-h-0 flex-1 overflow-auto px-2 pb-2 pt-1">
-        {!filtered.length && (
-          <div className="px-3 py-2 text-[13px] leading-normal text-placeholder">
-            {runs.length ? "No matching agents" : "No agents yet"}
+
+      <div className="min-h-0 flex-1 overflow-auto px-2.5 pb-2 pt-2">
+        {!filtered.length && runs.length > 0 && (
+          <div className="px-2.5 py-3 text-[12.5px] leading-normal text-placeholder">
+            No matching agents
           </div>
         )}
-        {groups.map((group, gi) => (
-          <div key={gi}>
-            {group.label != null && (
-              <div className="px-2.5 pb-1 pt-2.5 text-[11px] font-medium text-placeholder">{group.label}</div>
-            )}
-            {group.runs.map((run) => (
-              <button
-                key={run.id}
-                type="button"
-                className={[
-                  "mb-0.5 w-full rounded-sm text-left text-[13px] text-ink transition-colors hover:bg-secondary",
-                  listCompact ? "px-2 py-1.5" : "px-2.5 py-2",
-                  run.id === currentRunId ? "bg-active font-medium" : "",
-                ].join(" ")}
-                onClick={() => props.onOpenRun(run.id)}
-              >
-                <div className="overflow-hidden text-ellipsis whitespace-nowrap text-[13px]">{run.title}</div>
-                {!listCompact && (
-                  <small className="mt-0.5 block text-[10px] text-placeholder">
-                    <StatusDot status={run.status} />
-                    {run.status}
-                  </small>
-                )}
-              </button>
-            ))}
-          </div>
-        ))}
+        {groups.map((group, gi) => {
+          const indented = group.label != null;
+          return (
+            <div key={gi} className={gi === 0 ? "mb-2" : "mb-2 mt-3"}>
+              {group.label != null && (
+                <div className="mb-1.5 px-2.5 text-[11px] font-medium tracking-[0.01em] text-placeholder">
+                  {group.label}
+                </div>
+              )}
+              <div className={`flex flex-col ${listCompact ? "gap-0.5" : "gap-1"}`}>
+                {group.runs.map((run) => {
+                  const active = run.id === currentRunId;
+                  const renaming = renamingId === run.id;
+                  return (
+                    <div
+                      key={run.id}
+                      className={[
+                        "group flex w-full items-center gap-1.5 rounded-lg text-left text-[12.5px] text-ink transition-colors",
+                        indented ? "ml-1 pl-2" : "",
+                        listCompact ? "px-2 py-1" : "px-2.5 py-1.5",
+                        active
+                          ? "bg-canvas font-medium shadow-[0_0_0_1px_rgba(0,0,0,0.04)]"
+                          : "hover:bg-canvas/70",
+                      ].join(" ")}
+                      onContextMenu={(e) => {
+                        e.preventDefault();
+                        setCtx({ runId: run.id, x: e.clientX, y: e.clientY });
+                        setMenu(null);
+                        setFilterOpen(false);
+                      }}
+                    >
+                      {renaming ? (
+                        <input
+                          className="min-w-0 flex-1 rounded-md border border-line-strong bg-canvas px-1.5 py-0.5 text-[12.5px] outline-none focus:border-primary"
+                          autoFocus
+                          value={renameDraft}
+                          onChange={(e) => setRenameDraft(e.target.value)}
+                          onClick={(e) => e.stopPropagation()}
+                          onKeyDown={(e) => {
+                            if (e.key === "Enter") {
+                              e.preventDefault();
+                              const next = renameDraft.trim();
+                              setRenamingId(null);
+                              if (next && next !== run.title) void props.onRenameRun(run.id, next);
+                            } else if (e.key === "Escape") {
+                              setRenamingId(null);
+                            }
+                          }}
+                          onBlur={() => {
+                            const next = renameDraft.trim();
+                            setRenamingId(null);
+                            if (next && next !== run.title) void props.onRenameRun(run.id, next);
+                          }}
+                        />
+                      ) : (
+                        <button
+                          type="button"
+                          className="flex min-w-0 flex-1 items-center gap-2 text-left"
+                          onClick={() => props.onOpenRun(run.id)}
+                        >
+                          <StatusDot status={run.status} />
+                          <span className="min-w-0 flex-1 overflow-hidden text-ellipsis whitespace-nowrap">
+                            {run.title || "Untitled"}
+                          </span>
+                        </button>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          );
+        })}
       </div>
-      <div ref={footRef} className="relative border-t border-line p-2" onClick={(e) => e.stopPropagation()}>
+
+      {ctx && (
         <div
-          className="flex w-full cursor-pointer items-center gap-2 rounded-[10px] px-1 py-1.5 text-left hover:bg-tertiary"
+          ref={ctxRef}
+          className="menu-card fixed z-[60] min-w-[168px]"
+          style={{
+            left: Math.min(ctx.x, typeof window !== "undefined" ? window.innerWidth - 180 : ctx.x),
+            top: Math.min(ctx.y, typeof window !== "undefined" ? window.innerHeight - 160 : ctx.y),
+          }}
+          role="menu"
+          onClick={(e) => e.stopPropagation()}
+        >
+          <button
+            type="button"
+            className="menu-item"
+            onClick={() => {
+              const run = runs.find((r) => r.id === ctx.runId);
+              setRenameDraft(run?.title || "");
+              setRenamingId(ctx.runId);
+              setCtx(null);
+            }}
+          >
+            <IconPencil className="h-3.5 w-3.5 shrink-0 text-muted" />
+            <span className="min-w-0 flex-1">Rename</span>
+          </button>
+          <button
+            type="button"
+            className="menu-item"
+            onClick={() => {
+              const id = ctx.runId;
+              setCtx(null);
+              void props.onArchiveRun(id);
+            }}
+          >
+            <IconArchive className="h-3.5 w-3.5 shrink-0 text-muted" />
+            <span className="min-w-0 flex-1">Archive</span>
+          </button>
+          <div className="menu-sep" />
+          <button
+            type="button"
+            className="menu-item text-danger"
+            onClick={() => {
+              const id = ctx.runId;
+              setCtx(null);
+              void props.onDeleteRun(id);
+            }}
+          >
+            <IconTrash className="h-3.5 w-3.5 shrink-0" />
+            <span className="min-w-0 flex-1">Delete</span>
+          </button>
+        </div>
+      )}
+      <div ref={footRef} className="relative px-2.5 pb-2.5 pt-1" onClick={(e) => e.stopPropagation()}>
+        <div
+          className="flex w-full cursor-pointer items-center gap-2 rounded-lg px-1.5 py-1.5 text-left hover:bg-canvas/80"
           onClick={(e) => {
             if ((e.target as HTMLElement).closest("[data-list-menu-btn]")) return;
             setMenu(menu === "account" ? null : "account");
             setFilterOpen(false);
           }}
         >
-          <div className="grid h-7 w-7 shrink-0 place-items-center rounded-full bg-active text-[11px] font-semibold text-ink">
+          <div className="grid h-7 w-7 shrink-0 place-items-center rounded-full bg-canvas text-[11px] font-semibold text-ink shadow-[0_0_0_1px_rgba(0,0,0,0.06)]">
             {userInitials(name)}
           </div>
           <div className="min-w-0 flex-1">

@@ -1,9 +1,9 @@
 {
   "name": "zene-cloud-web",
-  "version": "0.1.3",
+  "version": "0.1.4",
   "private": true,
   "scripts": {
-    "dev": "next dev",
+    "dev": "NO_PROXY=127.0.0.1,localhost no_proxy=127.0.0.1,localhost next dev -p 8787",
     "build": "next build && rm -rf dist && cp -r out dist",
     "lint": "next lint",
     "typecheck": "tsc --noEmit"
@@ -12,7 +12,10 @@
     "lucide-react": "^1.25.0",
     "next": "14.2.35",
     "react": "18.3.1",
-    "react-dom": "18.3.1"
+    "react-dom": "18.3.1",
+    "react-markdown": "^10.1.0",
+    "remark-breaks": "^4.0.0",
+    "remark-gfm": "^4.0.1"
   },
   "devDependencies": {
     "@types/node": "^20",

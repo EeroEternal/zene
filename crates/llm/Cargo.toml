@@ -3,6 +3,11 @@ name = "zene-llm"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+description = "LLM protocol layer: OpenAI/Anthropic providers, messages, streaming, context metadata"
+readme = "README.md"
+repository = "https://github.com/ParaTensor/zene"
+keywords = ["llm", "openai", "anthropic", "agent"]
+categories = ["api-bindings", "asynchronous"]
 
 [dependencies]
 anyhow.workspace = true
@@ -15,5 +20,5 @@ serde_json.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
 tokio-util.workspace = true
-unigateway-sdk.workspace = true
+unigateway-sdk = { workspace = true, features = ["core"] }
 zene-config = { workspace = true }

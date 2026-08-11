@@ -49,16 +49,31 @@ export interface Run {
   baseRef?: string;
   model?: string;
   permissionMode?: string;
+  /** Agent step budget; `0` = unlimited. */
+  maxTurns?: number;
   headSha?: string;
   createdAt?: string;
   updatedAt?: string;
   startedAt?: string;
+  archivedAt?: string;
 }
 
 export interface RunMessage {
   role: string;
   content: string;
   createdAt: string;
+}
+
+export interface AcpSessionUpdate {
+  sessionUpdate?: string;
+  content?: { text?: string } | Array<{ type?: string; content?: { text?: string }; text?: string }>;
+  title?: string;
+  toolName?: string;
+  toolCallId?: string;
+  kind?: string;
+  status?: string;
+  rawInput?: unknown;
+  rawOutput?: { text?: string; isError?: boolean };
 }
 
 export interface RunEvent {
@@ -70,14 +85,12 @@ export interface RunEvent {
     event?: string;
     status?: string;
     headSha?: string;
+    prompt?: string;
+    role?: string;
+    text?: string;
+    title?: string;
     params?: {
-      update?: {
-        sessionUpdate?: string;
-        content?: { text?: string };
-        title?: string;
-        toolName?: string;
-        status?: string;
-      };
+      update?: AcpSessionUpdate;
     };
   };
 }

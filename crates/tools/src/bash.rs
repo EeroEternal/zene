@@ -7,7 +7,7 @@ use serde::Deserialize;
 use serde_json::json;
 use tokio_util::sync::CancellationToken;
 use zene_llm::ToolDefinition;
-use zene_sandbox::LocalSandbox;
+use zene_sandbox::Sandbox;
 
 use crate::background::{BackgroundTaskKind, BackgroundTaskStatus, BackgroundTaskStore};
 use crate::registry::{Tool, ToolContext, ToolResult};
@@ -99,7 +99,7 @@ async fn spawn_background_bash(
 
     tokio::spawn(async move {
         let result = exec_with_timeout(
-            &sandbox,
+            sandbox.as_ref(),
             &command,
             cwd.as_deref(),
             Some(&cancel),
@@ -146,7 +146,7 @@ async fn spawn_background_bash(
 }
 
 async fn exec_with_timeout(
-    sandbox: &LocalSandbox,
+    sandbox: &dyn Sandbox,
     command: &str,
     cwd: Option<&str>,
     cancel: Option<&CancellationToken>,
@@ -156,11 +156,13 @@ async fn exec_with_timeout(
         anyhow::bail!("aborted");
     }
 
-    // LocalSandbox::exec uses a fixed timeout; for background we wrap with our own
-    // longer timeout and cancellation by racing against the cancel token after start.
-    // Reuse exec but the sandbox timeout is 120s — for longer jobs we call a dedicated path.
     sandbox
-        .exec_with_timeout(command, cwd, cancel, Duration::from_secs(timeout_secs))
+        .exec_with_timeout(
+            command,
+            cwd,
+            cancel,
+            Duration::from_secs(timeout_secs),
+        )
         .await
 }
 

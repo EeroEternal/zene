@@ -15,8 +15,9 @@ use std::str::FromStr;
 use uuid::Uuid;
 use zene_cloud_domain::{
     ApprovalRequest, ApprovalStatus, AuthResponse, CloneAuthResponse, CreateApprovalRequest,
-    CreateRepositoryRequest, CreateRunRequest, LoginRequest, Organization, RegisterRequest,
-    Repository, Run, RunEvent, RunMessage, RunStatus, User, WorkerCommand,
+    CreateRepositoryRequest, CreateRunRequest, LoginRequest, Organization, QueueActive, QueueHold,
+    QueueStats, RegisterRequest, Repository, Run, RunEvent, RunMessage, RunStatus, User,
+    WorkerCommand,
 };
 
 #[derive(Clone)]
@@ -78,6 +79,14 @@ impl Db {
                 "006_user_llm_settings",
                 include_str!("../../../migrations/006_user_llm_settings.sql"),
             ),
+            (
+                "007_run_archive",
+                include_str!("../../../migrations/007_run_archive.sql"),
+            ),
+            (
+                "008_run_max_turns",
+                include_str!("../../../migrations/008_run_max_turns.sql"),
+            ),
         ];
 
         for (version, sql) in migrations {
@@ -90,8 +99,9 @@ impl Db {
                 continue;
             }
 
-            let ignore_alter_dupes =
-                version.starts_with("002") || version.starts_with("003");
+            let ignore_alter_dupes = version.starts_with("002")
+                || version.starts_with("003")
+                || version.starts_with("007");
             for statement in split_sql_statements(sql) {
                 match sqlx::query(&statement).execute(&self.pool).await {
                     Ok(_) => {}
@@ -368,14 +378,7 @@ impl Db {
         }
         let id = Uuid::new_v4();
         let now = Utc::now();
-        let title = req
-            .prompt
-            .lines()
-            .next()
-            .unwrap_or("Untitled agent")
-            .chars()
-            .take(80)
-            .collect::<String>();
+        let title = title_from_prompt(&req.prompt);
         let head_branch = format!(
             "zene/{}/{}",
             slugify(&title).chars().take(24).collect::<String>(),
@@ -400,16 +403,18 @@ impl Db {
             head_sha: None,
             model: req.model,
             permission_mode: req.permission_mode,
+            max_turns: req.max_turns,
             created_at: now,
             started_at: None,
             finished_at: None,
+            archived_at: None,
         };
         sqlx::query(
             "INSERT INTO runs
              (id, organization_id, repository_id, requested_by, status, status_version, title,
-              prompt, base_ref, base_sha, head_branch, head_sha, model, permission_mode,
-              created_at, started_at, finished_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+              prompt, base_ref, base_sha, head_branch, head_sha, model, permission_mode, max_turns,
+              created_at, started_at, finished_at, archived_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(run.id.to_string())
         .bind(run.organization_id.to_string())
@@ -425,7 +430,9 @@ impl Db {
         .bind(&run.head_sha)
         .bind(&run.model)
         .bind(&run.permission_mode)
+        .bind(run.max_turns as i64)
         .bind(run.created_at.to_rfc3339())
+        .bind(Option::<String>::None)
         .bind(Option::<String>::None)
         .bind(Option::<String>::None)
         .execute(&self.pool)
@@ -464,7 +471,9 @@ impl Db {
 
     pub async fn list_runs(&self, org_id: Uuid) -> Result<Vec<Run>> {
         let sql = format!(
-            "SELECT {RUN_COLUMNS} FROM runs WHERE organization_id = ? ORDER BY created_at DESC LIMIT 100"
+            "SELECT {RUN_COLUMNS} FROM runs
+             WHERE organization_id = ? AND archived_at IS NULL
+             ORDER BY created_at DESC LIMIT 100"
         );
         let rows = sqlx::query_as::<_, RunRow>(&sql)
             .bind(org_id.to_string())
@@ -480,6 +489,87 @@ impl Db {
             .fetch_optional(&self.pool)
             .await?;
         Ok(row.map(RunRow::into_run))
+    }
+
+    pub async fn update_run_meta(
+        &self,
+        run_id: Uuid,
+        title: Option<&str>,
+        archived: Option<bool>,
+    ) -> Result<Run> {
+        let run = self.get_run(run_id).await?.context("run not found")?;
+        if let Some(title) = title {
+            let title = title.trim();
+            if !title.is_empty() {
+                sqlx::query("UPDATE runs SET title = ? WHERE id = ?")
+                    .bind(title.chars().take(80).collect::<String>())
+                    .bind(run_id.to_string())
+                    .execute(&self.pool)
+                    .await?;
+            }
+        }
+        if let Some(archived) = archived {
+            if archived {
+                sqlx::query("UPDATE runs SET archived_at = ? WHERE id = ?")
+                    .bind(Utc::now().to_rfc3339())
+                    .bind(run_id.to_string())
+                    .execute(&self.pool)
+                    .await?;
+            } else {
+                sqlx::query("UPDATE runs SET archived_at = NULL WHERE id = ?")
+                    .bind(run_id.to_string())
+                    .execute(&self.pool)
+                    .await?;
+            }
+        }
+        if title.is_some() {
+            let updated = self.get_run(run_id).await?.context("run not found")?;
+            self.append_event(
+                run_id,
+                0,
+                Some("platform.run.title"),
+                "platform",
+                serde_json::json!({
+                    "event": "run.title",
+                    "title": updated.title,
+                }),
+            )
+            .await?;
+        }
+        if archived == Some(true) {
+            self.append_event(
+                run_id,
+                0,
+                Some("platform.run.archived"),
+                "platform",
+                serde_json::json!({ "event": "run.archived" }),
+            )
+            .await?;
+        }
+        let _ = run;
+        self.get_run(run_id).await?.context("run not found")
+    }
+
+    pub async fn delete_run(&self, run_id: Uuid) -> Result<()> {
+        let run_id_s = run_id.to_string();
+        let mut tx = self.pool.begin().await?;
+        for sql in [
+            "DELETE FROM run_events WHERE run_id = ?",
+            "DELETE FROM run_messages WHERE run_id = ?",
+            "DELETE FROM run_attempts WHERE run_id = ?",
+            "DELETE FROM approval_requests WHERE run_id = ?",
+            "DELETE FROM run_clone_credentials WHERE run_id = ?",
+            "DELETE FROM pull_requests WHERE run_id = ?",
+            "DELETE FROM git_operations WHERE run_id = ?",
+            "DELETE FROM runs WHERE id = ?",
+        ] {
+            sqlx::query(sql)
+                .bind(&run_id_s)
+                .execute(&mut *tx)
+                .await?;
+        }
+        tx.commit().await?;
+        Ok(())
     }
 
     pub async fn reclaim_stale_runs(&self) -> Result<u64> {
@@ -533,7 +623,9 @@ impl Db {
 
         let mut tx = self.pool.begin().await?;
         let sql = format!(
-            "SELECT {RUN_COLUMNS} FROM runs WHERE status = 'queued' ORDER BY created_at ASC LIMIT 1"
+            "SELECT {RUN_COLUMNS} FROM runs
+             WHERE status = 'queued' AND archived_at IS NULL
+             ORDER BY created_at ASC LIMIT 1"
         );
         let row = sqlx::query_as::<_, RunRow>(&sql)
         .fetch_optional(&mut *tx)
@@ -648,6 +740,83 @@ impl Db {
         .execute(&self.pool)
         .await?;
         Ok(())
+    }
+
+    /// Aggregate queue depth for the worker supervisor (single-node pool).
+    pub async fn queue_stats(&self) -> Result<QueueStats> {
+        let queued = sqlx::query_scalar::<_, i64>(
+            "SELECT COUNT(*) FROM runs
+             WHERE status = 'queued' AND archived_at IS NULL",
+        )
+        .fetch_one(&self.pool)
+        .await? as u64;
+
+        let active_rows = sqlx::query_as::<_, (String, String, String)>(
+            "SELECT a.worker_id, r.id, r.status
+             FROM runs r
+             JOIN run_attempts a ON a.run_id = r.id AND a.finished_at IS NULL
+             WHERE r.archived_at IS NULL
+               AND r.status IN ('provisioning','starting','cloning','running')
+             ORDER BY a.started_at ASC",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+
+        let hold_rows = sqlx::query_as::<_, (String, String, String)>(
+            "SELECT a.worker_id, r.id, COALESCE(a.started_at, r.started_at, r.created_at)
+             FROM runs r
+             JOIN run_attempts a ON a.run_id = r.id AND a.finished_at IS NULL
+             WHERE r.archived_at IS NULL
+               AND r.status IN ('waiting_for_user','waiting_for_approval')
+             ORDER BY a.started_at ASC",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+
+        let actives = active_rows
+            .into_iter()
+            .filter_map(|(worker_id, run_id, status)| {
+                let run_id = Uuid::parse_str(&run_id).ok()?;
+                Some(QueueActive {
+                    worker_id,
+                    run_id,
+                    status,
+                })
+            })
+            .collect::<Vec<_>>();
+
+        let holds = hold_rows
+            .into_iter()
+            .filter_map(|(worker_id, run_id, since)| {
+                let run_id = Uuid::parse_str(&run_id).ok()?;
+                let since = chrono::DateTime::parse_from_rfc3339(&since)
+                    .ok()
+                    .map(|dt| dt.with_timezone(&Utc))
+                    .or_else(|| {
+                        // SQLite may store without offset; treat as UTC.
+                        chrono::NaiveDateTime::parse_from_str(&since, "%Y-%m-%d %H:%M:%S%.f")
+                            .or_else(|_| {
+                                chrono::NaiveDateTime::parse_from_str(&since, "%Y-%m-%dT%H:%M:%S%.f")
+                            })
+                            .ok()
+                            .map(|ndt| ndt.and_utc())
+                    })
+                    .unwrap_or_else(Utc::now);
+                Some(QueueHold {
+                    worker_id,
+                    run_id,
+                    since,
+                })
+            })
+            .collect::<Vec<_>>();
+
+        Ok(QueueStats {
+            queued,
+            active: actives.len() as u64,
+            holding: holds.len() as u64,
+            holds,
+            actives,
+        })
     }
 
     pub async fn append_event(
@@ -1247,9 +1416,11 @@ struct RunRow {
     head_sha: Option<String>,
     model: String,
     permission_mode: String,
+    max_turns: i64,
     created_at: String,
     started_at: Option<String>,
     finished_at: Option<String>,
+    archived_at: Option<String>,
 }
 
 impl RunRow {
@@ -1269,9 +1440,11 @@ impl RunRow {
             head_sha: self.head_sha,
             model: self.model,
             permission_mode: self.permission_mode,
+            max_turns: self.max_turns.max(0) as u32,
             created_at: parse_time(&self.created_at),
             started_at: self.started_at.as_deref().map(parse_time),
             finished_at: self.finished_at.as_deref().map(parse_time),
+            archived_at: self.archived_at.as_deref().map(parse_time),
         }
     }
 }
@@ -1303,6 +1476,25 @@ pub(crate) fn parse_time(value: &str) -> chrono::DateTime<Utc> {
     chrono::DateTime::parse_from_rfc3339(value)
         .map(|v| v.with_timezone(&Utc))
         .unwrap_or_else(|_| Utc::now())
+}
+
+fn title_from_prompt(prompt: &str) -> String {
+    let cleaned = prompt
+        .lines()
+        .map(str::trim)
+        .find(|l| !l.is_empty())
+        .unwrap_or("Untitled agent")
+        .trim_start_matches(['#', '-', '*', ' '])
+        .trim();
+    let mut title: String = cleaned.chars().take(56).collect();
+    if cleaned.chars().count() > 56 {
+        title.push('…');
+    }
+    if title.is_empty() {
+        "Untitled agent".into()
+    } else {
+        title
+    }
 }
 
 fn slugify(input: &str) -> String {
@@ -1391,5 +1583,5 @@ pub(crate) fn map_approval_full_row(
 }
 
 const RUN_COLUMNS: &str = "id, organization_id, repository_id, requested_by, status, status_version,
-    title, prompt, base_ref, base_sha, head_branch, head_sha, model, permission_mode,
-    created_at, started_at, finished_at";
+    title, prompt, base_ref, base_sha, head_branch, head_sha, model, permission_mode, max_turns,
+    created_at, started_at, finished_at, archived_at";

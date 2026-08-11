@@ -1,18 +1,25 @@
 [workspace]
 members = [
     "apps/cli",
+    "apps/inference-gateway",
     "crates/config",
     "crates/llm",
     "crates/sandbox",
     "crates/tools",
     "crates/session",
+    "crates/context",
     "crates/core",
     "crates/mcp",
+    "crates/hooks",
+    "crates/permission",
+    "crates/tool-runtime",
+    "crates/turn",
+    "crates/workspace",
 ]
 resolver = "2"
 
 [workspace.package]
-version = "0.1.9"
+version = "0.1.11"
 edition = "2021"
 license = "MIT"
 authors = ["Zene Contributors"]
@@ -29,27 +36,31 @@ tower-http = { version = "0.6", features = ["trace"] }
 jsonschema = "0.26"
 regex = "1"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
-rustyline = "15"
 schemars = "0.8"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"
 tokio = { version = "1", features = ["full"] }
 tokio-util = "0.7"
-ctrlc = "3"
 parking_lot = "0.12"
 toml = "0.8"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 uuid = { version = "1", features = ["v4", "serde"] }
 walkdir = "2"
-zene-config = { path = "crates/config" }
+zene-config = { version = "0.1.11", path = "crates/config" }
+zene-context = { version = "0.1.11", path = "crates/context" }
 zene-core = { path = "crates/core" }
-zene-llm = { path = "crates/llm" }
+zene-llm = { version = "0.1.11", path = "crates/llm" }
 zene-sandbox = { path = "crates/sandbox" }
-zene-session = { path = "crates/session" }
+zene-session = { version = "0.1.11", path = "crates/session" }
 zene-tools = { path = "crates/tools" }
 zene-mcp = { path = "crates/mcp" }
-unigateway-sdk = "2.1.1"
+zene-hooks = { path = "crates/hooks" }
+zene-permission = { version = "0.1.11", path = "crates/permission" }
+zene-tool-runtime = { path = "crates/tool-runtime" }
+zene-turn = { path = "crates/turn" }
+zene-workspace = { path = "crates/workspace" }
+unigateway-sdk = { version = "2.14", default-features = false, features = ["core"] }
 llm_providers = "0.12.0"
 tiktoken-rs = "0.12"

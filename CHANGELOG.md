@@ -2,16 +2,31 @@
 
 ## Unreleased
 
-## v0.1.9 (2026-07-25)
+## v0.1.11 (2026-08-11)
+
+### Added
+- `zene-context` crate: ContextEngine (estimate, compact, assemble, epoch) decoupled from runtime.
+- `zene-inference-gateway`: UniGateway 2.14 session prefix store, delta assembly, optional Redis (`unigateway-session-redis`).
+- Cloud deploy: inference gateway systemd unit, VM Redis in startup, worker `ZENE_INFERENCE_GATEWAY_URL` injection.
+- Docs: `docs/context-engine.md`, agent-components cross-links; E2E test for publish + delta assembly.
 
 ### Changed
-- Retire local Web Agent / `zene-gateway`; default CLI entry is REPL; Cloud Console adopts Cursor-style Inter / `#0090FF` tokens while keeping the existing layout IA.
-- Cloud Run page: wider Git/Files panel, narrower chat composer, Stop + Send available during active runs.
-- Install scripts moved under `scripts/`.
+- OpenAI-compatible LLM path uses `unigateway-sdk` 2.14 with `_session_context` / fingerprint metadata.
+- Context modules moved from `zene-core` to `zene-context`; Agent wires ContextEngine on prepare/usage.
+
+## v0.1.10 (2026-07-26)
+
+### Added
+- Configurable run max turns (`ZENE_MAX_TURNS` / New Agent picker); `0` = unlimited, soft-stop instead of failing the run.
+- Cloud worker supervisor scaling and run archive migration.
+- Cloud Console markdown rendering and Cursor-style tool/activity summaries in Run view.
+
+### Changed
+- CLI focuses on `zene acp` (interactive REPL / headless `-p` removed).
+- Opening a past run drains all event pages offline and commits the timeline once (no chunked replay).
 
 ### Fixed
-- Cloud Run follow-up: restore assistant history and chronological message order after refresh.
-- Real ACP worker: pass `--yolo` before the `acp` subcommand; canonicalize workspace cwd so `session/new` works with relative workspace roots.
+- Run history reopen no longer appears to stream in slowly when events exceed the 500-per-page API limit.
 
 ## v0.1.8 (2026-07-25)
 

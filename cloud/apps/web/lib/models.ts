@@ -18,8 +18,9 @@ export function saveSelectedModel(id: string): void {
   localStorage.setItem(MODEL_STORAGE_KEY, id);
 }
 
-/** Models shown in NewAgent picker from user BYOK settings (fallback to presets). */
+/** Models shown in pickers only after BYOK API key is configured. */
 export function modelsForPicker(settings: LlmSettingsView | null): string[] {
+  if (!settings?.hasApiKey) return [];
   const fromSettings = [
     ...(settings?.defaultModel ? [settings.defaultModel] : []),
     ...(settings?.models || []),

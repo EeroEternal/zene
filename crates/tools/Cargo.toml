@@ -3,6 +3,7 @@ name = "zene-tools"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+publish = false
 
 [dependencies]
 anyhow.workspace = true
@@ -19,6 +20,7 @@ tokio.workspace = true
 tokio-util.workspace = true
 zene-config = { workspace = true }
 zene-llm = { workspace = true }
+zene-permission = { workspace = true }
 zene-sandbox = { workspace = true }
 zene-session = { workspace = true }
 

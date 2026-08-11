@@ -10,6 +10,10 @@ UI 视觉与布局以根目录 [`DESIGN.md`](DESIGN.md) 为准；细则见 [`doc
 
 **布局 IA 保持现有 Console 结构**（侧栏 272px、New Agent 居中 composer、Run = 对话左 + CodePanel 右）；视觉 token 使用 cursor 设计系统，不要擅自改成三栏 IDE 骨架，除非产品明确要求。
 
+### Dialogs / confirmations
+
+禁止使用浏览器原生弹窗（`window.alert` / `window.confirm` / `window.prompt`，以及等价的同步阻塞对话框）。确认删除、危险操作等一律用应用内自定义模态框（styled modal / `<dialog>`），视觉与交互需符合 Console 设计系统。
+
 ### Icons
 
 Cloud Console 图标统一使用 [Lucide](https://lucide.dev/icons)：
@@ -23,10 +27,10 @@ Cloud Console 图标统一使用 [Lucide](https://lucide.dev/icons)：
 
 Zene is a coding-agent product (workspace version in `Cargo.toml`). Primary surfaces:
 
-- `zene` (`apps/cli`): REPL (`--repl` / bare `zene`), headless `-p`, and `zene acp` stdio Agent Client Protocol
-- Cloud Console UI: `cloud/apps/web/` (served by `zene-cloud-api`). Production deploy: GCP VM behind Cloudflare (`zene.run`); see `cloud/deploy/`
+- Cloud Console UI: `cloud/apps/web/` (served by `zene-cloud-api`). Local: `cd cloud && ./scripts/dev.sh`. Production deploy: GCP VM behind Cloudflare (`zene.run`); see `cloud/deploy/`
+- `zene` (`apps/cli`): `zene acp` stdio Agent Client Protocol for Cloud workers / editors (interactive REPL and headless `-p` were removed)
 
-At runtime the agent makes outbound HTTPS calls to an external LLM provider (OpenAI-compatible or Anthropic). Cloud workers use `zene acp` via `cloud/crates/acp-bridge`.
+At runtime the agent makes outbound HTTPS calls to an external LLM provider (OpenAI-compatible or Anthropic). Cloud workers use `zene acp` via `cloud/crates/acp-bridge`. Console users set LLM keys in Settings (BYOK); env / `~/.zene/config.toml` still apply to the ACP process when injected.
 
 Toolchain caveat (non-obvious): a dependency (`unigateway-sdk`) requires Rust `edition2024`, so the toolchain must be Rust >= 1.85. The base image historically defaulted to an older `rustc` (1.83); the update script pins `rustup default stable`. If you ever hit `feature edition2024 is required`, run `rustup default stable`.
 
@@ -35,9 +39,5 @@ Standard commands (see `README.md`, `.github/workflows/ci.yml`, `scripts/install
 - Build: `cargo build --workspace --locked`
 - Test (CI gate): `cargo test --workspace --locked`
 - Lint: `cargo clippy --workspace --locked` (note: `cargo fmt --all --check` currently reports pre-existing formatting diffs and is NOT enforced in CI)
-- Run: `cargo run -p zene-cli` or the built `./target/debug/zene`
-- Install: `./scripts/install.sh` (= `cargo install --path apps/cli --locked`)
-
-Running the agent requires an LLM API key (`ZENE_API_KEY`/`OPENAI_API_KEY`, or `ANTHROPIC_API_KEY` with `ZENE_PROVIDER=anthropic`). Config lives at `~/.zene/config.toml` (auto-created on first run) and env vars override it (`ZENE_MODEL`, `ZENE_BASE_URL`, etc.). Sessions persist under `~/.zene/sessions/`.
-
-Testing the agent loop without a paid key: point it at a local OpenAI-compatible mock via `ZENE_BASE_URL` and run headless, e.g. `zene --yolo -p "<prompt>" --output-format json`. The mock only needs to serve `POST /chat/completions` returning `choices[0].message` (optionally with `tool_calls`); `--output-format json` forces non-streaming so a plain JSON completion is sufficient. `--yolo` auto-approves Write/Edit/Bash tools so headless tool calls run unattended.
+- Local Cloud: `cd cloud && ./scripts/dev.sh` (builds `zene` for ACP if needed). UI HMR: keep API on `:8788`, then `cd cloud/apps/web && npm run dev` → `:8787` (rewrites `/api/*` → API; optional `ZENE_CLOUD_SKIP_WEB_BUILD=1`)
+- Install ACP binary: `./scripts/install.sh` (= `cargo install --path apps/cli --locked`)

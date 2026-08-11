@@ -3,6 +3,7 @@
 import { useState } from "react";
 import { api, setToken } from "@/lib/api";
 import type { Organization, User } from "@/lib/types";
+import { useToast } from "./Toast";
 
 interface AuthResponse {
   token: string;
@@ -10,21 +11,35 @@ interface AuthResponse {
   organization: Organization;
 }
 
+function authErrorMessage(raw: string, isLogin: boolean): string {
+  const msg = raw.trim();
+  const lower = msg.toLowerCase();
+  if (lower.includes("invalid credentials")) {
+    return "Email or password is incorrect";
+  }
+  if (lower.includes("already registered") || lower.includes("already exists")) {
+    return "This email is already registered";
+  }
+  if (lower.includes("password") && (lower.includes("short") || lower.includes("at least"))) {
+    return "Password must be at least 8 characters";
+  }
+  return msg || (isLogin ? "Sign in failed" : "Registration failed");
+}
+
 export function AuthView({
   onAuthenticated,
 }: {
   onAuthenticated: (auth: AuthResponse) => void;
 }) {
+  const toast = useToast();
   const [mode, setMode] = useState<"login" | "register">("register");
   const [displayName, setDisplayName] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
-  const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const isLogin = mode === "login";
 
   const submit = async () => {
-    setError("");
     setBusy(true);
     try {
       const path = isLogin ? "/api/v1/auth/login" : "/api/v1/auth/register";
@@ -35,7 +50,8 @@ export function AuthView({
       setToken(auth.token);
       onAuthenticated(auth);
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      const raw = err instanceof Error ? err.message : String(err);
+      toast(authErrorMessage(raw, isLogin), "error");
     } finally {
       setBusy(false);
     }
@@ -117,7 +133,6 @@ export function AuthView({
             Continue
           </button>
         </div>
-        <div className="mt-2.5 min-h-[18px] text-[13px] leading-snug text-danger">{error}</div>
       </div>
     </div>
   );
