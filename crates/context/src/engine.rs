@@ -62,6 +62,20 @@ pub enum ContextEvent {
     Checkpoint {
         reason: &'static str,
     },
+    /// Runtime should persist a compaction segment for recovery.
+    CompactionSegment {
+        session_id: String,
+        body: String,
+    },
+}
+
+fn push_compaction_segment_events(events: &mut Vec<ContextEvent>, result: &CompactionResult) {
+    if let Some(segment) = &result.segment {
+        events.push(ContextEvent::CompactionSegment {
+            session_id: segment.session_id.clone(),
+            body: segment.body.clone(),
+        });
+    }
 }
 
 /// Result of [`ContextEngine::prepare_step`].
@@ -310,6 +324,7 @@ impl ContextEngine {
             .await
             {
                 Ok(Some(result)) => {
+                    push_compaction_segment_events(&mut events, &result);
                     self.prefire.clear();
                     self.water.clear_auto_compact_suppression();
                     self.bump_epoch_and_publish("compaction", deps.session)
@@ -406,6 +421,9 @@ impl ContextEngine {
             Ok(compaction) => {
                 self.water.clear_auto_compact_suppression();
                 if compaction.is_some() {
+                    if let Some(ref result) = compaction {
+                        push_compaction_segment_events(&mut events, result);
+                    }
                     self.bump_epoch_and_publish("manual_compaction", deps.session)
                         .await;
                     self.sync_water_from_estimate(
@@ -476,6 +494,7 @@ impl ContextEngine {
             .await
             {
                 Ok(Some(result)) => {
+                    push_compaction_segment_events(&mut events, &result);
                     self.prefire.clear();
                     self.water.clear_auto_compact_suppression();
                     self.bump_epoch_and_publish("overflow_compaction", deps.session)

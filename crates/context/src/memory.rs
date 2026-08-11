@@ -6,12 +6,13 @@
 //! block so work survives history loss without reshuffling the system prefix
 //! every turn.
 
-use std::fs;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use tracing::{info, warn};
 use zene_llm::{ChatClient, ChatRequest, Message, ToolDefinition};
+
+use crate::memory_store::{FsMemoryStore, MemoryStore};
 
 pub const MEMORY_CONTEXT_OPEN: &str = "<memory-context>";
 pub const MEMORY_CONTEXT_CLOSE: &str = "</memory-context>";
@@ -31,7 +32,6 @@ Do NOT include ephemeral progress or routine Q&A.
 Respond with NO_REPLY if nothing genuinely useful was learned.";
 
 const MAX_FLUSH_CHARS: usize = 4_000;
-const MAX_INJECT_CHARS: usize = 3_000;
 const FLUSH_INPUT_MSG_CAP: usize = 40;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -94,99 +94,18 @@ pub fn process_flush_response(response: &str) -> Result<Option<String>, FlushRes
     Ok(Some(content))
 }
 
-fn content_fingerprint(content: &str) -> u64 {
-    use std::hash::{Hash, Hasher};
-    let mut h = std::collections::hash_map::DefaultHasher::new();
-    content.trim().hash(&mut h);
-    h.finish()
-}
-
-fn last_flush_hash_path(workdir: &Path) -> PathBuf {
-    memory_root(workdir).join(".last_flush_hash")
-}
-
 /// Returns true when `content` matches the previous accepted flush (exact text).
 pub fn is_duplicate_flush(workdir: &Path, content: &str) -> bool {
-    let path = last_flush_hash_path(workdir);
-    let Ok(prev) = fs::read_to_string(path) else {
-        return false;
-    };
-    prev.trim() == content_fingerprint(content).to_string()
+    FsMemoryStore::new(workdir).is_duplicate_flush(content)
 }
 
 pub fn append_daily_log(workdir: &Path, content: &str) -> Result<PathBuf> {
-    let path = daily_log_path(workdir);
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).context("create memory daily dir")?;
-    }
-    let mut block = String::new();
-    if path.exists() {
-        block.push_str("\n\n---\n\n");
-    }
-    block.push_str(&format!(
-        "## Flush {}\n\n{content}\n",
-        chrono::Utc::now().format("%H:%M:%SZ")
-    ));
-    use std::io::Write;
-    let mut file = fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&path)
-        .context("open daily memory log")?;
-    file.write_all(block.as_bytes())
-        .context("write daily memory log")?;
-    let _ = fs::write(
-        last_flush_hash_path(workdir),
-        content_fingerprint(content).to_string(),
-    );
-    Ok(path)
+    FsMemoryStore::new(workdir).append_daily_log(content)
 }
 
 /// Load recent memory text for injection (MEMORY.md + recent daily logs).
 pub fn load_recent_memory(workdir: &Path) -> Option<String> {
-    let root = memory_root(workdir);
-    let mut chunks = Vec::new();
-
-    let memory_md = root.join("MEMORY.md");
-    if let Ok(text) = fs::read_to_string(&memory_md) {
-        if !text.trim().is_empty() {
-            chunks.push(text);
-        }
-    }
-
-    let daily_dir = root.join("daily");
-    if let Ok(entries) = fs::read_dir(&daily_dir) {
-        let mut files: Vec<PathBuf> = entries
-            .filter_map(|e| e.ok().map(|e| e.path()))
-            .filter(|p| p.extension().and_then(|e| e.to_str()) == Some("md"))
-            .collect();
-        files.sort();
-        for path in files.iter().rev().take(3) {
-            if let Ok(text) = fs::read_to_string(path) {
-                if !text.trim().is_empty() {
-                    chunks.push(text);
-                }
-            }
-        }
-    }
-
-    if chunks.is_empty() {
-        return None;
-    }
-    let mut combined = chunks.join("\n\n");
-    if combined.chars().count() > MAX_INJECT_CHARS {
-        // Keep the newest tail.
-        let owned: String = combined
-            .chars()
-            .rev()
-            .take(MAX_INJECT_CHARS)
-            .collect::<String>()
-            .chars()
-            .rev()
-            .collect();
-        combined = format!("…\n{owned}");
-    }
-    Some(combined)
+    FsMemoryStore::new(workdir).load_recent()
 }
 
 pub fn format_memory_context_block(body: &str) -> String {
@@ -251,6 +170,7 @@ pub async fn run_memory_flush(
     if !memory_enabled() {
         return Ok(FlushResult::NothingToStore);
     }
+    let store = FsMemoryStore::new(workdir);
     let conversation = format_flush_input(messages);
     if conversation.trim().is_empty() {
         return Ok(FlushResult::NothingToStore);
@@ -277,11 +197,11 @@ pub async fn run_memory_flush(
 
     match process_flush_response(&text) {
         Ok(Some(content)) => {
-            if is_duplicate_flush(workdir, &content) {
+            if store.is_duplicate_flush(&content) {
                 info!("memory flush: duplicate of last flush; skipped");
                 return Ok(FlushResult::NothingToStore);
             }
-            let path = append_daily_log(workdir, &content)?;
+            let path = store.append_daily_log(&content)?;
             info!(path = %path.display(), chars = content.len(), "memory flush wrote daily log");
             Ok(FlushResult::Accepted)
         }

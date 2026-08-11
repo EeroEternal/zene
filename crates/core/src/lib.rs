@@ -8,7 +8,10 @@ use parking_lot::Mutex;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
 use zene_config::ZeneConfig;
-use zene_context::{ContextDeps, ContextEngine, ContextEvent, PrefireClientFactory, StepContext};
+use zene_context::{
+    CompactionSegmentStore, CompactionSegmentWrite, ContextDeps, ContextEngine, ContextEvent,
+    FsCompactionSegmentStore, PrefireClientFactory, StepContext,
+};
 use zene_llm::{ChatClient, ChatRequest, Message, StreamEvent, TokenUsage, ToolCall};
 use zene_sandbox::{LocalSandbox, Sandbox};
 use zene_session::{
@@ -320,9 +323,28 @@ impl Agent {
     }
 
     fn dispatch_context_events(&self, events: &[ContextEvent]) -> Result<()> {
+        let segment_store = FsCompactionSegmentStore::new();
         for event in events {
-            if let ContextEvent::Checkpoint { reason } = event {
-                let _ = save_checkpoint(&self.session, reason)?;
+            match event {
+                ContextEvent::Checkpoint { reason } => {
+                    let _ = save_checkpoint(&self.session, reason)?;
+                }
+                ContextEvent::CompactionSegment { session_id, body } => {
+                    let write = CompactionSegmentWrite {
+                        session_id: session_id.clone(),
+                        body: body.clone(),
+                    };
+                    match segment_store.write_segment(&write) {
+                        Ok(path) => {
+                            info!(path = %path.display(), "wrote compaction segment");
+                        }
+                        Err(err) => {
+                            warn!(error = %err, "failed to write compaction segment");
+                        }
+                    }
+                }
+                ContextEvent::EpochBumped { .. }
+                | ContextEvent::PublishPrefix { .. } => {}
             }
         }
         Ok(())

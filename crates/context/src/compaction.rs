@@ -1,13 +1,10 @@
-use std::fs;
-use std::path::PathBuf;
-
 use anyhow::{bail, Context, Result};
 use tracing::info;
 use crate::config::CompactionConfig;
 use zene_llm::{ChatClient, ChatRequest, ChatResponse, Message, MessageKind, Role, ToolDefinition};
-use zene_session::session_record_dir;
 
 use crate::hooks::ContextHooks;
+use crate::segment_store::CompactionSegmentWrite;
 use crate::input_ladder::{prepare_summary_input, InputLadderStage};
 use crate::session::ContextSession;
 use crate::prefire::PrefireCache;
@@ -400,23 +397,21 @@ pub async fn summarize_prefix(
 }
 
 /// Persist compacted prefix for recovery (grok CompactionMode::Segments lite).
-pub fn persist_compaction_segment(
+pub fn plan_compaction_segment(
     session_id: &str,
     prefix: &[Message],
     summary: &str,
-) -> Result<PathBuf> {
-    let dir = session_record_dir(session_id).join("compaction_segments");
-    fs::create_dir_all(&dir).context("create compaction_segments dir")?;
-    let ts = chrono::Utc::now().format("%Y%m%dT%H%M%SZ");
-    let path = dir.join(format!("{ts}.md"));
+) -> CompactionSegmentWrite {
     let mut body = String::new();
     body.push_str("# Compaction segment\n\n");
     body.push_str("## Final summary\n\n");
     body.push_str(summary);
     body.push_str("\n\n## Compacted prefix\n\n");
     body.push_str(&format_messages_for_summary(prefix));
-    fs::write(&path, body).context("write compaction segment")?;
-    Ok(path)
+    CompactionSegmentWrite {
+        session_id: session_id.to_string(),
+        body,
+    }
 }
 
 pub struct CompactionPlan {
@@ -435,6 +430,8 @@ pub struct CompactionResult {
     pub reason: String,
     pub compacted_count: usize,
     pub stats: CompactionStats,
+    /// Segment payload for runtime persistence (`ContextEvent::CompactionSegment`).
+    pub segment: Option<CompactionSegmentWrite>,
 }
 
 pub fn plan_compaction(
@@ -619,6 +616,7 @@ fn try_truncate_only_compaction<S: ContextSession + ?Sized>(
             tokens_before,
             tokens_after,
         },
+        segment: None,
     };
     record_compaction_result(session, &result, None);
     Some(result)
@@ -660,6 +658,7 @@ fn try_slice_keep_compaction<S: ContextSession + ?Sized>(
             tokens_before,
             tokens_after,
         },
+        segment: None,
     };
     record_compaction_result(session, &result, None);
     Some(result)
@@ -834,6 +833,7 @@ where
             tokens_before,
             tokens_after,
         },
+        segment: None,
     }))
 }
 
@@ -867,6 +867,7 @@ fn try_truncate_only_on_messages(
             tokens_before,
             tokens_after,
         },
+        segment: None,
     })
 }
 
@@ -894,6 +895,7 @@ fn try_slice_keep_on_messages(
             tokens_before,
             tokens_after,
         },
+        segment: None,
     })
 }
 
@@ -983,9 +985,11 @@ pub async fn compact_session<S: ContextSession + ?Sized>(
     )
     .await?;
 
-    if let Ok(path) = persist_compaction_segment(session.session_id(), &prefix, &summary) {
-        info!(path = %path.display(), "wrote compaction segment");
-    }
+    let segment = Some(plan_compaction_segment(
+        session.session_id(),
+        &prefix,
+        &summary,
+    ));
 
     info!(
         reason = reason,
@@ -1017,6 +1021,7 @@ pub async fn compact_session<S: ContextSession + ?Sized>(
             tokens_before,
             tokens_after,
         },
+        segment,
     }))
 }
 
@@ -1085,9 +1090,11 @@ pub async fn compact_session_forced<S: ContextSession + ?Sized>(
     )
     .await?;
 
-    if let Ok(path) = persist_compaction_segment(session.session_id(), &prefix, &summary) {
-        info!(path = %path.display(), "wrote compaction segment");
-    }
+    let segment = Some(plan_compaction_segment(
+        session.session_id(),
+        &prefix,
+        &summary,
+    ));
 
     apply_full_replace_to_session(
         session,
@@ -1110,6 +1117,7 @@ pub async fn compact_session_forced<S: ContextSession + ?Sized>(
             tokens_before,
             tokens_after,
         },
+        segment,
     }))
 }
 

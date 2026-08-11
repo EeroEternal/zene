@@ -139,6 +139,11 @@ loop {
 
 拆分方向：`AgentBuilder` + trait object hooks（**已实现 builder**）；`ToolContext` 已改为 `Arc<dyn Sandbox>`；`TodoItem` / Permission 双层仍待拆。
 
+### 2026-08-11 — Phase 4 Context IO
+
+- compaction segment：`plan_compaction_segment` + `ContextEvent::CompactionSegment`；core 用 `FsCompactionSegmentStore` 落盘
+- memory：`MemoryStore` / `FsMemoryStore`；`memory.rs` 逻辑不再直接 `fs::`
+
 ### 2026-08-11 — Phase 3 WorkspaceProvider
 
 - 新增 `zene-workspace`：`WorkspaceProvider`、`FsWorkspaceProvider`、`build_system_prompt`

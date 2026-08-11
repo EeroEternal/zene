@@ -5,9 +5,13 @@ mod context_water;
 mod engine;
 mod hooks;
 mod input_ladder;
+mod segment_store;
 mod session;
 mod tokens;
 mod two_pass;
+
+#[cfg(feature = "memory")]
+mod memory_store;
 
 #[cfg(feature = "gateway")]
 mod gateway;
@@ -30,7 +34,7 @@ pub use compaction::{
     build_sliced_messages, compact_message_list_with_chat, compact_session,
     compact_session_forced, is_context_overflow_error, is_degenerate_summary,
     keep_recent_token_budget, last_user_query_index, plan_compaction,
-    persist_compaction_segment, should_compact, subagent_compaction_config,
+    plan_compaction_segment, should_compact, subagent_compaction_config,
     tail_start_index, truncate_old_message_bodies, truncate_old_tool_results,
     CompactionPlan, CompactionResult, CompactionStats, MIN_SUMMARY_SEED_CHARS,
 };
@@ -51,6 +55,8 @@ pub use gateway_stub::{close_session, external_session_id_from_env, gateway_conf
 pub use hooks::{ContextHooks, NoContextHooks};
 pub use input_ladder::{fit_messages_to_budget, prepare_summary_input, InputLadderStage};
 #[cfg(feature = "memory")]
+pub use memory_store::{FsMemoryStore, MemoryStore};
+#[cfg(feature = "memory")]
 pub use memory::{
     append_daily_log, conversation_has_memory_context, daily_log_path, ensure_memory_in_system,
     format_memory_context_block, is_duplicate_flush, load_recent_memory, memory_enabled,
@@ -68,6 +74,9 @@ pub use memory_stub::{
 pub use prefire::{prefire_lead_percent, PrefireCache, PrefireState};
 #[cfg(not(feature = "prefire"))]
 pub use prefire_stub::{prefire_lead_percent, PrefireCache, PrefireState};
+pub use segment_store::{
+    CompactionSegmentStore, CompactionSegmentWrite, FsCompactionSegmentStore,
+};
 pub use session::ContextSession;
 pub use tokens::{
     estimate_chars_as_tokens, estimate_context, estimate_message_tokens, estimate_messages_tokens,
