@@ -144,6 +144,11 @@ loop {
 - 新增 `zene-workspace`：`WorkspaceProvider`、`FsWorkspaceProvider`、`build_system_prompt`
 - core 删除 `workspace.rs` / `skills.rs`
 
+### 2026-08-11 — Phase 2 Hooks IO外移
+
+- 新增 `zene-hooks`：`HookEngine`（纯 plan）+ `HookExecutor` / `BashHookExecutor`（子进程 IO）
+- `HookRunner` 组合 plan + execute；core 继续 re-export
+
 ### 2026-08-11 — Phase 1 Permission + tool output
 
 - 新增 `zene-permission`：`ToolPermission` trait、`PermissionGate`、modes/rules 从 core 迁出

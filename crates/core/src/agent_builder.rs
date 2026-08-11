@@ -18,7 +18,7 @@ use zene_tools::{
 };
 use zene_mcp::McpManager;
 
-use crate::hooks::HookRunner;
+use zene_hooks::{HookRunner, HookSpec};
 use zene_permission::{PermissionGate, PermissionMode, PermissionRule, RuleAction, SharedToolPermission};
 use crate::plan_mode::{default_plan_approval_prompter, PlanApprovalPrompter};
 use crate::tool_dedup::ToolDedup;
@@ -238,9 +238,9 @@ impl AgentBuilder {
                     warn!(error = %err, "failed to load hooks; continuing without hooks");
                     Vec::new()
                 });
-                HookRunner::new(hook_entries, workdir.clone())
+                HookRunner::with_bash(hook_specs_from_entries(hook_entries), workdir.clone())
             }
-            None => HookRunner::new(Vec::new(), workdir.clone()),
+            None => HookRunner::with_bash(Vec::new(), workdir.clone()),
         };
 
         let todos = match self.todos {
@@ -313,6 +313,16 @@ pub(crate) fn permission_rules_from_config(config: &ZeneConfig) -> Vec<Permissio
                 pattern: rule.pattern,
                 action,
             })
+        })
+        .collect()
+}
+
+pub(crate) fn hook_specs_from_entries(entries: Vec<zene_config::HookEntry>) -> Vec<HookSpec> {
+    entries
+        .into_iter()
+        .map(|entry| HookSpec {
+            event: entry.event,
+            command: entry.command,
         })
         .collect()
 }

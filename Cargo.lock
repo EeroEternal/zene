@@ -4055,6 +4055,7 @@ dependencies = [
  "uuid",
  "zene-config",
  "zene-context",
+ "zene-hooks",
  "zene-llm",
  "zene-mcp",
  "zene-permission",
@@ -4063,6 +4064,19 @@ dependencies = [
  "zene-tool-runtime",
  "zene-tools",
  "zene-workspace",
+]
+
+[[package]]
+name = "zene-hooks"
+version = "0.1.11"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]

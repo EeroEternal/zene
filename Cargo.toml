@@ -10,6 +10,7 @@ members = [
     "crates/context",
     "crates/core",
     "crates/mcp",
+    "crates/hooks",
     "crates/permission",
     "crates/tool-runtime",
     "crates/workspace",
@@ -54,6 +55,7 @@ zene-sandbox = { path = "crates/sandbox" }
 zene-session = { version = "0.1.11", path = "crates/session" }
 zene-tools = { path = "crates/tools" }
 zene-mcp = { path = "crates/mcp" }
+zene-hooks = { path = "crates/hooks" }
 zene-permission = { version = "0.1.11", path = "crates/permission" }
 zene-tool-runtime = { path = "crates/tool-runtime" }
 zene-workspace = { path = "crates/workspace" }

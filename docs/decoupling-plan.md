@@ -8,9 +8,10 @@ Phased refactor toward composable agent crates (see `docs/agent-components.md`).
 - **`zene-tool-runtime`**: pure `plan_tool_output_bound` + `ToolOutputStore` / `FsToolOutputStore` spill.
 - `zene-core` composes spill at runtime; engine logic stays in tool-runtime.
 
-## Phase 2 — Hooks IO外移 (PR #45)
+## Phase 2 — Hooks IO外移 (done)
 
-- **`zene-hooks`**: `HookEngine` + `HookExecutor` / `BashHookExecutor` (see PR #45).
+- **`zene-hooks`**: `HookEngine` plans `HookRunRequest`; `HookExecutor` trait + `BashHookExecutor` for subprocess IO.
+- `HookRunner` orchestrates plan + execute; core re-exports for CLI/ACP.
 
 ## Phase 3 — Workspace / Skills (current)
 
