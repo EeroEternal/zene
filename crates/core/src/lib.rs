@@ -586,7 +586,11 @@ impl Agent {
         options: &PromptOptions,
         cancel: Option<&CancellationToken>,
     ) -> Result<String> {
-        zene_turn::run_turn_loop(self, user_input, options, cancel).await
+        let mut ports = zene_turn::LegacyTurnPorts::new(self);
+        zene_turn::TurnEngine::new(&mut ports)
+            .run(zene_turn::TurnRequest::new(user_input, options, cancel))
+            .await
+            .map(|outcome| outcome.final_text)
     }
 
     fn sync_todos_to_session(&mut self) {
