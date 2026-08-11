@@ -26,9 +26,9 @@ export type IdeTab = "git" | "files";
 
 const STORAGE_KEY = "zene.codePanelWidth";
 const OPEN_KEY = "zene.codePanelOpen";
-const DEFAULT_W = 520;
-const MIN_W = 380;
-const MAX_W = 860;
+const DEFAULT_W = 640;
+const MIN_W = 440;
+const MAX_W = 960;
 
 /** Prefer root README, else the first file in the repo root (then any file). */
 function pickDefaultFile(files: WorkspaceFile[]): string | null {
