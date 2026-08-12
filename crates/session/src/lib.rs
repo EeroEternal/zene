@@ -51,6 +51,29 @@ pub enum SessionEvent {
     CompactionApplied { id: String, created_at: DateTime<Utc>, entry: CompactionEntry },
 }
 
+/// Persistence boundary for mutable session state.
+///
+/// The runtime owns [`SessionRecord`] in memory; implementations decide where
+/// snapshots are written. Conversation semantics remain independent of the
+/// backing store.
+pub trait SessionStore: Send + Sync {
+    fn save(&self, session: &SessionRecord) -> Result<()>;
+}
+
+/// Default on-disk session store used by the compatibility APIs.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct FileSessionStore;
+
+impl SessionStore for FileSessionStore {
+    fn save(&self, session: &SessionRecord) -> Result<()> {
+        fs::create_dir_all(sessions_dir()).context("create sessions dir")?;
+        let path = session_path(&session.meta.id);
+        let raw = serde_json::to_string_pretty(session).context("serialize session")?;
+        fs::write(path, raw).context("write session file")?;
+        Ok(())
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SessionRecord {
     pub meta: SessionMeta,
@@ -244,11 +267,11 @@ impl SessionRecord {
     }
 
     pub fn save(&self) -> Result<()> {
-        fs::create_dir_all(sessions_dir()).context("create sessions dir")?;
-        let path = session_path(&self.meta.id);
-        let raw = serde_json::to_string_pretty(self).context("serialize session")?;
-        fs::write(path, raw).context("write session file")?;
-        Ok(())
+        FileSessionStore.save(self)
+    }
+
+    pub fn save_with_store(&self, store: &dyn SessionStore) -> Result<()> {
+        store.save(self)
     }
 
     pub fn load(id: &str) -> Result<Self> {
@@ -497,6 +520,28 @@ mod tests {
         assert_eq!(session.events.len(), 2);
         assert!(matches!(session.events[0], SessionEvent::MessageAppended { .. }));
         assert!(matches!(session.events[1], SessionEvent::MessageAppended { .. }));
+    }
+
+    #[test]
+    fn session_store_receives_complete_snapshot() {
+        use std::sync::{Arc, Mutex};
+
+        #[derive(Default)]
+        struct RecordingStore(Arc<Mutex<Vec<String>>>);
+
+        impl SessionStore for RecordingStore {
+            fn save(&self, session: &SessionRecord) -> Result<()> {
+                self.0.lock().unwrap().push(session.meta.id.clone());
+                Ok(())
+            }
+        }
+
+        let store = RecordingStore::default();
+        let mut session = SessionRecord::new(Path::new("."));
+        let id = session.meta.id.clone();
+        session.push_message(Message::user("persist me"));
+        session.save_with_store(&store).expect("store snapshot");
+        assert_eq!(store.0.lock().unwrap().as_slice(), [id]);
     }
 
     #[test]

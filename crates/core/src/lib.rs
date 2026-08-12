@@ -87,6 +87,7 @@ pub struct Agent {
     tool_dedup: ToolDedup,
     hooks: HookRunner,
     record_writer: AgentRecordWriter,
+    session_store: Arc<dyn zene_session::SessionStore>,
     mcp: Option<McpManager>,
     background: SharedBackgroundTasks,
 }
@@ -348,7 +349,7 @@ impl Agent {
                 if let Some(compact_result) = &forced.compaction {
                     self.record_compaction(compact_result)?;
                 }
-                self.session.save()?;
+                self.save_session()?;
                 Ok(forced.compaction.clone())
             }
             Err(_) => result.map(|forced| forced.compaction),
@@ -429,7 +430,7 @@ impl Agent {
             self.context.restore_water_from_session(tokens);
         }
         self.context.clear_prefire();
-        self.session.save()?;
+        self.save_session()?;
         Ok(id)
     }
 
@@ -438,13 +439,17 @@ impl Agent {
         let workdir = self.sandbox.workdir().to_path_buf();
         let forked = fork_session(&self.session, &workdir);
         let id = forked.meta.id.clone();
-        forked.save()?;
+        self.session_store.save(&forked)?;
         let _ = save_checkpoint(&forked, "fork");
         self.session = forked;
         self.record_writer = AgentRecordWriter::for_session(&id)?;
         self.todos = shared_todo_store_from(self.session.todos.clone());
         self.context.clear_prefire();
         Ok(id)
+    }
+
+    pub(crate) fn save_session(&self) -> Result<()> {
+        self.session_store.save(&self.session)
     }
 
     pub fn session(&self) -> &SessionRecord {

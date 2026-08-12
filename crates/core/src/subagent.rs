@@ -5,7 +5,7 @@ use anyhow::{Context, Result};
 use async_trait::async_trait;
 use tokio_util::sync::CancellationToken;
 use zene_config::ZeneConfig;
-use zene_llm::{ChatClient, ChatRequest, ChatResponse, Message, ToolCall};
+use zene_llm::{ChatClient, ChatRequest, ChatResponse, Message, TokenUsage, ToolCall};
 use zene_sandbox::Sandbox;
 use zene_tools::{
     tools_for_profile, SubagentEnv, SubagentProfile, SubagentRunner, ToolContext,
@@ -18,7 +18,10 @@ use zene_context::{
 };
 use crate::context_config;
 use zene_permission::{PermissionGate, SharedToolPermission};
-use zene_turn::{aborted_error, max_turns_notice};
+use zene_turn::{
+    aborted_error, max_turns_notice, run_turn_loop, StepResult, ToolBatchOutcome, TurnRuntime,
+    TurnState,
+};
 
 #[async_trait]
 pub trait ChatBackend: Send + Sync {
@@ -115,95 +118,187 @@ pub(crate) async fn run_subagent_with_runner(
         );
     }
 
-    let tools = tools_for_profile(profile);
-    let system_prompt = subagent_system_prompt(profile, sandbox.workdir());
-    let mut messages = vec![Message::system(&system_prompt), Message::user(prompt)];
-
     let runner = runner.unwrap_or_else(|| Arc::new(CoreSubagentRunner::new(config.clone())));
     let subagent_env = SubagentEnv {
         depth: subagent_depth,
         max_depth: DEFAULT_SUBAGENT_MAX_DEPTH,
         runner,
     };
+    let mut runtime = SubagentTurnRuntime::new(
+        profile,
+        sandbox,
+        config,
+        backend,
+        subagent_env,
+        permission,
+    );
 
-    // 0 = unlimited.
-    let max_steps = config.max_turns;
-    let mut final_text = String::new();
-    let mut completed = false;
-    let mut steps_done = 0u32;
-    let compaction_config =
-        subagent_compaction_config(&context_config::context_compaction_config(&config.compaction));
+    run_turn_loop(&mut runtime, prompt, &(), cancel).await
+}
 
-    loop {
-        if max_steps > 0 && steps_done >= max_steps {
-            break;
+/// TurnRuntime adapter for subagents.
+///
+/// Subagents intentionally remain ephemeral: they share the generic turn
+/// state machine, but keep their conversation in memory and do not publish
+/// the parent runtime's events or checkpoints.
+struct SubagentTurnRuntime<'a> {
+    sandbox: Arc<dyn Sandbox>,
+    config: &'a ZeneConfig,
+    backend: &'a dyn ChatBackend,
+    subagent_env: SubagentEnv,
+    permission: Option<SharedToolPermission>,
+    tools: ToolRegistry,
+    messages: Vec<Message>,
+    compaction_config: zene_context::CompactionConfig,
+    active_turn: Option<TurnState>,
+}
+
+impl<'a> SubagentTurnRuntime<'a> {
+    fn new(
+        profile: SubagentProfile,
+        sandbox: Arc<dyn Sandbox>,
+        config: &'a ZeneConfig,
+        backend: &'a dyn ChatBackend,
+        subagent_env: SubagentEnv,
+        permission: Option<SharedToolPermission>,
+    ) -> Self {
+        let system_prompt = subagent_system_prompt(profile, sandbox.workdir());
+        Self {
+            sandbox,
+            config,
+            backend,
+            subagent_env,
+            permission,
+            tools: tools_for_profile(profile),
+            messages: vec![Message::system(&system_prompt)],
+            compaction_config: subagent_compaction_config(
+                &context_config::context_compaction_config(&config.compaction),
+            ),
+            active_turn: None,
         }
-        steps_done = steps_done.saturating_add(1);
+    }
+}
 
+#[async_trait]
+impl TurnRuntime for SubagentTurnRuntime<'_> {
+    type Options = ();
+
+    fn max_steps(&self) -> u32 {
+        self.config.max_turns
+    }
+
+    fn active_turn(&mut self) -> Option<&mut TurnState> {
+        self.active_turn.as_mut()
+    }
+
+    fn on_step_begin(
+        &self,
+        _turn_id: zene_turn::TurnId,
+        _step_id: zene_turn::StepId,
+        _step: u32,
+        _options: &Self::Options,
+    ) {
+    }
+
+    async fn prepare_turn(&mut self, user_input: &str) -> Result<()> {
+        self.active_turn = Some(TurnState::begin());
+        self.messages.push(Message::user(user_input));
+        Ok(())
+    }
+
+    async fn run_step(
+        &mut self,
+        _options: &Self::Options,
+        cancel: Option<&CancellationToken>,
+    ) -> Result<StepResult> {
         if check_cancelled(cancel)? {
             return Err(aborted_error());
         }
-
         maybe_compact_subagent_messages(
-            &mut messages,
-            &tools,
-            &compaction_config,
-            &config.model,
-            backend,
+            &mut self.messages,
+            &self.tools,
+            &self.compaction_config,
+            &self.config.model,
+            self.backend,
         )
         .await?;
-
-        let request = ChatRequest {
-            model: config.model.clone(),
-            messages: messages.clone(),
-            tools: tools.definitions(),
-            stream: false,
-            context: None,
-        };
-
-        let response = backend.chat(request).await.context("subagent llm step")?;
-        let assistant_message = response.message;
-        let had_tool_calls = assistant_message
+        let response = self
+            .backend
+            .chat(ChatRequest {
+                model: self.config.model.clone(),
+                messages: self.messages.clone(),
+                tools: self.tools.definitions(),
+                stream: false,
+                context: None,
+            })
+            .await
+            .context("subagent llm step")?;
+        let had_tool_calls = response
+            .message
             .tool_calls
             .as_ref()
             .is_some_and(|calls| !calls.is_empty());
-
-        if had_tool_calls {
-            let tool_calls = assistant_message
-                .tool_calls
-                .clone()
-                .expect("tool calls checked above");
-            messages.push(assistant_message);
-            run_subagent_tools(
-                &tools,
-                &tool_calls,
-                &sandbox,
-                cancel,
-                &subagent_env,
-                permission.clone(),
-                &mut messages,
-            )
-            .await?;
-            continue;
-        }
-
-        final_text = assistant_message.content.unwrap_or_default();
-        messages.push(Message::assistant(&final_text));
-        completed = true;
-        break;
+        Ok(StepResult {
+            message: response.message,
+            usage: response.usage,
+            had_tool_calls,
+        })
     }
 
-    if !completed {
+    async fn on_step_usage(
+        &mut self,
+        _usage: &TokenUsage,
+        _options: &Self::Options,
+    ) -> Result<()> {
+        Ok(())
+    }
+
+    async fn run_tools(
+        &mut self,
+        tool_calls: &[ToolCall],
+        _options: &Self::Options,
+        cancel: Option<&CancellationToken>,
+    ) -> Result<ToolBatchOutcome> {
+        run_subagent_tools(
+            &self.tools,
+            tool_calls,
+            &self.sandbox,
+            cancel,
+            &self.subagent_env,
+            self.permission.clone(),
+            &mut self.messages,
+        )
+        .await?;
+        Ok(ToolBatchOutcome::Continue)
+    }
+
+    fn inject_steer(&mut self, _options: &Self::Options) -> Result<bool> {
+        Ok(false)
+    }
+
+    fn push_assistant(&mut self, message: Message) {
+        self.messages.push(message);
+    }
+
+    fn on_incomplete_turn(
+        &mut self,
+        max_steps: u32,
+        final_text: &mut String,
+        _options: &Self::Options,
+    ) -> Result<()> {
         let notice = max_turns_notice(max_steps);
-        final_text = if final_text.trim().is_empty() {
+        *final_text = if final_text.trim().is_empty() {
             notice
         } else {
             format!("{final_text}\n\n{notice}")
         };
-        messages.push(Message::assistant(&final_text));
+        self.messages.push(Message::assistant(final_text.clone()));
+        Ok(())
     }
 
-    Ok(final_text)
+    async fn finish_turn(&mut self) -> Result<()> {
+        Ok(())
+    }
 }
 
 async fn run_subagent_tools(
@@ -545,6 +640,39 @@ mod tests {
                 .to_string()
                 .contains("unknown tool")
         );
+    }
+
+    #[tokio::test]
+    async fn subagent_uses_shared_turn_engine_step_budget() {
+        let dir = tempdir().unwrap();
+        let sandbox = zene_sandbox::into_arc(LocalSandbox::new(dir.path()));
+        let mut config = ZeneConfig::default();
+        config.max_turns = 1;
+        let backend = ScriptedBackend::new(vec![ChatResponse {
+            message: Message::assistant_with_tools(
+                None,
+                vec![ToolCall {
+                    id: "call_glob".into(),
+                    name: "Glob".into(),
+                    arguments: r#"{"pattern":"**/*.rs"}"#.into(),
+                }],
+            ),
+            usage: None,
+        }]);
+
+        let result = run_subagent(
+            "Inspect Rust files",
+            SubagentProfile::Explore,
+            sandbox,
+            &config,
+            &backend,
+            None,
+            0,
+            None,
+        )
+        .await
+        .expect("incomplete subagent should return a notice");
+        assert!(result.contains("Reached max_turns (1)"));
     }
 
     #[tokio::test]
