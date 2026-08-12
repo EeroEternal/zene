@@ -400,7 +400,7 @@ impl ContextEngine {
         let view = session.view();
         let estimated = tokens::estimate_context(&view.messages, tools, estimator) as u32;
         session.update_context_usage(
-            self.water.effective_tokens().max(estimated),
+            self.water.usage_update(estimated),
             compaction_config.context_window_tokens,
         );
     }

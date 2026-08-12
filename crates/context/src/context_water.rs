@@ -44,6 +44,11 @@ impl ContextWaterLevel {
         }
     }
 
+    /// Computes the context usage value to persist after a provider response.
+    pub fn usage_update(&self, estimated_tokens: u32) -> u32 {
+        self.effective_tokens().max(estimated_tokens)
+    }
+
     /// Effective tokens for compaction trigger: prefer real usage, else estimate.
     pub fn effective_tokens(&self) -> u32 {
         match (self.last_prompt_tokens, self.last_estimate_tokens) {
@@ -130,6 +135,19 @@ mod tests {
             min_keep_messages: 4,
                     intra_steps_first: true,
         }));
+    }
+
+    #[test]
+    fn usage_update_keeps_the_larger_provider_or_estimate_value() {
+        let mut water = ContextWaterLevel::new(1000);
+        water.record_usage(&TokenUsage {
+            prompt_tokens: 700,
+            completion_tokens: 10,
+            total_tokens: 710,
+            cached_tokens: None,
+        });
+        assert_eq!(water.usage_update(650), 700);
+        assert_eq!(water.usage_update(750), 750);
     }
 
     #[test]

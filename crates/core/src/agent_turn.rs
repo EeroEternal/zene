@@ -38,7 +38,7 @@ impl TurnRuntime for Agent {
     }
 
     async fn prepare_turn(&mut self, user_input: &str) -> Result<(), anyhow::Error> {
-        self.turn_usage = TokenUsage::default();
+        self.usage_accumulator.reset();
         self.tool_dedup.reset();
         self.session.ensure_system_message(&self.system_prompt);
         self.session.set_title_from_prompt(user_input);
@@ -79,7 +79,7 @@ impl TurnRuntime for Agent {
         usage: &TokenUsage,
         options: &Self::Options,
     ) -> Result<(), anyhow::Error> {
-        self.turn_usage.accumulate(usage);
+        self.usage_accumulator.record(usage);
         let tools = self.tool_definitions_for_llm();
         let estimator = self.token_estimator();
         let compaction_config =
@@ -91,14 +91,20 @@ impl TurnRuntime for Agent {
             &estimator,
             &compaction_config,
         );
+        let snapshot = self.usage_accumulator.snapshot(
+            self.context.water().effective_tokens(),
+            self.config.compaction.context_window_tokens,
+            self.context.water().usage_percent(),
+            self.context.epoch(),
+        );
         emit_event(
             &options.event_handler,
             AgentEvent::UsageUpdate {
-                usage: self.turn_usage,
-                context_tokens: self.context.water().effective_tokens(),
-                context_window: self.config.compaction.context_window_tokens,
-                context_percent: self.context.water().usage_percent(),
-                context_epoch: self.context.epoch(),
+                usage: snapshot.usage,
+                context_tokens: snapshot.context_tokens,
+                context_window: snapshot.context_window,
+                context_percent: snapshot.context_percent,
+                context_epoch: snapshot.context_epoch,
             },
         );
         Ok(())

@@ -77,7 +77,7 @@ pub struct Agent {
     tools: Arc<ToolRegistry>,
     sandbox: Arc<dyn Sandbox>,
     session: SessionRecord,
-    turn_usage: TokenUsage,
+    usage_accumulator: model_executor::UsageAccumulator,
     context: ContextEngine,
     active_turn: Option<TurnState>,
     steer_buffer: Arc<Mutex<SteerBuffer>>,
@@ -512,7 +512,7 @@ impl Agent {
     }
 
     pub fn turn_usage(&self) -> &TokenUsage {
-        &self.turn_usage
+        self.usage_accumulator.total()
     }
 
     pub fn is_turn_active(&self) -> bool {

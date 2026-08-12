@@ -298,7 +298,7 @@ impl AgentBuilder {
             tools: Arc::new(tools),
             sandbox,
             session: self.session,
-            turn_usage: zene_llm::TokenUsage::default(),
+            usage_accumulator: crate::model_executor::UsageAccumulator::default(),
             context,
             active_turn: None,
             steer_buffer: Arc::new(Mutex::new(SteerBuffer::default())),
