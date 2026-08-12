@@ -10,7 +10,7 @@ use zene_config::ZeneConfig;
 use zene_context::{ensure_memory_in_system, ContextEngine, FsMemoryStore};
 use zene_llm::ChatClient;
 use zene_sandbox::{LocalSandbox, Sandbox};
-use zene_session::{AgentRecordWriter, SessionRecord};
+use zene_session::{AgentRecordWriter, FileSessionStore, SessionRecord, SessionStore};
 use zene_tools::{
     default_ask_user_prompter, shared_background_tasks, shared_plan_mode,
     shared_todo_store_from, SharedAskUserPrompter, SharedBackgroundTasks, SharedPlanMode,
@@ -59,6 +59,7 @@ pub struct AgentBuilder {
     ask_user: Option<SharedAskUserPrompter>,
     background: Option<SharedBackgroundTasks>,
     record_writer: Option<AgentRecordWriter>,
+    session_store: Option<Arc<dyn SessionStore>>,
     external_session_id: Option<String>,
     include_workspace_context: Option<bool>,
 }
@@ -88,6 +89,7 @@ impl AgentBuilder {
             ask_user: None,
             background: None,
             record_writer: None,
+            session_store: None,
             external_session_id: None,
             include_workspace_context: None,
         }
@@ -132,6 +134,12 @@ impl AgentBuilder {
     /// Inject the durable execution record store.
     pub fn record_writer(mut self, writer: AgentRecordWriter) -> Self {
         self.record_writer = Some(writer);
+        self
+    }
+
+    /// Inject the session snapshot store used by runtime writeback.
+    pub fn session_store(mut self, store: Arc<dyn SessionStore>) -> Self {
+        self.session_store = Some(store);
         self
     }
 
@@ -305,6 +313,9 @@ impl AgentBuilder {
             tool_dedup: ToolDedup::new(),
             hooks,
             record_writer,
+            session_store: self
+                .session_store
+                .unwrap_or_else(|| Arc::new(FileSessionStore)),
             mcp,
             background: self.background.unwrap_or_else(shared_background_tasks),
         })

@@ -134,7 +134,7 @@ impl TurnRuntime for Agent {
 
     async fn finish_turn(&mut self) -> Result<(), anyhow::Error> {
         self.sync_todos_to_session();
-        self.session.save()?;
+        self.save_session()?;
         Ok(())
     }
 }
