@@ -595,6 +595,7 @@ async fn run_with_mock(
                         run_id,
                         WorkerEventRequest {
                             source_event_id: event.source_event_id,
+                            cursor: event.cursor,
                             event_type: event.event_type,
                             payload: event.payload,
                             fence: Some(event_fence.clone()),
@@ -1151,6 +1152,7 @@ async fn fetch_commands(
 fn event_to_req(event: AcpEvent) -> WorkerEventRequest {
     WorkerEventRequest {
         source_event_id: event.source_event_id,
+        cursor: event.cursor,
         event_type: event.event_type,
         payload: event.payload,
         fence: None,
@@ -1200,15 +1202,33 @@ async fn post_event_raw(
     fence: &WorkerFence,
 ) -> Result<()> {
     event.fence = Some(fence.clone());
-    client
-        .post(format!("{api_url}/internal/v1/runs/{run_id}/events"))
-        .bearer_auth(token)
-        .json(&event)
-        .send()
-        .await?
-        .error_for_status()
-        .context("post event")?;
-    Ok(())
+    let url = format!("{api_url}/internal/v1/runs/{run_id}/events");
+    let mut delay = Duration::from_millis(100);
+    for attempt in 0..4 {
+        let response = client
+            .post(&url)
+            .bearer_auth(token)
+            .json(&event)
+            .send()
+            .await;
+        match response {
+            Ok(response) if response.status().is_success() => return Ok(()),
+            Ok(response) => {
+                let status = response.status();
+                let retryable = status == reqwest::StatusCode::REQUEST_TIMEOUT
+                    || status == reqwest::StatusCode::TOO_MANY_REQUESTS
+                    || status.is_server_error();
+                if !retryable || attempt == 3 {
+                    bail!("post event rejected with HTTP {status}");
+                }
+            }
+            Err(err) if attempt == 3 => return Err(err).context("post event request"),
+            Err(_) => {}
+        }
+        tokio::time::sleep(delay).await;
+        delay = delay.saturating_mul(2);
+    }
+    unreachable!("event retry loop returns on success or final failure")
 }
 
 fn chat_completions_url(base_url: &str) -> String {

@@ -360,7 +360,7 @@ impl AcpServer {
         let cwd = resolve_cwd(&params, &self.workdir)?;
         let session = SessionRecord::new(&cwd);
         let id = session.meta.id.clone();
-        let acp_session = self.build_session(session, &cwd, &id).await?;
+        let acp_session = self.build_session(session, &cwd, &id, false).await?;
         let mode = acp_session.runtime.current_mode().await?;
         let response = with_recovery_metadata(
             json!({
@@ -383,7 +383,7 @@ impl AcpServer {
         let cwd = resolve_cwd(&params, &self.workdir)?;
         let session = SessionRecord::repair_legacy(&sid).context("load session")?;
         let updates = replay_updates_from_messages(&session.view().messages);
-        let acp_session = self.build_session(session, &cwd, &sid).await?;
+        let acp_session = self.build_session(session, &cwd, &sid, false).await?;
         let mode = acp_session.runtime.current_mode().await?;
         let response = with_recovery_metadata(
             json!({
@@ -416,7 +416,7 @@ impl AcpServer {
         let cwd = resolve_cwd(&params, &self.workdir)?;
         let session = SessionRecord::repair_legacy(&sid).context("resume session")?;
         // Resume restores context without replaying history.
-        let acp_session = self.build_session(session, &cwd, &sid).await?;
+        let acp_session = self.build_session(session, &cwd, &sid, true).await?;
         let mode = acp_session.runtime.current_mode().await?;
         let response = with_recovery_metadata(
             json!({
@@ -497,6 +497,7 @@ impl AcpServer {
         session: SessionRecord,
         cwd: &Path,
         session_id: &str,
+        automatic_recovery: bool,
     ) -> Result<AcpSession> {
         let config = ZeneConfig::load(cwd).map_err(|err| anyhow!(err.to_string()))?;
         let permission_mode = if self.yolo {
@@ -531,7 +532,11 @@ impl AcpServer {
             permission_mode,
             Arc::clone(&pending_tool),
         );
-        let (runtime, _task) = RuntimeHandle::spawn(agent);
+        let (runtime, _task) = if automatic_recovery {
+            RuntimeHandle::spawn_with_automatic_recovery(agent)
+        } else {
+            RuntimeHandle::spawn(agent)
+        };
         Ok(AcpSession {
             runtime,
             busy: false,
@@ -1131,6 +1136,34 @@ mod recovery_tests {
         assert_eq!(metadata["disposition"], "clean");
         assert_eq!(metadata["hasIncompleteExecution"], false);
         assert_eq!(metadata["automaticResume"], false);
+    }
+
+    #[test]
+    fn recovery_metadata_advertises_only_a_prompt_backed_safe_resume() {
+        let snapshot = RecoverySnapshot {
+            active_turns: vec![zene_session::RecoveryExecution {
+                checkpoint_index: 1,
+                turn_id: "turn".into(),
+                step_id: None,
+                tool_call_id: None,
+                state: zene_session::ExecutionCheckpointState::TurnStarted,
+                idempotency_key: "turn/start".into(),
+                context_epoch: None,
+                model_request_hash: None,
+                ts: serde_json::from_value(serde_json::json!("2026-01-01T00:00:00Z"))
+                    .expect("timestamp fixture"),
+            }],
+            resume_candidates: vec![zene_session::ResumeCandidate {
+                turn_id: "turn".into(),
+                prompt: "continue".into(),
+                context_epoch: None,
+                model_request_hash: None,
+            }],
+            ..RecoverySnapshot::default()
+        };
+        let metadata = recovery_metadata(&snapshot);
+        assert_eq!(metadata["safeResumeAllowed"], true);
+        assert_eq!(metadata["automaticResume"], true);
     }
 }
 

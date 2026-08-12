@@ -211,6 +211,16 @@ mod tests {
     }
 
     #[test]
+    fn overflow_retry_state_round_trips_flags() {
+        let mut state = OverflowRetryState::default();
+        assert_eq!(state.flags(), (false, false));
+        state.set_flags(true, false);
+        assert_eq!(state.flags(), (true, false));
+        state.set_flags(true, true);
+        assert_eq!(state.flags(), (true, true));
+    }
+
+    #[test]
     fn assembles_streamed_tool_calls() {
         let mut accumulator = StreamAccumulator::default();
         accumulator.apply(&StreamEvent::TextDelta("hello ".into()));

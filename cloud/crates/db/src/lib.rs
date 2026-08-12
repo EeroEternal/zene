@@ -91,6 +91,10 @@ impl Db {
                 "009_acp_session",
                 include_str!("../../../migrations/009_acp_session.sql"),
             ),
+            (
+                "010_event_cursor",
+                include_str!("../../../migrations/010_event_cursor.sql"),
+            ),
         ];
 
         for (version, sql) in migrations {
@@ -760,6 +764,7 @@ impl Db {
             run_id,
             fence.generation,
             Some(&format!("platform.status.{}", status.as_str())),
+            None,
             "platform",
             serde_json::json!({ "event": "run.status", "status": status.as_str() }),
         )
@@ -940,7 +945,7 @@ impl Db {
         let mut tx = self.pool.begin().await?;
         self.validate_worker_fence(&mut tx, run_id, fence).await?;
         let event = self
-            .append_event_tx(&mut tx, run_id, fence.generation, source_event_id, event_type, payload)
+            .append_event_tx(&mut tx, run_id, fence.generation, source_event_id, None, event_type, payload)
             .await?;
         tx.commit().await?;
         Ok(event)
@@ -956,7 +961,25 @@ impl Db {
     ) -> Result<RunEvent> {
         let mut tx = self.pool.begin().await?;
         let event = self
-            .append_event_tx(&mut tx, run_id, attempt_generation, source_event_id, event_type, payload)
+            .append_event_tx(&mut tx, run_id, attempt_generation, source_event_id, None, event_type, payload)
+            .await?;
+        tx.commit().await?;
+        Ok(event)
+    }
+
+    pub async fn append_event_fenced_with_cursor(
+        &self,
+        run_id: Uuid,
+        fence: &WorkerFence,
+        source_event_id: Option<&str>,
+        cursor: Option<u64>,
+        event_type: &str,
+        payload: serde_json::Value,
+    ) -> Result<RunEvent> {
+        let mut tx = self.pool.begin().await?;
+        self.validate_worker_fence(&mut tx, run_id, fence).await?;
+        let event = self
+            .append_event_tx(&mut tx, run_id, fence.generation, source_event_id, cursor, event_type, payload)
             .await?;
         tx.commit().await?;
         Ok(event)
@@ -968,6 +991,7 @@ impl Db {
         run_id: Uuid,
         attempt_generation: i64,
         source_event_id: Option<&str>,
+        cursor: Option<u64>,
         event_type: &str,
         payload: serde_json::Value,
     ) -> Result<RunEvent> {
@@ -978,8 +1002,8 @@ impl Db {
                 .await?;
         let now = Utc::now();
         if let Some(source_id) = source_event_id {
-            let existing: Option<(i64, String, String, String)> = sqlx::query_as(
-                "SELECT seq, event_type, payload_json, created_at FROM run_events
+            let existing: Option<(i64, Option<i64>, String, String, String)> = sqlx::query_as(
+                "SELECT seq, cursor, event_type, payload_json, created_at FROM run_events
                  WHERE run_id = ? AND attempt_generation = ? AND source_event_id = ?",
             )
             .bind(run_id.to_string())
@@ -987,10 +1011,11 @@ impl Db {
             .bind(source_id)
             .fetch_optional(&mut **tx)
             .await?;
-            if let Some((seq, event_type, payload_json, created_at)) = existing {
+            if let Some((seq, stored_cursor, event_type, payload_json, created_at)) = existing {
                 return Ok(RunEvent {
                     run_id,
                     seq,
+                    cursor: stored_cursor.and_then(|value| u64::try_from(value).ok()),
                     event_type,
                     payload: serde_json::from_str(&payload_json).unwrap_or(payload),
                     created_at: parse_time(&created_at),
@@ -1000,13 +1025,14 @@ impl Db {
 
         sqlx::query(
             "INSERT INTO run_events
-             (run_id, seq, attempt_generation, source_event_id, event_type, payload_json, created_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?)",
+             (run_id, seq, attempt_generation, source_event_id, cursor, event_type, payload_json, created_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(run_id.to_string())
         .bind(next.0)
         .bind(attempt_generation)
         .bind(source_event_id)
+        .bind(cursor.map(|value| value as i64))
         .bind(event_type)
         .bind(payload.to_string())
         .bind(now.to_rfc3339())
@@ -1015,6 +1041,7 @@ impl Db {
         Ok(RunEvent {
             run_id,
             seq: next.0,
+            cursor,
             event_type: event_type.into(),
             payload,
             created_at: now,
@@ -1069,8 +1096,8 @@ impl Db {
     }
 
     pub async fn events_after(&self, run_id: Uuid, after_seq: i64) -> Result<Vec<RunEvent>> {
-        let rows: Vec<(i64, String, String, String)> = sqlx::query_as(
-            "SELECT seq, event_type, payload_json, created_at
+        let rows: Vec<(i64, Option<i64>, String, String, String)> = sqlx::query_as(
+            "SELECT seq, cursor, event_type, payload_json, created_at
              FROM run_events WHERE run_id = ? AND seq > ? ORDER BY seq ASC LIMIT 500",
         )
         .bind(run_id.to_string())
@@ -1079,9 +1106,36 @@ impl Db {
         .await?;
         Ok(rows
             .into_iter()
-            .map(|(seq, event_type, payload_json, created_at)| RunEvent {
+            .map(|(seq, cursor, event_type, payload_json, created_at)| RunEvent {
                 run_id,
                 seq,
+                cursor: cursor.and_then(|value| u64::try_from(value).ok()),
+                event_type,
+                payload: serde_json::from_str(&payload_json).unwrap_or(serde_json::json!({})),
+                created_at: parse_time(&created_at),
+            })
+            .collect())
+    }
+
+    /// Read provider-cursor events for reconnect/replay. Events without a
+    /// provider cursor remain available through the canonical `seq` cursor.
+    pub async fn events_after_cursor(&self, run_id: Uuid, after_cursor: u64) -> Result<Vec<RunEvent>> {
+        let rows: Vec<(i64, Option<i64>, String, String, String)> = sqlx::query_as(
+            "SELECT seq, cursor, event_type, payload_json, created_at
+             FROM run_events
+             WHERE run_id = ? AND cursor IS NOT NULL AND cursor > ?
+             ORDER BY cursor ASC, seq ASC LIMIT 500",
+        )
+        .bind(run_id.to_string())
+        .bind(after_cursor as i64)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows
+            .into_iter()
+            .map(|(seq, cursor, event_type, payload_json, created_at)| RunEvent {
+                run_id,
+                seq,
+                cursor: cursor.and_then(|value| u64::try_from(value).ok()),
                 event_type,
                 payload: serde_json::from_str(&payload_json).unwrap_or(serde_json::json!({})),
                 created_at: parse_time(&created_at),

@@ -54,6 +54,35 @@ pub struct RuntimeHandle {
 impl RuntimeHandle {
     /// Spawn an actor that exclusively owns `agent`.
     pub fn spawn(agent: Agent) -> (Self, JoinHandle<Result<()>>) {
+        Self::spawn_internal(agent, None)
+    }
+
+    /// Spawn an actor and automatically resume one safe model-boundary turn.
+    ///
+    /// Only a single open turn with no active tool is eligible. The durable
+    /// resume fence is claimed before the actor starts, so concurrent runtime
+    /// instances cannot replay the same model request.
+    pub fn spawn_with_automatic_recovery(agent: Agent) -> (Self, JoinHandle<Result<()>>) {
+        let record_writer = agent.execution_record_writer();
+        let candidate = record_writer
+            .recovery_snapshot()
+            .ok()
+            .filter(|snapshot| {
+                let plan = snapshot.plan();
+                plan.automatic_resume_implemented
+            })
+            .and_then(|snapshot| snapshot.resume_candidates.into_iter().next())
+            .filter(|candidate| record_writer.claim_safe_resume(candidate).unwrap_or(false));
+        Self::spawn_internal(agent, candidate)
+    }
+
+    fn spawn_internal(
+        mut agent: Agent,
+        candidate: Option<zene_session::ResumeCandidate>,
+    ) -> (Self, JoinHandle<Result<()>>) {
+        if candidate.is_some() {
+            agent.resume_existing_turn = true;
+        }
         let record_writer = agent.execution_record_writer();
         let (commands, command_rx) = mpsc::channel(32);
         let (events, _) = broadcast::channel(256);
@@ -70,6 +99,7 @@ impl RuntimeHandle {
             command_rx,
             events,
             state_tx,
+            candidate,
         ));
         (handle, task)
     }
@@ -191,13 +221,27 @@ async fn run_actor(
     mut commands: mpsc::Receiver<RuntimeMessage>,
     events: broadcast::Sender<RuntimeEvent>,
     state: watch::Sender<ExecutionState>,
+    initial_resume: Option<zene_session::ResumeCandidate>,
 ) -> Result<()> {
     let steer_buffer = agent.steer_buffer();
     let session_id = SessionId::from_string(agent.session().meta.id.clone());
     let sequence = Arc::new(AtomicU64::new(0));
     let mut agent = Some(agent);
     let mut queued: VecDeque<PendingPrompt> = VecDeque::new();
-    let mut active: Option<ActivePrompt> = None;
+    let mut active: Option<ActivePrompt> = initial_resume.map(|candidate| {
+        let (reply, _response) = oneshot::channel();
+        start_prompt(
+            agent.take().expect("initial recovery owns agent"),
+            PendingPrompt {
+                text: candidate.prompt,
+                reply,
+            },
+            &events,
+            &state,
+            &session_id,
+            &sequence,
+        )
+    });
     let mut shutdown_requested = false;
 
     loop {
@@ -385,41 +429,27 @@ fn handle_idle_command(
 ) -> Option<ActivePrompt> {
     match message.command {
         RuntimeCommand::ResumeSafeTurn => {
-            let Some(candidate) = agent
-                .as_ref()
-                .expect("idle actor owns agent")
-                .execution_record_writer()
-                .resume_candidate()
-                .ok()
-                .flatten()
-            else {
-                let _ = message
-                    .reply
-                    .send(Err("no safe resume candidate is available".into()));
-                return None;
-            };
-            let plan = match agent
+            let snapshot = match agent
                 .as_ref()
                 .expect("idle actor owns agent")
                 .execution_record_writer()
                 .recovery_snapshot()
-                .map(|snapshot| snapshot.plan())
             {
-                Ok(plan) => plan,
+                Ok(snapshot) => snapshot,
                 Err(err) => {
                     let _ = message.reply.send(Err(err.to_string()));
                     return None;
                 }
             };
-            if !plan.safe_resume_allowed
-                || !plan.active_tools.is_empty()
-                || plan.active_turns.len() != 1
-            {
+            let plan = snapshot.plan();
+            let Some(candidate) = snapshot.resume_candidates.into_iter().next()
+                .filter(|_| plan.automatic_resume_implemented)
+            else {
                 let _ = message
                     .reply
-                    .send(Err(format!("safe resume rejected: {}", plan.reason)));
+                    .send(Err("no unique prompt-backed safe resume candidate is available".into()));
                 return None;
-            }
+            };
             let writer = agent
                 .as_ref()
                 .expect("idle actor owns agent")
@@ -692,7 +722,7 @@ mod tests {
         .build()
         .await
         .expect("build agent without network calls");
-        let (runtime, task) = RuntimeHandle::spawn(agent);
+        let (runtime, task) = RuntimeHandle::spawn_with_automatic_recovery(agent);
 
         assert_eq!(
             runtime

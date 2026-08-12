@@ -829,6 +829,7 @@ async fn post_message(
 #[serde(rename_all = "camelCase")]
 struct EventsQuery {
     after_seq: Option<i64>,
+    after_cursor: Option<u64>,
 }
 
 async fn list_events(
@@ -838,13 +839,14 @@ async fn list_events(
     Query(query): Query<EventsQuery>,
 ) -> Result<impl IntoResponse, AppError> {
     let _ = authorize_run(&state, user.id, run_id).await?;
-    let events = state
-        .db
-        .events_after(run_id, query.after_seq.unwrap_or(0))
-        .await?;
+    let events = match query.after_cursor {
+        Some(cursor) => state.db.events_after_cursor(run_id, cursor).await?,
+        None => state.db.events_after(run_id, query.after_seq.unwrap_or(0)).await?,
+    };
     Ok(Json(serde_json::json!({
         "events": events,
-        "nextSeq": events.last().map(|e| e.seq).unwrap_or(query.after_seq.unwrap_or(0))
+        "nextSeq": events.last().map(|e| e.seq).unwrap_or(query.after_seq.unwrap_or(0)),
+        "nextCursor": events.iter().filter_map(|e| e.cursor).max().or(query.after_cursor)
     })))
 }
 
@@ -856,10 +858,15 @@ async fn stream_events(
 ) -> Result<impl IntoResponse, AppError> {
     let _ = authorize_run(&state, user.id, run_id).await?;
     let mut after = query.after_seq.unwrap_or(0);
+    let mut after_cursor = query.after_cursor;
     let (tx, rx) = tokio::sync::mpsc::channel::<Result<Event, Infallible>>(32);
     tokio::spawn(async move {
         loop {
-            match state.db.events_after(run_id, after).await {
+            let result = match after_cursor {
+                Some(cursor) => state.db.events_after_cursor(run_id, cursor).await,
+                None => state.db.events_after(run_id, after).await,
+            };
+            match result {
                 Ok(events) => {
                     if events.is_empty() {
                         if tx.send(Ok(Event::default().comment("ping"))).await.is_err() {
@@ -868,6 +875,9 @@ async fn stream_events(
                     } else {
                         for event in events {
                             after = event.seq;
+                            if let Some(cursor) = event.cursor {
+                                after_cursor = Some(cursor);
+                            }
                             let data = serde_json::to_string(&event).unwrap_or_default();
                             if tx
                                 .send(Ok(Event::default().id(event.seq.to_string()).data(data)))
@@ -1174,10 +1184,11 @@ async fn worker_event(
     Ok(Json(
         state
             .db
-            .append_event_fenced(
+            .append_event_fenced_with_cursor(
                 run_id,
                 &fence,
                 Some(&req.source_event_id),
+                req.cursor,
                 &req.event_type,
                 req.payload,
             )

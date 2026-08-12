@@ -70,15 +70,32 @@ async fn register_create_run_and_claim() {
     db.set_acp_session_id_fenced(run.id, &fence, "acp-session-1")
         .await
         .unwrap();
-    db.append_event_fenced(
-        run.id,
-        &fence,
-        Some("fenced-event-1"),
-        "runtime",
-        serde_json::json!({"ok": true}),
-    )
-    .await
-    .unwrap();
+    let event = db
+        .append_event_fenced_with_cursor(
+            run.id,
+            &fence,
+            Some("fenced-event-1"),
+            Some(17),
+            "runtime",
+            serde_json::json!({"ok": true}),
+        )
+        .await
+        .unwrap();
+    assert_eq!(event.cursor, Some(17));
+    let duplicate = db
+        .append_event_fenced_with_cursor(
+            run.id,
+            &fence,
+            Some("fenced-event-1"),
+            Some(99),
+            "runtime-retry",
+            serde_json::json!({"retry": true}),
+        )
+        .await
+        .unwrap();
+    assert_eq!(duplicate.seq, event.seq);
+    assert_eq!(duplicate.cursor, Some(17));
+    assert_eq!(duplicate.event_type, "runtime");
 
     let mut stale = fence.clone();
     stale.generation += 1;
@@ -122,5 +139,13 @@ async fn register_create_run_and_claim() {
     assert_eq!(reclaimed.3.as_deref(), Some("acp-session-1"));
 
     let events = db.events_after(run.id, 0).await.unwrap();
-    assert!(events.iter().any(|event| event.event_type == "runtime"));
+    let event = events
+        .iter()
+        .find(|event| event.event_type == "runtime")
+        .expect("runtime event should be persisted");
+    assert_eq!(event.cursor, Some(17));
+    let replay = db.events_after_cursor(run.id, 0).await.unwrap();
+    assert_eq!(replay.len(), 1);
+    assert_eq!(replay[0].cursor, Some(17));
+    assert_eq!(replay[0].seq, event.seq);
 }

@@ -99,7 +99,8 @@ pub struct RecoveryPlan {
     pub active_tools: Vec<RecoveryExecution>,
     /// Policy gate for a future explicit model-boundary resume command.
     pub safe_resume_allowed: bool,
-    /// Automatic restart is intentionally disabled until resume execution exists.
+    /// Automatic restart is enabled only when the safe model-boundary
+    /// disposition has exactly one durable prompt candidate.
     pub automatic_resume_implemented: bool,
     pub reason: String,
 }
@@ -120,12 +121,16 @@ impl RecoverySnapshot {
                 "runtime or execution failure requires operator review",
             ),
         };
+        let automatic_resume_implemented = safe_resume_allowed
+            && self.active_turns.len() == 1
+            && self.active_tools.is_empty()
+            && self.resume_candidates.len() == 1;
         RecoveryPlan {
             disposition,
             active_turns: self.active_turns.clone(),
             active_tools: self.active_tools.clone(),
             safe_resume_allowed,
-            automatic_resume_implemented: false,
+            automatic_resume_implemented,
             reason: reason.to_string(),
         }
     }
@@ -333,10 +338,7 @@ impl AgentRecordWriter {
         }
 
         let snapshot = self.recovery_snapshot()?;
-        let current = if snapshot.disposition() == RecoveryDisposition::SafeToResume
-            && snapshot.active_tools.is_empty()
-            && snapshot.active_turns.len() == 1
-        {
+        let current = if snapshot.plan().automatic_resume_implemented {
             snapshot.resume_candidates.into_iter().next()
         } else {
             None
@@ -484,10 +486,13 @@ impl AgentRecordWriter {
         Ok(snapshot)
     }
 
-    /// Backward-compatible flat view of open turn/tool boundaries.
+    /// Backward-compatible flat view of the single safe open turn.
+    ///
+    /// Multiple open turns or a missing prompt are intentionally rejected;
+    /// callers must not resume an arbitrary candidate by position.
     pub fn resume_candidate(&self) -> Result<Option<ResumeCandidate>> {
         let snapshot = self.recovery_snapshot()?;
-        if snapshot.disposition() != RecoveryDisposition::SafeToResume {
+        if !snapshot.plan().automatic_resume_implemented {
             return Ok(None);
         }
         Ok(snapshot.resume_candidates.into_iter().next())
@@ -853,10 +858,16 @@ mod tests {
                 model_request_hash: None,
                 ts: Utc::now(),
             }],
+            resume_candidates: vec![ResumeCandidate {
+                turn_id: "turn".into(),
+                prompt: "resume".into(),
+                context_epoch: None,
+                model_request_hash: None,
+            }],
             ..RecoverySnapshot::default()
         };
         assert!(safe.plan().safe_resume_allowed);
-        assert!(!safe.plan().automatic_resume_implemented);
+        assert!(safe.plan().automatic_resume_implemented);
         assert_eq!(safe.plan().reason, "only a model-boundary turn is open");
 
         let unsafe_plan = RecoverySnapshot {
@@ -867,7 +878,25 @@ mod tests {
             ..safe
         };
         assert!(!unsafe_plan.plan().safe_resume_allowed);
+        assert!(!unsafe_plan.plan().automatic_resume_implemented);
         assert!(unsafe_plan.plan().reason.contains("tool side effect"));
+
+        let missing_prompt = RecoverySnapshot {
+            active_turns: vec![RecoveryExecution {
+                checkpoint_index: 2,
+                turn_id: "without-prompt".into(),
+                step_id: None,
+                tool_call_id: None,
+                state: ExecutionCheckpointState::TurnStarted,
+                idempotency_key: "turn/missing-prompt".into(),
+                context_epoch: None,
+                model_request_hash: None,
+                ts: Utc::now(),
+            }],
+            ..RecoverySnapshot::default()
+        };
+        assert!(missing_prompt.plan().safe_resume_allowed);
+        assert!(!missing_prompt.plan().automatic_resume_implemented);
     }
 
     #[test]

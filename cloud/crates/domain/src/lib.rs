@@ -155,6 +155,8 @@ pub struct UpdateRunRequest {
 pub struct RunEvent {
     pub run_id: Id,
     pub seq: i64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cursor: Option<u64>,
     pub event_type: String,
     pub payload: serde_json::Value,
     pub created_at: DateTime<Utc>,
@@ -302,10 +304,31 @@ pub struct QueueStats {
 #[serde(rename_all = "camelCase")]
 pub struct WorkerEventRequest {
     pub source_event_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cursor: Option<u64>,
     pub event_type: String,
     pub payload: serde_json::Value,
     #[serde(flatten)]
     pub fence: Option<WorkerFence>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::WorkerEventRequest;
+
+    #[test]
+    fn worker_event_request_without_cursor_remains_compatible() {
+        let request: WorkerEventRequest = serde_json::from_value(serde_json::json!({
+            "sourceEventId": "legacy-event",
+            "eventType": "acp",
+            "payload": { "ok": true }
+        }))
+        .expect("legacy event request should deserialize");
+        assert_eq!(request.cursor, None);
+
+        let encoded = serde_json::to_value(request).expect("event request should serialize");
+        assert!(encoded.get("cursor").is_none());
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -40,6 +40,8 @@ pub enum BridgeMsg {
 #[derive(Debug, Clone)]
 pub struct AcpEvent {
     pub source_event_id: String,
+    /// Provider/runtime cursor extracted from ACP metadata, when available.
+    pub cursor: Option<u64>,
     pub event_type: String,
     pub payload: Value,
 }
@@ -54,25 +56,72 @@ impl AcpEvent {
             .pointer("/params/update/sessionUpdate")
             .and_then(|v| v.as_str())
             .unwrap_or("update");
+        let (event_id, cursor) = acp_identity(raw, sid, update);
         Self {
-            source_event_id: format!("{sid}-{update}-{}", Uuid::new_v4()),
+            source_event_id: event_id,
+            cursor,
             event_type: "acp".into(),
             payload: raw.clone(),
         }
     }
 
     pub fn from_reverse_request(id: &Value, method: &str, params: &Value) -> Self {
+        let payload = json!({
+            "jsonrpc": "2.0",
+            "id": id,
+            "method": method,
+            "params": params,
+        });
+        let cursor = metadata_cursor(params);
+        let identity = json!({ "method": method, "params": params });
+        let source_event_id = metadata_event_id(params)
+            .map(|event_id| format!("acp-{event_id}"))
+            .unwrap_or_else(|| stable_id("rev", &identity));
         Self {
-            source_event_id: format!("rev-{}-{}", method.replace('/', "."), Uuid::new_v4()),
+            source_event_id,
+            cursor,
             event_type: "acp".into(),
-            payload: json!({
-                "jsonrpc": "2.0",
-                "id": id,
-                "method": method,
-                "params": params,
-            }),
+            payload,
         }
     }
+}
+
+fn metadata_value<'a>(raw: &'a Value, key: &str) -> Option<&'a Value> {
+    raw.pointer("/params/update/_meta")
+        .or_else(|| raw.pointer("/params/_meta"))
+        .or_else(|| raw.pointer("/_meta"))
+        .and_then(|meta| meta.get(key))
+}
+
+fn metadata_cursor(raw: &Value) -> Option<u64> {
+    metadata_value(raw, "sequence")
+        .and_then(|value| value.as_u64().or_else(|| value.as_str()?.parse().ok()))
+}
+
+fn metadata_event_id(raw: &Value) -> Option<&str> {
+    metadata_value(raw, "eventId").and_then(Value::as_str)
+}
+
+/// Stable, non-security digest used only as an event de-duplication key.
+fn stable_id(prefix: &str, value: &Value) -> String {
+    let bytes = serde_json::to_vec(value).expect("JSON values are serializable");
+    let mut hash = 0xcbf29ce484222325_u64;
+    for byte in bytes {
+        hash ^= u64::from(byte);
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    format!("{prefix}-{hash:016x}")
+}
+
+fn acp_identity(raw: &Value, session_id: &str, update: &str) -> (String, Option<u64>) {
+    let cursor = metadata_cursor(raw);
+    if let Some(event_id) = metadata_event_id(raw) {
+        return (format!("acp-{event_id}"), cursor);
+    }
+    if let Some(cursor) = cursor {
+        return (format!("acp-{session_id}-{update}-{cursor}"), Some(cursor));
+    }
+    (stable_id("acp", raw), None)
 }
 
 fn id_key(id: &Value) -> String {
@@ -217,6 +266,7 @@ impl AcpBridge {
         let session_id = self.session_new(cwd).await?;
         events.push(AcpEvent {
             source_event_id: format!("session-new-{session_id}"),
+            cursor: None,
             event_type: "acp".into(),
             payload: json!({
                 "method": "session/new",
@@ -242,6 +292,7 @@ impl AcpBridge {
         .await?;
         events.push(AcpEvent {
             source_event_id: format!("session-resume-{session_id}"),
+            cursor: None,
             event_type: "acp".into(),
             payload: json!({
                 "method": "session/resume",
@@ -255,7 +306,8 @@ impl AcpBridge {
     async fn initialize_events(&self) -> Result<Vec<AcpEvent>> {
         let init = self.initialize().await?;
         Ok(vec![AcpEvent {
-            source_event_id: format!("init-{}", Uuid::new_v4()),
+            source_event_id: stable_id("init", &json!({ "method": "initialize", "result": init })),
+            cursor: None,
             event_type: "acp".into(),
             payload: json!({ "method": "initialize", "result": init }),
         }])
@@ -438,6 +490,47 @@ mod tests {
         assert_eq!(response["error"]["code"], -32000);
         assert_eq!(response["error"]["message"], "child failed");
         assert!(pending.lock().await.is_empty());
+    }
+
+    #[test]
+    fn notification_identity_prefers_meta_event_id_and_sequence() {
+        let raw = json!({
+            "jsonrpc": "2.0",
+            "method": "session/update",
+            "params": {
+                "sessionId": "session-1",
+                "update": {
+                    "sessionUpdate": "agent_message_chunk",
+                    "_meta": { "eventId": "provider-event-7", "sequence": 7 }
+                }
+            }
+        });
+        let event = AcpEvent::from_notification(&raw);
+        assert_eq!(event.source_event_id, "acp-provider-event-7");
+        assert_eq!(event.cursor, Some(7));
+    }
+
+    #[test]
+    fn notification_identity_is_stable_without_metadata() {
+        let raw = json!({
+            "jsonrpc": "2.0",
+            "method": "session/update",
+            "params": { "sessionId": "session-1", "update": { "sessionUpdate": "done" } }
+        });
+        let first = AcpEvent::from_notification(&raw);
+        let second = AcpEvent::from_notification(&raw);
+        assert_eq!(first.source_event_id, second.source_event_id);
+        assert!(first.source_event_id.starts_with("acp-"));
+        assert_eq!(first.cursor, None);
+    }
+
+    #[test]
+    fn reverse_request_identity_is_stable_across_jsonrpc_ids() {
+        let params = json!({ "sessionId": "session-1", "_meta": { "sequence": "9" } });
+        let first = AcpEvent::from_reverse_request(&json!(42), "session/request_permission", &params);
+        let second = AcpEvent::from_reverse_request(&json!(99), "session/request_permission", &params);
+        assert_eq!(first.source_event_id, second.source_event_id);
+        assert_eq!(first.cursor, Some(9));
     }
 }
 

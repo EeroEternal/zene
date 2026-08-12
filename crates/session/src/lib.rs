@@ -233,6 +233,23 @@ impl SessionView {
         Self::from_events_for_session(events, fallback, None)
     }
 
+    /// Return the event-backed projection or an error when compatibility fallback
+    /// would be required. Legacy callers should continue using [`Self::from_events`].
+    pub fn try_from_events(
+        events: &[SessionEvent],
+        fallback: &[Message],
+        session_id: Option<&str>,
+    ) -> std::result::Result<Self, ProjectionFallbackReason> {
+        let view = Self::from_events_for_session(events, fallback, session_id);
+        if view.used_materialized_fallback {
+            Err(view
+                .fallback_reason
+                .unwrap_or(ProjectionFallbackReason::IncompleteEventLog))
+        } else {
+            Ok(view)
+        }
+    }
+
     pub fn from_events_for_session(
         events: &[SessionEvent],
         fallback: &[Message],
@@ -614,6 +631,14 @@ impl SessionRecord {
 
     pub fn view(&self) -> SessionView {
         SessionView::from_events_for_session(&self.events, &self.messages, Some(&self.meta.id))
+    }
+
+    /// Strict event-backed view for new integrations. Legacy compatibility
+    /// callers should use [`Self::view`] and inspect its fallback reason.
+    pub fn try_view(
+        &self,
+    ) -> std::result::Result<SessionView, ProjectionFallbackReason> {
+        SessionView::try_from_events(&self.events, &self.messages, Some(&self.meta.id))
     }
 
     pub fn record_turn_started(&mut self, turn_id: &str, prompt: &str) {
@@ -1517,6 +1542,10 @@ mod tests {
         assert!(!session.is_event_backed());
         assert!(!session.migrate_to_event_backed());
         assert!(session.view().used_materialized_fallback);
+        assert_eq!(
+            session.try_view().unwrap_err(),
+            ProjectionFallbackReason::LegacyCompactionWithoutSnapshot
+        );
     }
 
     #[test]
@@ -1538,6 +1567,10 @@ mod tests {
         assert!(!session.migrate_to_event_backed());
         assert!(!session.is_event_backed());
         assert!(session.view().used_materialized_fallback);
+        assert_eq!(
+            session.try_view().unwrap_err(),
+            ProjectionFallbackReason::LegacyRewindWithoutSnapshot
+        );
     }
 
     #[test]

@@ -78,6 +78,8 @@ export interface AcpSessionUpdate {
 
 export interface RunEvent {
   seq: number;
+  /** Optional provider/runtime cursor; `seq` remains the server ordering. */
+  cursor?: number;
   createdAt: string;
   eventType?: string;
   event_type?: string;
