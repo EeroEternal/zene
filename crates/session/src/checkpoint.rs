@@ -19,6 +19,8 @@ pub struct SessionCheckpoint {
     pub messages: Vec<Message>,
     #[serde(default)]
     pub events: Vec<SessionEvent>,
+    #[serde(default)]
+    pub event_sequence: u64,
     pub todos: Vec<TodoItem>,
     pub compactions: Vec<CompactionEntry>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -35,6 +37,7 @@ impl SessionCheckpoint {
             reason: reason.to_string(),
             messages: session.messages.clone(),
             events: session.events.clone(),
+            event_sequence: session.event_sequence,
             todos: session.todos.clone(),
             compactions: session.compactions.clone(),
             context_window_usage: session.context_window_usage,
@@ -105,11 +108,13 @@ pub fn list_checkpoints(session_id: &str) -> Result<Vec<SessionCheckpoint>> {
 
 pub fn restore_checkpoint(session: &mut SessionRecord, checkpoint: &SessionCheckpoint) {
     session.messages = checkpoint.messages.clone();
-    session.events = checkpoint.events.clone();
     session.todos = checkpoint.todos.clone();
     session.compactions = checkpoint.compactions.clone();
     session.context_window_usage = checkpoint.context_window_usage;
     session.context_tokens_used = checkpoint.context_tokens_used;
+    session.record_rewound_with_messages(&checkpoint.id, Some(checkpoint.messages.clone()));
+    session.event_sequence = session.event_sequence.max(checkpoint.event_sequence);
+    session.todos = checkpoint.todos.clone();
     session.meta.updated_at = Utc::now();
 }
 
@@ -119,10 +124,12 @@ pub fn fork_session(session: &SessionRecord, workdir: &Path) -> SessionRecord {
     forked.meta.title = format!("{} (fork)", session.meta.title);
     forked.messages = session.messages.clone();
     forked.events = session.events.clone();
+    forked.event_sequence = session.event_sequence;
     forked.todos = session.todos.clone();
     forked.compactions = session.compactions.clone();
     forked.context_window_usage = session.context_window_usage;
     forked.context_tokens_used = session.context_tokens_used;
+    forked.record_branch_forked(&session.meta.id, &forked.meta.id.clone());
     forked
 }
 
@@ -150,6 +157,7 @@ mod tests {
         assert_eq!(loaded.messages.len(), 2);
         restore_checkpoint(&mut session, &loaded);
         assert_eq!(session.messages.len(), 2);
+        assert!(matches!(session.events.last(), Some(SessionEvent::Rewound { checkpoint_id, .. }) if checkpoint_id == &cp.id));
         match prev {
             Some(v) => env::set_var("ZENE_HOME", v),
             None => env::remove_var("ZENE_HOME"),

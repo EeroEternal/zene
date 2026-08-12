@@ -46,9 +46,257 @@ pub struct CompactionEntry {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum SessionEvent {
-    MessageAppended { id: String, created_at: DateTime<Utc>, message: Message },
-    SystemPrefixChanged { id: String, created_at: DateTime<Utc>, content: String },
-    CompactionApplied { id: String, created_at: DateTime<Utc>, entry: CompactionEntry },
+    MessageAppended {
+        #[serde(default)]
+        sequence: u64,
+        id: String,
+        created_at: DateTime<Utc>,
+        message: Message,
+    },
+    SystemPrefixChanged {
+        #[serde(default)]
+        sequence: u64,
+        id: String,
+        created_at: DateTime<Utc>,
+        content: String,
+    },
+    CompactionApplied {
+        #[serde(default)]
+        sequence: u64,
+        id: String,
+        created_at: DateTime<Utc>,
+        entry: CompactionEntry,
+        /// Snapshot of the materialized conversation after compaction. Older
+        /// sessions omit this and use the legacy replay fallback.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        messages_after: Option<Vec<Message>>,
+    },
+    TurnStarted {
+        #[serde(default)]
+        sequence: u64,
+        id: String,
+        turn_id: String,
+        created_at: DateTime<Utc>,
+        prompt: String,
+    },
+    StepStarted {
+        #[serde(default)]
+        sequence: u64,
+        id: String,
+        turn_id: String,
+        step_id: String,
+        created_at: DateTime<Utc>,
+        step: u32,
+    },
+    TurnEnded {
+        #[serde(default)]
+        sequence: u64,
+        id: String,
+        turn_id: String,
+        created_at: DateTime<Utc>,
+        steps: u32,
+        status: String,
+    },
+    Checkpoint {
+        #[serde(default)]
+        sequence: u64,
+        id: String,
+        turn_id: Option<String>,
+        step_id: Option<String>,
+        tool_call_id: Option<String>,
+        created_at: DateTime<Utc>,
+        state: String,
+        idempotency_key: String,
+    },
+    ToolCall {
+        #[serde(default)]
+        sequence: u64,
+        id: String,
+        turn_id: Option<String>,
+        step_id: Option<String>,
+        created_at: DateTime<Utc>,
+        name: String,
+        arguments: String,
+    },
+    ToolResult {
+        #[serde(default)]
+        sequence: u64,
+        id: String,
+        turn_id: Option<String>,
+        step_id: Option<String>,
+        created_at: DateTime<Utc>,
+        name: String,
+        content: String,
+        is_error: bool,
+        duration_ms: Option<u64>,
+    },
+    PermissionDecision {
+        #[serde(default)]
+        sequence: u64,
+        id: String,
+        turn_id: Option<String>,
+        step_id: Option<String>,
+        tool_call_id: String,
+        created_at: DateTime<Utc>,
+        tool_name: String,
+        allowed: bool,
+    },
+    ModeChanged {
+        #[serde(default)]
+        sequence: u64,
+        id: String,
+        created_at: DateTime<Utc>,
+        mode_id: String,
+    },
+    ModelChanged {
+        #[serde(default)]
+        sequence: u64,
+        id: String,
+        created_at: DateTime<Utc>,
+        model: String,
+    },
+    BranchForked {
+        #[serde(default)]
+        sequence: u64,
+        id: String,
+        created_at: DateTime<Utc>,
+        source_session_id: String,
+        branch_session_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        parent_sequence: Option<u64>,
+    },
+    Rewound {
+        #[serde(default)]
+        sequence: u64,
+        id: String,
+        created_at: DateTime<Utc>,
+        checkpoint_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        messages_after: Option<Vec<Message>>,
+    },
+}
+
+/// Read-only conversation projection reconstructed from the active event path.
+#[derive(Debug, Clone)]
+pub struct SessionView {
+    pub messages: Vec<Message>,
+    /// Complete append-only history retained for inspection and recovery.
+    pub events: Vec<SessionEvent>,
+    /// Events on the active path, including the shared parent history and
+    /// branch-local suffix. This is explicit even when it currently equals the
+    /// complete history for a materialized fork.
+    pub active_events: Vec<SessionEvent>,
+    pub active_branch_id: Option<String>,
+    pub active_path_start_sequence: Option<u64>,
+    pub source_event_count: usize,
+    pub used_materialized_fallback: bool,
+}
+
+impl SessionView {
+    pub fn from_events(events: &[SessionEvent], fallback: &[Message]) -> Self {
+        Self::from_events_for_session(events, fallback, None)
+    }
+
+    pub fn from_events_for_session(
+        events: &[SessionEvent],
+        fallback: &[Message],
+        session_id: Option<&str>,
+    ) -> Self {
+        let branch = session_id.and_then(|session_id| {
+            events.iter().rev().find_map(|event| match event {
+                SessionEvent::BranchForked {
+                    branch_session_id,
+                    parent_sequence,
+                    sequence,
+                    ..
+                } if branch_session_id == session_id => Some((
+                    branch_session_id.clone(),
+                    parent_sequence.unwrap_or(*sequence),
+                    *sequence,
+                )),
+                _ => None,
+            })
+        });
+        let (active_branch_id, active_path_start_sequence) = branch
+            .as_ref()
+            .map(|(branch_id, parent, _)| (Some(branch_id.clone()), Some(*parent)))
+            .unwrap_or((None, None));
+        let active_events: Vec<SessionEvent> = match branch {
+            Some((_, parent_sequence, fork_sequence)) => events
+                .iter()
+                .filter(|event| {
+                    let sequence = event.sequence();
+                    sequence <= parent_sequence || sequence >= fork_sequence
+                })
+                .cloned()
+                .collect(),
+            None => events.to_vec(),
+        };
+        let mut messages = Vec::new();
+        let mut has_message_fact = false;
+        let mut used_materialized_fallback = false;
+        for event in &active_events {
+            match event {
+                SessionEvent::MessageAppended { message, .. } => {
+                    has_message_fact = true;
+                    messages.push(message.clone());
+                }
+                SessionEvent::SystemPrefixChanged { content, .. } => {
+                    has_message_fact = true;
+                    if let Some(system) = messages
+                        .first_mut()
+                        .filter(|message| message.role == zene_llm::Role::System)
+                    {
+                        system.content = Some(content.clone());
+                    } else {
+                        messages.insert(0, Message::system(content));
+                    }
+                }
+                SessionEvent::CompactionApplied {
+                    messages_after: Some(snapshot),
+                    ..
+                } => {
+                    has_message_fact = true;
+                    used_materialized_fallback = false;
+                    messages = snapshot.clone();
+                }
+                SessionEvent::CompactionApplied {
+                    messages_after: None,
+                    ..
+                } => {
+                    // A pre-Wave 10 compaction has no projection snapshot, so
+                    // replaying it would silently produce an incomplete view.
+                    used_materialized_fallback = true;
+                }
+                SessionEvent::Rewound {
+                    messages_after: Some(snapshot),
+                    ..
+                } => {
+                    has_message_fact = true;
+                    used_materialized_fallback = false;
+                    messages = snapshot.clone();
+                }
+                SessionEvent::Rewound {
+                    messages_after: None,
+                    ..
+                } => used_materialized_fallback = true,
+                _ => {}
+            }
+        }
+        if !has_message_fact || used_materialized_fallback {
+            messages = fallback.to_vec();
+            used_materialized_fallback = true;
+        }
+        Self {
+            messages,
+            events: events.to_vec(),
+            active_events,
+            active_branch_id,
+            active_path_start_sequence,
+            source_event_count: events.len(),
+            used_materialized_fallback,
+        }
+    }
 }
 
 /// Persistence boundary for mutable session state.
@@ -81,6 +329,9 @@ pub struct SessionRecord {
     /// Materialized compatibility cache; events are the future conversation SoT.
     #[serde(default)]
     pub events: Vec<SessionEvent>,
+    /// Monotonic sequence for conversation events in this session.
+    #[serde(default)]
+    pub event_sequence: u64,
     #[serde(default)]
     pub compactions: Vec<CompactionEntry>,
     #[serde(default)]
@@ -91,6 +342,47 @@ pub struct SessionRecord {
     /// Last observed effective prompt tokens used for water-level checks.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub context_tokens_used: Option<u32>,
+}
+
+impl SessionEvent {
+    fn with_sequence(mut self, sequence: u64) -> Self {
+        match &mut self {
+            Self::MessageAppended { sequence: value, .. }
+            | Self::SystemPrefixChanged { sequence: value, .. }
+            | Self::CompactionApplied { sequence: value, .. }
+            | Self::TurnStarted { sequence: value, .. }
+            | Self::StepStarted { sequence: value, .. }
+            | Self::TurnEnded { sequence: value, .. }
+            | Self::Checkpoint { sequence: value, .. }
+            | Self::ToolCall { sequence: value, .. }
+            | Self::ToolResult { sequence: value, .. }
+            | Self::PermissionDecision { sequence: value, .. }
+            | Self::ModeChanged { sequence: value, .. }
+            | Self::ModelChanged { sequence: value, .. }
+            | Self::BranchForked { sequence: value, .. }
+            | Self::Rewound { sequence: value, .. } => *value = sequence,
+        }
+        self
+    }
+
+    fn sequence(&self) -> u64 {
+        match self {
+            Self::MessageAppended { sequence, .. }
+            | Self::SystemPrefixChanged { sequence, .. }
+            | Self::CompactionApplied { sequence, .. }
+            | Self::TurnStarted { sequence, .. }
+            | Self::StepStarted { sequence, .. }
+            | Self::TurnEnded { sequence, .. }
+            | Self::Checkpoint { sequence, .. }
+            | Self::ToolCall { sequence, .. }
+            | Self::ToolResult { sequence, .. }
+            | Self::PermissionDecision { sequence, .. }
+            | Self::ModeChanged { sequence, .. }
+            | Self::ModelChanged { sequence, .. }
+            | Self::BranchForked { sequence, .. }
+            | Self::Rewound { sequence, .. } => *sequence,
+        }
+    }
 }
 
 impl SessionRecord {
@@ -106,6 +398,7 @@ impl SessionRecord {
             },
             messages: Vec::new(),
             events: Vec::new(),
+            event_sequence: 0,
             compactions: Vec::new(),
             todos: Vec::new(),
             context_window_usage: None,
@@ -122,6 +415,31 @@ impl SessionRecord {
         self.meta.updated_at = Utc::now();
     }
 
+    fn append_event(&mut self, event: SessionEvent) {
+        if self.events.iter().any(|event| event.sequence() == 0) {
+            self.normalize_event_sequence();
+        } else {
+            self.event_sequence = self
+                .event_sequence
+                .max(self.events.iter().map(SessionEvent::sequence).max().unwrap_or(0));
+        }
+        self.event_sequence = self.event_sequence.saturating_add(1);
+        self.events.push(event.with_sequence(self.event_sequence));
+    }
+
+    fn normalize_event_sequence(&mut self) {
+        let mut sequence = self.event_sequence;
+        for event in &mut self.events {
+            if event.sequence() == 0 {
+                sequence = sequence.saturating_add(1);
+                *event = event.clone().with_sequence(sequence);
+            } else {
+                sequence = sequence.max(event.sequence());
+            }
+        }
+        self.event_sequence = sequence;
+    }
+
     pub fn push_message(&mut self, message: Message) {
         if message.role == zene_llm::Role::System
             && self.messages.iter().any(|m| m.role == zene_llm::Role::System)
@@ -129,13 +447,196 @@ impl SessionRecord {
             return;
         }
         self.messages.push(message.clone());
-        self.events.push(SessionEvent::MessageAppended {
-            id: Uuid::new_v4().to_string(), created_at: Utc::now(), message,
+        self.append_event(SessionEvent::MessageAppended {
+            sequence: 0,
+            id: Uuid::new_v4().to_string(),
+            created_at: Utc::now(),
+            message,
         });
         self.meta.updated_at = Utc::now();
     }
 
     pub fn events(&self) -> &[SessionEvent] { &self.events }
+
+    pub fn view(&self) -> SessionView {
+        SessionView::from_events_for_session(
+            &self.events,
+            &self.messages,
+            Some(&self.meta.id),
+        )
+    }
+
+    pub fn record_turn_started(&mut self, turn_id: &str, prompt: &str) {
+        self.append_event(SessionEvent::TurnStarted {
+            sequence: 0,
+            id: Uuid::new_v4().to_string(),
+            turn_id: turn_id.to_string(),
+            created_at: Utc::now(),
+            prompt: prompt.to_string(),
+        });
+        self.meta.updated_at = Utc::now();
+    }
+
+    pub fn record_step_started(&mut self, turn_id: &str, step_id: &str, step: u32) {
+        self.append_event(SessionEvent::StepStarted {
+            sequence: 0,
+            id: Uuid::new_v4().to_string(),
+            turn_id: turn_id.to_string(),
+            step_id: step_id.to_string(),
+            created_at: Utc::now(),
+            step,
+        });
+        self.meta.updated_at = Utc::now();
+    }
+
+    pub fn record_turn_ended(&mut self, turn_id: &str, steps: u32, status: &str) {
+        self.append_event(SessionEvent::TurnEnded {
+            sequence: 0,
+            id: Uuid::new_v4().to_string(),
+            turn_id: turn_id.to_string(),
+            created_at: Utc::now(),
+            steps,
+            status: status.to_string(),
+        });
+        self.meta.updated_at = Utc::now();
+    }
+
+    pub fn record_checkpoint(
+        &mut self,
+        turn_id: Option<&str>,
+        step_id: Option<&str>,
+        tool_call_id: Option<&str>,
+        state: &str,
+        idempotency_key: &str,
+    ) {
+        self.append_event(SessionEvent::Checkpoint {
+            sequence: 0,
+            id: Uuid::new_v4().to_string(),
+            turn_id: turn_id.map(str::to_string),
+            step_id: step_id.map(str::to_string),
+            tool_call_id: tool_call_id.map(str::to_string),
+            created_at: Utc::now(),
+            state: state.to_string(),
+            idempotency_key: idempotency_key.to_string(),
+        });
+        self.meta.updated_at = Utc::now();
+    }
+
+    pub fn record_tool_call(
+        &mut self,
+        turn_id: Option<&str>,
+        step_id: Option<&str>,
+        tool_call_id: &str,
+        name: &str,
+        arguments: &str,
+    ) {
+        self.append_event(SessionEvent::ToolCall {
+            sequence: 0,
+            id: tool_call_id.to_string(),
+            turn_id: turn_id.map(str::to_string),
+            step_id: step_id.map(str::to_string),
+            created_at: Utc::now(),
+            name: name.to_string(),
+            arguments: arguments.to_string(),
+        });
+        self.meta.updated_at = Utc::now();
+    }
+
+    pub fn record_tool_result(
+        &mut self,
+        turn_id: Option<&str>,
+        step_id: Option<&str>,
+        tool_call_id: &str,
+        name: &str,
+        content: &str,
+        is_error: bool,
+        duration_ms: Option<u64>,
+    ) {
+        self.append_event(SessionEvent::ToolResult {
+            sequence: 0,
+            id: tool_call_id.to_string(),
+            turn_id: turn_id.map(str::to_string),
+            step_id: step_id.map(str::to_string),
+            created_at: Utc::now(),
+            name: name.to_string(),
+            content: content.to_string(),
+            is_error,
+            duration_ms,
+        });
+        self.meta.updated_at = Utc::now();
+    }
+
+    pub fn record_permission_decision(
+        &mut self,
+        turn_id: Option<&str>,
+        step_id: Option<&str>,
+        tool_call_id: &str,
+        tool_name: &str,
+        allowed: bool,
+    ) {
+        self.append_event(SessionEvent::PermissionDecision {
+            sequence: 0,
+            id: Uuid::new_v4().to_string(),
+            turn_id: turn_id.map(str::to_string),
+            step_id: step_id.map(str::to_string),
+            tool_call_id: tool_call_id.to_string(),
+            created_at: Utc::now(),
+            tool_name: tool_name.to_string(),
+            allowed,
+        });
+        self.meta.updated_at = Utc::now();
+    }
+
+    pub fn record_mode_changed(&mut self, mode_id: &str) {
+        self.append_event(SessionEvent::ModeChanged {
+            sequence: 0,
+            id: Uuid::new_v4().to_string(),
+            created_at: Utc::now(),
+            mode_id: mode_id.to_string(),
+        });
+        self.meta.updated_at = Utc::now();
+    }
+
+    pub fn record_model_changed(&mut self, model: &str) {
+        self.append_event(SessionEvent::ModelChanged {
+            sequence: 0,
+            id: Uuid::new_v4().to_string(),
+            created_at: Utc::now(),
+            model: model.to_string(),
+        });
+        self.meta.updated_at = Utc::now();
+    }
+
+    pub fn record_branch_forked(&mut self, source_session_id: &str, branch_session_id: &str) {
+        self.append_event(SessionEvent::BranchForked {
+            sequence: 0,
+            id: Uuid::new_v4().to_string(),
+            created_at: Utc::now(),
+            source_session_id: source_session_id.to_string(),
+            branch_session_id: branch_session_id.to_string(),
+            parent_sequence: Some(self.event_sequence),
+        });
+        self.meta.updated_at = Utc::now();
+    }
+
+    pub fn record_rewound(&mut self, checkpoint_id: &str) {
+        self.record_rewound_with_messages(checkpoint_id, Some(self.messages.clone()));
+    }
+
+    pub fn record_rewound_with_messages(
+        &mut self,
+        checkpoint_id: &str,
+        messages_after: Option<Vec<Message>>,
+    ) {
+        self.append_event(SessionEvent::Rewound {
+            sequence: 0,
+            id: Uuid::new_v4().to_string(),
+            created_at: Utc::now(),
+            checkpoint_id: checkpoint_id.to_string(),
+            messages_after,
+        });
+        self.meta.updated_at = Utc::now();
+    }
 
     pub fn ensure_system_message(&mut self, content: &str) {
         if self
@@ -147,8 +648,11 @@ impl SessionRecord {
         }
         let message = Message::system(content);
         self.messages.insert(0, message.clone());
-        self.events.push(SessionEvent::MessageAppended {
-            id: Uuid::new_v4().to_string(), created_at: Utc::now(), message,
+        self.append_event(SessionEvent::MessageAppended {
+            sequence: 0,
+            id: Uuid::new_v4().to_string(),
+            created_at: Utc::now(),
+            message,
         });
         self.meta.updated_at = Utc::now();
     }
@@ -158,8 +662,11 @@ impl SessionRecord {
         if let Some(message) = self.messages.first_mut() {
             if message.role == zene_llm::Role::System {
                 message.content = Some(content.to_string());
-                self.events.push(SessionEvent::SystemPrefixChanged {
-                    id: Uuid::new_v4().to_string(), created_at: Utc::now(), content: content.to_string(),
+                self.append_event(SessionEvent::SystemPrefixChanged {
+                    sequence: 0,
+                    id: Uuid::new_v4().to_string(),
+                    created_at: Utc::now(),
+                    content: content.to_string(),
                 });
                 self.meta.updated_at = Utc::now();
                 return;
@@ -167,8 +674,11 @@ impl SessionRecord {
         }
         let message = Message::system(content);
         self.messages.insert(0, message.clone());
-        self.events.push(SessionEvent::MessageAppended {
-            id: Uuid::new_v4().to_string(), created_at: Utc::now(), message,
+        self.append_event(SessionEvent::MessageAppended {
+            sequence: 0,
+            id: Uuid::new_v4().to_string(),
+            created_at: Utc::now(),
+            message,
         });
         self.meta.updated_at = Utc::now();
     }
@@ -199,6 +709,25 @@ impl SessionRecord {
         tokens_before: Option<u32>,
         tokens_after: Option<u32>,
     ) -> CompactionEntry {
+        self.record_compaction_event_with_messages(
+            reason,
+            compacted_count,
+            summary,
+            tokens_before,
+            tokens_after,
+            Some(self.messages.clone()),
+        )
+    }
+
+    pub fn record_compaction_event_with_messages(
+        &mut self,
+        reason: &str,
+        compacted_count: usize,
+        summary: Option<String>,
+        tokens_before: Option<u32>,
+        tokens_after: Option<u32>,
+        messages_after: Option<Vec<Message>>,
+    ) -> CompactionEntry {
         let entry = CompactionEntry {
             id: Uuid::new_v4().to_string(),
             created_at: Utc::now(),
@@ -209,8 +738,12 @@ impl SessionRecord {
             tokens_after,
         };
         self.compactions.push(entry.clone());
-        self.events.push(SessionEvent::CompactionApplied {
-            id: Uuid::new_v4().to_string(), created_at: entry.created_at, entry: entry.clone(),
+        self.append_event(SessionEvent::CompactionApplied {
+            sequence: 0,
+            id: Uuid::new_v4().to_string(),
+            created_at: entry.created_at,
+            entry: entry.clone(),
+            messages_after,
         });
         self.meta.updated_at = Utc::now();
         entry
@@ -257,12 +790,13 @@ impl SessionRecord {
         }
         self.messages.push(summary_message);
         self.messages.extend(tail);
-        self.record_compaction_event(
+        self.record_compaction_event_with_messages(
             reason,
             compacted_count,
             Some(summary),
             tokens_before,
             tokens_after,
+            Some(self.messages.clone()),
         );
     }
 
@@ -288,7 +822,8 @@ pub fn session_path(id: &str) -> PathBuf {
 
 /// Parse a session JSON document, migrating older shapes that lack `meta`.
 pub fn parse_session_raw(raw: &str, fallback_id: Option<&str>) -> Result<SessionRecord> {
-    if let Ok(record) = serde_json::from_str::<SessionRecord>(raw) {
+    if let Ok(mut record) = serde_json::from_str::<SessionRecord>(raw) {
+        record.normalize_event_sequence();
         return Ok(record);
     }
 
@@ -381,6 +916,7 @@ fn legacy_record(
         },
         messages,
         events: Vec::new(),
+        event_sequence: 0,
         compactions: Vec::new(),
         todos: Vec::new(),
         context_window_usage: None,
@@ -511,6 +1047,56 @@ mod tests {
     }
 
     #[test]
+    fn session_view_rebuilds_messages_and_compaction_snapshot() {
+        let mut session = SessionRecord::new(Path::new("."));
+        session.push_message(Message::system("sys"));
+        session.push_message(Message::user("before"));
+        session.replace_messages_after_compaction("summary".into(), 1, 1);
+        session.push_message(Message::assistant("after"));
+
+        let view = session.view();
+        assert!(!view.used_materialized_fallback);
+        assert_eq!(view.source_event_count, session.events.len());
+        assert_eq!(
+            serde_json::to_string(&view.messages).unwrap(),
+            serde_json::to_string(&session.messages).unwrap(),
+        );
+    }
+
+    #[test]
+    fn fork_projection_uses_parent_and_branch_local_events() {
+        let mut source = SessionRecord::new(Path::new("."));
+        source.push_message(Message::user("parent"));
+        let mut fork = crate::checkpoint::fork_session(&source, Path::new("."));
+        fork.push_message(Message::assistant("branch"));
+
+        let view = fork.view();
+        assert_eq!(view.active_branch_id.as_deref(), Some(fork.meta.id.as_str()));
+        assert_eq!(view.active_path_start_sequence, Some(1));
+        assert_eq!(view.active_events.len(), 3);
+        let projected = serde_json::to_string(&view.messages).unwrap();
+        assert!(projected.contains("parent"));
+        assert!(projected.contains("branch"));
+        assert_eq!(view.source_event_count, fork.events.len());
+    }
+
+    #[test]
+    fn rewind_projection_keeps_prior_facts_and_resets_active_view() {
+        let mut session = SessionRecord::new(Path::new("."));
+        session.push_message(Message::user("before"));
+        let checkpoint_messages = session.messages.clone();
+        session.push_message(Message::assistant("later"));
+        session.record_rewound_with_messages("cp-1", Some(checkpoint_messages.clone()));
+        let view = session.view();
+        assert_eq!(
+            serde_json::to_string(&view.messages).unwrap(),
+            serde_json::to_string(&checkpoint_messages).unwrap(),
+        );
+        assert!(session.events.len() >= 3);
+        assert!(matches!(session.events.last(), Some(SessionEvent::Rewound { .. })));
+    }
+
+    #[test]
     fn session_messages_dual_write_conversation_events() {
         let mut session = SessionRecord::new(Path::new("."));
         session.ensure_system_message("sys");
@@ -520,6 +1106,88 @@ mod tests {
         assert_eq!(session.events.len(), 2);
         assert!(matches!(session.events[0], SessionEvent::MessageAppended { .. }));
         assert!(matches!(session.events[1], SessionEvent::MessageAppended { .. }));
+    }
+
+    #[test]
+    fn conversation_events_are_scoped_and_monotonic() {
+        let mut session = SessionRecord::new(Path::new("."));
+        session.push_message(Message::user("hello"));
+        session.record_tool_call(Some("turn-1"), Some("step-1"), "call-1", "Read", "{}");
+        session.record_permission_decision(
+            Some("turn-1"),
+            Some("step-1"),
+            "call-1",
+            "Read",
+            true,
+        );
+        session.record_tool_result(
+            Some("turn-1"),
+            Some("step-1"),
+            "call-1",
+            "Read",
+            "contents",
+            false,
+            Some(12),
+        );
+        session.record_mode_changed("plan");
+        session.record_model_changed("test-model");
+
+        assert_eq!(session.event_sequence, 6);
+        let sequences: Vec<u64> = session
+            .events
+            .iter()
+            .map(SessionEvent::sequence)
+            .collect();
+        assert_eq!(sequences, vec![1, 2, 3, 4, 5, 6]);
+        assert!(matches!(session.events[1], SessionEvent::ToolCall { ref turn_id, ref step_id, .. } if turn_id.as_deref() == Some("turn-1") && step_id.as_deref() == Some("step-1")));
+        assert!(matches!(session.events[2], SessionEvent::PermissionDecision { allowed: true, .. }));
+        assert!(matches!(session.events[3], SessionEvent::ToolResult { duration_ms: Some(12), .. }));
+        assert!(matches!(session.events[4], SessionEvent::ModeChanged { ref mode_id, .. } if mode_id == "plan"));
+        assert!(matches!(session.events[5], SessionEvent::ModelChanged { ref model, .. } if model == "test-model"));
+    }
+
+    #[test]
+    fn newer_snapshot_recovers_after_legacy_compaction_event() {
+        let mut session = SessionRecord::new(Path::new("."));
+        session.push_message(Message::user("before"));
+        session.events.push(SessionEvent::CompactionApplied {
+            sequence: 99,
+            id: "legacy-compact".into(),
+            created_at: Utc::now(),
+            entry: CompactionEntry {
+                id: "compact".into(),
+                created_at: Utc::now(),
+                summary: "old".into(),
+                compacted_message_count: 1,
+                reason: None,
+                tokens_before: None,
+                tokens_after: None,
+            },
+            messages_after: None,
+        });
+        session.replace_messages_after_compaction("new".into(), 0, 1);
+        let view = session.view();
+        assert!(!view.used_materialized_fallback);
+    }
+
+    #[test]
+    fn legacy_event_sequences_are_rebuilt_on_parse() {
+        let raw = r#"{
+            "meta": {
+                "id": "legacy-sequences",
+                "title": "Legacy",
+                "workdir": ".",
+                "created_at": "2026-01-01T00:00:00Z",
+                "updated_at": "2026-01-01T00:00:00Z"
+            },
+            "messages": [{"role":"user","content":"hello"}],
+            "events": [{"type":"message_appended","id":"m1","created_at":"2026-01-01T00:00:00Z","message":{"role":"user","content":"hello"}}]
+        }"#;
+        let mut session = parse_session_raw(raw, None).expect("parse legacy event");
+        assert_eq!(session.event_sequence, 1);
+        assert!(matches!(session.events[0], SessionEvent::MessageAppended { sequence: 1, .. }));
+        session.push_message(Message::assistant("reply"));
+        assert!(matches!(session.events[1], SessionEvent::MessageAppended { sequence: 2, .. }));
     }
 
     #[test]

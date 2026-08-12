@@ -299,6 +299,7 @@ impl Agent {
             }
         }
 
+        self.session.record_model_changed(model);
         self.config.refresh_model_context_window();
         self.context
             .set_window(self.config.compaction.context_window_tokens);
@@ -559,6 +560,7 @@ impl Agent {
             prompt: user_input.to_string(),
             ts: chrono::Utc::now(),
         })?;
+        self.session.record_turn_started(&turn_id.to_string(), user_input);
 
         let event_handler = merge_event_handler(
             &self.record_writer,
@@ -595,6 +597,7 @@ impl Agent {
                     &run_options.event_handler,
                     AgentEvent::TurnEnd { turn_id, steps },
                 );
+                self.session.record_turn_ended(&turn_id.to_string(), steps, "completed");
             }
             Err(err) => {
                 if err.to_string().contains("aborted") {
@@ -611,6 +614,11 @@ impl Agent {
                 emit_event(
                     &run_options.event_handler,
                     AgentEvent::TurnEnd { turn_id, steps },
+                );
+                self.session.record_turn_ended(
+                    &turn_id.to_string(),
+                    steps,
+                    if was_cancelled { "cancelled" } else { "failed" },
                 );
             }
         }
@@ -702,6 +710,17 @@ impl Agent {
         if let Some(result) = &prepared.compaction {
             self.record_compaction(result)?;
         }
+        emit_event(
+            &options.event_handler,
+            AgentEvent::ProjectionReady {
+                source_message_count: prepared.explain.source_message_count,
+                projected_message_count: prepared.explain.projected_message_count,
+                source_event_count: prepared.explain.source_event_count,
+                used_materialized_fallback: prepared.explain.used_materialized_fallback,
+                estimate_tokens: prepared.explain.estimate_tokens,
+                context_epoch: prepared.explain.context_epoch,
+            },
+        );
         let step = prepared.step;
         debug!(
             estimated_context_tokens = step.estimate_tokens,
@@ -710,6 +729,8 @@ impl Agent {
             message_count = step.messages.len(),
             tool_count = tools.len(),
             context_epoch = step.metadata.context_epoch,
+            source_event_count = prepared.explain.source_event_count,
+            projection_fallback = prepared.explain.used_materialized_fallback,
             "llm request context water level"
         );
         self.warn_if_near_context_limit(step.estimate_tokens as usize);
@@ -929,6 +950,33 @@ impl Agent {
         options: &PromptOptions,
         cancel: Option<&CancellationToken>,
     ) -> Result<zene_turn::ToolBatchOutcome> {
+        let scope = self.active_turn.as_ref().map(|turn| {
+            (
+                turn.turn_id.to_string(),
+                turn.step_id.map(|step_id| step_id.to_string()),
+            )
+        });
+        for call in tool_calls {
+            let turn_id = scope.as_ref().map(|(turn_id, _)| turn_id.as_str());
+            let step_id = scope
+                .as_ref()
+                .and_then(|(_, step_id)| step_id.as_deref());
+            self.session.record_tool_call(
+                turn_id,
+                step_id,
+                &call.id,
+                &call.name,
+                &call.arguments,
+            );
+            self.session.record_checkpoint(
+                turn_id,
+                step_id,
+                Some(&call.id),
+                "tool_started",
+                &format!("tool/{}/{}/{}/started", turn_id.unwrap_or("unknown"), step_id.unwrap_or("unknown"), call.id),
+            );
+        }
+
         let subagent_runner = Arc::new(CoreSubagentRunner::new(self.config.clone()));
         let result = {
             let executor = DefaultToolExecutor::new(ToolExecutorDeps {
@@ -960,13 +1008,48 @@ impl Agent {
         };
 
         if !result.mode_changes.is_empty() {
+            for mode_id in &result.mode_changes {
+                self.session.record_mode_changed(mode_id);
+            }
             self.sync_plan_mode_system();
         }
+        for decision in &result.permission_decisions {
+            self.session.record_permission_decision(
+                scope.as_ref().map(|(turn_id, _)| turn_id.as_str()),
+                scope
+                    .as_ref()
+                    .and_then(|(_, step_id)| step_id.as_deref()),
+                &decision.tool_call_id,
+                &decision.tool_name,
+                decision.allowed,
+            );
+        }
         for message in result.messages {
+            let content = message.content;
+            let turn_id = scope.as_ref().map(|(turn_id, _)| turn_id.as_str());
+            let step_id = scope
+                .as_ref()
+                .and_then(|(_, step_id)| step_id.as_deref());
+            self.session.record_tool_result(
+                turn_id,
+                step_id,
+                &message.call.id,
+                &message.call.name,
+                &content,
+                message.is_error,
+                message.duration_ms,
+            );
+            self.session.record_checkpoint(
+                turn_id,
+                step_id,
+                Some(&message.call.id),
+                "tool_completed",
+                &format!("tool/{}/{}/{}/completed", turn_id.unwrap_or("unknown"), step_id.unwrap_or("unknown"), message.call.id),
+            );
             self.session.push_message(Message::tool_result_with_error(
                 &message.call.id,
                 &message.call.name,
-                message.content,
+                content,
                 message.is_error,
             ));
         }
@@ -1127,6 +1210,7 @@ fn execution_checkpoints_from_agent_event(
         | AgentEvent::ThoughtDelta { .. }
         | AgentEvent::ModeChanged { .. }
         | AgentEvent::UsageUpdate { .. }
+        | AgentEvent::ProjectionReady { .. }
         | AgentEvent::SteerInput { .. } => None,
     };
     checkpoint.into_iter().collect()
@@ -1134,7 +1218,7 @@ fn execution_checkpoints_from_agent_event(
 
 impl Agent {
     fn append_terminal_checkpoint(
-        &self,
+        &mut self,
         turn_id: TurnId,
         state: ExecutionCheckpointState,
     ) -> Result<()> {
@@ -1144,6 +1228,13 @@ impl Agent {
             ExecutionCheckpointState::Failed => "failed",
             _ => "terminal",
         };
+        self.session.record_checkpoint(
+            Some(&turn_id.to_string()),
+            None,
+            None,
+            state_name,
+            &format!("{turn_id}/turn/{state_name}"),
+        );
         self.record_writer.append_execution_checkpoint(&RecordEntry::ExecutionCheckpoint {
             turn_id: turn_id.to_string(),
             step_id: None,
@@ -1202,7 +1293,8 @@ fn record_entry_from_agent_event(event: &AgentEvent) -> Option<RecordEntry> {
         | AgentEvent::ThoughtDelta { .. }
         | AgentEvent::SteerInput { .. }
         | AgentEvent::ModeChanged { .. }
-        | AgentEvent::UsageUpdate { .. } => None,
+        | AgentEvent::UsageUpdate { .. }
+        | AgentEvent::ProjectionReady { .. } => None,
     }
 }
 

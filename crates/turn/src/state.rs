@@ -68,6 +68,7 @@ impl fmt::Display for StepId {
 pub struct TurnState {
     pub turn_id: TurnId,
     pub step: u32,
+    pub step_id: Option<StepId>,
 }
 
 impl TurnState {
@@ -75,12 +76,15 @@ impl TurnState {
         Self {
             turn_id: TurnId::new(),
             step: 0,
+            step_id: None,
         }
     }
 
     pub fn next_step_id(&mut self) -> StepId {
         self.step += 1;
-        StepId::new()
+        let step_id = StepId::new();
+        self.step_id = Some(step_id);
+        step_id
     }
 }
 

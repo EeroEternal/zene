@@ -24,8 +24,8 @@ use super::terminal_bridge::AcpRemoteTerminal;
 use super::transport::{AcpWriter, SharedState};
 use super::updates::{
     agent_message_chunk, agent_thought_chunk, available_commands_update, current_mode_update,
-    modes_state, plan_from_todo_arguments, replay_updates_from_messages, tool_call_result_update,
-    tool_call_update, tool_kind, tool_title, usage_update,
+    modes_state, plan_from_todo_arguments, projection_ready_update, replay_updates_from_messages,
+    tool_call_result_update, tool_call_update, tool_kind, tool_title, usage_update,
 };
 
 /// Tracks the tool call currently awaiting permission so ACP can reuse its id.
@@ -770,6 +770,21 @@ fn project_runtime_event(
         RuntimeEventKind::Error { message } => {
             Some(agent_message_chunk(&format!("\n[error] {message}\n")))
         }
+        RuntimeEventKind::ProjectionReady {
+            source_message_count,
+            projected_message_count,
+            source_event_count,
+            used_materialized_fallback,
+            estimate_tokens,
+            context_epoch,
+        } => Some(projection_ready_update(
+            *source_message_count,
+            *projected_message_count,
+            *source_event_count,
+            *used_materialized_fallback,
+            *estimate_tokens,
+            *context_epoch,
+        )),
         RuntimeEventKind::TurnStarted
         | RuntimeEventKind::StepStarted { .. }
         | RuntimeEventKind::TurnEnded { .. }

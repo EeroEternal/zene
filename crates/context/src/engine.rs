@@ -59,6 +59,8 @@ pub struct ContextObservation {
 pub struct ProjectionExplain {
     pub source_message_count: usize,
     pub projected_message_count: usize,
+    pub source_event_count: usize,
+    pub used_materialized_fallback: bool,
     pub estimate_tokens: u32,
     pub context_epoch: u64,
 }
@@ -220,7 +222,8 @@ impl ContextEngine {
         estimator: &TokenEstimator,
         config: &CompactionConfig,
     ) -> ContextObservation {
-        let estimated_tokens = tokens::estimate_context(session.messages(), tools, estimator) as u32;
+        let view = session.view();
+        let estimated_tokens = tokens::estimate_context(&view.messages, tools, estimator) as u32;
         self.water.record_estimate(estimated_tokens);
         self.water.set_window(config.context_window_tokens);
         let preflight_overflow = self.water.exceeds_window() && !self.water.auto_compact_suppressed;
@@ -245,9 +248,12 @@ impl ContextEngine {
         );
         let commit = self.commit(deps, tools, &observation).await?;
         let step = self.project(deps.session, tools, deps.estimator);
+        let view = deps.session.view();
         let explain = ProjectionExplain {
-            source_message_count: deps.session.messages().len(),
+            source_message_count: view.messages.len(),
             projected_message_count: step.messages.len(),
+            source_event_count: view.source_event_count,
+            used_materialized_fallback: view.used_materialized_fallback,
             estimate_tokens: step.estimate_tokens,
             context_epoch: step.metadata.context_epoch,
         };
@@ -370,8 +376,8 @@ impl ContextEngine {
                 tracing::debug!(cached_tokens = cached, "provider cache usage");
             }
         }
-        let estimated =
-            tokens::estimate_context(session.messages(), tools, estimator) as u32;
+        let view = session.view();
+        let estimated = tokens::estimate_context(&view.messages, tools, estimator) as u32;
         session.update_context_usage(
             self.water.effective_tokens().max(estimated),
             compaction_config.context_window_tokens,
@@ -559,7 +565,8 @@ impl ContextEngine {
         estimator: &TokenEstimator,
     ) -> StepContext {
         let mode = delivery_mode_from_env();
-        let assembled = assemble_outbound(session.messages(), self.gateway_prefix_len, mode);
+        let view = session.view();
+        let assembled = assemble_outbound(&view.messages, self.gateway_prefix_len, mode);
         let metadata = self.metadata_for_outbound(session, &assembled);
         let estimate_tokens =
             tokens::estimate_context(&assembled.messages, tools, estimator) as u32;
@@ -577,8 +584,8 @@ impl ContextEngine {
         estimator: &TokenEstimator,
         compaction_config: &CompactionConfig,
     ) {
-        let estimated =
-            tokens::estimate_context(session.messages(), tools, estimator) as u32;
+        let view = session.view();
+        let estimated = tokens::estimate_context(&view.messages, tools, estimator) as u32;
         self.water.record_estimate(estimated);
         self.water.last_prompt_tokens = Some(estimated);
         session.update_context_usage(estimated, compaction_config.context_window_tokens);
@@ -633,7 +640,8 @@ impl ContextEngine {
             return Ok(());
         }
         self.pending_publish = false;
-        self.gateway_prefix_len = deps.session.messages().len();
+        let view = deps.session.view();
+        self.gateway_prefix_len = view.messages.len();
         let session_id = self.session_id_for(deps.session);
         Self::emit(
             deps,
@@ -641,7 +649,7 @@ impl ContextEngine {
             ContextEvent::PublishPrefix {
                 session_id,
                 epoch: self.epoch,
-                messages: deps.session.messages().to_vec(),
+                messages: view.messages,
             },
         )
         .await?;
@@ -657,13 +665,14 @@ impl ContextEngine {
             return Ok(());
         }
         self.initial_publish_done = true;
-        self.gateway_prefix_len = deps.session.messages().len();
+        let view = deps.session.view();
+        self.gateway_prefix_len = view.messages.len();
         let session_id = self.session_id_for(deps.session);
-        let pinned_boundary = stable_system_boundary(deps.session.messages());
+        let pinned_boundary = stable_system_boundary(&view.messages);
         info!(
             session_id = %session_id,
             epoch = self.epoch,
-            messages = deps.session.messages().len(),
+            messages = view.messages.len(),
             pinned_boundary,
             "initial gateway prefix publish"
         );
@@ -673,7 +682,7 @@ impl ContextEngine {
             ContextEvent::PublishPrefix {
                 session_id,
                 epoch: self.epoch,
-                messages: deps.session.messages().to_vec(),
+                messages: view.messages,
             },
         )
         .await?;
@@ -688,7 +697,8 @@ impl ContextEngine {
     ) -> Result<()> {
         let old = self.epoch;
         self.epoch = self.epoch.saturating_add(1);
-        self.gateway_prefix_len = deps.session.messages().len();
+        let view = deps.session.view();
+        self.gateway_prefix_len = view.messages.len();
         info!(
             old,
             new = self.epoch,
@@ -703,7 +713,7 @@ impl ContextEngine {
             ContextEvent::PublishPrefix {
                 session_id,
                 epoch: self.epoch,
-                messages: deps.session.messages().to_vec(),
+                messages: view.messages,
             },
         )
         .await?;
@@ -711,8 +721,9 @@ impl ContextEngine {
     }
 
     fn prefire_cache_for_session(&self, session: &dyn ContextSession) -> Option<PrefireCache> {
-        let prefix_start = if session
-            .messages()
+        let view = session.view();
+        let prefix_start = if view
+            .messages
             .first()
             .is_some_and(|m| m.role == zene_llm::Role::System)
         {
@@ -720,7 +731,7 @@ impl ContextEngine {
         } else {
             0
         };
-        let body = &session.messages()[prefix_start..];
+        let body = &view.messages[prefix_start..];
         self.prefire.valid_cache_for(body)
     }
 
@@ -738,7 +749,7 @@ impl ContextEngine {
                 return;
             }
 
-            let messages = deps.session.messages().to_vec();
+            let messages = deps.session.view().messages;
             let prefix_start = if messages
                 .first()
                 .is_some_and(|m| m.role == zene_llm::Role::System)
@@ -829,7 +840,7 @@ impl ContextEngine {
         ) {
             return Ok(());
         }
-        let conversation = memory::format_flush_input(deps.session.messages());
+        let conversation = memory::format_flush_input(&deps.session.view().messages);
         if conversation.trim().is_empty() {
             return Ok(());
         }

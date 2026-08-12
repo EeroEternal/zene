@@ -51,6 +51,21 @@ impl TurnRuntime for Agent {
         options: &Self::Options,
         cancel: Option<&CancellationToken>,
     ) -> Result<StepResult, anyhow::Error> {
+        if let Some(turn) = self.active_turn.as_ref() {
+            if let Some(step_id) = turn.step_id {
+                let turn_id = turn.turn_id.to_string();
+                let step_id = step_id.to_string();
+                self.session
+                    .record_step_started(&turn_id, &step_id, turn.step);
+                self.session.record_checkpoint(
+                    Some(&turn_id),
+                    Some(&step_id),
+                    None,
+                    "step_started",
+                    &format!("{turn_id}/{step_id}/started"),
+                );
+            }
+        }
         let (message, usage, had_tool_calls) = Agent::run_step(self, options, cancel).await?;
         Ok(StepResult {
             message,

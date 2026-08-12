@@ -78,10 +78,29 @@ pub fn runtime_event_handler(
                     context_percent: *context_percent, context_epoch: *context_epoch,
                 },
             ),
+            AgentEvent::ProjectionReady {
+                source_message_count,
+                projected_message_count,
+                source_event_count,
+                used_materialized_fallback,
+                estimate_tokens,
+                context_epoch,
+            } => (
+                current_turn,
+                current_step,
+                RuntimeEventKind::ProjectionReady {
+                    source_message_count: *source_message_count,
+                    projected_message_count: *projected_message_count,
+                    source_event_count: *source_event_count,
+                    used_materialized_fallback: *used_materialized_fallback,
+                    estimate_tokens: *estimate_tokens,
+                    context_epoch: *context_epoch,
+                },
+            ),
             AgentEvent::TurnEnd { turn_id, steps } => (Some(*turn_id), None, RuntimeEventKind::TurnEnded { steps: *steps }),
             AgentEvent::Error { message } => (current_turn, current_step, RuntimeEventKind::Error { message: message.clone() }),
             AgentEvent::SteerInput { text } => (current_turn, current_step, RuntimeEventKind::SteerInput { text: text.clone() }),
-            AgentEvent::ModeChanged { mode_id } => (current_turn, current_step, RuntimeEventKind::StateChanged { state: mode_id.clone() }),
+                AgentEvent::ModeChanged { mode_id } => (current_turn, current_step, RuntimeEventKind::StateChanged { state: mode_id.clone() }),
         };
         handler(RuntimeEvent { sequence, session_id: session_id.clone(), turn_id, step_id, kind });
     })
@@ -127,6 +146,14 @@ pub enum AgentEvent {
         context_percent: u8,
         context_epoch: u64,
     },
+    ProjectionReady {
+        source_message_count: usize,
+        projected_message_count: usize,
+        source_event_count: usize,
+        used_materialized_fallback: bool,
+        estimate_tokens: u32,
+        context_epoch: u64,
+    },
     TurnEnd {
         turn_id: TurnId,
         steps: u32,
@@ -167,13 +194,32 @@ mod tests {
         handler(AgentEvent::TurnStart { turn_id });
         handler(AgentEvent::StepBegin { turn_id, step_id, step: 1 });
         handler(AgentEvent::TextDelta { delta: "hello".into() });
+        handler(AgentEvent::ProjectionReady {
+            source_message_count: 4,
+            projected_message_count: 3,
+            source_event_count: 7,
+            used_materialized_fallback: false,
+            estimate_tokens: 128,
+            context_epoch: 2,
+        });
 
         let events = collected.lock().unwrap();
-        assert_eq!(events.len(), 3);
+        assert_eq!(events.len(), 4);
         assert_eq!(events[0].sequence.value(), 1);
-        assert_eq!(events[2].sequence.value(), 3);
-        assert_eq!(events[2].turn_id, Some(turn_id));
-        assert_eq!(events[2].step_id, Some(step_id));
+        assert_eq!(events[3].sequence.value(), 4);
+        assert_eq!(events[3].turn_id, Some(turn_id));
+        assert_eq!(events[3].step_id, Some(step_id));
+        assert!(matches!(
+            events[3].kind,
+            RuntimeEventKind::ProjectionReady {
+                source_message_count: 4,
+                projected_message_count: 3,
+                source_event_count: 7,
+                used_materialized_fallback: false,
+                estimate_tokens: 128,
+                context_epoch: 2,
+            }
+        ));
     }
 
     #[test]

@@ -314,6 +314,27 @@ pub fn usage_update(
     })
 }
 
+pub fn projection_ready_update(
+    source_message_count: usize,
+    projected_message_count: usize,
+    source_event_count: usize,
+    used_materialized_fallback: bool,
+    estimate_tokens: u32,
+    context_epoch: u64,
+) -> Value {
+    json!({
+        "sessionUpdate": "projection_update",
+        "_meta": {
+            "sourceMessageCount": source_message_count,
+            "projectedMessageCount": projected_message_count,
+            "sourceEventCount": source_event_count,
+            "usedMaterializedFallback": used_materialized_fallback,
+            "estimateTokens": estimate_tokens,
+            "contextEpoch": context_epoch,
+        },
+    })
+}
+
 pub fn available_modes() -> Value {
     json!([
         {

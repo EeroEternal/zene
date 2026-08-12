@@ -38,13 +38,21 @@ pub(crate) struct ToolExecutorDeps<'a> {
 pub(crate) struct ToolBatchResult {
     pub outcome: ToolBatchOutcome,
     pub mode_changes: Vec<String>,
+    pub permission_decisions: Vec<PermissionDecision>,
     pub messages: Vec<ToolMessage>,
+}
+
+pub(crate) struct PermissionDecision {
+    pub tool_call_id: String,
+    pub tool_name: String,
+    pub allowed: bool,
 }
 
 pub(crate) struct ToolMessage {
     pub call: ToolCall,
     pub content: String,
     pub is_error: bool,
+    pub duration_ms: Option<u64>,
 }
 
 pub(crate) struct DefaultToolExecutor<'a> {
@@ -85,6 +93,7 @@ impl<'a> DefaultToolExecutor<'a> {
 
         let mut prepared = Vec::with_capacity(tool_calls.len());
         let mut mode_changes = Vec::new();
+        let mut permission_decisions = Vec::new();
 
         for call in tool_calls {
             if zene_turn::is_cancelled(cancel) {
@@ -188,6 +197,11 @@ impl<'a> DefaultToolExecutor<'a> {
                         false
                     }
                 };
+                permission_decisions.push(PermissionDecision {
+                    tool_call_id: call.id.clone(),
+                    tool_name: call.name.clone(),
+                    allowed,
+                });
                 if !allowed {
                     Some((
                         zene_tools::ToolResult {
@@ -306,12 +320,14 @@ impl<'a> DefaultToolExecutor<'a> {
                 call,
                 content,
                 is_error: result.is_error,
+                duration_ms,
             });
         }
 
         Ok(ToolBatchResult {
             outcome: outcome_for_batch(&terminal_results),
             mode_changes,
+            permission_decisions,
             messages,
         })
     }

@@ -2,7 +2,8 @@
 
 > 状态：持续演进（Wave 0–8 基础能力已落地；Wave 2/3/7 仍处于过渡态；Wave 9+ 进行中）
 >
-> **进度快照 2026-08-12** — 基线 `origin/main = 38265cb`，PR #58（Subagent 统一 TurnEngine）已合并。
+> **进度快照：2026-08-12，基线 `origin/main` = `38265cb`（PR #58 已合并）。**
+> 本文同时记录目标架构、已实现能力和剩余工作；“已建立边界”不等于“最终架构已完成”。
 >
 > 本文基于当前 zene runtime 实现，描述如何将 `Agent`、`Turn`、`Step`、`Session`、Cloud `Run` 和 ACP transport 拉开，并给出渐进式迁移方案。
 >
@@ -23,14 +24,14 @@
 - ACP server 将 `Agent` 暴露给编辑器和 Cloud worker；
 - Cloud worker 负责 workspace、worker、approval、heartbeat、commit/PR 等 Job 生命周期。
 
-但当前 `Agent` 仍是一个较大的具体对象，且不同层次之间存在职责重叠：
+但当前 `Agent` 仍是一个较大的具体对象，且不同层次之间仍存在职责重叠：
 
-1. ~~主 Agent 和 Subagent 使用两套执行循环~~ — 已统一到 `TurnEngine`（Wave 8）；
-2. `Provider`、`ChatClient`、`ChatBackend` 存在相近但不统一的模型抽象 —— 独立 `ModelExecutor` 仍未抽出；
-3. ACP、Cloud event 和 Core `AgentEvent` 之间仍有语义转换，但已统一到 `RuntimeEvent` 信封 + 兼容适配；
-4. Session 可以恢复历史，execution checkpoint / recovery metadata 已落地，但尚无自动 execution resume；
-5. ~~ACP server 和 `Agent` 分别维护 prompt queue、active turn、cancel 等控制状态~~ — `RuntimeHandle` 已成为控制面状态所有者；
-6. Cloud `Run`、ACP session、Agent turn 的生命周期边界仍不够显式：Cloud `RuntimeClient` 尚未落地，worker 仍经 ACP 桥接。
+1. `TurnEngine` 已统一主 Agent 和 Subagent 的循环，但 `Agent` 仍承担默认能力组装和兼容 facade 职责；
+2. `Provider`、`ChatClient`、`ChatBackend` 仍存在相近但不统一的模型抽象，ModelExecutor 尚未独立落地；
+3. ACP、Cloud event 和 Core `AgentEvent` 仍存在语义转换，RuntimeEvent 适配已建立但消费方尚未完全统一；
+4. Session 可以恢复历史和评估未完成 execution，但不能自动恢复一个正在执行的 turn；
+5. `RuntimeHandle` 已成为 active turn、prompt queue、cancel 的控制所有者，但 ACP 仍保留 transport 层请求/响应和 session bookkeeping；
+6. Cloud `Run`、ACP session、Agent runtime 的跨进程生命周期边界仍需进一步显式化。
 
 本文目标不是立刻重写 runtime，而是建立一个可以渐进落地的目标架构：
 
@@ -47,20 +48,23 @@
 
 ```text
 Local CLI / ACP Server
-        │
+        │ RuntimeCommand / RuntimeEvent
+        ▼
+  RuntimeHandle (actor)
+        │ owns Agent + prompt queue + cancel
         ▼
   zene_core::Agent
         │
         ▼
-zene_turn::run_turn_loop
+  zene_turn::TurnEngine
         │
-        ├── ContextEngine
-        ├── ChatClient
-        ├── ToolRegistry
+        ├── ContextEngine (observe/commit/project)
+        ├── ChatClient (ModelExecutor boundary pending)
+        ├── DefaultToolExecutor
         ├── PermissionGate
         ├── Sandbox
         ├── Hooks / MCP
-        └── SessionRecord
+        └── SessionRecord + SessionStore
 ```
 
 Cloud 场景额外经过一层进程边界：
@@ -89,15 +93,15 @@ zene_core::Agent
 | Turn 适配 | `crates/core/src/agent_turn.rs` | 将 `Agent` 接入 `TurnRuntime` |
 | Agent 状态 | `crates/core/src/lib.rs` | session、context、tools、permission 等集中在 `Agent` |
 | LLM 请求 | `crates/core/src/lib.rs` + `crates/llm` | `Agent` 仍直接依赖具体 `ChatClient` |
-| Tool 执行 | `crates/core/src/tool_executor.rs` + `crates/tools` | 已抽出 `DefaultToolExecutor`，返回 `ToolBatchOutcome` |
-| Runtime 控制面 | `crates/core/src/runtime.rs` | `RuntimeHandle` / `RuntimeCommand` 为唯一控制入口与状态所有者 |
+| Tool 执行 | `crates/core/src/tool_executor.rs` + `crates/tools` | `Agent` 负责组装 `DefaultToolExecutor`；权限、hook、plan、scheduler 和结果规范化已移出主要编排路径 |
 | Tool 并发 | `crates/core/src/tool_scheduler.rs` | 同一模型 step 内进行冲突感知并发 |
-| Session | `crates/session` | 保存消息、元数据和记录 |
-| Context | `crates/context` | token 估算、compaction、overflow retry |
+| Session | `crates/session` | `SessionRecord` + `SessionStore`；`SessionEvent` 与 messages cache 双写，SoT 仍在迁移 |
+| Context | `crates/context` | token 估算、compaction、overflow retry、observe/commit/project |
 | Permission | `crates/permission` | 策略判断和 prompter |
-| Subagent | `crates/core/src/subagent.rs` | 与主 Agent 共用 `TurnEngine`，注入独立 session store |
-| ACP | `apps/cli/src/acp/server.rs` | 将 ACP request 映射到 `Agent` |
-| Cloud Job | `cloud/apps/worker/src/main.rs` | claim、workspace、ACP 子进程、Cloud 状态和 Git 生命周期 |
+| Subagent | `crates/core/src/subagent.rs` | 通过 `SubagentTurnRuntime` 复用 `zene-turn::TurnEngine`，保持 ephemeral scope |
+| Runtime | `crates/core/src/runtime.rs` | `RuntimeHandle` actor、command、event、state、prompt queue 和 cancellation |
+| ACP | `apps/cli/src/acp/server.rs` | transport adapter；创建/加载 session，并把请求接入 `RuntimeHandle` |
+| Cloud Job | `cloud/apps/worker/src/main.rs` | claim、workspace、ACP 子进程、Cloud 状态和 Git 生命周期；RuntimeClient 分层仍待完成 |
 
 ## 3. 核心概念边界
 
@@ -902,54 +906,64 @@ crates/
 
 ## 15. 当前进度与最终判断
 
-### 15.1 已完成能力（截至 2026-08-12，`origin/main = 38265cb`）
+### 15.1 已完成的基础能力
 
-| 能力 | 落点 | Wave |
+截至 2026-08-12，以下能力已经合并到 `main`：
+
+| 能力 | 实现位置 | 状态 |
 | --- | --- | --- |
-| 统一 IDs（`SessionId` / `TurnId` / `StepId` / `ToolCallId`） | `crates/core`、`crates/turn` | 1 |
-| `RuntimeEvent` 信封 | `crates/core` | 1 |
-| `AgentEvent` 兼容适配 | `crates/core` | 1 |
-| `SessionEvent` 双写（Message + CompactionApplied） | `crates/session` | 2 |
-| Context `observe` / `commit` / `project` | `crates/context` | 3 |
-| `ProjectionExplain` | `crates/context` | 3 |
-| `DefaultToolExecutor` | `crates/core/src/tool_executor.rs` | 4 |
-| `ToolBatchOutcome::Terminate` 契约 | `crates/turn`、`crates/core` | 4 |
-| `TurnEngine` 依赖 ports | `crates/turn` | 5 |
-| `RuntimeHandle` / `RuntimeCommand` | `crates/core/src/runtime.rs` | 6 |
-| ACP 走统一 control plane | `apps/cli/src/acp/server.rs` | 6 |
-| Execution checkpoints / recovery metadata | `crates/session`、`crates/core` | 7 |
-| Subagent 统一 `TurnEngine` | `crates/core/src/subagent.rs` | 8 |
-| `SessionStore` / `FileSessionStore` 注入 | `crates/session` | 8 |
+| 统一 `SessionId` / `TurnId` / `StepId` / `ToolCallId` | `crates/turn` | 已完成 |
+| `RuntimeEvent` envelope、sequence 和 scope | `crates/turn`, `crates/core` | 已完成 |
+| 旧 `AgentEvent` → `RuntimeEvent` 兼容适配 | `crates/core/src/events.rs` | 已完成 |
+| `SessionEvent` 双写基础设施 | `crates/session` | 已完成（过渡态） |
+| Context `observe → commit → project` | `crates/context/src/engine.rs` | 已完成（仍以 materialized messages 为输入） |
+| `ProjectionExplain` + RuntimeEvent / ACP projection update | `crates/context`, `crates/core`, `apps/cli/src/acp` | 已完成基础观测链路 |
+| 独立 `DefaultToolExecutor` | `crates/core/src/tool_executor.rs` | 已完成 |
+| `ToolBatchOutcome::Terminate` | `crates/turn`, `crates/core` | 已完成 |
+| `TurnEngine` ports | `crates/turn` | 已完成 |
+| `RuntimeHandle` / `RuntimeCommand` actor | `crates/core/src/runtime.rs` | 已完成（仍位于 core） |
+| ACP 通过 Runtime control plane 工作 | `apps/cli/src/acp` | 已完成 |
+| Execution checkpoint、幂等 key、恢复快照 | `crates/session`, `crates/core` | 已完成（评估能力） |
+| ACP recovery metadata | `apps/cli/src/acp/server.rs` | 已完成，默认不自动 resume |
+| 主 Agent 与 Subagent 共用 `TurnEngine` | `crates/core/src/subagent.rs` | 已完成 |
+| 可注入 `SessionStore` / 默认 `FileSessionStore` | `crates/session`, `crates/core` | 已完成 |
 
-### 15.2 未完成项
+已合并的主要 PR：
 
-1. Conversation SoT 完整事件化（当前仅双写关键 mutation，`messages` 仍是读路径）；
-2. event-backed Context projection（`project(events)` 尚未成为默认读路径）；
-3. 独立 `ModelExecutor` port（`Agent` 仍直接依赖具体 `ChatClient`）；
-4. 自动 execution resume（已有 checkpoint，但未自动续跑中断 turn）；
-5. Cloud `JobRunner` / `RuntimeClient` 解耦（worker 仍经 ACP 桥接消费内部语义）；
-6. Runtime crate 拆分（`zene-core` 仍是 composition root，§11 结构未落地）；
-7. `ProjectionExplain` 消费面（尚无 CLI / Console / debug 通道展示）。
+- PR #54：Tool executor termination contract
+- PR #55：TurnEngine capability ports
+- PR #56：Runtime control plane
+- PR #57：Execution recovery checkpoints and ACP recovery metadata
+- PR #58：Subagent TurnEngine unification and SessionStore injection
 
-### 15.3 最终判断
+### 15.2 当前仍未完成的目标
 
-zene 当前已经抽象出了比较可靠的 `Agent Turn`，控制面也已收敛到 `RuntimeHandle`；
-但还没有把 **Session 事件树** 升为对话事实源、把 **Context** 收成稳定投影 port，模型与 Cloud 两个边界也仍未拆开。
+**Wave 9 第一切片已完成（当前工作区，尚未提交）：** `SessionEvent` 已覆盖 tool call/result、permission decision、mode/model change、branch fork、rewind；事件带 session-local monotonic sequence，并兼容旧事件加载；主 Agent tool executor 已将关键事件双写到 Conversation facts，同时继续写入旧 execution record / RuntimeEvent。
 
-控制面最值得优先落地的三件事是：
+当前实现已经完成了控制面的大部分地基，但还不是最终的 `AgentRuntime + 可投影 Session` 架构：
 
-1. **主 Agent 和 Subagent 共用同一个 TurnEngine；**
-2. **外部通过 RuntimeHandle / RuntimeCommand 操作，不直接持有 Agent；**
-3. **明确拆开 Cloud Job、ACP Transport、Agent Runtime 三个生命周期。**
+1. **Conversation SoT 仍是过渡态**：`SessionEvent` 已覆盖 message、system prefix、compaction、tool call/result、permission、model change、branch/fork/rewind 等事实，但旧 session 仍需 materialized fallback。
+2. **Context 事件投影已进入过渡实现**：`observe / commit / project` 已拆分，`SessionView` 已选择 active branch path 并驱动 Context 只读 projection；仍需继续移除旧 cache fallback，并补充更完整的 projection lineage / injected-item explain。
+3. **ModelExecutor 尚未独立实现**：`Agent` 仍直接持有 `ChatClient` 并承担 context preparation、stream assembly、overflow retry 和 usage 处理；`TurnEngine` 的 port 已存在，但主 Agent 仍通过兼容适配层接入。
+4. **Recovery 仍是只读评估**：`RecoveryDisposition` 能区分 safe resume、tool inspection 和 manual intervention，但还不会自动恢复未完成 turn、pending approval 或 crash 后的 tool step。
+5. **Cloud JobRunner / RuntimeClient 尚未完全解耦**：目标中的 Cloud Job → RuntimeClient → ACP client 分层仍需落地，Cloud 不应解析 ACP 的底层 session/update 语义。
+6. **Runtime 尚未拆成独立 crate**：`RuntimeHandle` 当前在 `zene-core`，`Agent` 仍是默认 wiring、运行状态和兼容 facade 的大型 composition root。
+7. **投影可观测性仍可扩展**：`ProjectionExplain` 已通过 RuntimeEvent 和 ACP `projection_update` 暴露基础字段；`/context`、tool truncation/handle、注入项、保留 turn 等更细粒度信息仍需补齐。
 
-数据面最值得优先落地的三件事是：
+### 15.3 完成标准
 
-1. **统一 ID + RuntimeEvent 信封（与控制面共享）；**
-2. **Conversation SoT 双写（Message + CompactionApplied 起步）；**
-3. **ContextAssembler = observe / commit / project，compact 不销毁唯一历史。**
+只有在以下条件满足后，才可称为本设计的主要目标完成：
 
-两条线合成的落地顺序见下一节。完成后，zene 才能从「以 `Agent` + 可变 `messages` 为中心的 coding agent」演进为可被 CLI、ACP、Cloud、Subagent 和测试环境共同复用的 **Agent Runtime + 可投影 Session**。
-
+- Local CLI、ACP、Cloud 使用同一套 runtime command/event 语义；
+- 主 Agent 和 Subagent 使用同一个 `TurnEngine`；
+- Model、Context、Tool、Approval、Session 都可注入 fake 实现并独立测试；
+- `Agent` 不负责 ACP 格式转换，Cloud JobRunner 不解析 ACP 内部事件；
+- 一个 runtime 只有一个状态所有者；
+- Conversation facts 可从 append-only events 重建，`messages` 降为 materialized cache；
+- compaction 追加事实并保留可解释历史，不以物理删除消息作为唯一真相；
+- context projection 能从 active event path 生成，并可说明本步输入；
+- execution recovery 具备明确的 resume / inspect / manual 策略和工具幂等保护；
+- fork、rewind、compact、resume 的行为有跨层集成测试。
 ## 16. Merged implementation waves
 
 本节是 **Runtime（本文 §12）** 与 **Session/Context 投影** 的合并排期，避免两拨人互拆。
@@ -989,41 +1003,69 @@ Wave 7   Execution checkpoint / 幂等           ← 本文 Phase 7
 
 Wave 8   Subagent = RuntimeScope               ← 本文 Phase 5（可与 5–6 交叉）
 
-Wave 9   完整 Conversation Event Log
-         SessionEvent 覆盖全部对话 mutation；messages 降级为纯 cache
+Wave 9   Conversation facts 完整化
+         tool call/result、permission、model change、branch/fork/rewind
+         execution record 与 conversation event 的关联
 
 Wave 10  Event-backed Context projection
-         project(events) 成为默认读路径；ProjectionExplain 有消费面
+         active event path → SessionView → observe/commit/project
+         messages 降级为可重建 materialized cache
 
 Wave 11  ModelExecutor 与 Runtime crate 边界
-         抽出 ModelExecutor port；按 §11 拆分 runtime crate
+         抽离 ChatClient/stream/overflow；RuntimeHandle 移出 core
 
 Wave 12  Execution resume 与 Cloud RuntimeClient
-         中断 turn 自动幂等续跑；Cloud JobRunner 经 RuntimeClient 而非 ACP 内部语义
+         safe resume、approval/tool inspection、JobRunner/RuntimeClient 解耦
 ```
 
-**Wave 0–8 状态（2026-08-12）：**
+### Wave 0–8 完成状态
 
-| Wave | 内容 | 状态 |
+| Wave | 当前状态 | 说明 |
 | --- | --- | --- |
-| Wave 0 | 契约对齐 | 已完成 |
-| Wave 1 | 统一 ID + RuntimeEvent | 已完成 |
-| Wave 2 | Conversation SoT 双写 | 过渡态：关键 mutation 已双写，读路径仍走 `messages` |
-| Wave 3 | ContextAssembler 投影 | 过渡态：observe/commit/project 与 `ProjectionExplain` 已有，未成默认读路径 |
-| Wave 4 | ToolExecutor + terminate | 已完成 |
-| Wave 5 | TurnEngine 只依赖 ports | 已完成 |
-| Wave 6 | RuntimeHandle 控制面 | 已完成 |
-| Wave 7 | Execution checkpoint / 幂等 | 过渡态：checkpoint + recovery metadata 已有，无自动 resume |
-| Wave 8 | Subagent = RuntimeScope | 已完成（PR #58） |
+| Wave 0 | 已完成 | 术语、ID、Turn/Step/Session/RuntimeEvent 契约已对齐 |
+| Wave 1 | 已完成 | 统一 ID、RuntimeEvent envelope、兼容适配 |
+| Wave 2 | 基础完成 | SessionEvent 双写已存在；完整 Conversation SoT 未完成 |
+| Wave 3 | 基础完成 | observe/commit/project 已存在；仍从 messages 投影 |
+| Wave 4 | 已完成 | DefaultToolExecutor、scheduler、terminate 语义已抽取 |
+| Wave 5 | 已完成 | TurnEngine ports 已抽取，Legacy adapter 保留兼容 |
+| Wave 6 | 已完成 | RuntimeHandle actor 和 ACP control plane 已落地 |
+| Wave 7 | 基础完成 | checkpoint、幂等和恢复 disposition 已落地；尚无自动 resume |
+| Wave 8 | 已完成 | Subagent 复用 TurnEngine，SessionStore 可注入 |
+| Wave 9 | 进行中（第一切片已完成） | Conversation events 已覆盖工具、权限、模型/模式、turn/step、checkpoint、branch/rewind；仍需补齐所有 execution 关联和重建金丝雀 |
+| Wave 10 | 进行中（第一切片已完成） | `SessionView` 已从 active events 投影消息，Context 默认消费 projection 并提供 explain；仍需完全移除旧 cache fallback、补 active branch path |
 
-**Wave 9–12 下一步优先级：**
+### 接下来要完成的内容
 
-| Wave | 优先级 | 完成标准 |
-| --- | --- | --- |
-| Wave 9 完整 Conversation Event Log | **P0** | 所有对话 mutation 落 `SessionEvent`；删除 `messages` 后仍可完整重建；旧 session 可 load |
-| Wave 10 Event-backed Context projection | **P0** | `project(events)` 为默认读路径且与 materialized `messages` 金丝雀等价；`ProjectionExplain` 可从 CLI / debug 通道读取 |
-| Wave 11 ModelExecutor 与 Runtime crate 边界 | P1 | `Agent` 不再直接持有 `ChatClient`；ModelExecutor 可注入 fake；runtime crate 按 §11 拆出且依赖方向单向 |
-| Wave 12 Execution resume 与 Cloud RuntimeClient | P1 | 中断 turn 可从 checkpoint 幂等续跑；Cloud JobRunner 仅依赖 `RuntimeClient` command/event，不解析 ACP 内部语义 |
+建议按以下顺序推进，避免同时重写控制面和数据面：
+
+1. **Wave 9：完整 Conversation Event Log（P0，进行中）**
+   - 已完成：扩展 `SessionEvent` 覆盖 tool call/result、permission、mode/model change、branch/rewind，并加入 monotonic sequence；
+   - 继续完成：补齐 turn/step/checkpoint marker、所有 fork/rewind 写入路径，并将 conversation/execution IDs 统一到持久化事件；
+   - 保持旧 session 可 load，继续双写 messages cache；
+   - 增加事件重建与 materialized messages 的金丝雀等价测试。
+
+2. **Wave 10：Event-backed Context Projection（P0，进行中）**
+   - 已完成：`ContextSession::view` / `SessionView::from_events`，新 compaction/rewind 事件携带 projection snapshot；
+   - 已完成：Context 的 observe/project 默认基于 event-backed view，`ProjectionExplain` 暴露 source event count 与 cache fallback；
+   - 继续完成：active branch path、旧 cache fallback 的迁移清理、`/context` 或 debug RuntimeEvent 接入，以及跨层重建等价测试。
+
+3. **Wave 11：ModelExecutor 与 runtime crate（P1）**
+   - 抽离 ChatClient、stream assembly、overflow retry、usage 更新；
+   - 为 fake model executor 增加独立测试；
+   - 将 RuntimeHandle/command/event 逐步移入独立 runtime crate；
+   - 保留 `zene-core::Agent` 作为默认 wiring 和兼容 facade。
+
+4. **Wave 12：Execution resume 与 Cloud transport（P1）**
+   - 实现 safe turn resume；
+   - 对 pending tool / approval 强制 inspection，禁止不安全 replay；
+   - 将 Cloud JobRunner 与 RuntimeClient 分层，Cloud 只消费统一 runtime events；
+   - 增加 worker restart、ACP reconnect 和 crash recovery 集成测试。
+
+5. **持续质量门槛**
+   - 每个 wave 保持 `cargo test --workspace --locked`；
+   - 不破坏旧 ACP `AgentEvent` / RuntimeEvent 协议；
+   - 不把 Cloud HTTP、Git、ACP JSON 格式引入 `zene-turn`；
+   - 每个跨层迁移必须包含 legacy compatibility test 和 failure-path test。
 
 **对应本文原 Phase 编号：**
 
@@ -1087,10 +1129,10 @@ Wave 12  Execution resume 与 Cloud RuntimeClient
 - §9 区分 Conversation SoT / Execution record / RuntimeEvent；compact vs execution checkpoint
 - 新增 §16 Merged waves、§17 术语表；验收并入 fork/compact/explain
 
-### 2026-08-12 — Wave 0–8 状态复核
+### 2026-08-12 — 更新 Wave 0–8 实现状态
 
-- 基线 `origin/main = 38265cb`，PR #58 已合并；文档状态由 Proposal 改为持续演进
-- 修正 §2 现状：主 Agent 与 Subagent 已共用 `TurnEngine`，`RuntimeHandle` 为控制面状态所有者，`DefaultToolExecutor` 已抽出
-- §15 增补已完成能力表与未完成项：`ModelExecutor`、Cloud `RuntimeClient`、event-backed projection、自动 execution resume 仍未落地
-- §16 增补 Wave 0–8 状态表，并扩展 Wave 9–12（事件化 / 投影 / ModelExecutor 与 crate 边界 / resume 与 Cloud 解耦）及优先级与完成标准
+- PR #54–#58 已合并到 `main`；Wave 0–8 的主要控制面基础能力已完成
+- 明确 Wave 2/3/7 仍是过渡态：Session facts 尚未完整事件化，Context 尚未从 events 投影，recovery 尚未自动 resume
+- 记录 Wave 9–12：完整 Conversation Event Log、event-backed Context、ModelExecutor/runtime crate、execution resume 与 Cloud RuntimeClient
+- 将 `SessionStore` 注入、Subagent TurnEngine 统一、RuntimeHandle 和 ACP recovery metadata 加入实际实现清单
 
