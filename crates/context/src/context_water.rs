@@ -76,8 +76,7 @@ impl ContextWaterLevel {
 
     /// Over hard window (preflight after large tool results).
     pub fn exceeds_window(&self) -> bool {
-        self.context_window_tokens > 0
-            && self.effective_tokens() >= self.context_window_tokens
+        self.context_window_tokens > 0 && self.effective_tokens() >= self.context_window_tokens
     }
 
     pub fn should_compact(&self, config: &CompactionConfig) -> bool {
@@ -133,7 +132,7 @@ mod tests {
             keep_recent_ratio: 0.25,
             context_window_tokens: 1000,
             min_keep_messages: 4,
-                    intra_steps_first: true,
+            intra_steps_first: true,
         }));
     }
 
@@ -160,7 +159,7 @@ mod tests {
             keep_recent_ratio: 0.25,
             context_window_tokens: 1000,
             min_keep_messages: 4,
-                    intra_steps_first: true,
+            intra_steps_first: true,
         }));
         water.clear_auto_compact_suppression();
         assert!(water.should_compact(&CompactionConfig {
@@ -168,7 +167,7 @@ mod tests {
             keep_recent_ratio: 0.25,
             context_window_tokens: 1000,
             min_keep_messages: 4,
-                    intra_steps_first: true,
+            intra_steps_first: true,
         }));
     }
 
@@ -179,7 +178,7 @@ mod tests {
             keep_recent_ratio: 0.25,
             context_window_tokens: 1000,
             min_keep_messages: 4,
-                    intra_steps_first: true,
+            intra_steps_first: true,
         };
         let mut water = ContextWaterLevel::new(1000);
         water.record_estimate(760); // 76% — lead 10pp below 85%

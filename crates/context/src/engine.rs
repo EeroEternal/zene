@@ -8,7 +8,9 @@ use anyhow::Result;
 use tracing::{info, warn};
 use zene_llm::{ContextMetadata, Message, TokenUsage, ToolDefinition};
 
-use crate::assemble::{assemble_outbound, delivery_mode_from_env, stable_system_boundary, DeliveryMode};
+use crate::assemble::{
+    assemble_outbound, delivery_mode_from_env, stable_system_boundary, DeliveryMode,
+};
 use crate::compaction::{
     apply_overflow_truncate_pass, apply_steps_truncate_pass, compact_session,
     compact_session_forced, is_context_overflow_error, CompactionResult,
@@ -17,22 +19,22 @@ use crate::config::CompactionConfig;
 use crate::context_water::ContextWaterLevel;
 use crate::event_handler::{ContextEventHandler, EventOutcome};
 use crate::events::ContextEvent;
+#[cfg(feature = "gateway")]
+use crate::gateway::gateway_configured;
+#[cfg(not(feature = "gateway"))]
+use crate::gateway_stub::gateway_configured;
 use crate::hooks::ContextHooks;
-use crate::model::ContextModel;
 #[cfg(feature = "memory")]
 use crate::memory;
 #[cfg(not(feature = "memory"))]
 use crate::memory_stub as memory;
+use crate::model::ContextModel;
 #[cfg(feature = "prefire")]
 use crate::prefire::{self, PrefireCache, PrefireState};
 #[cfg(not(feature = "prefire"))]
 use crate::prefire_stub::{PrefireCache, PrefireState};
 use crate::session::ContextSession;
 use crate::tokens::{self, TokenEstimator};
-#[cfg(feature = "gateway")]
-use crate::gateway::gateway_configured;
-#[cfg(not(feature = "gateway"))]
-use crate::gateway_stub::gateway_configured;
 #[cfg(feature = "prefire")]
 use crate::two_pass;
 
@@ -53,6 +55,17 @@ fn projection_injected_labels(messages: &[Message]) -> Vec<String> {
         labels.push("system_reminder".to_string());
     }
     labels
+}
+
+fn projection_truncated_message_count(messages: &[Message]) -> usize {
+    messages
+        .iter()
+        .filter(|message| {
+            message.content.as_deref().is_some_and(|content| {
+                content.starts_with("[truncated ") || content.contains("…[steps-truncated ")
+            })
+        })
+        .count()
 }
 
 /// Builds a dedicated client for prefire pass1 (runtime-provided; avoids `ZeneConfig` in this crate).
@@ -97,6 +110,16 @@ pub struct ProjectionExplain {
     /// Stable labels for projection decorations visible in the outbound messages.
     /// Current labels include `compaction_summary` and `system_reminder`.
     pub injected: Vec<String>,
+    /// Number of messages retained in the outbound projection.
+    pub retained_message_count: usize,
+    /// Number of distinct turn IDs represented by the active event path.
+    pub retained_turn_count: usize,
+    /// Events excluded by branch/rewind projection boundaries.
+    pub dropped_event_count: usize,
+    /// Messages whose bodies were reduced by a truncation pass.
+    pub truncated_message_count: usize,
+    /// Compaction event IDs contributing to the active projection.
+    pub compaction_event_ids: Vec<String>,
     pub delivery: DeliveryMode,
     pub delivery_tail_start: Option<usize>,
     pub estimate_tokens: u32,
@@ -278,12 +301,7 @@ impl ContextEngine {
         deps: &mut ContextDeps<'_>,
         tools: &[ToolDefinition],
     ) -> Result<PrepareStepResult> {
-        let observation = self.observe(
-            deps.session,
-            tools,
-            deps.estimator,
-            deps.compaction_config,
-        );
+        let observation = self.observe(deps.session, tools, deps.estimator, deps.compaction_config);
         let commit = self.commit(deps, tools, &observation).await?;
         let step = self.project(deps.session, tools, deps.estimator);
         let explain = self.explain_projection_for_step(deps.session, &step);
@@ -307,7 +325,10 @@ impl ContextEngine {
         self.maybe_start_prefire(deps, tools);
 
         if !observation.should_compact {
-            return Ok(CommitResult { compaction: None, events });
+            return Ok(CommitResult {
+                compaction: None,
+                events,
+            });
         }
         if apply_steps_truncate_pass(deps.session, deps.compaction_config) {
             self.sync_water_from_estimate(
@@ -316,10 +337,11 @@ impl ContextEngine {
                 deps.estimator,
                 deps.compaction_config,
             );
-            if !self.water.should_compact(deps.compaction_config)
-                && !self.water.exceeds_window()
-            {
-                return Ok(CommitResult { compaction: None, events });
+            if !self.water.should_compact(deps.compaction_config) && !self.water.exceeds_window() {
+                return Ok(CommitResult {
+                    compaction: None,
+                    events,
+                });
             }
         }
 
@@ -330,7 +352,9 @@ impl ContextEngine {
         Self::emit(
             deps,
             &mut events,
-            ContextEvent::Checkpoint { reason: "pre_auto_compact" },
+            ContextEvent::Checkpoint {
+                reason: "pre_auto_compact",
+            },
         )
         .await?;
         let reason = if observation.preflight_overflow {
@@ -367,7 +391,9 @@ impl ContextEngine {
                 Self::emit(
                     deps,
                     &mut events,
-                    ContextEvent::Checkpoint { reason: "post_auto_compact" },
+                    ContextEvent::Checkpoint {
+                        reason: "post_auto_compact",
+                    },
                 )
                 .await?;
                 Some(result)
@@ -478,10 +504,7 @@ impl ContextEngine {
                     .await?;
                 }
                 deps.session.ensure_system_message(deps.system_prompt);
-                Ok(ForcedCompactResult {
-                    compaction,
-                    events,
-                })
+                Ok(ForcedCompactResult { compaction, events })
             }
             Err(err) => {
                 self.water.suppress_auto_compact();
@@ -614,6 +637,41 @@ impl ContextEngine {
         step: &StepContext,
     ) -> ProjectionExplain {
         let view = session.view();
+        let retained_turn_count = view
+            .active_events
+            .iter()
+            .filter_map(|event| match event {
+                zene_session::SessionEvent::TurnStarted { turn_id, .. }
+                | zene_session::SessionEvent::StepStarted { turn_id, .. }
+                | zene_session::SessionEvent::TurnEnded { turn_id, .. }
+                | zene_session::SessionEvent::Checkpoint {
+                    turn_id: Some(turn_id),
+                    ..
+                }
+                | zene_session::SessionEvent::ToolCall {
+                    turn_id: Some(turn_id),
+                    ..
+                }
+                | zene_session::SessionEvent::ToolResult {
+                    turn_id: Some(turn_id),
+                    ..
+                }
+                | zene_session::SessionEvent::PermissionDecision {
+                    turn_id: Some(turn_id),
+                    ..
+                } => Some(turn_id.as_str()),
+                _ => None,
+            })
+            .collect::<std::collections::BTreeSet<_>>()
+            .len();
+        let compaction_event_ids = view
+            .active_events
+            .iter()
+            .filter_map(|event| match event {
+                zene_session::SessionEvent::CompactionApplied { id, .. } => Some(id.clone()),
+                _ => None,
+            })
+            .collect();
         ProjectionExplain {
             source_message_count: view.messages.len(),
             projected_message_count: step.messages.len(),
@@ -627,6 +685,13 @@ impl ContextEngine {
             active_branch_id: view.active_branch_id,
             active_path_start_sequence: view.active_path_start_sequence,
             injected: projection_injected_labels(&step.messages),
+            retained_message_count: step.messages.len(),
+            retained_turn_count,
+            dropped_event_count: view
+                .source_event_count
+                .saturating_sub(view.active_events.len()),
+            truncated_message_count: projection_truncated_message_count(&step.messages),
+            compaction_event_ids,
             delivery: match step.metadata.delivery {
                 zene_llm::ContextDelivery::Full => DeliveryMode::Full,
                 zene_llm::ContextDelivery::Delta => DeliveryMode::Delta,
@@ -912,8 +977,7 @@ impl ContextEngine {
     ) -> Result<()> {
         let cycle = deps.session.compaction_cycle();
         let marker = cycle.saturating_add(1);
-        let threshold =
-            ContextWaterLevel::auto_compact_threshold_percent(deps.compaction_config);
+        let threshold = ContextWaterLevel::auto_compact_threshold_percent(deps.compaction_config);
         if !memory::should_flush(
             self.water.usage_percent(),
             threshold,
@@ -925,12 +989,7 @@ impl ContextEngine {
         if conversation.trim().is_empty() {
             return Ok(());
         }
-        let outcome = Self::emit(
-            deps,
-            events,
-            ContextEvent::MemoryFlush { conversation },
-        )
-        .await?;
+        let outcome = Self::emit(deps, events, ContextEvent::MemoryFlush { conversation }).await?;
         if let EventOutcome::MemoryFlush(memory::FlushResult::Accepted) = outcome {
             self.last_memory_flush_compaction = marker;
         }

@@ -20,4 +20,5 @@ tracing.workspace = true
 tracing-subscriber.workspace = true
 uuid.workspace = true
 zene-cloud-acp-bridge.workspace = true
+zene-cloud-runtime-client.workspace = true
 zene-cloud-domain.workspace = true

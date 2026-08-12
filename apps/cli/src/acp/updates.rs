@@ -29,7 +29,10 @@ pub fn tool_title(name: &str, arguments: &str) -> String {
         "Bash" => bash_title(field("command").unwrap_or("")),
         "Grep" => format!(
             "Searched code for {}",
-            truncate(field("pattern").or_else(|| field("regex")).unwrap_or("…"), 40)
+            truncate(
+                field("pattern").or_else(|| field("regex")).unwrap_or("…"),
+                40
+            )
         ),
         "Glob" => format!(
             "Found files matching {}",
@@ -95,7 +98,11 @@ fn strip_leading_cd(cmd: &str) -> &str {
 fn bash_intent(cmd: &str) -> String {
     let lower = cmd.to_ascii_lowercase();
     let head = lower.split_whitespace().next().unwrap_or("");
-    let rest = lower.split_whitespace().skip(1).collect::<Vec<_>>().join(" ");
+    let rest = lower
+        .split_whitespace()
+        .skip(1)
+        .collect::<Vec<_>>()
+        .join(" ");
 
     match head {
         "mkdir" | "mktemp" => "Created directories".into(),
@@ -122,9 +129,7 @@ fn bash_intent(cmd: &str) -> String {
         "gh" => gh_intent(&rest),
         "git" => git_intent(&rest),
         "tar" | "zip" | "unzip" | "gzip" => "Archived files".into(),
-        "sed" | "awk" | "cut" | "sort" | "uniq" | "tr" | "jq" | "xargs" => {
-            "Processed text".into()
-        }
+        "sed" | "awk" | "cut" | "sort" | "uniq" | "tr" | "jq" | "xargs" => "Processed text".into(),
         "test" | "[" => "Ran a shell check".into(),
         "bash" | "sh" | "zsh" => "Ran a shell script".into(),
         _ if lower.contains("&&") || lower.contains(';') || lower.contains('|') => {
@@ -200,7 +205,10 @@ fn display_path(path: &str) -> String {
     if shown.chars().count() > 42 {
         let parts: Vec<&str> = shown.split('/').filter(|s| !s.is_empty()).collect();
         if parts.len() >= 2 {
-            return truncate(&format!("{}/{}", parts[parts.len() - 2], parts[parts.len() - 1]), 42);
+            return truncate(
+                &format!("{}/{}", parts[parts.len() - 2], parts[parts.len() - 1]),
+                42,
+            );
         }
     }
     truncate(&shown, 42)
@@ -236,15 +244,9 @@ pub fn user_message_chunk(text: &str) -> Value {
     })
 }
 
-pub fn tool_call_update(
-    tool_call_id: &str,
-    name: &str,
-    arguments: &str,
-    status: &str,
-) -> Value {
-    let mut raw_input = serde_json::from_str::<Value>(arguments).unwrap_or_else(|_| {
-        json!({ "raw": arguments })
-    });
+pub fn tool_call_update(tool_call_id: &str, name: &str, arguments: &str, status: &str) -> Value {
+    let mut raw_input =
+        serde_json::from_str::<Value>(arguments).unwrap_or_else(|_| json!({ "raw": arguments }));
     if raw_input.is_null() {
         raw_input = json!({ "raw": arguments });
     }
@@ -258,11 +260,7 @@ pub fn tool_call_update(
     })
 }
 
-pub fn tool_call_result_update(
-    tool_call_id: &str,
-    content: &str,
-    is_error: bool,
-) -> Value {
+pub fn tool_call_result_update(tool_call_id: &str, content: &str, is_error: bool) -> Value {
     let status = if is_error { "failed" } else { "completed" };
     let text = if content.len() > 8_000 {
         format!("{}…", &content[..8_000])
@@ -325,6 +323,11 @@ pub fn projection_ready_update(
     active_branch_id: Option<&str>,
     active_path_start_sequence: Option<u64>,
     injected: &[String],
+    retained_message_count: usize,
+    retained_turn_count: usize,
+    dropped_event_count: usize,
+    truncated_message_count: usize,
+    compaction_event_ids: &[String],
     delivery: &str,
     delivery_tail_start: Option<usize>,
     estimate_tokens: u32,
@@ -343,6 +346,11 @@ pub fn projection_ready_update(
             "activeBranchId": active_branch_id,
             "activePathStartSequence": active_path_start_sequence,
             "injected": injected,
+            "retainedMessageCount": retained_message_count,
+            "retainedTurnCount": retained_turn_count,
+            "droppedEventCount": dropped_event_count,
+            "truncatedMessageCount": truncated_message_count,
+            "compactionEventIds": compaction_event_ids,
             "delivery": delivery,
             "deliveryTailStart": delivery_tail_start,
             "estimateTokens": estimate_tokens,
@@ -401,7 +409,11 @@ pub fn plan_from_todo_arguments(arguments: &str) -> Option<Value> {
         .iter()
         .filter_map(|todo| {
             let content = todo.get("content")?.as_str()?;
-            let status = match todo.get("status").and_then(Value::as_str).unwrap_or("pending") {
+            let status = match todo
+                .get("status")
+                .and_then(Value::as_str)
+                .unwrap_or("pending")
+            {
                 "in_progress" | "in-progress" => "in_progress",
                 "completed" | "done" => "completed",
                 _ => "pending",
@@ -458,10 +470,7 @@ pub fn replay_updates_from_messages(messages: &[Message]) -> Vec<Value> {
                 }
             }
             Role::Tool => {
-                let id = message
-                    .tool_call_id
-                    .as_deref()
-                    .unwrap_or("unknown");
+                let id = message.tool_call_id.as_deref().unwrap_or("unknown");
                 let content = message.content.as_deref().unwrap_or("");
                 let is_error = message.is_error.unwrap_or(false);
                 updates.push(tool_call_result_update(id, content, is_error));
@@ -561,7 +570,15 @@ mod tests {
             None,
             Some("branch-1"),
             Some(4),
-            &["compaction_summary".to_string(), "system_reminder".to_string()],
+            &[
+                "compaction_summary".to_string(),
+                "system_reminder".to_string(),
+            ],
+            5,
+            2,
+            3,
+            1,
+            &["compact-1".to_string()],
             "delta",
             Some(5),
             321,
@@ -575,6 +592,11 @@ mod tests {
         assert_eq!(update["_meta"]["deliveryTailStart"], 5);
         assert_eq!(update["_meta"]["injected"][0], "compaction_summary");
         assert_eq!(update["_meta"]["injected"][1], "system_reminder");
+        assert_eq!(update["_meta"]["retainedMessageCount"], 5);
+        assert_eq!(update["_meta"]["retainedTurnCount"], 2);
+        assert_eq!(update["_meta"]["droppedEventCount"], 3);
+        assert_eq!(update["_meta"]["truncatedMessageCount"], 1);
+        assert_eq!(update["_meta"]["compactionEventIds"][0], "compact-1");
     }
 
     #[test]

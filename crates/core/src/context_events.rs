@@ -6,9 +6,8 @@ use anyhow::Result;
 use async_trait::async_trait;
 use tracing::{info, warn};
 use zene_context::{
-    publish_prefix, CompactionSegmentStore, CompactionSegmentWrite, ContextEvent,
+    publish_prefix, run_memory_flush, CompactionSegmentStore, CompactionSegmentWrite, ContextEvent,
     ContextEventHandler, ContextModel, EventOutcome, FsCompactionSegmentStore, FsMemoryStore,
-    run_memory_flush,
 };
 
 pub struct AgentContextHandler<'a> {

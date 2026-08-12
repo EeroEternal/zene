@@ -4059,6 +4059,7 @@ dependencies = [
  "zene-hooks",
  "zene-llm",
  "zene-mcp",
+ "zene-model-executor",
  "zene-permission",
  "zene-sandbox",
  "zene-session",
@@ -4141,11 +4142,31 @@ dependencies = [
 ]
 
 [[package]]
+name = "zene-model-executor"
+version = "0.1.11"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "futures",
+ "tokio",
+ "zene-llm",
+]
+
+[[package]]
 name = "zene-permission"
 version = "0.1.11"
 dependencies = [
  "parking_lot",
  "serde_json",
+]
+
+[[package]]
+name = "zene-runtime"
+version = "0.1.11"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "tokio",
 ]
 
 [[package]]

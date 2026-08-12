@@ -3,15 +3,17 @@ use std::fs::{self, OpenOptions};
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 
+use crate::paths::sessions_dir;
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use crate::paths::sessions_dir;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum ExecutionCheckpointState {
     TurnStarted,
+    /// A previously interrupted model-boundary turn was explicitly resumed.
+    TurnResumed,
     StepStarted,
     ToolStarted,
     ToolCompleted,
@@ -109,12 +111,14 @@ impl RecoverySnapshot {
             RecoveryDisposition::Clean => (false, "no incomplete execution"),
             RecoveryDisposition::AlreadyCompleted => (false, "latest execution is terminal"),
             RecoveryDisposition::SafeToResume => (true, "only a model-boundary turn is open"),
-            RecoveryDisposition::RequiresToolInspection => {
-                (false, "a tool side effect has no durable completion boundary")
-            }
-            RecoveryDisposition::RequiresManualIntervention => {
-                (false, "runtime or execution failure requires operator review")
-            }
+            RecoveryDisposition::RequiresToolInspection => (
+                false,
+                "a tool side effect has no durable completion boundary",
+            ),
+            RecoveryDisposition::RequiresManualIntervention => (
+                false,
+                "runtime or execution failure requires operator review",
+            ),
         };
         RecoveryPlan {
             disposition,
@@ -128,6 +132,14 @@ impl RecoverySnapshot {
 }
 
 /// An execution boundary that remains open in the durable record.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ResumeCandidate {
+    pub turn_id: String,
+    pub prompt: String,
+    pub context_epoch: Option<u64>,
+    pub model_request_hash: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct RecoveryExecution {
     pub checkpoint_index: usize,
@@ -165,6 +177,8 @@ pub struct RecoverySnapshot {
     pub active_tools: Vec<RecoveryExecution>,
     pub latest_runtime_checkpoint: Option<RecordEntry>,
     pub latest_runtime_state: Option<ExecutionCheckpointState>,
+    /// Original prompts for open turns, recovered from durable TurnPrompt entries.
+    pub resume_candidates: Vec<ResumeCandidate>,
 }
 
 impl RecoverySnapshot {
@@ -173,15 +187,17 @@ impl RecoverySnapshot {
         let latest_runtime_failed = self.latest_runtime_state
             == Some(ExecutionCheckpointState::RuntimeFailed)
             && self.latest_runtime_checkpoint == self.latest_checkpoint;
-        if latest_runtime_failed || self.latest_checkpoint.as_ref().is_some_and(|entry| {
-            matches!(
-                entry,
-                RecordEntry::ExecutionCheckpoint {
-                    state: ExecutionCheckpointState::Failed,
-                    ..
-                }
-            )
-        }) {
+        if latest_runtime_failed
+            || self.latest_checkpoint.as_ref().is_some_and(|entry| {
+                matches!(
+                    entry,
+                    RecordEntry::ExecutionCheckpoint {
+                        state: ExecutionCheckpointState::Failed,
+                        ..
+                    }
+                )
+            })
+        {
             return RecoveryDisposition::RequiresManualIntervention;
         }
         if !self.active_tools.is_empty() {
@@ -196,8 +212,7 @@ impl RecoverySnapshot {
                 ExecutionCheckpointState::TurnCompleted
                 | ExecutionCheckpointState::TurnCancelled => RecoveryDisposition::AlreadyCompleted,
                 ExecutionCheckpointState::RuntimeShutdown => RecoveryDisposition::Clean,
-                ExecutionCheckpointState::Failed
-                | ExecutionCheckpointState::RuntimeFailed => {
+                ExecutionCheckpointState::Failed | ExecutionCheckpointState::RuntimeFailed => {
                     RecoveryDisposition::RequiresManualIntervention
                 }
                 _ => RecoveryDisposition::Clean,
@@ -211,7 +226,10 @@ impl RecoverySnapshot {
     }
 
     pub fn requires_inspection(&self) -> bool {
-        !matches!(self.disposition(), RecoveryDisposition::Clean | RecoveryDisposition::AlreadyCompleted)
+        !matches!(
+            self.disposition(),
+            RecoveryDisposition::Clean | RecoveryDisposition::AlreadyCompleted
+        )
     }
 }
 
@@ -255,11 +273,11 @@ impl AgentRecordWriter {
     /// Runtime writes are serialized by the owning Agent/Runtime, but the
     /// read-before-append guard also protects replay paths from duplicating a
     /// completed tool boundary.
-    pub fn append_execution_checkpoint(
-        &self,
-        checkpoint: &RecordEntry,
-    ) -> Result<bool> {
-        let RecordEntry::ExecutionCheckpoint { idempotency_key, .. } = checkpoint else {
+    pub fn append_execution_checkpoint(&self, checkpoint: &RecordEntry) -> Result<bool> {
+        let RecordEntry::ExecutionCheckpoint {
+            idempotency_key, ..
+        } = checkpoint
+        else {
             anyhow::bail!("expected execution checkpoint record");
         };
         if self
@@ -290,6 +308,7 @@ impl AgentRecordWriter {
         let mut snapshot = RecoverySnapshot::default();
         let mut active_turns: HashMap<String, RecoveryExecution> = HashMap::new();
         let mut active_tools: HashMap<String, RecoveryExecution> = HashMap::new();
+        let mut prompts: HashMap<String, String> = HashMap::new();
 
         for (index, entry) in self.read_all()?.into_iter().enumerate() {
             if matches!(entry, RecordEntry::Rewound { .. }) {
@@ -302,6 +321,13 @@ impl AgentRecordWriter {
                 snapshot.latest_runtime_state = None;
                 continue;
             }
+            if let RecordEntry::TurnPrompt {
+                turn_id, prompt, ..
+            } = &entry
+            {
+                prompts.insert(turn_id.clone(), prompt.clone());
+                continue;
+            }
             let RecordEntry::ExecutionCheckpoint {
                 turn_id,
                 step_id,
@@ -311,11 +337,15 @@ impl AgentRecordWriter {
                 context_epoch,
                 model_request_hash,
                 ts,
-            } = &entry else {
+            } = &entry
+            else {
                 continue;
             };
             snapshot.latest_checkpoint = Some(entry.clone());
-            if matches!(state, ExecutionCheckpointState::RuntimeShutdown | ExecutionCheckpointState::RuntimeFailed) {
+            if matches!(
+                state,
+                ExecutionCheckpointState::RuntimeShutdown | ExecutionCheckpointState::RuntimeFailed
+            ) {
                 snapshot.latest_runtime_checkpoint = Some(entry.clone());
                 snapshot.latest_runtime_state = Some(state.clone());
             }
@@ -356,33 +386,67 @@ impl AgentRecordWriter {
                 ExecutionCheckpointState::RuntimeShutdown
                 | ExecutionCheckpointState::RuntimeFailed
                 | ExecutionCheckpointState::StepStarted => {}
+                ExecutionCheckpointState::TurnResumed => {
+                    active_turns.remove(turn_id);
+                }
             }
         }
 
         snapshot.active_turns = active_turns.into_values().collect();
         snapshot.active_tools = active_tools.into_values().collect();
-        snapshot.active_turns.sort_by_key(|item| item.checkpoint_index);
-        snapshot.active_tools.sort_by_key(|item| item.checkpoint_index);
+        snapshot
+            .active_turns
+            .sort_by_key(|item| item.checkpoint_index);
+        snapshot.resume_candidates = snapshot
+            .active_turns
+            .iter()
+            .filter_map(|execution| {
+                prompts
+                    .get(&execution.turn_id)
+                    .map(|prompt| ResumeCandidate {
+                        turn_id: execution.turn_id.clone(),
+                        prompt: prompt.clone(),
+                        context_epoch: execution.context_epoch,
+                        model_request_hash: execution.model_request_hash.clone(),
+                    })
+            })
+            .collect();
+        snapshot
+            .active_tools
+            .sort_by_key(|item| item.checkpoint_index);
         Ok(snapshot)
     }
 
     /// Backward-compatible flat view of open turn/tool boundaries.
+    pub fn resume_candidate(&self) -> Result<Option<ResumeCandidate>> {
+        let snapshot = self.recovery_snapshot()?;
+        if snapshot.disposition() != RecoveryDisposition::SafeToResume {
+            return Ok(None);
+        }
+        Ok(snapshot.resume_candidates.into_iter().next())
+    }
+
     pub fn incomplete_execution_checkpoints(&self) -> Result<Vec<RecordEntry>> {
         let snapshot = self.recovery_snapshot()?;
         let mut pending = snapshot
             .active_turns
             .into_iter()
             .chain(snapshot.active_tools)
-            .map(|execution| (execution.checkpoint_index, RecordEntry::ExecutionCheckpoint {
-                turn_id: execution.turn_id,
-                step_id: execution.step_id,
-                tool_call_id: execution.tool_call_id,
-                state: execution.state,
-                idempotency_key: execution.idempotency_key,
-                context_epoch: execution.context_epoch,
-                model_request_hash: execution.model_request_hash,
-                ts: execution.ts,
-            }))
+            .map(|execution| {
+                (
+                    execution.checkpoint_index,
+                    RecordEntry::ExecutionCheckpoint {
+                        turn_id: execution.turn_id,
+                        step_id: execution.step_id,
+                        tool_call_id: execution.tool_call_id,
+                        state: execution.state,
+                        idempotency_key: execution.idempotency_key,
+                        context_epoch: execution.context_epoch,
+                        model_request_hash: execution.model_request_hash,
+                        ts: execution.ts,
+                    },
+                )
+            })
             .collect::<Vec<_>>();
         pending.sort_by_key(|(index, _)| *index);
         Ok(pending.into_iter().map(|(_, entry)| entry).collect())
@@ -401,8 +465,7 @@ impl AgentRecordWriter {
             if line.trim().is_empty() {
                 continue;
             }
-            let entry: RecordEntry =
-                serde_json::from_str(&line).context("parse record entry")?;
+            let entry: RecordEntry = serde_json::from_str(&line).context("parse record entry")?;
             entries.push(entry);
         }
         Ok(entries)
@@ -529,31 +592,72 @@ mod tests {
         with_temp_home(|| {
             let writer = AgentRecordWriter::for_session("recovery-test").expect("writer");
             let ts = Utc::now();
-            let turn = |state: ExecutionCheckpointState, key: &str| RecordEntry::ExecutionCheckpoint {
-                turn_id: "turn-1".into(), step_id: None, tool_call_id: None,
-                state, idempotency_key: key.to_string(), context_epoch: None,
-                model_request_hash: None, ts,
-            };
-            writer.append(&turn(ExecutionCheckpointState::TurnStarted, "turn/start")).unwrap();
-            writer.append(&turn(ExecutionCheckpointState::TurnCompleted, "turn/end")).unwrap();
-            writer.append(&RecordEntry::ExecutionCheckpoint {
-                turn_id: "turn-2".into(), step_id: Some("step-1".into()),
-                tool_call_id: Some("call-1".into()), state: ExecutionCheckpointState::ToolStarted,
-                idempotency_key: "tool/start".into(), context_epoch: None,
-                model_request_hash: None, ts,
-            }).unwrap();
-            writer.append(&RecordEntry::ExecutionCheckpoint {
-                turn_id: "turn-2".into(), step_id: None, tool_call_id: None,
-                state: ExecutionCheckpointState::RuntimeFailed,
-                idempotency_key: "runtime/failed".into(), context_epoch: None,
-                model_request_hash: None, ts,
-            }).unwrap();
+            let turn =
+                |state: ExecutionCheckpointState, key: &str| RecordEntry::ExecutionCheckpoint {
+                    turn_id: "turn-1".into(),
+                    step_id: None,
+                    tool_call_id: None,
+                    state,
+                    idempotency_key: key.to_string(),
+                    context_epoch: None,
+                    model_request_hash: None,
+                    ts,
+                };
+            writer
+                .append(&RecordEntry::TurnPrompt {
+                    turn_id: "turn-1".into(),
+                    prompt: "resume me".into(),
+                    ts,
+                })
+                .unwrap();
+            writer
+                .append(&turn(ExecutionCheckpointState::TurnStarted, "turn/start"))
+                .unwrap();
+            let candidate = writer.resume_candidate().unwrap().expect("candidate");
+            assert_eq!(candidate.turn_id, "turn-1");
+            assert_eq!(candidate.prompt, "resume me");
+            writer
+                .append(&turn(ExecutionCheckpointState::TurnCompleted, "turn/end"))
+                .unwrap();
+            writer
+                .append(&RecordEntry::ExecutionCheckpoint {
+                    turn_id: "turn-2".into(),
+                    step_id: Some("step-1".into()),
+                    tool_call_id: Some("call-1".into()),
+                    state: ExecutionCheckpointState::ToolStarted,
+                    idempotency_key: "tool/start".into(),
+                    context_epoch: None,
+                    model_request_hash: None,
+                    ts,
+                })
+                .unwrap();
+            writer
+                .append(&RecordEntry::ExecutionCheckpoint {
+                    turn_id: "turn-2".into(),
+                    step_id: None,
+                    tool_call_id: None,
+                    state: ExecutionCheckpointState::RuntimeFailed,
+                    idempotency_key: "runtime/failed".into(),
+                    context_epoch: None,
+                    model_request_hash: None,
+                    ts,
+                })
+                .unwrap();
             let snapshot = writer.recovery_snapshot().unwrap();
             assert_eq!(snapshot.active_turns.len(), 0);
             assert_eq!(snapshot.active_tools.len(), 1);
-            assert_eq!(snapshot.active_tools[0].tool_call_id.as_deref(), Some("call-1"));
-            assert_eq!(snapshot.latest_runtime_state, Some(ExecutionCheckpointState::RuntimeFailed));
-            assert_eq!(snapshot.disposition(), RecoveryDisposition::RequiresManualIntervention);
+            assert_eq!(
+                snapshot.active_tools[0].tool_call_id.as_deref(),
+                Some("call-1")
+            );
+            assert_eq!(
+                snapshot.latest_runtime_state,
+                Some(ExecutionCheckpointState::RuntimeFailed)
+            );
+            assert_eq!(
+                snapshot.disposition(),
+                RecoveryDisposition::RequiresManualIntervention
+            );
             assert!(snapshot.requires_inspection());
             assert_eq!(writer.incomplete_execution_checkpoints().unwrap().len(), 1);
         });
@@ -566,30 +670,54 @@ mod tests {
 
         let completed = RecoverySnapshot {
             latest_checkpoint: Some(RecordEntry::ExecutionCheckpoint {
-                turn_id: "turn".into(), step_id: None, tool_call_id: None,
+                turn_id: "turn".into(),
+                step_id: None,
+                tool_call_id: None,
                 state: ExecutionCheckpointState::TurnCompleted,
-                idempotency_key: "turn/completed".into(), context_epoch: None,
-                model_request_hash: None, ts: Utc::now(),
+                idempotency_key: "turn/completed".into(),
+                context_epoch: None,
+                model_request_hash: None,
+                ts: Utc::now(),
             }),
             ..RecoverySnapshot::default()
         };
-        assert_eq!(completed.disposition(), RecoveryDisposition::AlreadyCompleted);
+        assert_eq!(
+            completed.disposition(),
+            RecoveryDisposition::AlreadyCompleted
+        );
 
         let turn = RecoveryExecution {
-            checkpoint_index: 1, turn_id: "turn".into(), step_id: None,
-            tool_call_id: None, state: ExecutionCheckpointState::TurnStarted,
-            idempotency_key: "turn/started".into(), context_epoch: None,
-            model_request_hash: None, ts: Utc::now(),
+            checkpoint_index: 1,
+            turn_id: "turn".into(),
+            step_id: None,
+            tool_call_id: None,
+            state: ExecutionCheckpointState::TurnStarted,
+            idempotency_key: "turn/started".into(),
+            context_epoch: None,
+            model_request_hash: None,
+            ts: Utc::now(),
         };
         let tool = RecoveryExecution {
-            tool_call_id: Some("call".into()), ..turn.clone()
+            tool_call_id: Some("call".into()),
+            ..turn.clone()
         };
-        assert_eq!(RecoverySnapshot {
-            active_turns: vec![turn.clone()], ..RecoverySnapshot::default()
-        }.disposition(), RecoveryDisposition::SafeToResume);
-        assert_eq!(RecoverySnapshot {
-            active_turns: vec![turn], active_tools: vec![tool], ..RecoverySnapshot::default()
-        }.disposition(), RecoveryDisposition::RequiresToolInspection);
+        assert_eq!(
+            RecoverySnapshot {
+                active_turns: vec![turn.clone()],
+                ..RecoverySnapshot::default()
+            }
+            .disposition(),
+            RecoveryDisposition::SafeToResume
+        );
+        assert_eq!(
+            RecoverySnapshot {
+                active_turns: vec![turn],
+                active_tools: vec![tool],
+                ..RecoverySnapshot::default()
+            }
+            .disposition(),
+            RecoveryDisposition::RequiresToolInspection
+        );
     }
 
     #[test]
@@ -670,8 +798,12 @@ mod tests {
                 model_request_hash: None,
                 ts: Utc::now(),
             };
-            assert!(writer.append_execution_checkpoint(&checkpoint).expect("append"));
-            assert!(!writer.append_execution_checkpoint(&checkpoint).expect("dedupe"));
+            assert!(writer
+                .append_execution_checkpoint(&checkpoint)
+                .expect("append"));
+            assert!(!writer
+                .append_execution_checkpoint(&checkpoint)
+                .expect("dedupe"));
             assert_eq!(writer.read_all().expect("read").len(), 1);
         });
     }

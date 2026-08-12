@@ -10,8 +10,12 @@ use crate::{SessionId, StepId, ToolCallId, TurnId};
 pub struct EventSequence(u64);
 
 impl EventSequence {
-    pub const fn new(value: u64) -> Self { Self(value) }
-    pub const fn value(self) -> u64 { self.0 }
+    pub const fn new(value: u64) -> Self {
+        Self(value)
+    }
+    pub const fn value(self) -> u64 {
+        self.0
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -26,10 +30,20 @@ pub struct RuntimeEvent {
 #[derive(Debug, Clone, PartialEq)]
 pub enum RuntimeEventKind {
     TurnStarted,
-    StepStarted { step: u32 },
-    TextDelta { delta: String },
-    ThoughtDelta { delta: String },
-    ToolCall { id: ToolCallId, name: String, arguments: String },
+    StepStarted {
+        step: u32,
+    },
+    TextDelta {
+        delta: String,
+    },
+    ThoughtDelta {
+        delta: String,
+    },
+    ToolCall {
+        id: ToolCallId,
+        name: String,
+        arguments: String,
+    },
     ToolResult {
         id: ToolCallId,
         name: String,
@@ -37,7 +51,13 @@ pub enum RuntimeEventKind {
         is_error: bool,
         duration_ms: Option<u64>,
     },
-    UsageUpdate { usage: TokenUsage, context_tokens: u32, context_window: u32, context_percent: u8, context_epoch: u64 },
+    UsageUpdate {
+        usage: TokenUsage,
+        context_tokens: u32,
+        context_window: u32,
+        context_percent: u8,
+        context_epoch: u64,
+    },
     ProjectionReady {
         source_message_count: usize,
         projected_message_count: usize,
@@ -49,15 +69,28 @@ pub enum RuntimeEventKind {
         active_branch_id: Option<String>,
         active_path_start_sequence: Option<u64>,
         injected: Vec<String>,
+        retained_message_count: usize,
+        retained_turn_count: usize,
+        dropped_event_count: usize,
+        truncated_message_count: usize,
+        compaction_event_ids: Vec<String>,
         delivery: String,
         delivery_tail_start: Option<usize>,
         estimate_tokens: u32,
         context_epoch: u64,
     },
-    TurnEnded { steps: u32 },
-    Error { message: String },
-    SteerInput { text: String },
-    StateChanged { state: String },
+    TurnEnded {
+        steps: u32,
+    },
+    Error {
+        message: String,
+    },
+    SteerInput {
+        text: String,
+    },
+    StateChanged {
+        state: String,
+    },
 }
 
 pub type RuntimeEventHandler = Arc<dyn Fn(RuntimeEvent) + Send + Sync>;

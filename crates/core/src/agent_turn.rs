@@ -41,8 +41,11 @@ impl TurnRuntime for Agent {
         self.usage_accumulator.reset();
         self.tool_dedup.reset();
         self.session.ensure_system_message(&self.system_prompt);
-        self.session.set_title_from_prompt(user_input);
-        self.session.push_message(Message::user(user_input));
+        if !self.resume_existing_turn {
+            self.session.set_title_from_prompt(user_input);
+            self.session.push_message(Message::user(user_input));
+        }
+        self.resume_existing_turn = false;
         Ok(())
     }
 
@@ -146,10 +149,7 @@ impl TurnRuntime for Agent {
         };
         self.session
             .push_message(Message::assistant(final_text.clone()));
-        emit_event(
-            &options.event_handler,
-            AgentEvent::TextDelta { delta },
-        );
+        emit_event(&options.event_handler, AgentEvent::TextDelta { delta });
         Ok(())
     }
 

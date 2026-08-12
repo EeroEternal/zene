@@ -1,74 +1,71 @@
-use std::io::{self, Write};
-use std::sync::Arc;
 use anyhow::{bail, Context, Result};
 use futures::StreamExt;
 use parking_lot::Mutex;
+use std::io::{self, Write};
+use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
 use zene_config::ZeneConfig;
-use zene_context::{
-    ContextDeps, ContextEngine, PrefireClientFactory, StepContext,
-};
+use zene_context::{ContextDeps, ContextEngine, PrefireClientFactory, StepContext};
 use zene_llm::{ChatClient, ChatRequest, Message, StreamEvent, TokenUsage, ToolCall};
 
-use crate::model_executor::ModelExecutor;
+use zene_mcp::McpManager;
+use zene_model_executor::ModelExecutor;
 use zene_sandbox::{LocalSandbox, Sandbox};
 use zene_session::{
     fork_session, latest_checkpoint_id, load_checkpoint, restore_checkpoint, save_checkpoint,
     AgentRecordWriter, ExecutionCheckpointState, RecordEntry, SessionRecord,
 };
 pub use zene_session::{RecoveryDisposition, RecoveryExecution, RecoverySnapshot};
-use zene_tools::{
-    shared_todo_store_from,
-    SharedAskUserPrompter, SharedBackgroundTasks, SharedTodoStore, SharedPlanMode,
-    SubagentEnv, ToolRegistry, DEFAULT_SUBAGENT_MAX_DEPTH,
-};
 pub use zene_tools::AskUserOption;
-use zene_mcp::McpManager;
+use zene_tools::{
+    shared_todo_store_from, SharedAskUserPrompter, SharedBackgroundTasks, SharedPlanMode,
+    SharedTodoStore, SubagentEnv, ToolRegistry, DEFAULT_SUBAGENT_MAX_DEPTH,
+};
 
 mod agent_builder;
 mod agent_turn;
 mod context_config;
-mod model_executor;
-mod usage;
+pub use zene_model_executor as model_executor;
 mod context_events;
 mod context_hooks;
 mod events;
 mod plan_mode;
+mod runtime;
 mod subagent;
 mod tool_dedup;
 mod tool_executor;
-mod runtime;
 pub mod tool_scheduler;
+mod usage;
 mod worktree;
 
 pub use zene_context::{
-    compact_session, compact_session_forced, ensure_memory_in_system, memory_enabled,
-    memory_root, CompactionResult, ContextWaterLevel, EstimateMode, EstimateProvider,
-    InputLadderStage, TiktokenEncoding, TokenEstimator, estimate_context,
+    compact_session, compact_session_forced, ensure_memory_in_system, estimate_context,
+    memory_enabled, memory_root, CompactionResult, ContextWaterLevel, EstimateMode,
+    EstimateProvider, InputLadderStage, TiktokenEncoding, TokenEstimator,
 };
 
+use crate::tool_executor::{DefaultToolExecutor, ToolExecutorDeps};
 pub use agent_builder::AgentBuilder;
 pub use events::{emit_event, runtime_event_handler, AgentEvent, EventHandler};
+pub use plan_mode::PlanApprovalPrompter;
+use plan_mode::{build_effective_system_prompt, tool_visible_in_definitions};
 pub use runtime::{
     ApprovalDecision, ExecutionState, RuntimeCommand, RuntimeHandle, RuntimeResponse,
 };
+pub use subagent::{run_subagent, ChatBackend, CoreSubagentRunner};
+pub use tool_dedup::{append_reminder, ToolDedup};
+pub use tool_scheduler::{classify_tool_accesses, ToolScheduler};
 pub use zene_hooks::{HookBlock, HookRunner, HookSpec};
 pub use zene_permission::{
     approve_tool_call, policy_denied, PermissionGate, PermissionMode, PermissionPrompter,
     PermissionRule, PromptChoice, RuleAction, SharedToolPermission, ToolPermission,
 };
-pub use plan_mode::PlanApprovalPrompter;
-pub use subagent::{run_subagent, ChatBackend, CoreSubagentRunner};
 pub use zene_turn::{
     aborted_error, begin_turn, end_turn, max_turns_notice, steer_requires_active_turn,
     EventSequence, RuntimeEvent, RuntimeEventHandler, RuntimeEventKind, SessionId, SteerBuffer,
     StepId, ToolCallId, TurnId, TurnState,
 };
-use plan_mode::{build_effective_system_prompt, tool_visible_in_definitions};
-pub use tool_dedup::{append_reminder, ToolDedup};
-pub use tool_scheduler::{classify_tool_accesses, ToolScheduler};
-use crate::tool_executor::{DefaultToolExecutor, ToolExecutorDeps};
 pub use zene_workspace::{build_system_prompt, FsWorkspaceProvider, WorkspaceProvider};
 
 fn make_context_deps<'a>(
@@ -105,6 +102,9 @@ pub struct Agent {
     session: SessionRecord,
     usage_accumulator: usage::UsageAccumulator,
     context: ContextEngine,
+    /// Set only for an explicit safe model-boundary resume; the original user
+    /// message is already present in the event-backed session projection.
+    pub(crate) resume_existing_turn: bool,
     active_turn: Option<TurnState>,
     steer_buffer: Arc<Mutex<SteerBuffer>>,
     system_prompt: String,
@@ -161,9 +161,7 @@ impl Agent {
     }
 
     pub fn is_plan_mode_active(&self) -> bool {
-        self.plan_mode
-            .lock()
-            .is_active()
+        self.plan_mode.lock().is_active()
     }
 
     pub fn enter_plan_mode(&mut self) {
@@ -244,18 +242,14 @@ impl Agent {
         if !active {
             return true;
         }
-        self.plan_mode
-            .lock()
-            .is_tool_allowed(tool_name)
+        self.plan_mode.lock().is_tool_allowed(tool_name)
     }
 
     fn sync_plan_mode_system(&mut self) {
         let active = self.is_plan_mode_active();
         let effective = build_effective_system_prompt(&self.system_prompt, active);
         self.session.set_system_message(&effective);
-        let _event = self
-            .context
-            .on_system_prefix_changed("plan_mode");
+        let _event = self.context.on_system_prefix_changed("plan_mode");
     }
 
     fn tool_definitions_for_llm(&self) -> Vec<zene_llm::ToolDefinition> {
@@ -336,7 +330,7 @@ impl Agent {
         // Recreate the client and context model.
         let client = Arc::new(zene_llm::ChatClient::from_config(&self.config).await?);
         self.context_model = client.clone();
-        self.model_executor = Arc::new(model_executor::ChatClientExecutor::new(client));
+        self.model_executor = Arc::new(zene_model_executor::ChatClientExecutor::new(client));
         self.config
             .persist_connection_settings()
             .context("save model settings to ~/.zene/config.toml")?;
@@ -348,7 +342,10 @@ impl Agent {
     }
 
     /// Manually compact the conversation (`/compact [hint]`).
-    pub async fn compact_now(&mut self, user_hint: Option<&str>) -> Result<Option<CompactionResult>> {
+    pub async fn compact_now(
+        &mut self,
+        user_hint: Option<&str>,
+    ) -> Result<Option<CompactionResult>> {
         self.sync_todos_to_session();
         let tools = self.tool_definitions_for_llm();
         let estimator = self.token_estimator();
@@ -548,9 +545,7 @@ impl Agent {
     }
 
     pub fn pending_steer_count(&self) -> usize {
-        self.steer_buffer
-            .lock()
-            .len()
+        self.steer_buffer.lock().len()
     }
 
     pub fn steer_buffer(&self) -> Arc<Mutex<SteerBuffer>> {
@@ -566,9 +561,7 @@ impl Agent {
         if text.is_empty() {
             anyhow::bail!("steer message cannot be empty");
         }
-        self.steer_buffer
-            .lock()
-            .push(text.to_string());
+        self.steer_buffer.lock().push(text.to_string());
         Ok(())
     }
 
@@ -641,7 +634,8 @@ impl Agent {
             prompt: user_input.to_string(),
             ts: chrono::Utc::now(),
         })?;
-        self.session.record_turn_started(&turn_id.to_string(), user_input);
+        self.session
+            .record_turn_started(&turn_id.to_string(), user_input);
 
         let event_handler = merge_event_handler(
             &self.record_writer,
@@ -651,10 +645,7 @@ impl Agent {
         );
 
         info!(turn_id = %turn_id, "turn_start");
-        emit_event(
-            &event_handler,
-            AgentEvent::TurnStart { turn_id },
-        );
+        emit_event(&event_handler, AgentEvent::TurnStart { turn_id });
 
         let run_options = PromptOptions {
             stream: options.stream,
@@ -663,7 +654,9 @@ impl Agent {
             runtime_event_handler: None,
             quiet: options.quiet,
         };
-        let result = self.run_turn(user_input, &run_options, cancel.as_ref()).await;
+        let result = self
+            .run_turn(user_input, &run_options, cancel.as_ref())
+            .await;
 
         let steps = self.active_turn.as_ref().map(|t| t.step).unwrap_or(0);
         let was_cancelled = cancel.is_some_and(|token| token.is_cancelled())
@@ -678,7 +671,8 @@ impl Agent {
                     &run_options.event_handler,
                     AgentEvent::TurnEnd { turn_id, steps },
                 );
-                self.session.record_turn_ended(&turn_id.to_string(), steps, "completed");
+                self.session
+                    .record_turn_ended(&turn_id.to_string(), steps, "completed");
             }
             Err(err) => {
                 if err.to_string().contains("aborted") {
@@ -735,10 +729,7 @@ impl Agent {
     }
 
     fn inject_pending_steer(&mut self, options: &PromptOptions) -> Result<bool> {
-        let messages = self
-            .steer_buffer
-            .lock()
-            .take_all();
+        let messages = self.steer_buffer.lock().take_all();
         if messages.is_empty() {
             return Ok(false);
         }
@@ -746,9 +737,7 @@ impl Agent {
             info!(steer_chars = text.len(), "steer_injected");
             emit_event(
                 &options.event_handler,
-                AgentEvent::SteerInput {
-                    text: text.clone(),
-                },
+                AgentEvent::SteerInput { text: text.clone() },
             );
             self.session.push_message(Message::user(text));
         }
@@ -804,6 +793,11 @@ impl Agent {
                 active_branch_id: prepared.explain.active_branch_id.clone(),
                 active_path_start_sequence: prepared.explain.active_path_start_sequence,
                 injected: prepared.explain.injected.clone(),
+                retained_message_count: prepared.explain.retained_message_count,
+                retained_turn_count: prepared.explain.retained_turn_count,
+                dropped_event_count: prepared.explain.dropped_event_count,
+                truncated_message_count: prepared.explain.truncated_message_count,
+                compaction_event_ids: prepared.explain.compaction_event_ids.clone(),
                 delivery: prepared.explain.delivery.as_str().to_string(),
                 delivery_tail_start: prepared.explain.delivery_tail_start,
                 estimate_tokens: prepared.explain.estimate_tokens,
@@ -868,7 +862,8 @@ impl Agent {
             );
 
             let result = if options.stream {
-                self.run_streaming_step(self.model_executor.as_ref(), request, options, cancel).await
+                self.run_streaming_step(self.model_executor.as_ref(), request, options, cancel)
+                    .await
             } else {
                 self.model_executor
                     .complete(request)
@@ -879,9 +874,8 @@ impl Agent {
             match result {
                 Ok(value) => return Ok(value),
                 Err(err) if ContextEngine::is_context_overflow_error(&err) => {
-                    if let Some(refreshed) = self
-                        .recover_overflow(tools, &mut overflow_state)
-                        .await?
+                    if let Some(refreshed) =
+                        self.recover_overflow(tools, &mut overflow_state).await?
                     {
                         messages = refreshed.messages;
                         metadata = refreshed.metadata;
@@ -903,8 +897,7 @@ impl Agent {
         let estimator = self.token_estimator();
         let background_tasks = self.background.lock().list();
         let hooks = context_hooks::ZeneContextHooks::new(&self.session, &background_tasks);
-        let compaction_config =
-            context_config::context_compaction_config(&self.config.compaction);
+        let compaction_config = context_config::context_compaction_config(&self.config.compaction);
         let mut handler = context_events::AgentContextHandler::new(
             self.context_model.as_ref(),
             &self.config.model,
@@ -937,10 +930,9 @@ impl Agent {
         if let Some(result) = &overflow.compaction {
             self.record_compaction(result)?;
         }
-        Ok(overflow.retry.then(|| {
-            self.context
-                .assemble_step(&self.session, tools, &estimator)
-        }))
+        Ok(overflow
+            .retry
+            .then(|| self.context.assemble_step(&self.session, tools, &estimator)))
     }
 
     fn check_cancelled(cancel: Option<&CancellationToken>) -> Result<bool> {
@@ -949,7 +941,7 @@ impl Agent {
 
     async fn run_streaming_step(
         &self,
-        executor: &dyn model_executor::ModelExecutor,
+        executor: &dyn zene_model_executor::ModelExecutor,
         request: ChatRequest,
         options: &PromptOptions,
         cancel: Option<&CancellationToken>,
@@ -1016,22 +1008,20 @@ impl Agent {
         });
         for call in tool_calls {
             let turn_id = scope.as_ref().map(|(turn_id, _)| turn_id.as_str());
-            let step_id = scope
-                .as_ref()
-                .and_then(|(_, step_id)| step_id.as_deref());
-            self.session.record_tool_call(
-                turn_id,
-                step_id,
-                &call.id,
-                &call.name,
-                &call.arguments,
-            );
+            let step_id = scope.as_ref().and_then(|(_, step_id)| step_id.as_deref());
+            self.session
+                .record_tool_call(turn_id, step_id, &call.id, &call.name, &call.arguments);
             self.session.record_checkpoint(
                 turn_id,
                 step_id,
                 Some(&call.id),
                 "tool_started",
-                &format!("tool/{}/{}/{}/started", turn_id.unwrap_or("unknown"), step_id.unwrap_or("unknown"), call.id),
+                &format!(
+                    "tool/{}/{}/{}/started",
+                    turn_id.unwrap_or("unknown"),
+                    step_id.unwrap_or("unknown"),
+                    call.id
+                ),
             );
         }
 
@@ -1074,9 +1064,7 @@ impl Agent {
         for decision in &result.permission_decisions {
             self.session.record_permission_decision(
                 scope.as_ref().map(|(turn_id, _)| turn_id.as_str()),
-                scope
-                    .as_ref()
-                    .and_then(|(_, step_id)| step_id.as_deref()),
+                scope.as_ref().and_then(|(_, step_id)| step_id.as_deref()),
                 &decision.tool_call_id,
                 &decision.tool_name,
                 decision.allowed,
@@ -1085,9 +1073,7 @@ impl Agent {
         for message in result.messages {
             let content = message.content;
             let turn_id = scope.as_ref().map(|(turn_id, _)| turn_id.as_str());
-            let step_id = scope
-                .as_ref()
-                .and_then(|(_, step_id)| step_id.as_deref());
+            let step_id = scope.as_ref().and_then(|(_, step_id)| step_id.as_deref());
             self.session.record_tool_result(
                 turn_id,
                 step_id,
@@ -1102,7 +1088,12 @@ impl Agent {
                 step_id,
                 Some(&message.call.id),
                 "tool_completed",
-                &format!("tool/{}/{}/{}/completed", turn_id.unwrap_or("unknown"), step_id.unwrap_or("unknown"), message.call.id),
+                &format!(
+                    "tool/{}/{}/{}/completed",
+                    turn_id.unwrap_or("unknown"),
+                    step_id.unwrap_or("unknown"),
+                    message.call.id
+                ),
             );
             self.session.push_message(Message::tool_result_with_error(
                 &message.call.id,
@@ -1146,7 +1137,9 @@ fn merge_event_handler(
                     current.0 = Some(*turn_id);
                     current.1 = None;
                 }
-                AgentEvent::StepBegin { turn_id, step_id, .. } => {
+                AgentEvent::StepBegin {
+                    turn_id, step_id, ..
+                } => {
                     current.0 = Some(*turn_id);
                     current.1 = Some(*step_id);
                 }
@@ -1263,16 +1256,17 @@ impl Agent {
             state_name,
             &format!("{turn_id}/turn/{state_name}"),
         );
-        self.record_writer.append_execution_checkpoint(&RecordEntry::ExecutionCheckpoint {
-            turn_id: turn_id.to_string(),
-            step_id: None,
-            tool_call_id: None,
-            state,
-            idempotency_key: format!("{turn_id}/turn/{state_name}"),
-            context_epoch: Some(self.context.epoch()),
-            model_request_hash: None,
-            ts: chrono::Utc::now(),
-        })?;
+        self.record_writer
+            .append_execution_checkpoint(&RecordEntry::ExecutionCheckpoint {
+                turn_id: turn_id.to_string(),
+                step_id: None,
+                tool_call_id: None,
+                state,
+                idempotency_key: format!("{turn_id}/turn/{state_name}"),
+                context_epoch: Some(self.context.epoch()),
+                model_request_hash: None,
+                ts: chrono::Utc::now(),
+            })?;
         Ok(())
     }
 }
@@ -1290,7 +1284,9 @@ fn record_entry_from_agent_event(event: &AgentEvent) -> Option<RecordEntry> {
             step: *step,
             ts,
         }),
-        AgentEvent::ToolCall { name, arguments, .. } => Some(RecordEntry::ToolCall {
+        AgentEvent::ToolCall {
+            name, arguments, ..
+        } => Some(RecordEntry::ToolCall {
             name: name.clone(),
             arguments: arguments.clone(),
             ts,
@@ -1355,7 +1351,8 @@ mod execution_checkpoint_tests {
             state,
             idempotency_key,
             ..
-        } = &checkpoints[0] else {
+        } = &checkpoints[0]
+        else {
             panic!("expected execution checkpoint");
         };
         assert_eq!(recorded_turn, &turn_text);

@@ -1,0 +1,15 @@
+[package]
+name = "zene-model-executor"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+anyhow.workspace = true
+async-trait.workspace = true
+futures.workspace = true
+zene-llm = { workspace = true }
+
+[dev-dependencies]
+tokio.workspace = true

@@ -4,8 +4,8 @@ use anyhow::Result;
 use async_trait::async_trait;
 
 use crate::events::ContextEvent;
-use crate::FlushResult;
 use crate::segment_store::CompactionSegmentWrite;
+use crate::FlushResult;
 
 /// Outcome of handling a single [`ContextEvent`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -45,9 +45,7 @@ pub struct RecordingContextEventHandler {
 
 impl RecordingContextEventHandler {
     pub fn new() -> Self {
-        Self {
-            events: Vec::new(),
-        }
+        Self { events: Vec::new() }
     }
 }
 
@@ -62,7 +60,9 @@ impl ContextEventHandler for RecordingContextEventHandler {
     async fn handle(&mut self, event: &ContextEvent) -> Result<EventOutcome> {
         self.events.push(event.clone());
         Ok(match event {
-            ContextEvent::MemoryFlush { .. } => EventOutcome::MemoryFlush(FlushResult::NothingToStore),
+            ContextEvent::MemoryFlush { .. } => {
+                EventOutcome::MemoryFlush(FlushResult::NothingToStore)
+            }
             _ => EventOutcome::Void,
         })
     }

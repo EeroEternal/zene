@@ -24,7 +24,9 @@ pub fn runtime_event_handler(
                     current.0 = Some(*turn_id);
                     current.1 = None;
                 }
-                AgentEvent::StepBegin { turn_id, step_id, .. } => {
+                AgentEvent::StepBegin {
+                    turn_id, step_id, ..
+                } => {
                     current.0 = Some(*turn_id);
                     current.1 = Some(*step_id);
                 }
@@ -36,23 +38,50 @@ pub fn runtime_event_handler(
             handler(event.clone());
         }
         let Some(handler) = &runtime else { return };
-        let sequence = EventSequence::new(
-            sequence.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1,
-        );
+        let sequence =
+            EventSequence::new(sequence.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1);
         let (current_turn, current_step) = scope
             .lock()
             .map(|current| (current.0, current.1))
             .unwrap_or((None, None));
         let (turn_id, step_id, kind) = match &event {
-            AgentEvent::TurnStart { turn_id } => (Some(*turn_id), None, RuntimeEventKind::TurnStarted),
-            AgentEvent::StepBegin { turn_id, step_id, step } => (
-                Some(*turn_id), Some(*step_id), RuntimeEventKind::StepStarted { step: *step },
+            AgentEvent::TurnStart { turn_id } => {
+                (Some(*turn_id), None, RuntimeEventKind::TurnStarted)
+            }
+            AgentEvent::StepBegin {
+                turn_id,
+                step_id,
+                step,
+            } => (
+                Some(*turn_id),
+                Some(*step_id),
+                RuntimeEventKind::StepStarted { step: *step },
             ),
-            AgentEvent::TextDelta { delta } => (current_turn, current_step, RuntimeEventKind::TextDelta { delta: delta.clone() }),
-            AgentEvent::ThoughtDelta { delta } => (current_turn, current_step, RuntimeEventKind::ThoughtDelta { delta: delta.clone() }),
-            AgentEvent::ToolCall { id, name, arguments } => (
-                current_turn, current_step, RuntimeEventKind::ToolCall {
-                    id: ToolCallId::from_string(id.clone()), name: name.clone(), arguments: arguments.clone(),
+            AgentEvent::TextDelta { delta } => (
+                current_turn,
+                current_step,
+                RuntimeEventKind::TextDelta {
+                    delta: delta.clone(),
+                },
+            ),
+            AgentEvent::ThoughtDelta { delta } => (
+                current_turn,
+                current_step,
+                RuntimeEventKind::ThoughtDelta {
+                    delta: delta.clone(),
+                },
+            ),
+            AgentEvent::ToolCall {
+                id,
+                name,
+                arguments,
+            } => (
+                current_turn,
+                current_step,
+                RuntimeEventKind::ToolCall {
+                    id: ToolCallId::from_string(id.clone()),
+                    name: name.clone(),
+                    arguments: arguments.clone(),
                 },
             ),
             AgentEvent::ToolResult {
@@ -72,10 +101,21 @@ pub fn runtime_event_handler(
                     duration_ms: *duration_ms,
                 },
             ),
-            AgentEvent::UsageUpdate { usage, context_tokens, context_window, context_percent, context_epoch } => (
-                current_turn, current_step, RuntimeEventKind::UsageUpdate {
-                    usage: *usage, context_tokens: *context_tokens, context_window: *context_window,
-                    context_percent: *context_percent, context_epoch: *context_epoch,
+            AgentEvent::UsageUpdate {
+                usage,
+                context_tokens,
+                context_window,
+                context_percent,
+                context_epoch,
+            } => (
+                current_turn,
+                current_step,
+                RuntimeEventKind::UsageUpdate {
+                    usage: *usage,
+                    context_tokens: *context_tokens,
+                    context_window: *context_window,
+                    context_percent: *context_percent,
+                    context_epoch: *context_epoch,
                 },
             ),
             AgentEvent::ProjectionReady {
@@ -89,6 +129,11 @@ pub fn runtime_event_handler(
                 active_branch_id,
                 active_path_start_sequence,
                 injected,
+                retained_message_count,
+                retained_turn_count,
+                dropped_event_count,
+                truncated_message_count,
+                compaction_event_ids,
                 delivery,
                 delivery_tail_start,
                 estimate_tokens,
@@ -107,18 +152,49 @@ pub fn runtime_event_handler(
                     active_branch_id: active_branch_id.clone(),
                     active_path_start_sequence: *active_path_start_sequence,
                     injected: injected.clone(),
+                    retained_message_count: *retained_message_count,
+                    retained_turn_count: *retained_turn_count,
+                    dropped_event_count: *dropped_event_count,
+                    truncated_message_count: *truncated_message_count,
+                    compaction_event_ids: compaction_event_ids.clone(),
                     delivery: delivery.clone(),
                     delivery_tail_start: *delivery_tail_start,
                     estimate_tokens: *estimate_tokens,
                     context_epoch: *context_epoch,
                 },
             ),
-            AgentEvent::TurnEnd { turn_id, steps } => (Some(*turn_id), None, RuntimeEventKind::TurnEnded { steps: *steps }),
-            AgentEvent::Error { message } => (current_turn, current_step, RuntimeEventKind::Error { message: message.clone() }),
-            AgentEvent::SteerInput { text } => (current_turn, current_step, RuntimeEventKind::SteerInput { text: text.clone() }),
-                AgentEvent::ModeChanged { mode_id } => (current_turn, current_step, RuntimeEventKind::StateChanged { state: mode_id.clone() }),
+            AgentEvent::TurnEnd { turn_id, steps } => (
+                Some(*turn_id),
+                None,
+                RuntimeEventKind::TurnEnded { steps: *steps },
+            ),
+            AgentEvent::Error { message } => (
+                current_turn,
+                current_step,
+                RuntimeEventKind::Error {
+                    message: message.clone(),
+                },
+            ),
+            AgentEvent::SteerInput { text } => (
+                current_turn,
+                current_step,
+                RuntimeEventKind::SteerInput { text: text.clone() },
+            ),
+            AgentEvent::ModeChanged { mode_id } => (
+                current_turn,
+                current_step,
+                RuntimeEventKind::StateChanged {
+                    state: mode_id.clone(),
+                },
+            ),
         };
-        handler(RuntimeEvent { sequence, session_id: session_id.clone(), turn_id, step_id, kind });
+        handler(RuntimeEvent {
+            sequence,
+            session_id: session_id.clone(),
+            turn_id,
+            step_id,
+            kind,
+        });
     })
 }
 
@@ -173,6 +249,11 @@ pub enum AgentEvent {
         active_branch_id: Option<String>,
         active_path_start_sequence: Option<u64>,
         injected: Vec<String>,
+        retained_message_count: usize,
+        retained_turn_count: usize,
+        dropped_event_count: usize,
+        truncated_message_count: usize,
+        compaction_event_ids: Vec<String>,
         delivery: String,
         delivery_tail_start: Option<usize>,
         estimate_tokens: u32,
@@ -208,16 +289,18 @@ mod tests {
         let runtime: RuntimeEventHandler = Arc::new(move |event| {
             sink.lock().unwrap().push(event);
         });
-        let handler = runtime_event_handler(
-            SessionId::from_string("session"),
-            None,
-            Some(runtime),
-        );
+        let handler = runtime_event_handler(SessionId::from_string("session"), None, Some(runtime));
         let turn_id = TurnId::new();
         let step_id = StepId::new();
         handler(AgentEvent::TurnStart { turn_id });
-        handler(AgentEvent::StepBegin { turn_id, step_id, step: 1 });
-        handler(AgentEvent::TextDelta { delta: "hello".into() });
+        handler(AgentEvent::StepBegin {
+            turn_id,
+            step_id,
+            step: 1,
+        });
+        handler(AgentEvent::TextDelta {
+            delta: "hello".into(),
+        });
         handler(AgentEvent::ProjectionReady {
             source_message_count: 4,
             projected_message_count: 3,
@@ -229,6 +312,11 @@ mod tests {
             active_branch_id: Some("branch".into()),
             active_path_start_sequence: Some(3),
             injected: vec!["compaction_summary".into()],
+            retained_message_count: 3,
+            retained_turn_count: 1,
+            dropped_event_count: 2,
+            truncated_message_count: 1,
+            compaction_event_ids: vec!["compact-1".into()],
             delivery: "full".into(),
             delivery_tail_start: None,
             estimate_tokens: 128,
@@ -253,6 +341,11 @@ mod tests {
                 active_branch_id,
                 active_path_start_sequence,
                 injected,
+                retained_message_count,
+                retained_turn_count,
+                dropped_event_count,
+                truncated_message_count,
+                compaction_event_ids,
                 delivery,
                 delivery_tail_start,
                 estimate_tokens,
@@ -268,6 +361,11 @@ mod tests {
                 assert_eq!(active_branch_id.as_deref(), Some("branch"));
                 assert_eq!(*active_path_start_sequence, Some(3));
                 assert_eq!(injected, &["compaction_summary"]);
+                assert_eq!(*retained_message_count, 3);
+                assert_eq!(*retained_turn_count, 1);
+                assert_eq!(*dropped_event_count, 2);
+                assert_eq!(*truncated_message_count, 1);
+                assert_eq!(compaction_event_ids, &["compact-1"]);
                 assert_eq!(delivery, "full");
                 assert_eq!(*delivery_tail_start, None);
                 assert_eq!(*estimate_tokens, 128);

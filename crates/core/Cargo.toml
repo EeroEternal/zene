@@ -26,6 +26,7 @@ zene-sandbox = { workspace = true }
 zene-session = { workspace = true }
 zene-tools = { workspace = true }
 zene-mcp = { workspace = true }
+zene-model-executor = { workspace = true }
 zene-permission = { workspace = true }
 zene-tool-runtime = { workspace = true }
 zene-turn = { workspace = true }

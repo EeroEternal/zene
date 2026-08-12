@@ -9,22 +9,23 @@ use tracing::{info, warn};
 use zene_config::ZeneConfig;
 use zene_context::{ensure_memory_in_system, ContextEngine, FsMemoryStore};
 use zene_llm::ChatClient;
+use zene_mcp::McpManager;
 use zene_sandbox::{LocalSandbox, Sandbox};
 use zene_session::{AgentRecordWriter, FileSessionStore, SessionRecord, SessionStore};
 use zene_tools::{
-    default_ask_user_prompter, shared_background_tasks, shared_plan_mode,
-    shared_todo_store_from, SharedAskUserPrompter, SharedBackgroundTasks, SharedPlanMode,
-    SharedTodoStore, ToolRegistry,
+    default_ask_user_prompter, shared_background_tasks, shared_plan_mode, shared_todo_store_from,
+    SharedAskUserPrompter, SharedBackgroundTasks, SharedPlanMode, SharedTodoStore, ToolRegistry,
 };
-use zene_mcp::McpManager;
 
-use zene_hooks::{HookRunner, HookSpec};
-use zene_permission::{PermissionGate, PermissionMode, PermissionRule, RuleAction, SharedToolPermission};
 use crate::plan_mode::{default_plan_approval_prompter, PlanApprovalPrompter};
 use crate::tool_dedup::ToolDedup;
+use crate::Agent;
+use zene_hooks::{HookRunner, HookSpec};
+use zene_permission::{
+    PermissionGate, PermissionMode, PermissionRule, RuleAction, SharedToolPermission,
+};
 use zene_turn::SteerBuffer;
 use zene_workspace::{build_system_prompt, FsWorkspaceProvider};
-use crate::Agent;
 
 /// How MCP servers are attached when building an [`Agent`].
 #[derive(Default)]
@@ -211,10 +212,7 @@ impl AgentBuilder {
             include_workspace,
         );
         self.session.ensure_system_message(&system_prompt);
-        ensure_memory_in_system(
-            &mut self.session.messages,
-            &FsMemoryStore::new(&workdir),
-        );
+        ensure_memory_in_system(&mut self.session.messages, &FsMemoryStore::new(&workdir));
 
         let client = Arc::new(match self.client {
             Some(client) => client,
@@ -227,15 +225,16 @@ impl AgentBuilder {
 
         let mut tools = match self.tools {
             Some(tools) => tools,
-            None => zene_tools::agent_tools(self.config.agent_profile, self.config.web_search.clone()),
+            None => {
+                zene_tools::agent_tools(self.config.agent_profile, self.config.web_search.clone())
+            }
         };
 
         let mcp = match self.mcp {
             McpAttach::Skip => None,
             McpAttach::Inject(manager) => Some(manager),
             McpAttach::Auto => {
-                let (mcp, mcp_tools) =
-                    McpManager::connect_with_sandbox(&workdir, &local).await?;
+                let (mcp, mcp_tools) = McpManager::connect_with_sandbox(&workdir, &local).await?;
                 if !mcp_tools.definitions().is_empty() {
                     info!(
                         tool_count = mcp_tools.definitions().len(),
@@ -294,13 +293,16 @@ impl AgentBuilder {
 
         Ok(Agent {
             config: self.config,
-            model_executor: Arc::new(crate::model_executor::ChatClientExecutor::new(Arc::clone(&client))),
+            model_executor: Arc::new(zene_model_executor::ChatClientExecutor::new(Arc::clone(
+                &client,
+            ))),
             context_model: client,
             tools: Arc::new(tools),
             sandbox,
             session: self.session,
             usage_accumulator: crate::usage::UsageAccumulator::default(),
             context,
+            resume_existing_turn: false,
             active_turn: None,
             steer_buffer: Arc::new(Mutex::new(SteerBuffer::default())),
             system_prompt,

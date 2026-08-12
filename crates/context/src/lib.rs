@@ -29,39 +29,41 @@ mod prefire;
 #[cfg(not(feature = "prefire"))]
 mod prefire_stub;
 
-pub use compaction::{
-    apply_compaction_to_messages, apply_overflow_truncate_pass, apply_slice_keep,
-    apply_steps_truncate_pass, assemble_full_replace_history, build_compaction_reminder,
-    build_sliced_messages, compact_message_list_with_chat, compact_session,
-    compact_session_forced, is_context_overflow_error, is_degenerate_summary,
-    keep_recent_token_budget, last_user_query_index, plan_compaction,
-    plan_compaction_segment, should_compact, subagent_compaction_config,
-    tail_start_index, truncate_old_message_bodies, truncate_old_tool_results,
-    CompactionPlan, CompactionResult, CompactionStats, MIN_SUMMARY_SEED_CHARS,
-};
-pub use config::{CompactionConfig, DEFAULT_CONTEXT_WINDOW_TOKENS};
-pub use context_water::ContextWaterLevel;
 pub use assemble::{
     assemble_outbound, delivery_mode_from_env, stable_system_boundary, AssembledOutbound,
     DeliveryMode,
 };
-pub use engine::{
-    ContextDeps, ContextEngine, ContextObservation, ContextUsageUpdate, ForcedCompactResult, OverflowHandleResult,
-    PrefireClientFactory, PrepareStepResult, ProjectionExplain, StepContext,
+pub use compaction::{
+    apply_compaction_to_messages, apply_overflow_truncate_pass, apply_slice_keep,
+    apply_steps_truncate_pass, assemble_full_replace_history, build_compaction_reminder,
+    build_sliced_messages, compact_message_list_with_chat, compact_session, compact_session_forced,
+    is_context_overflow_error, is_degenerate_summary, keep_recent_token_budget,
+    last_user_query_index, plan_compaction, plan_compaction_segment, should_compact,
+    subagent_compaction_config, tail_start_index, truncate_old_message_bodies,
+    truncate_old_tool_results, CompactionPlan, CompactionResult, CompactionStats,
+    MIN_SUMMARY_SEED_CHARS,
 };
-pub use model::ContextModel;
+pub use config::{CompactionConfig, DEFAULT_CONTEXT_WINDOW_TOKENS};
+pub use context_water::ContextWaterLevel;
+pub use engine::{
+    ContextDeps, ContextEngine, ContextObservation, ContextUsageUpdate, ForcedCompactResult,
+    OverflowHandleResult, PrefireClientFactory, PrepareStepResult, ProjectionExplain, StepContext,
+};
 pub use event_handler::{
-    write_compaction_segment_via, ContextEventHandler, EventOutcome,
-    NoopContextEventHandler, RecordingContextEventHandler,
+    write_compaction_segment_via, ContextEventHandler, EventOutcome, NoopContextEventHandler,
+    RecordingContextEventHandler,
 };
 pub use events::ContextEvent;
 #[cfg(feature = "gateway")]
-pub use gateway::{close_session, external_session_id_from_env, gateway_configured, publish_prefix};
+pub use gateway::{
+    close_session, external_session_id_from_env, gateway_configured, publish_prefix,
+};
 #[cfg(not(feature = "gateway"))]
-pub use gateway_stub::{close_session, external_session_id_from_env, gateway_configured, publish_prefix};
+pub use gateway_stub::{
+    close_session, external_session_id_from_env, gateway_configured, publish_prefix,
+};
 pub use hooks::{ContextHooks, NoContextHooks};
 pub use input_ladder::{fit_messages_to_budget, prepare_summary_input, InputLadderStage};
-pub use memory_store::{FsMemoryStore, MemoryStore};
 #[cfg(feature = "memory")]
 pub use memory::{
     append_daily_log, conversation_has_memory_context, daily_log_path, ensure_memory_in_system,
@@ -70,6 +72,7 @@ pub use memory::{
     memory_root, process_flush_response, run_memory_flush, should_flush, FlushResult,
     MEMORY_CONTEXT_CLOSE, MEMORY_CONTEXT_OPEN,
 };
+pub use memory_store::{FsMemoryStore, MemoryStore};
 #[cfg(not(feature = "memory"))]
 pub use memory_stub::{
     append_daily_log, conversation_has_memory_context, daily_log_path, ensure_memory_in_system,
@@ -78,13 +81,12 @@ pub use memory_stub::{
     memory_root, process_flush_response, run_memory_flush, should_flush, FlushResult,
     MEMORY_CONTEXT_CLOSE, MEMORY_CONTEXT_OPEN,
 };
+pub use model::ContextModel;
 #[cfg(feature = "prefire")]
 pub use prefire::{prefire_lead_percent, PrefireCache, PrefireState};
 #[cfg(not(feature = "prefire"))]
 pub use prefire_stub::{prefire_lead_percent, PrefireCache, PrefireState};
-pub use segment_store::{
-    CompactionSegmentStore, CompactionSegmentWrite, FsCompactionSegmentStore,
-};
+pub use segment_store::{CompactionSegmentStore, CompactionSegmentWrite, FsCompactionSegmentStore};
 pub use session::ContextSession;
 pub use tokens::{
     estimate_chars_as_tokens, estimate_context, estimate_message_tokens, estimate_messages_tokens,

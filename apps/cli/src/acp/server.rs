@@ -119,8 +119,10 @@ impl AcpServer {
                                 if let Some(err) = msg.get("error") {
                                     let _ = tx.send(Err(err.clone()));
                                 } else {
-                                    let _ = tx
-                                        .send(Ok(msg.get("result").cloned().unwrap_or(Value::Null)));
+                                    let _ = tx.send(Ok(msg
+                                        .get("result")
+                                        .cloned()
+                                        .unwrap_or(Value::Null)));
                                 }
                             }
                         } else if in_tx.send(msg).is_err() {
@@ -254,7 +256,10 @@ impl AcpServer {
         let params = msg.get("params").cloned().unwrap_or(Value::Null);
 
         if method == "session/prompt" {
-            if let Err(e) = self.enqueue_or_start_prompt(id.clone(), params, active).await {
+            if let Err(e) = self
+                .enqueue_or_start_prompt(id.clone(), params, active)
+                .await
+            {
                 warn!("ACP {method}: {e:#}");
                 let reply = err_response(id, dispatch_error_code(&method, &e), &format!("{e:#}"));
                 self.writer.send_raw(reply.to_string())?;
@@ -283,7 +288,9 @@ impl AcpServer {
             "session/close" => self.handle_session_close(params).await,
             "session/set_mode" => self.handle_session_set_mode(params).await,
             "authenticate" => Ok(json!({})),
-            "session/prompt" => Err(anyhow!("session/prompt is handled by the async prompt queue")),
+            "session/prompt" => Err(anyhow!(
+                "session/prompt is handled by the async prompt queue"
+            )),
             other => Err(MethodNotFound(other.to_string()).into()),
         }
     }
@@ -576,11 +583,7 @@ impl AcpServer {
             };
             let text = prompt_text_from_params(&next.params);
             if text.trim().is_empty() {
-                let reply = err_response(
-                    next.rpc_id,
-                    error_codes::INVALID_PARAMS,
-                    "empty prompt",
-                );
+                let reply = err_response(next.rpc_id, error_codes::INVALID_PARAMS, "empty prompt");
                 self.writer.send_raw(reply.to_string())?;
                 continue;
             }
@@ -724,7 +727,11 @@ fn project_runtime_event(
     let update = match &event.kind {
         RuntimeEventKind::TextDelta { delta } => Some(agent_message_chunk(delta)),
         RuntimeEventKind::ThoughtDelta { delta } => Some(agent_thought_chunk(delta)),
-        RuntimeEventKind::ToolCall { id, name, arguments } => {
+        RuntimeEventKind::ToolCall {
+            id,
+            name,
+            arguments,
+        } => {
             pending_tool.lock().unwrap().id = Some(id.to_string());
             let update = tool_call_update(id.as_str(), name, arguments, "pending");
             if name == "TodoWrite" {
@@ -781,6 +788,11 @@ fn project_runtime_event(
             active_branch_id,
             active_path_start_sequence,
             injected,
+            retained_message_count,
+            retained_turn_count,
+            dropped_event_count,
+            truncated_message_count,
+            compaction_event_ids,
             delivery,
             delivery_tail_start,
             estimate_tokens,
@@ -796,6 +808,11 @@ fn project_runtime_event(
             active_branch_id.as_deref(),
             *active_path_start_sequence,
             injected,
+            *retained_message_count,
+            *retained_turn_count,
+            *dropped_event_count,
+            *truncated_message_count,
+            compaction_event_ids,
             delivery,
             *delivery_tail_start,
             *estimate_tokens,
@@ -811,7 +828,6 @@ fn project_runtime_event(
         let _ = writer.session_update(sid, update);
     }
 }
-
 
 fn attach_meta(update: &mut Value, meta: Value) {
     if let Some(obj) = update.as_object_mut() {
@@ -834,7 +850,9 @@ fn recovery_disposition_name(disposition: zene_session::RecoveryDisposition) -> 
         zene_session::RecoveryDisposition::AlreadyCompleted => "already_completed",
         zene_session::RecoveryDisposition::SafeToResume => "safe_to_resume",
         zene_session::RecoveryDisposition::RequiresToolInspection => "requires_tool_inspection",
-        zene_session::RecoveryDisposition::RequiresManualIntervention => "requires_manual_intervention",
+        zene_session::RecoveryDisposition::RequiresManualIntervention => {
+            "requires_manual_intervention"
+        }
     }
 }
 
@@ -855,9 +873,12 @@ fn recovery_metadata(snapshot: &RecoverySnapshot) -> Value {
 fn with_recovery_metadata(mut response: Value, runtime: &RuntimeHandle) -> Result<Value> {
     let snapshot = runtime.recovery_snapshot()?;
     if let Some(obj) = response.as_object_mut() {
-        obj.insert("_meta".into(), json!({
-            "recovery": recovery_metadata(&snapshot),
-        }));
+        obj.insert(
+            "_meta".into(),
+            json!({
+                "recovery": recovery_metadata(&snapshot),
+            }),
+        );
     }
     Ok(response)
 }
@@ -972,10 +993,7 @@ fn acp_ask_user_prompt(
         return Ok(answer);
     }
 
-    if let Some((_, label, _)) = option_labels
-        .iter()
-        .find(|(id, _, _)| id == option_id)
-    {
+    if let Some((_, label, _)) = option_labels.iter().find(|(id, _, _)| id == option_id) {
         return Ok(label.clone());
     }
 
@@ -1070,8 +1088,14 @@ mod recovery_tests {
             (RecoveryDisposition::Clean, "clean"),
             (RecoveryDisposition::AlreadyCompleted, "already_completed"),
             (RecoveryDisposition::SafeToResume, "safe_to_resume"),
-            (RecoveryDisposition::RequiresToolInspection, "requires_tool_inspection"),
-            (RecoveryDisposition::RequiresManualIntervention, "requires_manual_intervention"),
+            (
+                RecoveryDisposition::RequiresToolInspection,
+                "requires_tool_inspection",
+            ),
+            (
+                RecoveryDisposition::RequiresManualIntervention,
+                "requires_manual_intervention",
+            ),
         ];
         for (disposition, expected) in cases {
             assert_eq!(recovery_disposition_name(disposition), expected);

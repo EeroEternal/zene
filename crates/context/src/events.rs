@@ -17,16 +17,9 @@ pub enum ContextEvent {
         messages: Vec<Message>,
     },
     /// Runtime should persist a rewind checkpoint (e.g. before/after compact).
-    Checkpoint {
-        reason: &'static str,
-    },
+    Checkpoint { reason: &'static str },
     /// Runtime should persist a compaction segment for recovery.
-    CompactionSegment {
-        session_id: String,
-        body: String,
-    },
+    CompactionSegment { session_id: String, body: String },
     /// Runtime should run memory flush LLM + persist before compaction.
-    MemoryFlush {
-        conversation: String,
-    },
+    MemoryFlush { conversation: String },
 }

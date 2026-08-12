@@ -15,9 +15,9 @@ use tokio::sync::{broadcast, mpsc, oneshot, watch};
 use tokio::task::{JoinError, JoinHandle};
 use tokio_util::sync::CancellationToken;
 
+use crate::{RecoveryDisposition, RecoverySnapshot};
 use zene_permission::PromptChoice;
 use zene_session::{AgentRecordWriter, ExecutionCheckpointState, RecoveryPlan};
-use crate::{RecoveryDisposition, RecoverySnapshot};
 use zene_turn::{
     EventSequence, RuntimeEvent, RuntimeEventHandler, RuntimeEventKind, SessionId, SteerBuffer,
     TurnId,
@@ -31,6 +31,8 @@ pub enum RuntimeCommand {
     Prompt {
         text: String,
     },
+    /// Resume the single safe model-boundary candidate without replaying tools.
+    ResumeSafeTurn,
     Steer {
         text: String,
     },
@@ -157,6 +159,13 @@ impl RuntimeHandle {
         self.command(RuntimeCommand::Steer { text: text.into() })
             .await
             .map(|_| ())
+    }
+
+    pub async fn resume_safe_turn(&self) -> Result<String> {
+        match self.command(RuntimeCommand::ResumeSafeTurn).await? {
+            RuntimeResponse::Prompt { text } => Ok(text),
+            _ => Err(anyhow!("runtime returned an invalid resume response")),
+        }
     }
 
     pub async fn cancel(&self) -> Result<()> {
@@ -427,6 +436,73 @@ fn handle_idle_command(
     sequence: &Arc<AtomicU64>,
 ) -> Option<ActivePrompt> {
     match message.command {
+        RuntimeCommand::ResumeSafeTurn => {
+            let Some(candidate) = agent
+                .as_ref()
+                .expect("idle actor owns agent")
+                .execution_record_writer()
+                .resume_candidate()
+                .ok()
+                .flatten()
+            else {
+                let _ = message
+                    .reply
+                    .send(Err("no safe resume candidate is available".into()));
+                return None;
+            };
+            let plan = match agent
+                .as_ref()
+                .expect("idle actor owns agent")
+                .execution_record_writer()
+                .recovery_snapshot()
+                .map(|snapshot| snapshot.plan())
+            {
+                Ok(plan) => plan,
+                Err(err) => {
+                    let _ = message.reply.send(Err(err.to_string()));
+                    return None;
+                }
+            };
+            if !plan.safe_resume_allowed
+                || !plan.active_tools.is_empty()
+                || plan.active_turns.len() != 1
+            {
+                let _ = message
+                    .reply
+                    .send(Err(format!("safe resume rejected: {}", plan.reason)));
+                return None;
+            }
+            let mut resumed = agent.take().expect("idle actor owns agent");
+            resumed.resume_existing_turn = true;
+            let writer = resumed.execution_record_writer();
+            let _ = writer.append_execution_checkpoint(
+                &zene_session::RecordEntry::ExecutionCheckpoint {
+                    turn_id: candidate.turn_id.clone(),
+                    step_id: None,
+                    tool_call_id: None,
+                    state: ExecutionCheckpointState::TurnResumed,
+                    idempotency_key: format!(
+                        "resume/{}/{}",
+                        resumed.session().meta.id,
+                        candidate.turn_id
+                    ),
+                    context_epoch: candidate.context_epoch,
+                    model_request_hash: candidate.model_request_hash,
+                    ts: chrono::Utc::now(),
+                },
+            );
+            Some(start_prompt(
+                resumed,
+                PendingPrompt {
+                    text: candidate.prompt,
+                    reply: message.reply,
+                },
+                events,
+                state,
+                session_id,
+                sequence,
+            ))
+        }
         RuntimeCommand::Prompt { text } => {
             if text.trim().is_empty() {
                 let _ = message.reply.send(Err("prompt cannot be empty".into()));
@@ -515,6 +591,11 @@ fn handle_active_command(
                 });
             }
         }
+        RuntimeCommand::ResumeSafeTurn => {
+            let _ = message
+                .reply
+                .send(Err("cannot resume while a turn is active".into()));
+        }
         RuntimeCommand::Steer { text } => {
             let text = text.trim();
             if text.is_empty() {
@@ -531,9 +612,9 @@ fn handle_active_command(
             let _ = message.reply.send(Ok(RuntimeResponse::Accepted));
         }
         RuntimeCommand::SetMode { .. } | RuntimeCommand::GetMode => {
-            let _ = message
-                .reply
-                .send(Err("cannot change or read mode while a turn is active".into()));
+            let _ = message.reply.send(Err(
+                "cannot change or read mode while a turn is active".into()
+            ));
         }
         RuntimeCommand::Approval { request_id, .. } => {
             let _ = message.reply.send(Err(format!(
@@ -628,7 +709,9 @@ mod tests {
         use tempfile::tempdir;
         use zene_config::ZeneConfig;
         use zene_sandbox::LocalSandbox;
-        use zene_session::{AgentRecordWriter, ExecutionCheckpointState, RecordEntry, SessionRecord};
+        use zene_session::{
+            AgentRecordWriter, ExecutionCheckpointState, RecordEntry, SessionRecord,
+        };
 
         let workdir = tempdir().expect("workdir");
         let record_dir = tempdir().expect("record dir");
@@ -665,7 +748,9 @@ mod tests {
         let (runtime, task) = RuntimeHandle::spawn(agent);
 
         assert_eq!(
-            runtime.recovery_disposition().expect("recovery disposition"),
+            runtime
+                .recovery_disposition()
+                .expect("recovery disposition"),
             RecoveryDisposition::SafeToResume
         );
         assert!(runtime
@@ -696,13 +781,21 @@ mod tests {
         );
 
         assert!(cancel_for_assertion.is_cancelled());
-        assert!(matches!(response.await.unwrap(), Ok(RuntimeResponse::Accepted)));
+        assert!(matches!(
+            response.await.unwrap(),
+            Ok(RuntimeResponse::Accepted)
+        ));
         assert!(queued.is_empty());
     }
 
     #[tokio::test]
     async fn active_mode_commands_are_rejected_without_mutating_queue() {
-        for command in [RuntimeCommand::SetMode { mode_id: "plan".into() }, RuntimeCommand::GetMode] {
+        for command in [
+            RuntimeCommand::SetMode {
+                mode_id: "plan".into(),
+            },
+            RuntimeCommand::GetMode,
+        ] {
             let (reply, response) = oneshot::channel();
             let cancel = CancellationToken::new();
             let mut queued = VecDeque::new();
@@ -740,7 +833,10 @@ mod tests {
             cancel.clone(),
             &mut false,
         );
-        assert!(matches!(response.await.unwrap(), Ok(RuntimeResponse::Accepted)));
+        assert!(matches!(
+            response.await.unwrap(),
+            Ok(RuntimeResponse::Accepted)
+        ));
         assert_eq!(steer.lock().take_all(), vec!["keep going"]);
 
         let (reply, response) = oneshot::channel();
@@ -780,7 +876,9 @@ mod tests {
         let (reply, _response) = oneshot::channel();
         handle_active_command(
             RuntimeMessage {
-                command: RuntimeCommand::Prompt { text: "next".into() },
+                command: RuntimeCommand::Prompt {
+                    text: "next".into(),
+                },
                 reply,
             },
             &mut queued,

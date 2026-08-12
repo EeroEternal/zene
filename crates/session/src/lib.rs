@@ -1,5 +1,5 @@
-mod paths;
 mod checkpoint;
+mod paths;
 mod record;
 mod todo;
 
@@ -12,11 +12,14 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 use zene_llm::Message;
 
-pub use paths::{sessions_dir, workdir_slug, zene_home};
+/// Current event-backed conversation schema. Older records may omit this field.
+pub const CURRENT_CONVERSATION_SCHEMA_VERSION: u16 = 1;
+
 pub use checkpoint::{
     fork_session, latest_checkpoint_id, list_checkpoints, load_checkpoint, restore_checkpoint,
     save_checkpoint, SessionCheckpoint,
 };
+pub use paths::{sessions_dir, workdir_slug, zene_home};
 pub use todo::{TodoItem, TodoStatus};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -315,7 +318,8 @@ impl SessionView {
                     messages_after: None,
                     ..
                 } => {
-                    fallback_reason = Some(ProjectionFallbackReason::LegacyCompactionWithoutSnapshot);
+                    fallback_reason =
+                        Some(ProjectionFallbackReason::LegacyCompactionWithoutSnapshot);
                 }
                 SessionEvent::Rewound {
                     messages_after: Some(snapshot),
@@ -341,8 +345,8 @@ impl SessionView {
         } else if !has_message_fact && fallback_reason.is_none() {
             fallback_reason = Some(ProjectionFallbackReason::IncompleteEventLog);
         }
-        let cache_drift_detected = serde_json::to_vec(&messages).ok()
-            != serde_json::to_vec(fallback).ok();
+        let cache_drift_detected =
+            serde_json::to_vec(&messages).ok() != serde_json::to_vec(fallback).ok();
         let used_materialized_fallback = fallback_reason.is_some();
         if used_materialized_fallback {
             messages = fallback.to_vec();
@@ -388,6 +392,10 @@ impl SessionStore for FileSessionStore {
 pub struct SessionRecord {
     pub meta: SessionMeta,
     pub messages: Vec<Message>,
+    /// Version of the conversation event log. `0` identifies pre-event or
+    /// legacy records that may require one-time migration.
+    #[serde(default)]
+    pub conversation_schema_version: u16,
     /// Materialized compatibility cache; events are the future conversation SoT.
     #[serde(default)]
     pub events: Vec<SessionEvent>,
@@ -409,20 +417,48 @@ pub struct SessionRecord {
 impl SessionEvent {
     fn with_sequence(mut self, sequence: u64) -> Self {
         match &mut self {
-            Self::MessageAppended { sequence: value, .. }
-            | Self::SystemPrefixChanged { sequence: value, .. }
-            | Self::CompactionApplied { sequence: value, .. }
-            | Self::TurnStarted { sequence: value, .. }
-            | Self::StepStarted { sequence: value, .. }
-            | Self::TurnEnded { sequence: value, .. }
-            | Self::Checkpoint { sequence: value, .. }
-            | Self::ToolCall { sequence: value, .. }
-            | Self::ToolResult { sequence: value, .. }
-            | Self::PermissionDecision { sequence: value, .. }
-            | Self::ModeChanged { sequence: value, .. }
-            | Self::ModelChanged { sequence: value, .. }
-            | Self::BranchForked { sequence: value, .. }
-            | Self::Rewound { sequence: value, .. } => *value = sequence,
+            Self::MessageAppended {
+                sequence: value, ..
+            }
+            | Self::SystemPrefixChanged {
+                sequence: value, ..
+            }
+            | Self::CompactionApplied {
+                sequence: value, ..
+            }
+            | Self::TurnStarted {
+                sequence: value, ..
+            }
+            | Self::StepStarted {
+                sequence: value, ..
+            }
+            | Self::TurnEnded {
+                sequence: value, ..
+            }
+            | Self::Checkpoint {
+                sequence: value, ..
+            }
+            | Self::ToolCall {
+                sequence: value, ..
+            }
+            | Self::ToolResult {
+                sequence: value, ..
+            }
+            | Self::PermissionDecision {
+                sequence: value, ..
+            }
+            | Self::ModeChanged {
+                sequence: value, ..
+            }
+            | Self::ModelChanged {
+                sequence: value, ..
+            }
+            | Self::BranchForked {
+                sequence: value, ..
+            }
+            | Self::Rewound {
+                sequence: value, ..
+            } => *value = sequence,
         }
         self
     }
@@ -461,6 +497,7 @@ impl SessionRecord {
                 parent_sequence: None,
             },
             messages: Vec::new(),
+            conversation_schema_version: CURRENT_CONVERSATION_SCHEMA_VERSION,
             events: Vec::new(),
             event_sequence: 0,
             compactions: Vec::new(),
@@ -468,6 +505,37 @@ impl SessionRecord {
             context_window_usage: None,
             context_tokens_used: None,
         }
+    }
+
+    pub fn is_event_backed(&self) -> bool {
+        self.conversation_schema_version >= CURRENT_CONVERSATION_SCHEMA_VERSION
+    }
+
+    /// Migrate a legacy materialized session into the event-backed format.
+    ///
+    /// This method is explicit and idempotent: callers can save the returned
+    /// record after deciding when migration should become durable. Existing
+    /// events are preserved; a cache-only legacy session receives one message
+    /// fact per materialized message.
+    pub fn migrate_to_event_backed(&mut self) -> bool {
+        if self.is_event_backed() {
+            return false;
+        }
+        self.normalize_event_sequence();
+        if self.events.is_empty() {
+            let messages = self.messages.clone();
+            for message in messages {
+                self.append_event(SessionEvent::MessageAppended {
+                    sequence: 0,
+                    id: Uuid::new_v4().to_string(),
+                    created_at: Utc::now(),
+                    message,
+                });
+            }
+        }
+        self.conversation_schema_version = CURRENT_CONVERSATION_SCHEMA_VERSION;
+        self.meta.updated_at = Utc::now();
+        true
     }
 
     pub fn update_context_usage(&mut self, tokens_used: u32, context_window: u32) {
@@ -483,9 +551,13 @@ impl SessionRecord {
         if self.events.iter().any(|event| event.sequence() == 0) {
             self.normalize_event_sequence();
         } else {
-            self.event_sequence = self
-                .event_sequence
-                .max(self.events.iter().map(SessionEvent::sequence).max().unwrap_or(0));
+            self.event_sequence = self.event_sequence.max(
+                self.events
+                    .iter()
+                    .map(SessionEvent::sequence)
+                    .max()
+                    .unwrap_or(0),
+            );
         }
         self.event_sequence = self.event_sequence.saturating_add(1);
         self.events.push(event.with_sequence(self.event_sequence));
@@ -506,7 +578,10 @@ impl SessionRecord {
 
     pub fn push_message(&mut self, message: Message) {
         if message.role == zene_llm::Role::System
-            && self.messages.iter().any(|m| m.role == zene_llm::Role::System)
+            && self
+                .messages
+                .iter()
+                .any(|m| m.role == zene_llm::Role::System)
         {
             return;
         }
@@ -520,14 +595,12 @@ impl SessionRecord {
         self.meta.updated_at = Utc::now();
     }
 
-    pub fn events(&self) -> &[SessionEvent] { &self.events }
+    pub fn events(&self) -> &[SessionEvent] {
+        &self.events
+    }
 
     pub fn view(&self) -> SessionView {
-        SessionView::from_events_for_session(
-            &self.events,
-            &self.messages,
-            Some(&self.meta.id),
-        )
+        SessionView::from_events_for_session(&self.events, &self.messages, Some(&self.meta.id))
     }
 
     pub fn record_turn_started(&mut self, turn_id: &str, prompt: &str) {
@@ -766,13 +839,7 @@ impl SessionRecord {
 
     /// Replace older messages with a compaction summary, keeping system + recent tail.
     pub fn apply_compaction(&mut self, summary: String, compacted_count: usize) -> CompactionEntry {
-        self.record_compaction_event(
-            "llm_summarize",
-            compacted_count,
-            Some(summary),
-            None,
-            None,
-        )
+        self.record_compaction_event("llm_summarize", compacted_count, Some(summary), None, None)
     }
 
     pub fn record_compaction_event(
@@ -854,9 +921,8 @@ impl SessionRecord {
             .filter(|m| m.role == zene_llm::Role::System)
             .cloned();
         let tail = self.messages[tail_start..].to_vec();
-        let summary_message = Message::compaction_summary(format!(
-            "[Previous conversation summary]\n{summary}"
-        ));
+        let summary_message =
+            Message::compaction_summary(format!("[Previous conversation summary]\n{summary}"));
 
         self.messages.clear();
         if let Some(system) = system {
@@ -887,6 +953,14 @@ impl SessionRecord {
         let raw = fs::read_to_string(&path)
             .with_context(|| format!("read session file: {}", path.display()))?;
         parse_session_raw(&raw, Some(id)).context("parse session file")
+    }
+
+    /// Load a session and explicitly migrate legacy materialized records.
+    /// The migrated record is not persisted until the caller invokes `save`.
+    pub fn load_migrated(id: &str) -> Result<Self> {
+        let mut session = Self::load(id)?;
+        session.migrate_to_event_backed();
+        Ok(session)
     }
 }
 
@@ -934,9 +1008,15 @@ pub fn parse_session_raw(raw: &str, fallback_id: Option<&str>) -> Result<Session
             .get("workdir")
             .and_then(|v| v.as_str())
             .map(str::to_string);
-        let mut record = legacy_record(id.as_deref(), title.as_deref(), workdir.as_deref(), messages);
+        let mut record = legacy_record(
+            id.as_deref(),
+            title.as_deref(),
+            workdir.as_deref(),
+            messages,
+        );
         if let Some(compactions) = value.get("compactions") {
-            if let Ok(parsed) = serde_json::from_value::<Vec<CompactionEntry>>(compactions.clone()) {
+            if let Ok(parsed) = serde_json::from_value::<Vec<CompactionEntry>>(compactions.clone())
+            {
                 record.compactions = parsed;
             }
         }
@@ -991,6 +1071,7 @@ fn legacy_record(
             parent_sequence: None,
         },
         messages,
+        conversation_schema_version: 0,
         events: Vec::new(),
         event_sequence: 0,
         compactions: Vec::new(),
@@ -1013,10 +1094,7 @@ pub fn list_sessions_for_workdir(workdir: &Path) -> Result<Vec<SessionMeta>> {
         let raw = match fs::read_to_string(&path) {
             Ok(raw) => raw,
             Err(err) => {
-                eprintln!(
-                    "skipping unreadable session file {}: {err}",
-                    path.display()
-                );
+                eprintln!("skipping unreadable session file {}: {err}", path.display());
                 continue;
             }
         };
@@ -1048,7 +1126,7 @@ pub fn ensure_zene_home() -> Result<()> {
 
 pub use record::{
     export_session, record_path, session_record_dir, AgentRecordWriter, ExecutionCheckpointState,
-    RecoveryDisposition, RecoveryExecution, RecoveryPlan, RecoverySnapshot, RecordEntry,
+    RecordEntry, RecoveryDisposition, RecoveryExecution, RecoveryPlan, RecoverySnapshot,
 };
 
 #[cfg(test)]
@@ -1065,7 +1143,10 @@ mod tests {
         session.ensure_system_message("system prompt");
         session.ensure_system_message("system prompt");
         assert_eq!(session.messages.len(), 1);
-        assert_eq!(session.messages[0].content.as_deref(), Some("system prompt"));
+        assert_eq!(
+            session.messages[0].content.as_deref(),
+            Some("system prompt")
+        );
     }
 
     #[test]
@@ -1085,14 +1166,13 @@ mod tests {
         session.push_message(Message::user("recent request"));
         session.push_message(Message::assistant("recent reply"));
 
-        session.replace_messages_after_compaction(
-            "summarized old work".into(),
-            3,
-            2,
-        );
+        session.replace_messages_after_compaction("summarized old work".into(), 3, 2);
 
         assert_eq!(session.messages.len(), 4);
-        assert_eq!(session.messages[0].content.as_deref(), Some("system prompt"));
+        assert_eq!(
+            session.messages[0].content.as_deref(),
+            Some("system prompt")
+        );
         assert_eq!(
             session.messages[1].kind,
             Some(zene_llm::MessageKind::CompactionSummary)
@@ -1102,7 +1182,10 @@ mod tests {
             .as_deref()
             .unwrap()
             .contains("summarized old work"));
-        assert_eq!(session.messages[2].content.as_deref(), Some("recent request"));
+        assert_eq!(
+            session.messages[2].content.as_deref(),
+            Some("recent request")
+        );
         assert_eq!(session.compactions.len(), 1);
         assert_eq!(session.compactions[0].compacted_message_count, 2);
     }
@@ -1118,8 +1201,14 @@ mod tests {
         assert_eq!(loaded.compactions.len(), 1);
         assert_eq!(loaded.compactions[0].summary, "summary");
         assert_eq!(loaded.events.len(), 2);
-        assert!(matches!(loaded.events[0], SessionEvent::MessageAppended { .. }));
-        assert!(matches!(loaded.events[1], SessionEvent::CompactionApplied { .. }));
+        assert!(matches!(
+            loaded.events[0],
+            SessionEvent::MessageAppended { .. }
+        ));
+        assert!(matches!(
+            loaded.events[1],
+            SessionEvent::CompactionApplied { .. }
+        ));
     }
 
     #[test]
@@ -1169,12 +1258,18 @@ mod tests {
         let mut source = SessionRecord::new(Path::new("."));
         source.push_message(Message::user("parent"));
         let mut fork = crate::checkpoint::fork_session(&source, Path::new("."));
-        assert_eq!(fork.meta.parent_session_id.as_deref(), Some(source.meta.id.as_str()));
+        assert_eq!(
+            fork.meta.parent_session_id.as_deref(),
+            Some(source.meta.id.as_str())
+        );
         assert_eq!(fork.meta.parent_sequence, Some(source.event_sequence));
         fork.push_message(Message::assistant("branch"));
 
         let view = fork.view();
-        assert_eq!(view.active_branch_id.as_deref(), Some(fork.meta.id.as_str()));
+        assert_eq!(
+            view.active_branch_id.as_deref(),
+            Some(fork.meta.id.as_str())
+        );
         assert_eq!(view.active_path_start_sequence, Some(1));
         assert_eq!(view.active_events.len(), 3);
         let projected = serde_json::to_string(&view.messages).unwrap();
@@ -1196,12 +1291,18 @@ mod tests {
         let view = second.view();
         let projected = serde_json::to_string(&view.messages).unwrap();
 
-        assert_eq!(second.meta.parent_session_id.as_deref(), Some(first_id.as_str()));
+        assert_eq!(
+            second.meta.parent_session_id.as_deref(),
+            Some(first_id.as_str())
+        );
         assert!(projected.contains("root"));
         assert!(projected.contains("first branch"));
         assert!(projected.contains("second branch"));
         assert!(!projected.contains("sibling branch"));
-        assert_eq!(view.active_branch_id.as_deref(), Some(second.meta.id.as_str()));
+        assert_eq!(
+            view.active_branch_id.as_deref(),
+            Some(second.meta.id.as_str())
+        );
     }
 
     #[test]
@@ -1240,11 +1341,8 @@ mod tests {
         let view = session.view();
         assert_eq!(
             serde_json::to_string(&view.messages).unwrap(),
-            serde_json::to_string(&[
-                Message::user("before"),
-                Message::user("after rewind"),
-            ])
-            .unwrap(),
+            serde_json::to_string(&[Message::user("before"), Message::user("after rewind"),])
+                .unwrap(),
             "active events: {:?}, fallback: {:?}",
             view.active_events,
             view.fallback_reason,
@@ -1256,7 +1354,10 @@ mod tests {
         }));
         assert!(!view.used_materialized_fallback);
         assert!(session.events.len() >= 4);
-        assert!(matches!(session.events.last(), Some(SessionEvent::MessageAppended { .. })));
+        assert!(matches!(
+            session.events.last(),
+            Some(SessionEvent::MessageAppended { .. })
+        ));
     }
 
     #[test]
@@ -1308,9 +1409,47 @@ mod tests {
     #[test]
     fn empty_new_session_has_no_projection_fallback() {
         let session = SessionRecord::new(Path::new("."));
+        assert!(session.is_event_backed());
         let view = session.view();
         assert!(!view.used_materialized_fallback);
         assert!(!view.cache_drift_detected);
+        assert_eq!(view.fallback_reason, None);
+    }
+
+    #[test]
+    fn event_backed_projection_survives_empty_materialized_cache() {
+        let mut session = SessionRecord::new(Path::new("."));
+        session.push_message(Message::system("sys"));
+        session.push_message(Message::user("hello"));
+        let expected = session.view().messages;
+        session.messages.clear();
+
+        let view = session.view();
+        assert_eq!(
+            serde_json::to_vec(&view.messages).unwrap(),
+            serde_json::to_vec(&expected).unwrap(),
+        );
+        assert!(!view.used_materialized_fallback);
+        assert!(view.cache_drift_detected);
+    }
+
+    #[test]
+    fn legacy_cache_only_session_migrates_idempotently() {
+        let mut session = legacy_record(
+            Some("legacy"),
+            None,
+            None,
+            vec![Message::user("hello"), Message::assistant("reply")],
+        );
+        assert!(!session.is_event_backed());
+        assert!(session.migrate_to_event_backed());
+        assert!(!session.migrate_to_event_backed());
+        assert!(session.is_event_backed());
+        assert_eq!(session.events.len(), 2);
+        session.messages.clear();
+        let view = session.view();
+        assert_eq!(view.messages.len(), 2);
+        assert!(!view.used_materialized_fallback);
         assert_eq!(view.fallback_reason, None);
     }
 
@@ -1322,8 +1461,14 @@ mod tests {
 
         assert_eq!(session.messages.len(), 2);
         assert_eq!(session.events.len(), 2);
-        assert!(matches!(session.events[0], SessionEvent::MessageAppended { .. }));
-        assert!(matches!(session.events[1], SessionEvent::MessageAppended { .. }));
+        assert!(matches!(
+            session.events[0],
+            SessionEvent::MessageAppended { .. }
+        ));
+        assert!(matches!(
+            session.events[1],
+            SessionEvent::MessageAppended { .. }
+        ));
     }
 
     #[test]
@@ -1331,13 +1476,7 @@ mod tests {
         let mut session = SessionRecord::new(Path::new("."));
         session.push_message(Message::user("hello"));
         session.record_tool_call(Some("turn-1"), Some("step-1"), "call-1", "Read", "{}");
-        session.record_permission_decision(
-            Some("turn-1"),
-            Some("step-1"),
-            "call-1",
-            "Read",
-            true,
-        );
+        session.record_permission_decision(Some("turn-1"), Some("step-1"), "call-1", "Read", true);
         session.record_tool_result(
             Some("turn-1"),
             Some("step-1"),
@@ -1351,17 +1490,28 @@ mod tests {
         session.record_model_changed("test-model");
 
         assert_eq!(session.event_sequence, 6);
-        let sequences: Vec<u64> = session
-            .events
-            .iter()
-            .map(SessionEvent::sequence)
-            .collect();
+        let sequences: Vec<u64> = session.events.iter().map(SessionEvent::sequence).collect();
         assert_eq!(sequences, vec![1, 2, 3, 4, 5, 6]);
-        assert!(matches!(session.events[1], SessionEvent::ToolCall { ref turn_id, ref step_id, .. } if turn_id.as_deref() == Some("turn-1") && step_id.as_deref() == Some("step-1")));
-        assert!(matches!(session.events[2], SessionEvent::PermissionDecision { allowed: true, .. }));
-        assert!(matches!(session.events[3], SessionEvent::ToolResult { duration_ms: Some(12), .. }));
-        assert!(matches!(session.events[4], SessionEvent::ModeChanged { ref mode_id, .. } if mode_id == "plan"));
-        assert!(matches!(session.events[5], SessionEvent::ModelChanged { ref model, .. } if model == "test-model"));
+        assert!(
+            matches!(session.events[1], SessionEvent::ToolCall { ref turn_id, ref step_id, .. } if turn_id.as_deref() == Some("turn-1") && step_id.as_deref() == Some("step-1"))
+        );
+        assert!(matches!(
+            session.events[2],
+            SessionEvent::PermissionDecision { allowed: true, .. }
+        ));
+        assert!(matches!(
+            session.events[3],
+            SessionEvent::ToolResult {
+                duration_ms: Some(12),
+                ..
+            }
+        ));
+        assert!(
+            matches!(session.events[4], SessionEvent::ModeChanged { ref mode_id, .. } if mode_id == "plan")
+        );
+        assert!(
+            matches!(session.events[5], SessionEvent::ModelChanged { ref model, .. } if model == "test-model")
+        );
     }
 
     #[test]
@@ -1403,9 +1553,15 @@ mod tests {
         }"#;
         let mut session = parse_session_raw(raw, None).expect("parse legacy event");
         assert_eq!(session.event_sequence, 1);
-        assert!(matches!(session.events[0], SessionEvent::MessageAppended { sequence: 1, .. }));
+        assert!(matches!(
+            session.events[0],
+            SessionEvent::MessageAppended { sequence: 1, .. }
+        ));
         session.push_message(Message::assistant("reply"));
-        assert!(matches!(session.events[1], SessionEvent::MessageAppended { sequence: 2, .. }));
+        assert!(matches!(
+            session.events[1],
+            SessionEvent::MessageAppended { sequence: 2, .. }
+        ));
     }
 
     #[test]

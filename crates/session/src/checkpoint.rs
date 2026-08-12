@@ -66,8 +66,8 @@ pub fn save_checkpoint(session: &SessionRecord, reason: &str) -> Result<SessionC
 
 pub fn load_checkpoint(session_id: &str, checkpoint_id: &str) -> Result<SessionCheckpoint> {
     let path = checkpoints_dir(session_id).join(format!("{checkpoint_id}.json"));
-    let raw = fs::read_to_string(&path)
-        .with_context(|| format!("read checkpoint {}", path.display()))?;
+    let raw =
+        fs::read_to_string(&path).with_context(|| format!("read checkpoint {}", path.display()))?;
     serde_json::from_str(&raw).context("parse checkpoint")
 }
 
@@ -163,7 +163,9 @@ mod tests {
         assert_eq!(loaded.messages.len(), 2);
         restore_checkpoint(&mut session, &loaded);
         assert_eq!(session.messages.len(), 2);
-        assert!(matches!(session.events.last(), Some(SessionEvent::Rewound { checkpoint_id, .. }) if checkpoint_id == &cp.id));
+        assert!(
+            matches!(session.events.last(), Some(SessionEvent::Rewound { checkpoint_id, .. }) if checkpoint_id == &cp.id)
+        );
         match prev {
             Some(v) => env::set_var("ZENE_HOME", v),
             None => env::remove_var("ZENE_HOME"),

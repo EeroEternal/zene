@@ -1,19 +1,19 @@
+use crate::config::CompactionConfig;
 use anyhow::{bail, Context, Result};
 use tracing::info;
-use crate::config::CompactionConfig;
 use zene_llm::{ChatRequest, ChatResponse, Message, MessageKind, Role, ToolDefinition};
 
 use crate::model::ContextModel;
 
 use crate::hooks::ContextHooks;
-use crate::segment_store::CompactionSegmentWrite;
 use crate::input_ladder::{prepare_summary_input, InputLadderStage};
+use crate::segment_store::CompactionSegmentWrite;
 use crate::session::ContextSession;
-use crate::PrefireCache;
 use crate::tokens::{self, TokenEstimator};
 use crate::two_pass::{
     note_for_pass2, pass2_user_prompt, split_messages_for_two_pass, TWO_PASS_DEFAULT_SPLIT_FRACTION,
 };
+use crate::PrefireCache;
 
 const SUMMARY_SYSTEM_PROMPT: &str = "You summarize coding agent conversations. Preserve key user requests, files discussed or modified, tool outcomes, errors and fixes, and current task state. Prefer tight prose over verbatim dumps. Aim for a few hundred to a few thousand words.";
 
@@ -26,8 +26,7 @@ const TRUNCATE_ASSISTANT_TEXT_MAX_CHARS: usize = 1_200;
 pub const MIN_SUMMARY_SEED_CHARS: usize = 500;
 
 pub fn should_compact(estimated_tokens: u32, config: &CompactionConfig) -> bool {
-    let threshold =
-        (config.context_window_tokens as f32 * config.trigger_ratio).floor() as u32;
+    let threshold = (config.context_window_tokens as f32 * config.trigger_ratio).floor() as u32;
     estimated_tokens >= threshold
 }
 
@@ -108,10 +107,7 @@ pub fn is_degenerate_summary(summary: &str) -> bool {
 /// Find the last real user turn (non-empty content) for full-replace assembly.
 pub fn last_user_query_index(messages: &[Message]) -> Option<usize> {
     messages.iter().rposition(|m| {
-        m.role == Role::User
-            && m.content
-                .as_ref()
-                .is_some_and(|c| !c.trim().is_empty())
+        m.role == Role::User && m.content.as_ref().is_some_and(|c| !c.trim().is_empty())
     })
 }
 
@@ -493,7 +489,8 @@ pub fn truncate_old_message_bodies(
                 let Some(content) = message.content.as_ref() else {
                     continue;
                 };
-                if let Some(replacement) = truncate_message_body(content, max_assistant_text_chars) {
+                if let Some(replacement) = truncate_message_body(content, max_assistant_text_chars)
+                {
                     message.content = Some(replacement);
                     truncated += 1;
                 }
@@ -550,7 +547,9 @@ pub fn apply_slice_keep(messages: &mut Vec<Message>, tail_start: usize) -> usize
         .iter()
         .filter(|m| m.kind == Some(MessageKind::CompactionSummary))
         .count();
-    let removed = tail_start.saturating_sub(prefix_start).saturating_sub(summaries_kept);
+    let removed = tail_start
+        .saturating_sub(prefix_start)
+        .saturating_sub(summaries_kept);
     let sliced = build_sliced_messages(messages, tail_start);
     *messages = sliced;
     removed
@@ -634,8 +633,7 @@ fn try_slice_keep_compaction<S: ContextSession + ?Sized>(
     let plan = plan_compaction(session.messages(), config, estimator)?;
 
     let sliced = build_sliced_messages(session.messages(), plan.tail_start);
-    let tokens_after =
-        tokens::estimate_context(&sliced, tools, estimator) as u32;
+    let tokens_after = tokens::estimate_context(&sliced, tools, estimator) as u32;
     if should_compact(tokens_after, config) {
         return None;
     }
@@ -742,9 +740,7 @@ pub fn apply_steps_truncate_pass<S: ContextSession + ?Sized>(
             continue;
         }
         let kept: String = content.chars().take(STEPS_TOOL_RESULT_MAX_CHARS).collect();
-        message.content = Some(format!(
-            "{kept}…[steps-truncated {count} chars]"
-        ));
+        message.content = Some(format!("{kept}…[steps-truncated {count} chars]"));
         changed += 1;
     }
     if changed > 0 {
@@ -760,10 +756,7 @@ pub fn apply_compaction_to_messages(
     tail_start: usize,
     compacted_count: usize,
 ) {
-    let system = messages
-        .first()
-        .filter(|m| m.role == Role::System)
-        .cloned();
+    let system = messages.first().filter(|m| m.role == Role::System).cloned();
     let (last_user, recent) = match last_user_query_index(messages) {
         Some(idx) if idx >= tail_start => {
             let query = messages[idx].clone();
@@ -797,8 +790,7 @@ where
     F: Fn(ChatRequest) -> Fut,
     Fut: std::future::Future<Output = Result<ChatResponse>>,
 {
-    let tokens_before =
-        tokens::estimate_context(messages, tools, estimator) as u32;
+    let tokens_before = tokens::estimate_context(messages, tools, estimator) as u32;
 
     if let Some(result) = try_truncate_only_on_messages(messages, config, tools, estimator) {
         return Ok(Some(result));
@@ -834,7 +826,12 @@ where
         .content
         .unwrap_or_else(|| "(empty summary)".to_string());
 
-    apply_compaction_to_messages(messages, summary.clone(), plan.tail_start, plan.compacted_count);
+    apply_compaction_to_messages(
+        messages,
+        summary.clone(),
+        plan.tail_start,
+        plan.compacted_count,
+    );
     let tokens_after = tokens::estimate_context(messages, tools, estimator) as u32;
 
     info!(
@@ -1216,7 +1213,7 @@ mod tests {
             keep_recent_ratio: 0.25,
             context_window_tokens: 1000,
             min_keep_messages: 4,
-                    intra_steps_first: true,
+            intra_steps_first: true,
         };
         assert!(!should_compact(499, &config));
         assert!(should_compact(500, &config));
@@ -1230,7 +1227,7 @@ mod tests {
             keep_recent_ratio: 0.25,
             context_window_tokens: 200,
             min_keep_messages: 2,
-                    intra_steps_first: true,
+            intra_steps_first: true,
         };
         let messages: Vec<Message> = (0..30)
             .map(|i| user_msg(&format!("message {i}: {}", "x".repeat(200))))
@@ -1282,7 +1279,7 @@ mod tests {
             keep_recent_ratio: 0.5,
             context_window_tokens: 100,
             min_keep_messages: 2,
-                    intra_steps_first: true,
+            intra_steps_first: true,
         };
         let plan = plan_compaction(&messages, &config, &estimator()).expect("plan");
         assert!(plan.compacted_count >= 1);
@@ -1359,7 +1356,7 @@ mod tests {
             keep_recent_ratio: 0.25,
             context_window_tokens: 128_000,
             min_keep_messages: 20,
-                    intra_steps_first: true,
+            intra_steps_first: true,
         };
         let sub = subagent_compaction_config(&parent);
         assert_eq!(sub.context_window_tokens, 16_000);
@@ -1395,8 +1392,12 @@ mod tests {
         assert!(is_context_overflow_error(&anyhow::anyhow!(
             "maximum context length exceeded"
         )));
-        assert!(is_context_overflow_error(&anyhow::anyhow!("prompt is too long")));
-        assert!(!is_context_overflow_error(&anyhow::anyhow!("connection reset")));
+        assert!(is_context_overflow_error(&anyhow::anyhow!(
+            "prompt is too long"
+        )));
+        assert!(!is_context_overflow_error(&anyhow::anyhow!(
+            "connection reset"
+        )));
     }
 
     #[test]

@@ -5,6 +5,7 @@ members = [
     "crates/domain",
     "crates/db",
     "crates/acp-bridge",
+    "crates/runtime-client",
     "crates/github",
     "crates/git-broker",
 ]
@@ -40,6 +41,7 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 uuid = { version = "1", features = ["v4", "serde"] }
 zene-cloud-acp-bridge = { path = "crates/acp-bridge" }
+zene-cloud-runtime-client = { path = "crates/runtime-client" }
 zene-cloud-db = { path = "crates/db" }
 zene-cloud-domain = { path = "crates/domain" }
 zene-cloud-github = { path = "crates/github" }

@@ -16,8 +16,9 @@ use tracing::{error, info, warn};
 use tracing_subscriber::EnvFilter;
 use uuid::Uuid;
 use zene_cloud_acp_bridge::{
-    resolve_zene_bin, AcpBridge, AcpEvent, BridgeMsg, MockAgent, MockMsg, PermissionDecision,
+    resolve_zene_bin, AcpEvent, MockAgent, MockMsg, PermissionDecision,
 };
+use zene_cloud_runtime_client::{AcpRuntimeClient, RuntimeClient, RuntimeEvent};
 use zene_cloud_domain::{
     ApprovalRequest, ApprovalStatus, ClaimedRun, CloneAuthResponse, CreateApprovalRequest,
     LlmAuthResponse, RunStatus, WorkerCommand, WorkerCommandsResponse, WorkerEventRequest,
@@ -811,27 +812,20 @@ async fn run_with_real_acp(
         "injected ZENE_MAX_TURNS, ZENE_RUN_ID, and optional inference gateway for acp"
     );
 
-    let (bridge, mut msg_rx) = AcpBridge::spawn(zene_bin, workspace, yolo, &llm_env).await?;
-    let bridge = std::sync::Arc::new(tokio::sync::Mutex::new(Some(bridge)));
-
-    let (session_id, init_events) = {
-        let mut guard = bridge.lock().await;
-        let b = guard.as_mut().context("bridge missing")?;
-        b.initialize_and_new_session(workspace).await?
-    };
-    for event in init_events {
-        post_event(client, cli, run_id, event_to_req(event)).await?;
-    }
-
+    let runtime = Arc::new(
+        AcpRuntimeClient::connect(zene_bin, workspace, yolo, &llm_env)
+            .await
+            .context("connect runtime client")?,
+    );
     let client_bg = client.clone();
     let cli_api = cli.api_url.clone();
     let token = cli.worker_token.clone();
-    let bridge_bg = bridge.clone();
+    let runtime_bg = runtime.clone();
     let pump = tokio::spawn(async move {
-        while let Some(msg) = msg_rx.recv().await {
-            match msg {
-                BridgeMsg::Notification { raw, .. } => {
-                    let event = AcpEvent::from_notification(&raw);
+        while let Some(event) = runtime_bg.next_event().await {
+            match event {
+                RuntimeEvent::Initialized { event, .. }
+                | RuntimeEvent::Notification(event) => {
                     let _ = post_event_raw(
                         &client_bg,
                         &cli_api,
@@ -841,8 +835,7 @@ async fn run_with_real_acp(
                     )
                     .await;
                 }
-                BridgeMsg::ReverseRequest { id, method, params } => {
-                    let event = AcpEvent::from_reverse_request(&id, &method, &params);
+                RuntimeEvent::ApprovalRequest { id, method, params, event } => {
                     let _ = post_event_raw(
                         &client_bg,
                         &cli_api,
@@ -851,7 +844,6 @@ async fn run_with_real_acp(
                         event_to_req(event),
                     )
                     .await;
-
                     if method == "session/request_permission" {
                         let request_key = params
                             .pointer("/toolCall/toolCallId")
@@ -873,24 +865,19 @@ async fn run_with_real_acp(
                             Ok(d) => d,
                             Err(err) => {
                                 warn!(error = %err, "permission resolve failed");
-                                PermissionDecision {
-                                    option_id: "reject-once".into(),
-                                }
+                                PermissionDecision { option_id: "reject-once".into() }
                             }
                         };
-                        let mut guard = bridge_bg.lock().await;
-                        if let Some(b) = guard.as_mut() {
-                            let _ = b.respond(&id, decision.to_result()).await;
-                        }
+                        let _ = runtime_bg.respond_approval(&id, decision.to_result()).await;
                     } else {
-                        // Unsupported reverse requests: reject.
-                        let mut guard = bridge_bg.lock().await;
-                        if let Some(b) = guard.as_mut() {
-                            let _ = b
-                                .respond_error(&id, -32601, &format!("unsupported: {method}"))
-                                .await;
-                        }
+                        let _ = runtime_bg
+                            .reject_request(&id, -32601, &format!("unsupported: {method}"))
+                            .await;
                     }
+                }
+                RuntimeEvent::ChildExited => {
+                    info!(run_id = %run_id, "runtime child exited");
+                    break;
                 }
             }
         }
@@ -898,9 +885,8 @@ async fn run_with_real_acp(
 
     let cancelled = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     let last_activity = std::sync::Arc::new(tokio::sync::Mutex::new(tokio::time::Instant::now()));
-    let session_for_cancel = session_id.clone();
-    let bridge_cancel = bridge.clone();
     let cancel_flag = cancelled.clone();
+    let runtime_cancel = runtime.clone();
     let activity_cmd = last_activity.clone();
     let client_cmd = client.clone();
     let cli_cmd = cli.api_url.clone();
@@ -912,10 +898,7 @@ async fn run_with_real_acp(
                     for cmd in commands {
                         if cmd.kind == "cancel" {
                             cancel_flag.store(true, std::sync::atomic::Ordering::SeqCst);
-                            let mut guard = bridge_cancel.lock().await;
-                            if let Some(b) = guard.as_mut() {
-                                let _ = b.cancel(&session_for_cancel).await;
-                            }
+                            let _ = runtime_cancel.cancel().await;
                             return;
                         }
                         if cmd.kind == "prompt" {
@@ -932,11 +915,8 @@ async fn run_with_real_acp(
                                     RunStatus::Running,
                                 )
                                 .await;
-                                let mut guard = bridge_cancel.lock().await;
-                                if let Some(b) = guard.as_mut() {
-                                    if let Err(err) = b.prompt(&session_for_cancel, &text).await {
-                                        warn!(error = %err, "follow-up prompt failed");
-                                    }
+                                if let Err(err) = runtime_cancel.prompt(&text).await {
+                                    warn!(error = %err, "follow-up prompt failed");
                                 }
                                 {
                                     let mut ts = activity_cmd.lock().await;
@@ -962,13 +942,7 @@ async fn run_with_real_acp(
         }
     });
 
-    {
-        let mut guard = bridge.lock().await;
-        let b = guard.as_mut().context("bridge missing")?;
-        b.prompt(&session_id, &claimed.run.prompt)
-            .await
-            .context("session/prompt")?;
-    }
+    runtime.prompt(&claimed.run.prompt).await.context("session/prompt")?;
     {
         let mut ts = last_activity.lock().await;
         *ts = tokio::time::Instant::now();
@@ -993,16 +967,9 @@ async fn run_with_real_acp(
             info!(run_id = %run_id, "ending hold due to shutdown signal");
             break;
         }
-        {
-            let mut guard = bridge.lock().await;
-            if let Some(b) = guard.as_mut() {
-                if b.child_exited() {
-                    info!(run_id = %run_id, "acp child exited");
-                    break;
-                }
-            } else {
-                break;
-            }
+        if !runtime.is_alive().await {
+            info!(run_id = %run_id, "runtime child exited");
+            break;
         }
         let elapsed = {
             let ts = last_activity.lock().await;
@@ -1016,12 +983,7 @@ async fn run_with_real_acp(
     }
 
     cmd_task.abort();
-    {
-        let mut guard = bridge.lock().await;
-        if let Some(b) = guard.take() {
-            let _ = b.kill().await;
-        }
-    }
+    let _ = runtime.shutdown().await;
     pump.abort();
 
     if cancelled.load(std::sync::atomic::Ordering::SeqCst) {
@@ -1151,22 +1113,6 @@ fn heartbeat_loop(
             tokio::time::sleep(Duration::from_secs(20)).await;
         }
     })
-}
-
-async fn post_event(
-    client: &reqwest::Client,
-    cli: &Cli,
-    run_id: Uuid,
-    event: WorkerEventRequest,
-) -> Result<()> {
-    post_event_raw(
-        client,
-        &cli.api_url,
-        &cli.worker_token,
-        run_id,
-        event,
-    )
-    .await
 }
 
 async fn post_event_raw(

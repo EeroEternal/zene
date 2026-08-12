@@ -23,7 +23,11 @@ pub fn memory_root(_workdir: &Path) -> std::path::PathBuf {
     std::path::PathBuf::new()
 }
 
-pub fn ensure_memory_in_system(_messages: &mut [Message], _store: &dyn crate::memory_store::MemoryStore) {}
+pub fn ensure_memory_in_system(
+    _messages: &mut [Message],
+    _store: &dyn crate::memory_store::MemoryStore,
+) {
+}
 
 pub fn conversation_has_memory_context(_messages: &[Message]) -> bool {
     false
@@ -70,7 +74,9 @@ pub fn load_recent_memory(_workdir: &Path) -> Option<String> {
     None
 }
 
-pub fn load_recent_memory_from_store(_store: &dyn crate::memory_store::MemoryStore) -> Option<String> {
+pub fn load_recent_memory_from_store(
+    _store: &dyn crate::memory_store::MemoryStore,
+) -> Option<String> {
     None
 }
 
