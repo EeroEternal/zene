@@ -7,8 +7,7 @@ use async_trait::async_trait;
 use tracing::{info, warn};
 use zene_context::{
     publish_prefix, CompactionSegmentStore, CompactionSegmentWrite, ContextEvent,
-    ContextEventHandler, EventOutcome, FsCompactionSegmentStore, FsMemoryStore, MemoryStore,
-    run_memory_flush,
+    ContextEventHandler, EventOutcome, FsCompactionSegmentStore, FsMemoryStore, run_memory_flush,
 };
 use zene_llm::ChatClient;
 

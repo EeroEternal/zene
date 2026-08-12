@@ -13,8 +13,9 @@ use zene_llm::{ChatClient, ChatRequest, Message, StreamEvent, TokenUsage, ToolCa
 use zene_sandbox::{LocalSandbox, Sandbox};
 use zene_session::{
     fork_session, latest_checkpoint_id, load_checkpoint, restore_checkpoint, save_checkpoint,
-    AgentRecordWriter, RecordEntry, SessionRecord,
+    AgentRecordWriter, ExecutionCheckpointState, RecordEntry, SessionRecord,
 };
+pub use zene_session::{RecoveryDisposition, RecoveryExecution, RecoverySnapshot};
 use zene_tools::{
     shared_todo_store_from,
     SharedAskUserPrompter, SharedBackgroundTasks, SharedTodoStore, SharedPlanMode,
@@ -231,6 +232,30 @@ impl Agent {
         let active = self.is_plan_mode_active();
         self.tools
             .filter_definitions(|name| tool_visible_in_definitions(name, active))
+    }
+
+    pub(crate) fn execution_record_writer(&self) -> AgentRecordWriter {
+        self.record_writer.clone()
+    }
+
+    pub(crate) async fn record_runtime_checkpoint(
+        writer: &AgentRecordWriter,
+        session_id: &str,
+        state: ExecutionCheckpointState,
+        detail: Option<&str>,
+    ) -> Result<()> {
+        let suffix = detail.unwrap_or("shutdown");
+        writer.append_execution_checkpoint(&RecordEntry::ExecutionCheckpoint {
+            turn_id: session_id.to_string(),
+            step_id: None,
+            tool_call_id: None,
+            state,
+            idempotency_key: format!("runtime/{session_id}/{suffix}"),
+            context_epoch: None,
+            model_request_hash: None,
+            ts: chrono::Utc::now(),
+        })?;
+        Ok(())
     }
 
     pub async fn shutdown(&mut self) -> Result<()> {
@@ -553,6 +578,11 @@ impl Agent {
         let result = self.run_turn(user_input, &run_options, cancel.as_ref()).await;
 
         let steps = self.active_turn.as_ref().map(|t| t.step).unwrap_or(0);
+        let was_cancelled = cancel.is_some_and(|token| token.is_cancelled())
+            || result
+                .as_ref()
+                .err()
+                .is_some_and(|err| err.to_string().contains("aborted"));
         match &result {
             Ok(_) => {
                 info!(turn_id = %turn_id, steps, "turn_end");
@@ -580,6 +610,14 @@ impl Agent {
             }
         }
 
+        let terminal_state = if was_cancelled {
+            ExecutionCheckpointState::TurnCancelled
+        } else if result.is_ok() {
+            ExecutionCheckpointState::TurnCompleted
+        } else {
+            ExecutionCheckpointState::Failed
+        };
+        self.append_terminal_checkpoint(turn_id, terminal_state)?;
         zene_turn::end_turn(&mut self.active_turn);
         result
     }
@@ -983,12 +1021,136 @@ fn merge_event_handler(
         user_handler,
         runtime_handler,
     );
+    let scope = Arc::new(Mutex::new((None, None)));
     Some(Arc::new(move |event| {
+        {
+            let mut current = scope.lock();
+            match &event {
+                AgentEvent::TurnStart { turn_id } => {
+                    current.0 = Some(*turn_id);
+                    current.1 = None;
+                }
+                AgentEvent::StepBegin { turn_id, step_id, .. } => {
+                    current.0 = Some(*turn_id);
+                    current.1 = Some(*step_id);
+                }
+                AgentEvent::TurnEnd { .. } => current.1 = None,
+                _ => {}
+            }
+        }
         if let Some(entry) = record_entry_from_agent_event(&event) {
             let _ = record_writer.append(&entry);
         }
+        let (turn_id, step_id) = {
+            let current = scope.lock();
+            (current.0, current.1)
+        };
+        for checkpoint in execution_checkpoints_from_agent_event(&event, turn_id, step_id) {
+            let _ = record_writer.append_execution_checkpoint(&checkpoint);
+        }
         shared(event);
     }))
+}
+
+fn execution_checkpoints_from_agent_event(
+    event: &AgentEvent,
+    current_turn: Option<TurnId>,
+    current_step: Option<StepId>,
+) -> Vec<RecordEntry> {
+    let ts = chrono::Utc::now();
+    let turn_key = current_turn
+        .map(|id| id.to_string())
+        .unwrap_or_else(|| "unknown".into());
+    let step_key = current_step
+        .map(|id| id.to_string())
+        .unwrap_or_else(|| "unknown".into());
+    let checkpoint = match event {
+        AgentEvent::TurnStart { turn_id } => Some(RecordEntry::ExecutionCheckpoint {
+            turn_id: turn_id.to_string(),
+            step_id: None,
+            tool_call_id: None,
+            state: ExecutionCheckpointState::TurnStarted,
+            idempotency_key: format!("{turn_id}/turn/started"),
+            context_epoch: None,
+            model_request_hash: None,
+            ts,
+        }),
+        AgentEvent::StepBegin {
+            turn_id, step_id, ..
+        } => Some(RecordEntry::ExecutionCheckpoint {
+            turn_id: turn_id.to_string(),
+            step_id: Some(step_id.to_string()),
+            tool_call_id: None,
+            state: ExecutionCheckpointState::StepStarted,
+            idempotency_key: format!("{turn_id}/{step_id}/started"),
+            context_epoch: None,
+            model_request_hash: None,
+            ts,
+        }),
+        AgentEvent::ToolCall { id, .. } => Some(RecordEntry::ExecutionCheckpoint {
+            turn_id: turn_key.clone(),
+            step_id: current_step.map(|id| id.to_string()),
+            tool_call_id: Some(id.clone()),
+            state: ExecutionCheckpointState::ToolStarted,
+            idempotency_key: format!("tool/{turn_key}/{step_key}/{id}/started"),
+            context_epoch: None,
+            model_request_hash: None,
+            ts,
+        }),
+        AgentEvent::ToolResult { id, .. } => Some(RecordEntry::ExecutionCheckpoint {
+            turn_id: turn_key.clone(),
+            step_id: current_step.map(|id| id.to_string()),
+            tool_call_id: Some(id.clone()),
+            state: ExecutionCheckpointState::ToolCompleted,
+            idempotency_key: format!("tool/{turn_key}/{step_key}/{id}/completed"),
+            context_epoch: None,
+            model_request_hash: None,
+            ts,
+        }),
+        AgentEvent::TurnEnd { .. } => None,
+        AgentEvent::Error { message } => Some(RecordEntry::ExecutionCheckpoint {
+            turn_id: turn_key.clone(),
+            step_id: current_step.map(|id| id.to_string()),
+            tool_call_id: None,
+            state: ExecutionCheckpointState::Failed,
+            idempotency_key: format!("error/{turn_key}/{step_key}/{message}"),
+            context_epoch: None,
+            model_request_hash: None,
+            ts,
+        }),
+        AgentEvent::TextDelta { .. }
+        | AgentEvent::ThoughtDelta { .. }
+        | AgentEvent::ModeChanged { .. }
+        | AgentEvent::UsageUpdate { .. }
+        | AgentEvent::SteerInput { .. } => None,
+    };
+    checkpoint.into_iter().collect()
+}
+
+impl Agent {
+    fn append_terminal_checkpoint(
+        &self,
+        turn_id: TurnId,
+        state: ExecutionCheckpointState,
+    ) -> Result<()> {
+        let state_name = match &state {
+            ExecutionCheckpointState::TurnCancelled => "cancelled",
+            ExecutionCheckpointState::TurnCompleted => "completed",
+            ExecutionCheckpointState::Failed => "failed",
+            _ => "terminal",
+        };
+        self.record_writer.append_execution_checkpoint(&RecordEntry::ExecutionCheckpoint {
+            turn_id: turn_id.to_string(),
+            step_id: None,
+            tool_call_id: None,
+            state,
+            idempotency_key: format!("{turn_id}/turn/{state_name}"),
+            context_epoch: Some(self.context.epoch()),
+            model_request_hash: None,
+            ts: chrono::Utc::now(),
+        })?;
+        Ok(())
+    }
 }
 
 fn record_entry_from_agent_event(event: &AgentEvent) -> Option<RecordEntry> {
@@ -1036,5 +1198,57 @@ fn record_entry_from_agent_event(event: &AgentEvent) -> Option<RecordEntry> {
         | AgentEvent::SteerInput { .. }
         | AgentEvent::ModeChanged { .. }
         | AgentEvent::UsageUpdate { .. } => None,
+    }
+}
+
+#[cfg(test)]
+mod execution_checkpoint_tests {
+    use super::*;
+    use zene_session::ExecutionCheckpointState;
+
+    #[test]
+    fn checkpoint_projection_preserves_turn_step_and_tool_scope() {
+        let turn_id = TurnId::new();
+        let step_id = StepId::new();
+        let turn_text = turn_id.to_string();
+        let step_text = step_id.to_string();
+        let tool_id = "call-1";
+        let checkpoints = execution_checkpoints_from_agent_event(
+            &AgentEvent::ToolCall {
+                id: tool_id.into(),
+                name: "Read".into(),
+                arguments: "{}".into(),
+            },
+            Some(turn_id),
+            Some(step_id),
+        );
+        assert_eq!(checkpoints.len(), 1);
+        let RecordEntry::ExecutionCheckpoint {
+            turn_id: recorded_turn,
+            step_id: recorded_step,
+            tool_call_id,
+            state,
+            idempotency_key,
+            ..
+        } = &checkpoints[0] else {
+            panic!("expected execution checkpoint");
+        };
+        assert_eq!(recorded_turn, &turn_text);
+        assert_eq!(recorded_step.as_deref(), Some(step_text.as_str()));
+        assert_eq!(tool_call_id.as_deref(), Some(tool_id));
+        assert_eq!(state, &ExecutionCheckpointState::ToolStarted);
+        assert!(idempotency_key.contains(tool_id));
+        assert!(idempotency_key.contains(&turn_text));
+        assert!(idempotency_key.contains(&step_text));
+    }
+
+    #[test]
+    fn non_boundary_stream_events_do_not_create_execution_checkpoints() {
+        let checkpoints = execution_checkpoints_from_agent_event(
+            &AgentEvent::TextDelta { delta: "hi".into() },
+            None,
+            None,
+        );
+        assert!(checkpoints.is_empty());
     }
 }

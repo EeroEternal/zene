@@ -411,7 +411,10 @@ pub fn ensure_zene_home() -> Result<()> {
     Ok(())
 }
 
-pub use record::{export_session, record_path, session_record_dir, AgentRecordWriter, RecordEntry};
+pub use record::{
+    export_session, record_path, session_record_dir, AgentRecordWriter, ExecutionCheckpointState,
+    RecoveryDisposition, RecoveryExecution, RecoverySnapshot, RecordEntry,
+};
 
 #[cfg(test)]
 pub(crate) static ZENE_HOME_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());

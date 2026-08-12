@@ -16,6 +16,8 @@ use tokio::task::{JoinError, JoinHandle};
 use tokio_util::sync::CancellationToken;
 
 use zene_permission::PromptChoice;
+use zene_session::{AgentRecordWriter, ExecutionCheckpointState};
+use crate::{RecoveryDisposition, RecoverySnapshot};
 use zene_turn::{
     EventSequence, RuntimeEvent, RuntimeEventHandler, RuntimeEventKind, SessionId, SteerBuffer,
     TurnId,
@@ -96,11 +98,13 @@ pub struct RuntimeHandle {
     commands: mpsc::Sender<RuntimeMessage>,
     events: broadcast::Sender<RuntimeEvent>,
     state: watch::Receiver<ExecutionState>,
+    record_writer: AgentRecordWriter,
 }
 
 impl RuntimeHandle {
     /// Spawn an actor that exclusively owns `agent`.
     pub fn spawn(agent: Agent) -> (Self, JoinHandle<Result<()>>) {
+        let record_writer = agent.execution_record_writer();
         let (commands, command_rx) = mpsc::channel(32);
         let (events, _) = broadcast::channel(256);
         let (state_tx, state) = watch::channel(ExecutionState::Idle);
@@ -108,8 +112,15 @@ impl RuntimeHandle {
             commands,
             events: events.clone(),
             state,
+            record_writer: record_writer.clone(),
         };
-        let task = tokio::spawn(run_actor(agent, command_rx, events, state_tx));
+        let task = tokio::spawn(run_actor(
+            agent,
+            record_writer,
+            command_rx,
+            events,
+            state_tx,
+        ));
         (handle, task)
     }
 
@@ -184,6 +195,16 @@ impl RuntimeHandle {
     pub fn state(&self) -> watch::Receiver<ExecutionState> {
         self.state.clone()
     }
+
+    /// Read the durable recovery view without starting or replaying execution.
+    pub fn recovery_snapshot(&self) -> Result<RecoverySnapshot> {
+        self.record_writer.recovery_snapshot()
+    }
+
+    /// Classify durable recovery state without starting or replaying execution.
+    pub fn recovery_disposition(&self) -> Result<RecoveryDisposition> {
+        Ok(self.recovery_snapshot()?.disposition())
+    }
 }
 
 struct PendingPrompt {
@@ -204,6 +225,7 @@ enum ActivePoll {
 
 async fn run_actor(
     agent: Agent,
+    record_writer: AgentRecordWriter,
     mut commands: mpsc::Receiver<RuntimeMessage>,
     events: broadcast::Sender<RuntimeEvent>,
     state: watch::Sender<ExecutionState>,
@@ -222,6 +244,13 @@ async fn run_actor(
                 while let Some(prompt) = queued.pop_front() {
                     let _ = prompt.reply.send(Err("runtime is shutting down".into()));
                 }
+                let _ = Agent::record_runtime_checkpoint(
+                    &record_writer,
+                    session_id.as_str(),
+                    ExecutionCheckpointState::RuntimeShutdown,
+                    Some("shutdown"),
+                )
+                .await;
                 let _ = state.send(ExecutionState::Shutdown);
                 if let Some(mut agent) = agent.take() {
                     agent.shutdown().await?;
@@ -306,6 +335,13 @@ async fn run_actor(
                         // The task owned the Agent; after a panic it cannot be
                         // recovered. Stop cleanly instead of panicking again
                         // in the shutdown path.
+                        let _ = Agent::record_runtime_checkpoint(
+                            &record_writer,
+                            session_id.as_str(),
+                            ExecutionCheckpointState::RuntimeFailed,
+                            Some("task_failed"),
+                        )
+                        .await;
                         let _ = state.send(ExecutionState::Shutdown);
                         return Ok(());
                     }
@@ -579,6 +615,60 @@ mod tests {
         let turn_id = TurnId::new();
         let state = ExecutionState::Running { turn_id, step: 2 };
         assert!(matches!(state, ExecutionState::Running { step: 2, .. }));
+    }
+
+    #[tokio::test]
+    async fn runtime_handle_reads_recovery_without_starting_execution() {
+        use chrono::Utc;
+        use tempfile::tempdir;
+        use zene_config::ZeneConfig;
+        use zene_sandbox::LocalSandbox;
+        use zene_session::{AgentRecordWriter, ExecutionCheckpointState, RecordEntry, SessionRecord};
+
+        let workdir = tempdir().expect("workdir");
+        let record_dir = tempdir().expect("record dir");
+        let session = SessionRecord::new(workdir.path());
+        let writer = AgentRecordWriter::from_path(record_dir.path().join("record.jsonl"))
+            .expect("record writer");
+        writer
+            .append(&RecordEntry::ExecutionCheckpoint {
+                turn_id: "turn-incomplete".into(),
+                step_id: None,
+                tool_call_id: None,
+                state: ExecutionCheckpointState::TurnStarted,
+                idempotency_key: "turn-incomplete/started".into(),
+                context_epoch: None,
+                model_request_hash: None,
+                ts: Utc::now(),
+            })
+            .expect("checkpoint");
+
+        let mut config = ZeneConfig::default();
+        config.provider = "anthropic".into();
+        config.anthropic_api_key = Some("test-key".into());
+        let agent = crate::AgentBuilder::new(
+            config,
+            LocalSandbox::new(workdir.path()),
+            session,
+            zene_permission::PermissionMode::BypassPermissions,
+        )
+        .without_mcp()
+        .record_writer(writer)
+        .build()
+        .await
+        .expect("build agent without network calls");
+        let (runtime, task) = RuntimeHandle::spawn(agent);
+
+        assert_eq!(
+            runtime.recovery_disposition().expect("recovery disposition"),
+            RecoveryDisposition::SafeToResume
+        );
+        assert!(runtime
+            .recovery_snapshot()
+            .expect("recovery snapshot")
+            .has_incomplete_execution());
+        runtime.shutdown().await.expect("shutdown");
+        task.await.expect("actor join").expect("actor result");
     }
 
     #[tokio::test]
