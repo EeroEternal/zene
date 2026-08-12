@@ -161,9 +161,9 @@ struct ProjectionExplain {
     /// 可选但对「可解释 context」极重要
     kept_event_ids: Vec<String>,
     summary_event_id: Option<String>,
-    injected: Vec<&'static str>, // "memory", "todos", "bg_tasks", …
+    injected: Vec<&'static str>, // 当前："compaction_summary", "system_reminder"；后续扩展 memory/todos/bg_tasks
     truncated_tools: usize,
-    delivery: DeliveryExplain,   // Full | Delta { tail_start }
+    delivery: DeliveryExplain,   // 当前 ACP：delivery + deliveryTailStart
     compact_reason: Option<String>,
 }
 
@@ -278,7 +278,8 @@ function project_llm(path, policy):
 
 - 只有 **稳定 prefix 集合** 变化才 `epoch++`（system 基座、compaction 边界、pinned 区）
 - 每步都变的 reminder（todos 计数、bg task）**尽量不 bump epoch**，避免 cache 抖动
-- `ProjectionExplain.injected` 标明本步装饰，供 UI / ACP 展示「模型额外看到了什么」
+- `ProjectionExplain.injected` 标明本步装饰，供 UI / ACP 展示「模型额外看到了什么」；当前已识别 `compaction_summary` 和 `system_reminder`
+- RuntimeEvent / ACP `projection_update` 当前暴露 `sourceEventCount`、`activeEventCount`、分支路径、fallback、`injected`、`delivery` 和 `deliveryTailStart`
 
 与现有 `pinned_boundary` / `PublishPrefix` / delta `tail_start` 一致：把「什么算 pinned prefix」写进投影契约，而不是散落在 assemble 细节里。见 [context-engine.md](./context-engine.md) Phase 3–5。
 

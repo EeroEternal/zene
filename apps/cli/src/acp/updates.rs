@@ -318,7 +318,14 @@ pub fn projection_ready_update(
     source_message_count: usize,
     projected_message_count: usize,
     source_event_count: usize,
+    active_event_count: usize,
     used_materialized_fallback: bool,
+    fallback_reason: Option<&str>,
+    active_branch_id: Option<&str>,
+    active_path_start_sequence: Option<u64>,
+    injected: &[String],
+    delivery: &str,
+    delivery_tail_start: Option<usize>,
     estimate_tokens: u32,
     context_epoch: u64,
 ) -> Value {
@@ -328,7 +335,14 @@ pub fn projection_ready_update(
             "sourceMessageCount": source_message_count,
             "projectedMessageCount": projected_message_count,
             "sourceEventCount": source_event_count,
+            "activeEventCount": active_event_count,
             "usedMaterializedFallback": used_materialized_fallback,
+            "fallbackReason": fallback_reason,
+            "activeBranchId": active_branch_id,
+            "activePathStartSequence": active_path_start_sequence,
+            "injected": injected,
+            "delivery": delivery,
+            "deliveryTailStart": delivery_tail_start,
             "estimateTokens": estimate_tokens,
             "contextEpoch": context_epoch,
         },
@@ -531,6 +545,32 @@ mod tests {
         assert_eq!(plan["sessionUpdate"], "plan");
         assert_eq!(plan["entries"][0]["content"], "Ship ACP");
         assert_eq!(plan["entries"][0]["status"], "in_progress");
+    }
+
+    #[test]
+    fn projection_update_exposes_projection_explain() {
+        let update = projection_ready_update(
+            8,
+            5,
+            12,
+            9,
+            false,
+            None,
+            Some("branch-1"),
+            Some(4),
+            &["compaction_summary".to_string(), "system_reminder".to_string()],
+            "delta",
+            Some(5),
+            321,
+            7,
+        );
+        assert_eq!(update["sessionUpdate"], "projection_update");
+        assert_eq!(update["_meta"]["activeEventCount"], 9);
+        assert_eq!(update["_meta"]["activeBranchId"], "branch-1");
+        assert_eq!(update["_meta"]["delivery"], "delta");
+        assert_eq!(update["_meta"]["deliveryTailStart"], 5);
+        assert_eq!(update["_meta"]["injected"][0], "compaction_summary");
+        assert_eq!(update["_meta"]["injected"][1], "system_reminder");
     }
 
     #[test]

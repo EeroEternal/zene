@@ -112,7 +112,11 @@ pub fn restore_checkpoint(session: &mut SessionRecord, checkpoint: &SessionCheck
     session.compactions = checkpoint.compactions.clone();
     session.context_window_usage = checkpoint.context_window_usage;
     session.context_tokens_used = checkpoint.context_tokens_used;
-    session.record_rewound_with_messages(&checkpoint.id, Some(checkpoint.messages.clone()));
+    session.record_rewound_with_target(
+        &checkpoint.id,
+        Some(checkpoint.event_sequence),
+        Some(checkpoint.messages.clone()),
+    );
     session.event_sequence = session.event_sequence.max(checkpoint.event_sequence);
     session.todos = checkpoint.todos.clone();
     session.meta.updated_at = Utc::now();
@@ -122,6 +126,8 @@ pub fn restore_checkpoint(session: &mut SessionRecord, checkpoint: &SessionCheck
 pub fn fork_session(session: &SessionRecord, workdir: &Path) -> SessionRecord {
     let mut forked = SessionRecord::new(workdir);
     forked.meta.title = format!("{} (fork)", session.meta.title);
+    forked.meta.parent_session_id = Some(session.meta.id.clone());
+    forked.meta.parent_sequence = Some(session.event_sequence);
     forked.messages = session.messages.clone();
     forked.events = session.events.clone();
     forked.event_sequence = session.event_sequence;

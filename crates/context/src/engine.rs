@@ -34,6 +34,25 @@ use crate::gateway::gateway_configured;
 use crate::gateway_stub::gateway_configured;
 use crate::two_pass;
 
+fn projection_injected_labels(messages: &[Message]) -> Vec<String> {
+    let mut labels = Vec::new();
+    if messages
+        .iter()
+        .any(|message| message.kind == Some(zene_llm::MessageKind::CompactionSummary))
+    {
+        labels.push("compaction_summary".to_string());
+    }
+    if messages.iter().any(|message| {
+        message
+            .content
+            .as_deref()
+            .is_some_and(|content| content.contains("<system-reminder>"))
+    }) {
+        labels.push("system_reminder".to_string());
+    }
+    labels
+}
+
 /// Builds a dedicated client for prefire pass1 (runtime-provided; avoids `ZeneConfig` in this crate).
 pub type PrefireClientFactory = Arc<
     dyn Fn() -> Pin<Box<dyn Future<Output = Result<ChatClient>> + Send>> + Send + Sync,
@@ -60,7 +79,16 @@ pub struct ProjectionExplain {
     pub source_message_count: usize,
     pub projected_message_count: usize,
     pub source_event_count: usize,
+    pub active_event_count: usize,
     pub used_materialized_fallback: bool,
+    pub fallback_reason: Option<String>,
+    pub active_branch_id: Option<String>,
+    pub active_path_start_sequence: Option<u64>,
+    /// Stable labels for projection decorations visible in the outbound messages.
+    /// Current labels include `compaction_summary` and `system_reminder`.
+    pub injected: Vec<String>,
+    pub delivery: DeliveryMode,
+    pub delivery_tail_start: Option<usize>,
     pub estimate_tokens: u32,
     pub context_epoch: u64,
 }
@@ -253,7 +281,19 @@ impl ContextEngine {
             source_message_count: view.messages.len(),
             projected_message_count: step.messages.len(),
             source_event_count: view.source_event_count,
+            active_event_count: view.active_events.len(),
             used_materialized_fallback: view.used_materialized_fallback,
+            fallback_reason: view
+                .fallback_reason
+                .map(|reason| reason.as_str().to_string()),
+            active_branch_id: view.active_branch_id,
+            active_path_start_sequence: view.active_path_start_sequence,
+            injected: projection_injected_labels(&step.messages),
+            delivery: match step.metadata.delivery {
+                zene_llm::ContextDelivery::Full => DeliveryMode::Full,
+                zene_llm::ContextDelivery::Delta => DeliveryMode::Delta,
+            },
+            delivery_tail_start: step.metadata.tail_start,
             estimate_tokens: step.estimate_tokens,
             context_epoch: step.metadata.context_epoch,
         };
@@ -467,7 +507,12 @@ impl ContextEngine {
         let mut events = Vec::new();
         if !*overflow_truncated {
             *overflow_truncated = true;
-            if apply_overflow_truncate_pass(deps.session, deps.compaction_config, deps.estimator) {
+            if apply_overflow_truncate_pass(
+                deps.session,
+                deps.compaction_config,
+                tools,
+                deps.estimator,
+            ) {
                 info!("context overflow: applied truncate pass before retry");
                 deps.session.ensure_system_message(deps.system_prompt);
                 return Ok(OverflowHandleResult {

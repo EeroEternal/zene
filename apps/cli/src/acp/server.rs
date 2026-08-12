@@ -774,14 +774,28 @@ fn project_runtime_event(
             source_message_count,
             projected_message_count,
             source_event_count,
+            active_event_count,
             used_materialized_fallback,
+            fallback_reason,
+            active_branch_id,
+            active_path_start_sequence,
+            injected,
+            delivery,
+            delivery_tail_start,
             estimate_tokens,
             context_epoch,
         } => Some(projection_ready_update(
             *source_message_count,
             *projected_message_count,
             *source_event_count,
+            *active_event_count,
             *used_materialized_fallback,
+            fallback_reason.as_deref(),
+            active_branch_id.as_deref(),
+            *active_path_start_sequence,
+            injected,
+            delivery,
+            *delivery_tail_start,
             *estimate_tokens,
             *context_epoch,
         )),
@@ -823,13 +837,16 @@ fn recovery_disposition_name(disposition: zene_session::RecoveryDisposition) -> 
 }
 
 fn recovery_metadata(snapshot: &RecoverySnapshot) -> Value {
-    let disposition = recovery_disposition_name(snapshot.disposition());
+    let plan = snapshot.plan();
+    let disposition = recovery_disposition_name(plan.disposition);
     json!({
         "disposition": disposition,
         "hasIncompleteExecution": snapshot.has_incomplete_execution(),
         "activeTurnCount": snapshot.active_turns.len(),
         "activeToolCount": snapshot.active_tools.len(),
-        "automaticResume": false,
+        "safeResumeAllowed": plan.safe_resume_allowed,
+        "automaticResume": plan.automatic_resume_implemented,
+        "reason": plan.reason,
     })
 }
 

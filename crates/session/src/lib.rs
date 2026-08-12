@@ -26,6 +26,12 @@ pub struct SessionMeta {
     pub workdir: String,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+    /// Parent session for a forked conversation. Optional for legacy sessions.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_session_id: Option<String>,
+    /// Last parent event included when this session was forked.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_sequence: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -171,9 +177,33 @@ pub enum SessionEvent {
         id: String,
         created_at: DateTime<Utc>,
         checkpoint_id: String,
+        /// Event sequence represented by the restored checkpoint. Older
+        /// sessions omit this and retain snapshot-only compatibility.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        target_sequence: Option<u64>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         messages_after: Option<Vec<Message>>,
     },
+}
+
+/// Why a session view had to use the materialized message cache.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProjectionFallbackReason {
+    NoEvents,
+    LegacyCompactionWithoutSnapshot,
+    LegacyRewindWithoutSnapshot,
+    IncompleteEventLog,
+}
+
+impl ProjectionFallbackReason {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::NoEvents => "no_events",
+            Self::LegacyCompactionWithoutSnapshot => "legacy_compaction_without_snapshot",
+            Self::LegacyRewindWithoutSnapshot => "legacy_rewind_without_snapshot",
+            Self::IncompleteEventLog => "incomplete_event_log",
+        }
+    }
 }
 
 /// Read-only conversation projection reconstructed from the active event path.
@@ -190,6 +220,7 @@ pub struct SessionView {
     pub active_path_start_sequence: Option<u64>,
     pub source_event_count: usize,
     pub used_materialized_fallback: bool,
+    pub fallback_reason: Option<ProjectionFallbackReason>,
 }
 
 impl SessionView {
@@ -221,7 +252,7 @@ impl SessionView {
             .as_ref()
             .map(|(branch_id, parent, _)| (Some(branch_id.clone()), Some(*parent)))
             .unwrap_or((None, None));
-        let active_events: Vec<SessionEvent> = match branch {
+        let branch_events: Vec<SessionEvent> = match branch {
             Some((_, parent_sequence, fork_sequence)) => events
                 .iter()
                 .filter(|event| {
@@ -232,9 +263,27 @@ impl SessionView {
                 .collect(),
             None => events.to_vec(),
         };
+        let rewind = branch_events.iter().rev().find_map(|event| match event {
+            SessionEvent::Rewound {
+                sequence,
+                target_sequence: Some(target_sequence),
+                ..
+            } => Some((*sequence, *target_sequence)),
+            _ => None,
+        });
+        let active_events: Vec<SessionEvent> = match rewind {
+            Some((rewind_sequence, target_sequence)) => branch_events
+                .into_iter()
+                .filter(|event| {
+                    let sequence = event.sequence();
+                    sequence <= target_sequence || sequence >= rewind_sequence
+                })
+                .collect(),
+            None => branch_events,
+        };
         let mut messages = Vec::new();
         let mut has_message_fact = false;
-        let mut used_materialized_fallback = false;
+        let mut fallback_reason = None;
         for event in &active_events {
             match event {
                 SessionEvent::MessageAppended { message, .. } => {
@@ -257,35 +306,44 @@ impl SessionView {
                     ..
                 } => {
                     has_message_fact = true;
-                    used_materialized_fallback = false;
+                    fallback_reason = None;
                     messages = snapshot.clone();
                 }
                 SessionEvent::CompactionApplied {
                     messages_after: None,
                     ..
                 } => {
-                    // A pre-Wave 10 compaction has no projection snapshot, so
-                    // replaying it would silently produce an incomplete view.
-                    used_materialized_fallback = true;
+                    fallback_reason = Some(ProjectionFallbackReason::LegacyCompactionWithoutSnapshot);
                 }
                 SessionEvent::Rewound {
                     messages_after: Some(snapshot),
                     ..
                 } => {
                     has_message_fact = true;
-                    used_materialized_fallback = false;
+                    fallback_reason = None;
                     messages = snapshot.clone();
                 }
                 SessionEvent::Rewound {
                     messages_after: None,
                     ..
-                } => used_materialized_fallback = true,
+                } => {
+                    fallback_reason = Some(ProjectionFallbackReason::LegacyRewindWithoutSnapshot);
+                }
                 _ => {}
             }
         }
-        if !has_message_fact || used_materialized_fallback {
+        if events.is_empty() {
+            fallback_reason = Some(ProjectionFallbackReason::NoEvents);
+        } else if !has_message_fact && fallback_reason.is_none() {
+            fallback_reason = Some(ProjectionFallbackReason::IncompleteEventLog);
+        } else if fallback_reason.is_none()
+            && serde_json::to_vec(&messages).ok() != serde_json::to_vec(fallback).ok()
+        {
+            fallback_reason = Some(ProjectionFallbackReason::IncompleteEventLog);
+        }
+        let used_materialized_fallback = fallback_reason.is_some();
+        if used_materialized_fallback {
             messages = fallback.to_vec();
-            used_materialized_fallback = true;
         }
         Self {
             messages,
@@ -295,6 +353,7 @@ impl SessionView {
             active_path_start_sequence,
             source_event_count: events.len(),
             used_materialized_fallback,
+            fallback_reason,
         }
     }
 }
@@ -395,6 +454,8 @@ impl SessionRecord {
                 workdir: workdir.display().to_string(),
                 created_at: now,
                 updated_at: now,
+                parent_session_id: None,
+                parent_sequence: None,
             },
             messages: Vec::new(),
             events: Vec::new(),
@@ -628,11 +689,21 @@ impl SessionRecord {
         checkpoint_id: &str,
         messages_after: Option<Vec<Message>>,
     ) {
+        self.record_rewound_with_target(checkpoint_id, None, messages_after);
+    }
+
+    pub fn record_rewound_with_target(
+        &mut self,
+        checkpoint_id: &str,
+        target_sequence: Option<u64>,
+        messages_after: Option<Vec<Message>>,
+    ) {
         self.append_event(SessionEvent::Rewound {
             sequence: 0,
             id: Uuid::new_v4().to_string(),
             created_at: Utc::now(),
             checkpoint_id: checkpoint_id.to_string(),
+            target_sequence,
             messages_after,
         });
         self.meta.updated_at = Utc::now();
@@ -913,6 +984,8 @@ fn legacy_record(
             workdir: workdir.unwrap_or(".").to_string(),
             created_at: now,
             updated_at: now,
+            parent_session_id: None,
+            parent_sequence: None,
         },
         messages,
         events: Vec::new(),
@@ -972,7 +1045,7 @@ pub fn ensure_zene_home() -> Result<()> {
 
 pub use record::{
     export_session, record_path, session_record_dir, AgentRecordWriter, ExecutionCheckpointState,
-    RecoveryDisposition, RecoveryExecution, RecoverySnapshot, RecordEntry,
+    RecoveryDisposition, RecoveryExecution, RecoveryPlan, RecoverySnapshot, RecordEntry,
 };
 
 #[cfg(test)]
@@ -1057,6 +1130,7 @@ mod tests {
         let view = session.view();
         assert!(!view.used_materialized_fallback);
         assert_eq!(view.source_event_count, session.events.len());
+        assert_eq!(view.active_events.len(), session.events.len());
         assert_eq!(
             serde_json::to_string(&view.messages).unwrap(),
             serde_json::to_string(&session.messages).unwrap(),
@@ -1064,10 +1138,36 @@ mod tests {
     }
 
     #[test]
+    fn compaction_projection_survives_session_reload() {
+        let mut session = SessionRecord::new(Path::new("."));
+        session.push_message(Message::system("sys"));
+        session.push_message(Message::user("before"));
+        session.push_message(Message::assistant("old reply"));
+        session.replace_messages_after_compaction("summary".into(), 1, 2);
+        session.push_message(Message::user("after reload"));
+
+        let before = session.view();
+        let raw = serde_json::to_string(&session).expect("serialize session");
+        let reloaded: SessionRecord = serde_json::from_str(&raw).expect("reload session");
+        let after = reloaded.view();
+
+        assert_eq!(
+            serde_json::to_vec(&before.messages).unwrap(),
+            serde_json::to_vec(&after.messages).unwrap()
+        );
+        assert_eq!(before.source_event_count, after.source_event_count);
+        assert_eq!(before.active_events.len(), after.active_events.len());
+        assert_eq!(before.fallback_reason, after.fallback_reason);
+        assert!(!after.used_materialized_fallback);
+    }
+
+    #[test]
     fn fork_projection_uses_parent_and_branch_local_events() {
         let mut source = SessionRecord::new(Path::new("."));
         source.push_message(Message::user("parent"));
         let mut fork = crate::checkpoint::fork_session(&source, Path::new("."));
+        assert_eq!(fork.meta.parent_session_id.as_deref(), Some(source.meta.id.as_str()));
+        assert_eq!(fork.meta.parent_sequence, Some(source.event_sequence));
         fork.push_message(Message::assistant("branch"));
 
         let view = fork.view();
@@ -1081,19 +1181,127 @@ mod tests {
     }
 
     #[test]
+    fn nested_fork_projection_keeps_each_branch_local_suffix() {
+        let mut root = SessionRecord::new(Path::new("."));
+        root.push_message(Message::user("root"));
+        let mut first = crate::checkpoint::fork_session(&root, Path::new("."));
+        first.push_message(Message::assistant("first branch"));
+        let first_id = first.meta.id.clone();
+
+        let mut second = crate::checkpoint::fork_session(&first, Path::new("."));
+        second.push_message(Message::assistant("second branch"));
+        let view = second.view();
+        let projected = serde_json::to_string(&view.messages).unwrap();
+
+        assert_eq!(second.meta.parent_session_id.as_deref(), Some(first_id.as_str()));
+        assert!(projected.contains("root"));
+        assert!(projected.contains("first branch"));
+        assert!(projected.contains("second branch"));
+        assert!(!projected.contains("sibling branch"));
+        assert_eq!(view.active_branch_id.as_deref(), Some(second.meta.id.as_str()));
+    }
+
+    #[test]
+    fn sibling_fork_projection_does_not_leak_other_branch_messages() {
+        let mut root = SessionRecord::new(Path::new("."));
+        root.push_message(Message::user("root"));
+        let mut left = crate::checkpoint::fork_session(&root, Path::new("."));
+        left.push_message(Message::assistant("left only"));
+        let mut right = crate::checkpoint::fork_session(&root, Path::new("."));
+        right.push_message(Message::assistant("right only"));
+
+        let left_view = left.view();
+        let right_view = right.view();
+        let left_json = serde_json::to_string(&left_view.messages).unwrap();
+        let right_json = serde_json::to_string(&right_view.messages).unwrap();
+        assert!(left_json.contains("left only"));
+        assert!(!left_json.contains("right only"));
+        assert!(right_json.contains("right only"));
+        assert!(!right_json.contains("left only"));
+    }
+
+    #[test]
     fn rewind_projection_keeps_prior_facts_and_resets_active_view() {
         let mut session = SessionRecord::new(Path::new("."));
         session.push_message(Message::user("before"));
         let checkpoint_messages = session.messages.clone();
+        let checkpoint_sequence = session.event_sequence;
         session.push_message(Message::assistant("later"));
-        session.record_rewound_with_messages("cp-1", Some(checkpoint_messages.clone()));
+        session.messages = checkpoint_messages.clone();
+        session.record_rewound_with_target(
+            "cp-1",
+            Some(checkpoint_sequence),
+            Some(checkpoint_messages.clone()),
+        );
+        session.push_message(Message::user("after rewind"));
         let view = session.view();
         assert_eq!(
             serde_json::to_string(&view.messages).unwrap(),
-            serde_json::to_string(&checkpoint_messages).unwrap(),
+            serde_json::to_string(&[
+                Message::user("before"),
+                Message::user("after rewind"),
+            ])
+            .unwrap(),
+            "active events: {:?}, fallback: {:?}",
+            view.active_events,
+            view.fallback_reason,
         );
-        assert!(session.events.len() >= 3);
-        assert!(matches!(session.events.last(), Some(SessionEvent::Rewound { .. })));
+        assert_eq!(view.active_events.len(), 3);
+        assert_eq!(view.active_events[0].sequence(), 1);
+        assert!(view.active_events.iter().all(|event| {
+            !matches!(event, SessionEvent::MessageAppended { message, .. } if message.content.as_deref() == Some("later"))
+        }));
+        assert!(!view.used_materialized_fallback);
+        assert!(session.events.len() >= 4);
+        assert!(matches!(session.events.last(), Some(SessionEvent::MessageAppended { .. })));
+    }
+
+    #[test]
+    fn legacy_projection_fallback_exposes_reason() {
+        let mut session = SessionRecord::new(Path::new("."));
+        session.messages = vec![Message::user("cached")];
+        session.events.push(SessionEvent::CompactionApplied {
+            sequence: 1,
+            id: "legacy-compact".into(),
+            created_at: Utc::now(),
+            entry: CompactionEntry {
+                id: "compact".into(),
+                created_at: Utc::now(),
+                summary: "old".into(),
+                compacted_message_count: 1,
+                reason: None,
+                tokens_before: None,
+                tokens_after: None,
+            },
+            messages_after: None,
+        });
+        let view = session.view();
+        assert!(view.used_materialized_fallback);
+        assert_eq!(
+            view.fallback_reason,
+            Some(ProjectionFallbackReason::LegacyCompactionWithoutSnapshot)
+        );
+        assert_eq!(
+            serde_json::to_vec(&view.messages).unwrap(),
+            serde_json::to_vec(&session.messages).unwrap()
+        );
+    }
+
+    #[test]
+    fn event_projection_detects_inconsistent_materialized_cache() {
+        let mut session = SessionRecord::new(Path::new("."));
+        session.push_message(Message::user("event fact"));
+        session.messages.push(Message::assistant("cache drift"));
+        let view = session.view();
+        assert!(view.used_materialized_fallback);
+        assert_eq!(
+            view.fallback_reason,
+            Some(ProjectionFallbackReason::IncompleteEventLog)
+        );
+        assert_eq!(
+            serde_json::to_vec(&view.messages).unwrap(),
+            serde_json::to_vec(&session.messages).unwrap()
+        );
     }
 
     #[test]

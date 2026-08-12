@@ -27,6 +27,7 @@ use zene_mcp::McpManager;
 mod agent_builder;
 mod agent_turn;
 mod context_config;
+mod model_executor;
 mod context_events;
 mod context_hooks;
 mod events;
@@ -426,6 +427,11 @@ impl Agent {
         };
         let checkpoint = load_checkpoint(&self.session.meta.id, &id)?;
         restore_checkpoint(&mut self.session, &checkpoint);
+        self.record_writer.append(&RecordEntry::Rewound {
+            checkpoint_id: checkpoint.id.clone(),
+            target_sequence: Some(checkpoint.event_sequence),
+            ts: chrono::Utc::now(),
+        })?;
         self.session.ensure_system_message(&self.system_prompt);
         if let Some(tokens) = self.session.context_tokens_used {
             self.context.restore_water_from_session(tokens);
@@ -716,7 +722,14 @@ impl Agent {
                 source_message_count: prepared.explain.source_message_count,
                 projected_message_count: prepared.explain.projected_message_count,
                 source_event_count: prepared.explain.source_event_count,
+                active_event_count: prepared.explain.active_event_count,
                 used_materialized_fallback: prepared.explain.used_materialized_fallback,
+                fallback_reason: prepared.explain.fallback_reason.clone(),
+                active_branch_id: prepared.explain.active_branch_id.clone(),
+                active_path_start_sequence: prepared.explain.active_path_start_sequence,
+                injected: prepared.explain.injected.clone(),
+                delivery: prepared.explain.delivery.as_str().to_string(),
+                delivery_tail_start: prepared.explain.delivery_tail_start,
                 estimate_tokens: prepared.explain.estimate_tokens,
                 context_epoch: prepared.explain.context_epoch,
             },
@@ -860,7 +873,7 @@ impl Agent {
 
         let mut stream = self.client.chat_stream(request).await?;
         let mut text = String::new();
-        let mut tool_calls: Vec<ToolCallBuilder> = Vec::new();
+        let mut tool_calls: Vec<model_executor::ToolCallBuilder> = Vec::new();
         let mut usage = None;
 
         while let Some(event) = stream.next().await {
@@ -896,18 +909,14 @@ impl Agent {
                     arguments,
                 } => {
                     while tool_calls.len() <= index {
-                        tool_calls.push(ToolCallBuilder::default());
+                        tool_calls.push(model_executor::ToolCallBuilder::default());
                     }
-                    let entry = &mut tool_calls[index];
-                    if let Some(id) = id {
-                        entry.id = id;
-                    }
-                    if let Some(name) = name {
-                        entry.name = name;
-                    }
-                    if let Some(arguments) = arguments {
-                        entry.arguments.push_str(&arguments);
-                    }
+                    model_executor::apply_tool_call_delta(
+                        &mut tool_calls[index],
+                        id,
+                        name,
+                        arguments,
+                    );
                 }
                 StreamEvent::Done { usage: step_usage } => {
                     usage = step_usage;
@@ -920,26 +929,7 @@ impl Agent {
             println!();
         }
 
-        let built_calls = normalize_tool_calls(
-            tool_calls
-                .into_iter()
-                .filter(|call| !call.name.is_empty())
-                .map(|call| ToolCall {
-                    id: call.id,
-                    name: call.name,
-                    arguments: call.arguments,
-                })
-                .collect(),
-        );
-
-        let message = if built_calls.is_empty() {
-            Message::assistant(text)
-        } else {
-            Message::assistant_with_tools(
-                if text.is_empty() { None } else { Some(text) },
-                built_calls,
-            )
-        };
+        let message = model_executor::assemble_message(text, tool_calls);
 
         Ok((message, usage))
     }
@@ -1065,36 +1055,6 @@ impl Agent {
             ts: chrono::Utc::now(),
         })
     }
-}
-
-#[derive(Default)]
-struct ToolCallBuilder {
-    id: String,
-    name: String,
-    arguments: String,
-}
-
-/// Streaming providers sometimes omit tool call ids; API follow-up turns require stable unique ids.
-fn normalize_tool_calls(calls: Vec<ToolCall>) -> Vec<ToolCall> {
-    let mut used_ids = std::collections::HashSet::new();
-    calls
-        .into_iter()
-        .enumerate()
-        .map(|(index, mut call)| {
-            if call.id.trim().is_empty() {
-                call.id = format!("call_{index}");
-            }
-            let base = call.id.clone();
-            let mut unique = base.clone();
-            let mut suffix = 0u32;
-            while !used_ids.insert(unique.clone()) {
-                suffix += 1;
-                unique = format!("{base}_{suffix}");
-            }
-            call.id = unique;
-            call
-        })
-        .collect()
 }
 
 fn merge_event_handler(

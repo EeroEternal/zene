@@ -82,7 +82,14 @@ pub fn runtime_event_handler(
                 source_message_count,
                 projected_message_count,
                 source_event_count,
+                active_event_count,
                 used_materialized_fallback,
+                fallback_reason,
+                active_branch_id,
+                active_path_start_sequence,
+                injected,
+                delivery,
+                delivery_tail_start,
                 estimate_tokens,
                 context_epoch,
             } => (
@@ -92,7 +99,14 @@ pub fn runtime_event_handler(
                     source_message_count: *source_message_count,
                     projected_message_count: *projected_message_count,
                     source_event_count: *source_event_count,
+                    active_event_count: *active_event_count,
                     used_materialized_fallback: *used_materialized_fallback,
+                    fallback_reason: fallback_reason.clone(),
+                    active_branch_id: active_branch_id.clone(),
+                    active_path_start_sequence: *active_path_start_sequence,
+                    injected: injected.clone(),
+                    delivery: delivery.clone(),
+                    delivery_tail_start: *delivery_tail_start,
                     estimate_tokens: *estimate_tokens,
                     context_epoch: *context_epoch,
                 },
@@ -150,7 +164,14 @@ pub enum AgentEvent {
         source_message_count: usize,
         projected_message_count: usize,
         source_event_count: usize,
+        active_event_count: usize,
         used_materialized_fallback: bool,
+        fallback_reason: Option<String>,
+        active_branch_id: Option<String>,
+        active_path_start_sequence: Option<u64>,
+        injected: Vec<String>,
+        delivery: String,
+        delivery_tail_start: Option<usize>,
         estimate_tokens: u32,
         context_epoch: u64,
     },
@@ -198,7 +219,14 @@ mod tests {
             source_message_count: 4,
             projected_message_count: 3,
             source_event_count: 7,
+            active_event_count: 5,
             used_materialized_fallback: false,
+            fallback_reason: None,
+            active_branch_id: Some("branch".into()),
+            active_path_start_sequence: Some(3),
+            injected: vec!["compaction_summary".into()],
+            delivery: "full".into(),
+            delivery_tail_start: None,
             estimate_tokens: 128,
             context_epoch: 2,
         });
@@ -209,17 +237,38 @@ mod tests {
         assert_eq!(events[3].sequence.value(), 4);
         assert_eq!(events[3].turn_id, Some(turn_id));
         assert_eq!(events[3].step_id, Some(step_id));
-        assert!(matches!(
-            events[3].kind,
+        match &events[3].kind {
             RuntimeEventKind::ProjectionReady {
-                source_message_count: 4,
-                projected_message_count: 3,
-                source_event_count: 7,
-                used_materialized_fallback: false,
-                estimate_tokens: 128,
-                context_epoch: 2,
+                source_message_count,
+                projected_message_count,
+                source_event_count,
+                active_event_count,
+                used_materialized_fallback,
+                fallback_reason,
+                active_branch_id,
+                active_path_start_sequence,
+                injected,
+                delivery,
+                delivery_tail_start,
+                estimate_tokens,
+                context_epoch,
+            } => {
+                assert_eq!(*source_message_count, 4);
+                assert_eq!(*projected_message_count, 3);
+                assert_eq!(*source_event_count, 7);
+                assert_eq!(*active_event_count, 5);
+                assert!(!used_materialized_fallback);
+                assert_eq!(fallback_reason, &None);
+                assert_eq!(active_branch_id.as_deref(), Some("branch"));
+                assert_eq!(*active_path_start_sequence, Some(3));
+                assert_eq!(injected, &["compaction_summary"]);
+                assert_eq!(delivery, "full");
+                assert_eq!(*delivery_tail_start, None);
+                assert_eq!(*estimate_tokens, 128);
+                assert_eq!(*context_epoch, 2);
             }
-        ));
+            other => panic!("unexpected runtime event: {other:?}"),
+        }
     }
 
     #[test]

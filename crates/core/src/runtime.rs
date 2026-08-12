@@ -16,7 +16,7 @@ use tokio::task::{JoinError, JoinHandle};
 use tokio_util::sync::CancellationToken;
 
 use zene_permission::PromptChoice;
-use zene_session::{AgentRecordWriter, ExecutionCheckpointState};
+use zene_session::{AgentRecordWriter, ExecutionCheckpointState, RecoveryPlan};
 use crate::{RecoveryDisposition, RecoverySnapshot};
 use zene_turn::{
     EventSequence, RuntimeEvent, RuntimeEventHandler, RuntimeEventKind, SessionId, SteerBuffer,
@@ -204,6 +204,11 @@ impl RuntimeHandle {
     /// Classify durable recovery state without starting or replaying execution.
     pub fn recovery_disposition(&self) -> Result<RecoveryDisposition> {
         Ok(self.recovery_snapshot()?.disposition())
+    }
+
+    /// Return the conservative recovery plan without starting execution.
+    pub fn recovery_plan(&self) -> Result<RecoveryPlan> {
+        Ok(self.recovery_snapshot()?.plan())
     }
 }
 

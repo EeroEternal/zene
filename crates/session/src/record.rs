@@ -65,6 +65,12 @@ pub enum RecordEntry {
         message: String,
         ts: DateTime<Utc>,
     },
+    /// Marks execution boundaries that were invalidated by a session rewind.
+    Rewound {
+        checkpoint_id: String,
+        target_sequence: Option<u64>,
+        ts: DateTime<Utc>,
+    },
     /// Durable execution boundary used for recovery and tool-call idempotency.
     #[serde(rename = "execution_checkpoint")]
     ExecutionCheckpoint {
@@ -81,6 +87,44 @@ pub enum RecordEntry {
         model_request_hash: Option<String>,
         ts: DateTime<Utc>,
     },
+}
+
+/// Explicit recovery decision and the reason automatic execution is or is not safe.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RecoveryPlan {
+    pub disposition: RecoveryDisposition,
+    pub active_turns: Vec<RecoveryExecution>,
+    pub active_tools: Vec<RecoveryExecution>,
+    /// Policy gate for a future explicit model-boundary resume command.
+    pub safe_resume_allowed: bool,
+    /// Automatic restart is intentionally disabled until resume execution exists.
+    pub automatic_resume_implemented: bool,
+    pub reason: String,
+}
+
+impl RecoverySnapshot {
+    pub fn plan(&self) -> RecoveryPlan {
+        let disposition = self.disposition();
+        let (safe_resume_allowed, reason) = match disposition {
+            RecoveryDisposition::Clean => (false, "no incomplete execution"),
+            RecoveryDisposition::AlreadyCompleted => (false, "latest execution is terminal"),
+            RecoveryDisposition::SafeToResume => (true, "only a model-boundary turn is open"),
+            RecoveryDisposition::RequiresToolInspection => {
+                (false, "a tool side effect has no durable completion boundary")
+            }
+            RecoveryDisposition::RequiresManualIntervention => {
+                (false, "runtime or execution failure requires operator review")
+            }
+        };
+        RecoveryPlan {
+            disposition,
+            active_turns: self.active_turns.clone(),
+            active_tools: self.active_tools.clone(),
+            safe_resume_allowed,
+            automatic_resume_implemented: false,
+            reason: reason.to_string(),
+        }
+    }
 }
 
 /// An execution boundary that remains open in the durable record.
@@ -247,7 +291,17 @@ impl AgentRecordWriter {
         let mut active_turns: HashMap<String, RecoveryExecution> = HashMap::new();
         let mut active_tools: HashMap<String, RecoveryExecution> = HashMap::new();
 
-        for (index, entry) in self.execution_checkpoints()?.into_iter().enumerate() {
+        for (index, entry) in self.read_all()?.into_iter().enumerate() {
+            if matches!(entry, RecordEntry::Rewound { .. }) {
+                // A rewind invalidates every open execution boundary from the
+                // abandoned path. Later checkpoints, if any, rebuild state.
+                active_turns.clear();
+                active_tools.clear();
+                snapshot.latest_checkpoint = None;
+                snapshot.latest_runtime_checkpoint = None;
+                snapshot.latest_runtime_state = None;
+                continue;
+            }
             let RecordEntry::ExecutionCheckpoint {
                 turn_id,
                 step_id,
@@ -536,6 +590,70 @@ mod tests {
         assert_eq!(RecoverySnapshot {
             active_turns: vec![turn], active_tools: vec![tool], ..RecoverySnapshot::default()
         }.disposition(), RecoveryDisposition::RequiresToolInspection);
+    }
+
+    #[test]
+    fn rewind_boundary_clears_open_recovery_state() {
+        with_temp_home(|| {
+            let writer = AgentRecordWriter::for_session("rewind-recovery").expect("writer");
+            let ts = Utc::now();
+            writer
+                .append(&RecordEntry::ExecutionCheckpoint {
+                    turn_id: "turn-1".into(),
+                    step_id: Some("step-1".into()),
+                    tool_call_id: Some("call-1".into()),
+                    state: ExecutionCheckpointState::ToolStarted,
+                    idempotency_key: "tool/start".into(),
+                    context_epoch: None,
+                    model_request_hash: None,
+                    ts,
+                })
+                .unwrap();
+            writer
+                .append(&RecordEntry::Rewound {
+                    checkpoint_id: "cp-1".into(),
+                    target_sequence: Some(3),
+                    ts,
+                })
+                .unwrap();
+            let snapshot = writer.recovery_snapshot().unwrap();
+            assert!(snapshot.active_turns.is_empty());
+            assert!(snapshot.active_tools.is_empty());
+            assert_eq!(snapshot.disposition(), RecoveryDisposition::Clean);
+            assert!(!snapshot.plan().safe_resume_allowed);
+            assert!(!snapshot.plan().automatic_resume_implemented);
+        });
+    }
+
+    #[test]
+    fn recovery_plan_explains_safe_and_unsafe_states() {
+        let safe = RecoverySnapshot {
+            active_turns: vec![RecoveryExecution {
+                checkpoint_index: 1,
+                turn_id: "turn".into(),
+                step_id: Some("step".into()),
+                tool_call_id: None,
+                state: ExecutionCheckpointState::TurnStarted,
+                idempotency_key: "turn/start".into(),
+                context_epoch: None,
+                model_request_hash: None,
+                ts: Utc::now(),
+            }],
+            ..RecoverySnapshot::default()
+        };
+        assert!(safe.plan().safe_resume_allowed);
+        assert!(!safe.plan().automatic_resume_implemented);
+        assert_eq!(safe.plan().reason, "only a model-boundary turn is open");
+
+        let unsafe_plan = RecoverySnapshot {
+            active_tools: vec![RecoveryExecution {
+                tool_call_id: Some("call".into()),
+                ..safe.active_turns[0].clone()
+            }],
+            ..safe
+        };
+        assert!(!unsafe_plan.plan().safe_resume_allowed);
+        assert!(unsafe_plan.plan().reason.contains("tool side effect"));
     }
 
     #[test]

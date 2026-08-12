@@ -668,19 +668,38 @@ fn try_slice_keep_compaction<S: ContextSession + ?Sized>(
 pub fn apply_overflow_truncate_pass<S: ContextSession + ?Sized>(
     session: &mut S,
     config: &CompactionConfig,
+    tools: &[ToolDefinition],
     estimator: &TokenEstimator,
 ) -> bool {
+    let tokens_before = estimate_session_tokens(session, tools, estimator);
     let Some(plan) = plan_compaction(session.messages(), config, estimator) else {
         return false;
     };
     let prefix_start = system_prefix_start(session.messages());
-    truncate_old_message_bodies(
+    let truncated = truncate_old_message_bodies(
         session.messages_mut(),
         prefix_start,
         plan.tail_start,
         TRUNCATE_TOOL_RESULT_MAX_CHARS,
         TRUNCATE_ASSISTANT_TEXT_MAX_CHARS,
-    ) > 0
+    );
+    if truncated == 0 {
+        return false;
+    }
+
+    let tokens_after = estimate_session_tokens(session, tools, estimator);
+    // Overflow truncation mutates the materialized cache, so record the exact
+    // post-mutation snapshot just like the regular compaction paths. Without
+    // this fact, the next event-backed projection would silently drift and
+    // fall back to the cache.
+    session.record_compaction_event(
+        "context_overflow_truncate",
+        truncated,
+        None,
+        Some(tokens_before),
+        Some(tokens_after),
+    );
+    true
 }
 
 pub fn subagent_compaction_config(parent: &CompactionConfig) -> CompactionConfig {
