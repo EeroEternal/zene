@@ -295,7 +295,7 @@ impl AgentBuilder {
         Ok(Agent {
             config: self.config,
             model_executor: Arc::new(crate::model_executor::ChatClientExecutor::new(Arc::clone(&client))),
-            client,
+            context_model: client,
             tools: Arc::new(tools),
             sandbox,
             session: self.session,

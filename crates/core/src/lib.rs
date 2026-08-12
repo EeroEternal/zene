@@ -97,7 +97,7 @@ pub use worktree::ensure_session_worktree;
 
 pub struct Agent {
     config: ZeneConfig,
-    client: Arc<ChatClient>,
+    context_model: Arc<dyn zene_context::ContextModel>,
     model_executor: Arc<dyn ModelExecutor>,
     tools: Arc<ToolRegistry>,
     sandbox: Arc<dyn Sandbox>,
@@ -332,9 +332,10 @@ impl Agent {
         self.context
             .set_window(self.config.compaction.context_window_tokens);
 
-        // Recreate the client
-        self.client = Arc::new(zene_llm::ChatClient::from_config(&self.config).await?);
-        self.model_executor = Arc::new(model_executor::ChatClientExecutor::new(Arc::clone(&self.client)));
+        // Recreate the client and context model.
+        let client = Arc::new(zene_llm::ChatClient::from_config(&self.config).await?);
+        self.context_model = client.clone();
+        self.model_executor = Arc::new(model_executor::ChatClientExecutor::new(client));
         self.config
             .persist_connection_settings()
             .context("save model settings to ~/.zene/config.toml")?;
@@ -354,7 +355,7 @@ impl Agent {
         let hooks = context_hooks::ZeneContextHooks::new(&self.session, &background_tasks);
         let compaction_config = context_config::context_compaction_config(&self.config.compaction);
         let mut handler = context_events::AgentContextHandler::new(
-            &self.client,
+            self.context_model.as_ref(),
             &self.config.model,
             self.sandbox.workdir(),
         );
@@ -363,7 +364,7 @@ impl Agent {
             &mut self.session,
             &compaction_config,
             &self.config.model,
-            &self.client,
+            self.context_model.as_ref(),
             Some(&hooks),
             &self.system_prompt,
             &estimator,
@@ -769,7 +770,7 @@ impl Agent {
         let hooks = context_hooks::ZeneContextHooks::new(&self.session, &background_tasks);
         let compaction_config = context_config::context_compaction_config(&self.config.compaction);
         let mut handler = context_events::AgentContextHandler::new(
-            &self.client,
+            self.context_model.as_ref(),
             &self.config.model,
             self.sandbox.workdir(),
         );
@@ -778,7 +779,7 @@ impl Agent {
             &mut self.session,
             &compaction_config,
             &self.config.model,
-            &self.client,
+            self.context_model.as_ref(),
             Some(&hooks),
             &self.system_prompt,
             &estimator,
@@ -904,7 +905,7 @@ impl Agent {
         let compaction_config =
             context_config::context_compaction_config(&self.config.compaction);
         let mut handler = context_events::AgentContextHandler::new(
-            &self.client,
+            self.context_model.as_ref(),
             &self.config.model,
             self.sandbox.workdir(),
         );
@@ -915,7 +916,7 @@ impl Agent {
                 &mut self.session,
                 &compaction_config,
                 &self.config.model,
-                &self.client,
+                self.context_model.as_ref(),
                 Some(&hooks),
                 &self.system_prompt,
                 &estimator,

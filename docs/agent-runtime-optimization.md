@@ -945,7 +945,7 @@ crates/
 
 1. **Conversation SoT 正在从过渡态收口**：`SessionEvent` 已覆盖 message、system prefix、compaction、tool call/result、permission、model change、branch/fork/rewind 等事实；完整事件日志现在优先于 `messages` cache，cache drift 仅作为诊断暴露。旧 session、无 snapshot 的 legacy compaction/rewind 和不完整事件日志仍需 materialized fallback。
 2. **Context 事件投影已进入过渡实现**：`observe / commit / project` 已拆分，`SessionView` 已选择 active branch path 并驱动 Context 只读 projection；当前已补充 rewind target boundary、active path 过滤、fork parent lineage、fallback reason，以及 `activeBranchId` / `activePathStartSequence` / `activeEventCount` explain；compaction 序列化 reload 等价测试已加入。`injected`、`delivery` 和 `deliveryTailStart` 已通过 RuntimeEvent/ACP 暴露；仍需继续移除旧 cache fallback，并补充 tool truncation/handle 与 kept-turn explain。
-3. **ModelExecutor 正在独立化**：Wave 11.1 已将 stream tool-call delta 累积、ID 规范化和 `Message` 组装移入 core 内部 `model_executor` seam；当前 `ModelExecutor` 请求边界和 `ChatClientExecutor` 默认适配器已覆盖 stream / non-stream 请求，`StreamAccumulator` 负责纯 stream assembly，`UsageAccumulator` 负责 turn usage 累积，并已有 fake executor 测试。`Agent` 仍保留 `ChatClient` 供 ContextModel 默认实现及 legacy wiring 使用；context preparation、Context water 写入和 usage 事件发布尚未完全抽离。
+3. **ModelExecutor 正在独立化**：Wave 11.1 已将 stream tool-call delta 累积、ID 规范化和 `Message` 组装移入 core 内部 `model_executor` seam；当前 `ModelExecutor` 请求边界和 `ChatClientExecutor` 默认适配器已覆盖 stream / non-stream 请求，`StreamAccumulator` 负责纯 stream assembly，`UsageAccumulator` 负责 turn usage 累积，并已有 fake executor 测试。`Agent` 已不再直接持有具体 `ChatClient`；ContextModel 与 ModelExecutor 分别承担 context complete 和 runtime stream/complete，context preparation、Context water 写入和 usage 事件发布尚未完全抽离。
 4. **Recovery 仍是安全计划评估**：`RecoveryDisposition` 与 `RecoveryPlan` 能区分 safe resume、tool inspection 和 manual intervention；rewind 会清除旧 execution 边界，但目前仍不会自动恢复未完成 turn、pending approval 或 crash 后的 tool step。
 5. **Cloud JobRunner / RuntimeClient 尚未完全解耦**：目标中的 Cloud Job → RuntimeClient → ACP client 分层仍需落地，Cloud 不应解析 ACP 的底层 session/update 语义。
 6. **Runtime 尚未拆成独立 crate**：`RuntimeHandle` 当前在 `zene-core`，`Agent` 仍是默认 wiring、运行状态和兼容 facade 的大型 composition root。
@@ -1063,7 +1063,8 @@ Wave 12  Execution resume 与 Cloud RuntimeClient
    - 已完成 usage snapshot 与 Context water 计算切片：`UsageSnapshot` 封装 usage 事件只读字段，`ContextWaterLevel::usage_update` 统一 provider usage 与估算值的持久化取值；
    - 已完成请求 executor 共享持有关系：Agent 通过 `Arc<dyn ModelExecutor>` 复用 `ChatClientExecutor`，模型配置切换时同步替换 client/executor；
    - 已完成 Context 模型边界切片：`zene-context::ContextModel` 只暴露 `complete(ChatRequest)`，compaction、memory flush、prefire factory 和 `ContextDeps` 不再要求具体 `ChatClient`；
-   - 继续抽离 ChatClient 持有关系、Context water 写入和 usage 事件编排；
+   - 已完成 Agent client 持有关系切片：Agent 仅保存 `Arc<dyn ContextModel>` 与 `Arc<dyn ModelExecutor>`，具体 `ChatClient` 只在 builder / model adapter 内部持有；
+   - 继续抽离 Context water 写入和 usage 事件编排；
    - 将 RuntimeHandle/command/event 逐步移入独立 runtime crate；
    - 保留 `zene-core::Agent` 作为默认 wiring 和兼容 facade。
 
