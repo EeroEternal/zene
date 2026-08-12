@@ -17,7 +17,7 @@ use zene_cloud_domain::{
     ApprovalRequest, ApprovalStatus, AuthResponse, CloneAuthResponse, CreateApprovalRequest,
     CreateRepositoryRequest, CreateRunRequest, LoginRequest, Organization, QueueActive, QueueHold,
     QueueStats, RegisterRequest, Repository, Run, RunEvent, RunMessage, RunStatus, User,
-    WorkerCommand,
+    WorkerCommand, WorkerFence,
 };
 
 #[derive(Clone)]
@@ -86,6 +86,10 @@ impl Db {
             (
                 "008_run_max_turns",
                 include_str!("../../../migrations/008_run_max_turns.sql"),
+            ),
+            (
+                "009_acp_session",
+                include_str!("../../../migrations/009_acp_session.sql"),
             ),
         ];
 
@@ -617,7 +621,7 @@ impl Db {
         &self,
         worker_id: &str,
         workspace_root: &Path,
-    ) -> Result<Option<(Run, Uuid, i64, String)>> {
+    ) -> Result<Option<(Run, Uuid, i64, Option<String>, String)>> {
         // Recover runs left mid-flight when a worker dies (common during long git clones).
         let _ = self.reclaim_stale_runs().await;
 
@@ -641,6 +645,15 @@ impl Db {
         .bind(run.id.to_string())
         .fetch_one(&mut *tx)
         .await?;
+        let resume_session_id = sqlx::query_scalar::<_, Option<String>>(
+            "SELECT acp_session_id FROM run_attempts
+             WHERE run_id = ? AND acp_session_id IS NOT NULL
+             ORDER BY attempt DESC LIMIT 1",
+        )
+        .bind(run.id.to_string())
+        .fetch_optional(&mut *tx)
+        .await?
+        .flatten();
         let generation = attempt;
         let now = Utc::now();
         let lease = now + Duration::seconds(60);
@@ -676,7 +689,85 @@ impl Db {
             .to_string();
         let mut run = self.get_run(run.id).await?.context("run missing after claim")?;
         run.status = RunStatus::Provisioning;
-        Ok(Some((run, attempt_id, generation, workspace_dir)))
+        Ok(Some((run, attempt_id, generation, resume_session_id, workspace_dir)))
+    }
+
+    pub async fn set_acp_session_id_fenced(
+        &self,
+        run_id: Uuid,
+        fence: &WorkerFence,
+        session_id: &str,
+    ) -> Result<()> {
+        self.validate_worker_fence_simple(run_id, fence).await?;
+        let result = sqlx::query(
+            "UPDATE run_attempts SET acp_session_id = ?
+             WHERE id = ? AND run_id = ? AND generation = ? AND worker_id = ? AND finished_at IS NULL",
+        )
+        .bind(session_id)
+        .bind(fence.attempt_id.to_string())
+        .bind(run_id.to_string())
+        .bind(fence.generation)
+        .bind(&fence.worker_id)
+        .execute(&self.pool)
+        .await?;
+        if result.rows_affected() != 1 {
+            bail!("stale_attempt: worker fence rejected ACP session update")
+        }
+        Ok(())
+    }
+
+    pub async fn update_run_status_fenced(
+        &self,
+        run_id: Uuid,
+        fence: &WorkerFence,
+        status: RunStatus,
+        head_sha: Option<String>,
+        failure_code: Option<String>,
+    ) -> Result<Run> {
+        let mut tx = self.pool.begin().await?;
+        self.validate_worker_fence(&mut tx, run_id, fence).await?;
+        let now = Utc::now();
+        let finished = if status.is_terminal() || matches!(status, RunStatus::Completed) {
+            Some(now.to_rfc3339())
+        } else {
+            None
+        };
+        sqlx::query(
+            "UPDATE runs
+             SET status = ?, status_version = status_version + 1, head_sha = COALESCE(?, head_sha),
+                 finished_at = COALESCE(?, finished_at)
+             WHERE id = ?",
+        )
+        .bind(status.as_str())
+        .bind(head_sha)
+        .bind(finished.clone())
+        .bind(run_id.to_string())
+        .execute(&mut *tx)
+        .await?;
+        sqlx::query(
+            "UPDATE run_attempts SET status = ?, failure_code = COALESCE(?, failure_code), finished_at = COALESCE(?, finished_at)
+             WHERE id = ? AND run_id = ? AND finished_at IS NULL",
+        )
+        .bind(status.as_str())
+        .bind(failure_code)
+        .bind(finished)
+        .bind(fence.attempt_id.to_string())
+        .bind(run_id.to_string())
+        .execute(&mut *tx)
+        .await?;
+        self.append_event_tx(
+            &mut tx,
+            run_id,
+            fence.generation,
+            Some(&format!("platform.status.{}", status.as_str())),
+            "platform",
+            serde_json::json!({ "event": "run.status", "status": status.as_str() }),
+        )
+        .await?;
+        tx.commit().await?;
+        self.get_run(run_id)
+            .await?
+            .context("run missing after status update")
     }
 
     pub async fn update_run_status(
@@ -726,6 +817,25 @@ impl Db {
         self.get_run(run_id)
             .await?
             .context("run missing after status update")
+    }
+
+    pub async fn heartbeat_fenced(&self, run_id: Uuid, fence: &WorkerFence) -> Result<()> {
+        let lease = Utc::now() + Duration::seconds(60);
+        let result = sqlx::query(
+            "UPDATE run_attempts SET lease_expires_at = ?
+             WHERE id = ? AND run_id = ? AND generation = ? AND worker_id = ? AND finished_at IS NULL",
+        )
+        .bind(lease.to_rfc3339())
+        .bind(fence.attempt_id.to_string())
+        .bind(run_id.to_string())
+        .bind(fence.generation)
+        .bind(&fence.worker_id)
+        .execute(&self.pool)
+        .await?;
+        if result.rows_affected() != 1 {
+            bail!("stale_attempt: worker fence rejected heartbeat")
+        }
+        Ok(())
     }
 
     pub async fn heartbeat(&self, run_id: Uuid, worker_id: &str) -> Result<()> {
@@ -819,6 +929,23 @@ impl Db {
         })
     }
 
+    pub async fn append_event_fenced(
+        &self,
+        run_id: Uuid,
+        fence: &WorkerFence,
+        source_event_id: Option<&str>,
+        event_type: &str,
+        payload: serde_json::Value,
+    ) -> Result<RunEvent> {
+        let mut tx = self.pool.begin().await?;
+        self.validate_worker_fence(&mut tx, run_id, fence).await?;
+        let event = self
+            .append_event_tx(&mut tx, run_id, fence.generation, source_event_id, event_type, payload)
+            .await?;
+        tx.commit().await?;
+        Ok(event)
+    }
+
     pub async fn append_event(
         &self,
         run_id: Uuid,
@@ -828,10 +955,26 @@ impl Db {
         payload: serde_json::Value,
     ) -> Result<RunEvent> {
         let mut tx = self.pool.begin().await?;
+        let event = self
+            .append_event_tx(&mut tx, run_id, attempt_generation, source_event_id, event_type, payload)
+            .await?;
+        tx.commit().await?;
+        Ok(event)
+    }
+
+    async fn append_event_tx(
+        &self,
+        tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+        run_id: Uuid,
+        attempt_generation: i64,
+        source_event_id: Option<&str>,
+        event_type: &str,
+        payload: serde_json::Value,
+    ) -> Result<RunEvent> {
         let next: (i64,) =
             sqlx::query_as("SELECT COALESCE(MAX(seq), 0) + 1 FROM run_events WHERE run_id = ?")
                 .bind(run_id.to_string())
-                .fetch_one(&mut *tx)
+                .fetch_one(&mut **tx)
                 .await?;
         let now = Utc::now();
         if let Some(source_id) = source_event_id {
@@ -842,10 +985,9 @@ impl Db {
             .bind(run_id.to_string())
             .bind(attempt_generation)
             .bind(source_id)
-            .fetch_optional(&mut *tx)
+            .fetch_optional(&mut **tx)
             .await?;
             if let Some((seq, event_type, payload_json, created_at)) = existing {
-                tx.commit().await?;
                 return Ok(RunEvent {
                     run_id,
                     seq,
@@ -868,9 +1010,8 @@ impl Db {
         .bind(event_type)
         .bind(payload.to_string())
         .bind(now.to_rfc3339())
-        .execute(&mut *tx)
+        .execute(&mut **tx)
         .await?;
-        tx.commit().await?;
         Ok(RunEvent {
             run_id,
             seq: next.0,
@@ -878,6 +1019,53 @@ impl Db {
             payload,
             created_at: now,
         })
+    }
+
+    async fn validate_worker_fence_simple(
+        &self,
+        run_id: Uuid,
+        fence: &WorkerFence,
+    ) -> Result<()> {
+        let row: Option<(i64, Option<String>, Option<String>)> = sqlx::query_as(
+            "SELECT generation, worker_id, finished_at FROM run_attempts
+             WHERE id = ? AND run_id = ?",
+        )
+        .bind(fence.attempt_id.to_string())
+        .bind(run_id.to_string())
+        .fetch_optional(&self.pool)
+        .await?;
+        match row {
+            Some((generation, Some(worker_id), None))
+                if generation == fence.generation && worker_id == fence.worker_id => Ok(()),
+            _ => bail!("stale_attempt: worker fence rejected ACP session update"),
+        }
+    }
+
+    async fn validate_worker_fence(
+        &self,
+        tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+        run_id: Uuid,
+        fence: &WorkerFence,
+    ) -> Result<()> {
+        let current: Option<(i64, Option<String>, Option<String>)> = sqlx::query_as(
+            "SELECT generation, worker_id, finished_at FROM run_attempts
+             WHERE id = ? AND run_id = ?",
+        )
+        .bind(fence.attempt_id.to_string())
+        .bind(run_id.to_string())
+        .fetch_optional(&mut **tx)
+        .await?;
+        let valid = current
+            .as_ref()
+            .is_some_and(|(generation, worker_id, finished_at)| {
+                *generation == fence.generation
+                    && worker_id.as_deref() == Some(fence.worker_id.as_str())
+                    && finished_at.is_none()
+            });
+        if !valid {
+            bail!("stale_attempt: worker fence rejected operation")
+        }
+        Ok(())
     }
 
     pub async fn events_after(&self, run_id: Uuid, after_seq: i64) -> Result<Vec<RunEvent>> {
@@ -1044,6 +1232,17 @@ impl Db {
             head_branch: run.head_branch,
             mock,
         })
+    }
+
+    pub async fn poll_worker_commands_fenced(
+        &self,
+        run_id: Uuid,
+        fence: &WorkerFence,
+    ) -> Result<Vec<WorkerCommand>> {
+        let mut tx = self.pool.begin().await?;
+        self.validate_worker_fence(&mut tx, run_id, fence).await?;
+        tx.commit().await?;
+        self.poll_worker_commands(run_id).await
     }
 
     pub async fn poll_worker_commands(&self, run_id: Uuid) -> Result<Vec<WorkerCommand>> {

@@ -513,19 +513,21 @@ impl SessionRecord {
 
     /// Migrate a legacy materialized session into the event-backed format.
     ///
-    /// This method is explicit and idempotent: callers can save the returned
-    /// record after deciding when migration should become durable. Existing
-    /// events are preserved; a cache-only legacy session receives one message
-    /// fact per materialized message.
+    /// Migration is explicit and idempotent. It is committed to `self` only
+    /// when the candidate can be projected without materialized fallback.
+    /// Legacy compaction, rewind, and incomplete event logs therefore remain
+    /// legacy records until a future migration can reconstruct their facts.
     pub fn migrate_to_event_backed(&mut self) -> bool {
         if self.is_event_backed() {
             return false;
         }
-        self.normalize_event_sequence();
-        if self.events.is_empty() {
-            let messages = self.messages.clone();
+
+        let mut candidate = self.clone();
+        candidate.normalize_event_sequence();
+        if candidate.events.is_empty() {
+            let messages = candidate.messages.clone();
             for message in messages {
-                self.append_event(SessionEvent::MessageAppended {
+                candidate.append_event(SessionEvent::MessageAppended {
                     sequence: 0,
                     id: Uuid::new_v4().to_string(),
                     created_at: Utc::now(),
@@ -533,8 +535,19 @@ impl SessionRecord {
                 });
             }
         }
-        self.conversation_schema_version = CURRENT_CONVERSATION_SCHEMA_VERSION;
-        self.meta.updated_at = Utc::now();
+
+        let view = SessionView::from_events_for_session(
+            &candidate.events,
+            &candidate.messages,
+            Some(&candidate.meta.id),
+        );
+        if view.used_materialized_fallback {
+            return false;
+        }
+
+        candidate.conversation_schema_version = CURRENT_CONVERSATION_SCHEMA_VERSION;
+        candidate.meta.updated_at = Utc::now();
+        *self = candidate;
         true
     }
 
@@ -955,12 +968,35 @@ impl SessionRecord {
         parse_session_raw(&raw, Some(id)).context("parse session file")
     }
 
-    /// Load a session and explicitly migrate legacy materialized records.
+    /// Load a session and explicitly attempt to migrate legacy materialized
+    /// records. Safe cache-only records are upgraded in memory; legacy
+    /// compaction/rewind or incomplete logs remain legacy for compatibility.
     /// The migrated record is not persisted until the caller invokes `save`.
     pub fn load_migrated(id: &str) -> Result<Self> {
         let mut session = Self::load(id)?;
         session.migrate_to_event_backed();
         Ok(session)
+    }
+
+    /// Load and persist a legacy migration at an explicit persistence boundary.
+    ///
+    /// The store is called only after migration succeeds. If persistence
+    /// fails, the error is returned and the loaded record is not returned as
+    /// migrated; stores should provide their own atomic-write guarantee when
+    /// needed. Retrying is safe because migration is idempotent.
+    pub fn load_migrated_with_store(id: &str, store: &dyn SessionStore) -> Result<Self> {
+        let mut session = Self::load(id)?;
+        if session.migrate_to_event_backed() {
+            session
+                .save_with_store(store)
+                .context("persist migrated session")?;
+        }
+        Ok(session)
+    }
+
+    /// Repair a legacy session using the default file store.
+    pub fn repair_legacy(id: &str) -> Result<Self> {
+        Self::load_migrated_with_store(id, &FileSessionStore)
     }
 }
 
@@ -1127,6 +1163,7 @@ pub fn ensure_zene_home() -> Result<()> {
 pub use record::{
     export_session, record_path, session_record_dir, AgentRecordWriter, ExecutionCheckpointState,
     RecordEntry, RecoveryDisposition, RecoveryExecution, RecoveryPlan, RecoverySnapshot,
+    ResumeCandidate,
 };
 
 #[cfg(test)]
@@ -1451,6 +1488,149 @@ mod tests {
         assert_eq!(view.messages.len(), 2);
         assert!(!view.used_materialized_fallback);
         assert_eq!(view.fallback_reason, None);
+    }
+
+    #[test]
+    fn legacy_compaction_does_not_migrate_without_snapshot() {
+        let mut session = legacy_record(
+            Some("legacy-compaction"),
+            None,
+            None,
+            vec![Message::user("cached")],
+        );
+        session.events.push(SessionEvent::CompactionApplied {
+            sequence: 1,
+            id: "compact-1".into(),
+            created_at: Utc::now(),
+            entry: CompactionEntry {
+                id: "entry-1".into(),
+                created_at: Utc::now(),
+                summary: "legacy summary".into(),
+                compacted_message_count: 1,
+                reason: None,
+                tokens_before: None,
+                tokens_after: None,
+            },
+            messages_after: None,
+        });
+        assert!(!session.migrate_to_event_backed());
+        assert!(!session.is_event_backed());
+        assert!(!session.migrate_to_event_backed());
+        assert!(session.view().used_materialized_fallback);
+    }
+
+    #[test]
+    fn legacy_rewind_does_not_migrate_without_snapshot() {
+        let mut session = legacy_record(
+            Some("legacy-rewind"),
+            None,
+            None,
+            vec![Message::user("cached")],
+        );
+        session.events.push(SessionEvent::Rewound {
+            sequence: 1,
+            id: "rewind-1".into(),
+            created_at: Utc::now(),
+            checkpoint_id: "checkpoint-1".into(),
+            target_sequence: None,
+            messages_after: None,
+        });
+        assert!(!session.migrate_to_event_backed());
+        assert!(!session.is_event_backed());
+        assert!(session.view().used_materialized_fallback);
+    }
+
+    #[test]
+    fn incomplete_legacy_event_log_does_not_migrate() {
+        let mut session = legacy_record(
+            Some("legacy-incomplete"),
+            None,
+            None,
+            vec![Message::user("cached")],
+        );
+        session.events.push(SessionEvent::TurnStarted {
+            sequence: 1,
+            id: "turn-1".into(),
+            turn_id: "turn-1".into(),
+            created_at: Utc::now(),
+            prompt: "cached".into(),
+        });
+        assert!(!session.migrate_to_event_backed());
+        assert!(!session.is_event_backed());
+        assert_eq!(
+            session.view().fallback_reason,
+            Some(ProjectionFallbackReason::IncompleteEventLog)
+        );
+    }
+
+    #[test]
+    fn load_migrated_with_store_persists_once_and_is_idempotent() {
+        let _guard = ZENE_HOME_TEST_LOCK.lock().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        std::env::set_var("ZENE_HOME", dir.path());
+        fs::create_dir_all(sessions_dir()).unwrap();
+
+        let legacy = legacy_record(
+            Some("repair-once"),
+            None,
+            None,
+            vec![Message::user("hello")],
+        );
+        fs::write(
+            session_path("repair-once"),
+            serde_json::to_string(&legacy).unwrap(),
+        )
+        .unwrap();
+
+        struct CountingStore(std::sync::Mutex<usize>);
+        impl SessionStore for CountingStore {
+            fn save(&self, session: &SessionRecord) -> Result<()> {
+                *self.0.lock().unwrap() += 1;
+                FileSessionStore.save(session)
+            }
+        }
+
+        let store = CountingStore(std::sync::Mutex::new(0));
+        let first = SessionRecord::load_migrated_with_store("repair-once", &store).unwrap();
+        assert!(first.is_event_backed());
+        let second = SessionRecord::load_migrated_with_store("repair-once", &store).unwrap();
+        assert!(second.is_event_backed());
+        assert_eq!(*store.0.lock().unwrap(), 1);
+        assert_eq!(SessionRecord::load("repair-once").unwrap().events.len(), 1);
+
+        std::env::remove_var("ZENE_HOME");
+    }
+
+    #[test]
+    fn failed_migration_persistence_leaves_legacy_file_unchanged() {
+        let _guard = ZENE_HOME_TEST_LOCK.lock().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        std::env::set_var("ZENE_HOME", dir.path());
+        fs::create_dir_all(sessions_dir()).unwrap();
+
+        let legacy = legacy_record(
+            Some("repair-fails"),
+            None,
+            None,
+            vec![Message::user("hello")],
+        );
+        let raw = serde_json::to_string(&legacy).unwrap();
+        fs::write(session_path("repair-fails"), &raw).unwrap();
+
+        struct FailingStore;
+        impl SessionStore for FailingStore {
+            fn save(&self, _session: &SessionRecord) -> Result<()> {
+                Err(anyhow::anyhow!("injected persistence failure"))
+            }
+        }
+
+        let error = SessionRecord::load_migrated_with_store("repair-fails", &FailingStore)
+            .expect_err("migration persistence should fail");
+        assert!(error.to_string().contains("persist migrated session"));
+        assert_eq!(fs::read_to_string(session_path("repair-fails")).unwrap(), raw);
+        assert!(!SessionRecord::load("repair-fails").unwrap().is_event_backed());
+
+        std::env::remove_var("ZENE_HOME");
     }
 
     #[test]

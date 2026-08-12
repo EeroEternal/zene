@@ -47,7 +47,8 @@ pub use config::{CompactionConfig, DEFAULT_CONTEXT_WINDOW_TOKENS};
 pub use context_water::ContextWaterLevel;
 pub use engine::{
     ContextDeps, ContextEngine, ContextObservation, ContextUsageUpdate, ForcedCompactResult,
-    OverflowHandleResult, PrefireClientFactory, PrepareStepResult, ProjectionExplain, StepContext,
+    InjectedSource, OverflowHandleResult, PrefireClientFactory, PrepareStepResult,
+    ProjectionExplain, StepContext, ToolOutputProvenance,
 };
 pub use event_handler::{
     write_compaction_segment_via, ContextEventHandler, EventOutcome, NoopContextEventHandler,

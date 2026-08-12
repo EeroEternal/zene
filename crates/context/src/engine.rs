@@ -5,6 +5,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 
 use anyhow::Result;
+use serde::{Deserialize, Serialize};
 use tracing::{info, warn};
 use zene_llm::{ContextMetadata, Message, TokenUsage, ToolDefinition};
 
@@ -62,10 +63,126 @@ fn projection_truncated_message_count(messages: &[Message]) -> usize {
         .iter()
         .filter(|message| {
             message.content.as_deref().is_some_and(|content| {
-                content.starts_with("[truncated ") || content.contains("…[steps-truncated ")
+                content.contains("[truncated ") || content.contains("…[steps-truncated ")
             })
         })
         .count()
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ToolOutputProvenance {
+    pub message_index: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_call_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_name: Option<String>,
+    /// Stable classification: `truncated` or `handle`.
+    pub kind: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub handle_reference: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct InjectedSource {
+    pub message_index: usize,
+    pub kind: String,
+    pub source: String,
+}
+
+fn tool_handle_reference(content: &str) -> Option<String> {
+    let marker = "[zene-tool-output path=\"";
+    let start = content.find(marker)? + marker.len();
+    let end = content[start..].find('\"')?;
+    Some(content[start..start + end].to_string())
+}
+
+fn saved_output_reference(content: &str) -> Option<String> {
+    let marker = "full output saved to ";
+    let start = content.find(marker)? + marker.len();
+    let reference = content[start..]
+        .split_whitespace()
+        .next()?
+        .trim_end_matches(['.', ',', ';', ']', ')']);
+    (!reference.is_empty()).then(|| reference.to_string())
+}
+
+fn projection_tool_output_provenance(messages: &[Message]) -> Vec<ToolOutputProvenance> {
+    messages
+        .iter()
+        .enumerate()
+        .filter_map(|(message_index, message)| {
+            if message.role != zene_llm::Role::Tool {
+                return None;
+            }
+            let content = message.content.as_deref()?;
+            let handle_reference = tool_handle_reference(content)
+                .or_else(|| saved_output_reference(content));
+            let kind = if content.contains("[zene-tool-output ") {
+                "handle"
+            } else if content.contains("[truncated ")
+                || content.contains("…[steps-truncated ")
+            {
+                "truncated"
+            } else {
+                return None;
+            };
+            Some(ToolOutputProvenance {
+                message_index,
+                tool_call_id: message.tool_call_id.clone(),
+                tool_name: message.name.clone(),
+                kind: kind.to_string(),
+                handle_reference,
+            })
+        })
+        .collect()
+}
+
+fn injected_source_kind(content: &str) -> Vec<&'static str> {
+    let lower = content.to_ascii_lowercase();
+    let mut sources = Vec::new();
+    if lower.contains("<memory-context>") {
+        sources.push("memory");
+    }
+    if lower.contains("todo") {
+        sources.push("todos");
+    }
+    if lower.contains("background") || lower.contains("task") {
+        sources.push("background_tasks");
+    }
+    if sources.is_empty() {
+        sources.push("system");
+    }
+    sources
+}
+
+fn projection_injected_sources(messages: &[Message]) -> Vec<InjectedSource> {
+    messages
+        .iter()
+        .enumerate()
+        .flat_map(|(message_index, message)| {
+            if message.kind == Some(zene_llm::MessageKind::CompactionSummary) {
+                return vec![InjectedSource {
+                    message_index,
+                    kind: "compaction_summary".to_string(),
+                    source: "compaction_event".to_string(),
+                }];
+            }
+            let Some(content) = message.content.as_deref() else {
+                return Vec::new();
+            };
+            if !content.contains("<system-reminder>") {
+                return Vec::new();
+            }
+            injected_source_kind(content)
+                .into_iter()
+                .map(|source| InjectedSource {
+                    message_index,
+                    kind: "system_reminder".to_string(),
+                    source: source.to_string(),
+                })
+                .collect()
+        })
+        .collect()
 }
 
 /// Builds a dedicated client for prefire pass1 (runtime-provided; avoids `ZeneConfig` in this crate).
@@ -120,6 +237,12 @@ pub struct ProjectionExplain {
     pub truncated_message_count: usize,
     /// Compaction event IDs contributing to the active projection.
     pub compaction_event_ids: Vec<String>,
+    /// Per-message provenance for bounded tool output.
+    pub tool_output_provenance: Vec<ToolOutputProvenance>,
+    /// Turn IDs represented by the active event path, in path order.
+    pub retained_turn_ids: Vec<String>,
+    /// Classification of injected projection decorations and their sources.
+    pub injected_sources: Vec<InjectedSource>,
     pub delivery: DeliveryMode,
     pub delivery_tail_start: Option<usize>,
     pub estimate_tokens: u32,
@@ -180,6 +303,46 @@ pub struct ContextEngine {
     pending_publish: bool,
     gateway_prefix_len: usize,
     initial_publish_done: bool,
+}
+
+#[cfg(test)]
+mod projection_tests {
+    use super::*;
+    use zene_llm::Message;
+
+    #[test]
+    fn detects_tool_truncation_and_handle_markers() {
+        let messages = vec![
+            Message::tool_result(
+                "call-1",
+                "Read",
+                "preview\n\n[truncated 42 bytes; full output saved to /tmp/out.txt.]",
+            ),
+            Message::tool_result(
+                "call-2",
+                "Bash",
+                "[zene-tool-output path=\"/tmp/handle.txt\" bytes=100]",
+            ),
+        ];
+        let provenance = projection_tool_output_provenance(&messages);
+        assert_eq!(provenance.len(), 2);
+        assert_eq!(provenance[0].kind, "truncated");
+        assert_eq!(provenance[0].handle_reference.as_deref(), Some("/tmp/out.txt"));
+        assert_eq!(provenance[1].kind, "handle");
+        assert_eq!(provenance[1].handle_reference.as_deref(), Some("/tmp/handle.txt"));
+    }
+
+    #[test]
+    fn classifies_injected_sources() {
+        let messages = vec![
+            Message::compaction_summary("summary"),
+            Message::user("<system-reminder>\n<memory-context>memory</memory-context>\nActive todos\n</system-reminder>"),
+        ];
+        let sources = projection_injected_sources(&messages);
+        assert_eq!(sources[0].source, "compaction_event");
+        assert_eq!(sources[1].source, "memory");
+        assert_eq!(sources[2].source, "todos");
+    }
 }
 
 impl ContextEngine {
@@ -637,10 +800,9 @@ impl ContextEngine {
         step: &StepContext,
     ) -> ProjectionExplain {
         let view = session.view();
-        let retained_turn_count = view
-            .active_events
-            .iter()
-            .filter_map(|event| match event {
+        let mut retained_turn_ids = Vec::new();
+        for event in &view.active_events {
+            let turn_id = match event {
                 zene_session::SessionEvent::TurnStarted { turn_id, .. }
                 | zene_session::SessionEvent::StepStarted { turn_id, .. }
                 | zene_session::SessionEvent::TurnEnded { turn_id, .. }
@@ -659,11 +821,14 @@ impl ContextEngine {
                 | zene_session::SessionEvent::PermissionDecision {
                     turn_id: Some(turn_id),
                     ..
-                } => Some(turn_id.as_str()),
-                _ => None,
-            })
-            .collect::<std::collections::BTreeSet<_>>()
-            .len();
+                } => turn_id,
+                _ => continue,
+            };
+            if !retained_turn_ids.iter().any(|id| id == turn_id) {
+                retained_turn_ids.push(turn_id.clone());
+            }
+        }
+        let retained_turn_count = retained_turn_ids.len();
         let compaction_event_ids = view
             .active_events
             .iter()
@@ -692,6 +857,9 @@ impl ContextEngine {
                 .saturating_sub(view.active_events.len()),
             truncated_message_count: projection_truncated_message_count(&step.messages),
             compaction_event_ids,
+            tool_output_provenance: projection_tool_output_provenance(&step.messages),
+            retained_turn_ids,
+            injected_sources: projection_injected_sources(&step.messages),
             delivery: match step.metadata.delivery {
                 zene_llm::ContextDelivery::Full => DeliveryMode::Full,
                 zene_llm::ContextDelivery::Delta => DeliveryMode::Delta,

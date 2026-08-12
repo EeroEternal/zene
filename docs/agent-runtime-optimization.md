@@ -943,12 +943,12 @@ crates/
 
 当前实现已经完成了控制面的大部分地基，但还不是最终的 `AgentRuntime + 可投影 Session` 架构：
 
-1. **Conversation SoT 正在从过渡态收口**：`SessionEvent` 已覆盖 message、system prefix、compaction、tool call/result、permission、model change、branch/fork/rewind 等事实；完整事件日志现在优先于 `messages` cache，cache drift 仅作为诊断暴露。旧 session、无 snapshot 的 legacy compaction/rewind 和不完整事件日志仍需 materialized fallback。
+1. **Conversation SoT 正在从过渡态收口**：`SessionEvent` 已覆盖 message、system prefix、compaction、tool call/result、permission、model change、branch/fork/rewind 等事实；完整事件日志现在优先于 `messages` cache，cache drift 仅作为诊断暴露。cache-only legacy session 已支持显式、幂等、加载边界迁移并在 ACP load/resume 中启用；缺少历史 snapshot 的 legacy compaction/rewind 和不完整事件日志仍保留明确的 materialized compatibility fallback。
 2. **Context 事件投影已进入过渡实现**：`observe / commit / project` 已拆分，`SessionView` 已选择 active branch path 并驱动 Context 只读 projection；当前已补充 rewind target boundary、active path 过滤、fork parent lineage、fallback reason，以及 `activeBranchId` / `activePathStartSequence` / `activeEventCount` explain；compaction 序列化 reload 等价测试已加入。`injected`、`delivery` 和 `deliveryTailStart` 已通过 RuntimeEvent/ACP 暴露；仍需继续移除旧 cache fallback，并补充 tool truncation/handle 与 kept-turn explain。
 3. **ModelExecutor 已完成独立 crate 第一切片**：`zene-model-executor` 提供 `ModelExecutor`、`ChatClientExecutor`、request builder、stream assembly、ID 规范化和 fake executor 测试；`zene-core` 保留兼容 re-export。`Agent` 已不再直接持有具体 `ChatClient`；ContextModel 与 ModelExecutor 分别承担 context complete 和 runtime stream/complete。仍需继续抽离 overflow policy、Context water 写入和 usage 事件编排。
 4. **Recovery 已支持显式 safe model-boundary resume 第一切片**：durable `TurnPrompt` 可生成 `ResumeCandidate`，新增 `ResumeSafeTurn`，只允许无 pending tool/approval 的 model-boundary turn，且通过 `TurnResumed` 幂等 checkpoint 后进入普通 pipeline；pending tool、approval 和 failure 仍必须 inspection/manual intervention，启动时仍不会盲目自动恢复。
-5. **Cloud RuntimeClient 已完成第一切片**：新增 `zene-cloud-runtime-client`，负责 ACP child、session、prompt/cancel、事件归一化和 approval response；worker real ACP 路径不再直接匹配 `BridgeMsg`。仍需补 reconnect/session resume、attempt/generation fencing 和完整 Cloud runtime integration tests。
-6. **Runtime 尚未拆成独立 crate**：`RuntimeHandle` 当前在 `zene-core`，`Agent` 仍是默认 wiring、运行状态和兼容 facade 的大型 composition root。
+5. **Cloud RuntimeClient 已完成第一切片**：新增 `zene-cloud-runtime-client`，负责 ACP child、session、prompt/cancel、事件归一化和 approval response；worker real ACP 路径不再直接匹配 `BridgeMsg`。attempt/generation 已贯通 worker status/event/heartbeat/command fencing，stale worker 不再覆盖 replacement attempt；ACP child failure 现在会立即释放 pending requests 并使 worker 进入失败路径；ACP session ID 已按 attempt 持久化，replacement claim 会调用 `session/resume`；仍需补 reconnect 事件 cursor 和可靠事件重试。
+6. **Runtime 边界已完成第一阶段拆分**：公共 command/state/response 协议位于 `zene-runtime`，Agent-specific actor 已移入 core 私有 `agent_runtime` 模块，`zene-core::RuntimeHandle` 保留兼容 facade；后续仍可继续抽离完整 Agent driver wiring 和 runtime event sink。
 7. **投影可观测性仍可扩展**：`ProjectionExplain` 已通过 RuntimeEvent 和 ACP `projection_update` 暴露 source/active event、分支路径、fallback、注入标签和 full/delta delivery 信息；`/context`、tool truncation/handle、保留 turn 等更细粒度信息仍需补齐。
 
 ### 15.3 完成标准
@@ -1048,7 +1048,7 @@ Wave 12  Execution resume 与 Cloud RuntimeClient
 2. **Wave 10：Event-backed Context Projection（P0，进行中）**
    - 已完成：`ContextSession::view` / `SessionView::from_events`，新 compaction/rewind 事件携带 projection snapshot；
    - 已完成：Context 的 observe/project 默认基于 event-backed view，`ProjectionExplain` 暴露 source event count、cache fallback 和 fallback reason；rewind target boundary 已用于 active path 过滤；
-   - 已完成：fallback reason、active branch ID、active path start sequence 和 active event count 通过 RuntimeEvent 和 ACP `projection_update` 暴露；
+   - 已完成：fallback reason、active branch ID、active path start sequence、active event count 和结构化 tool/injected/retained-turn provenance 通过 RuntimeEvent 和 ACP `projection_update` 暴露；
    - 已完成：fork parent lineage metadata，以及 nested/sibling fork projection regression tests；
    - 已完成：compaction 后 SessionRecord 序列化 reload 与 event-backed projection 等价测试；
    - 已完成：完整事件日志优先于 materialized cache；cache drift 通过 `cacheDriftDetected` 诊断，不再覆盖 event-backed projection；空的新 session 不再误报 fallback；
@@ -1073,7 +1073,7 @@ Wave 12  Execution resume 与 Cloud RuntimeClient
    - 已完成安全门控第一切片：`RecoveryPlan`、rewind execution boundary 和 ACP recovery metadata；
    - 已完成显式 safe model-boundary resume 第一切片；
    - 继续实现启动时安全恢复；对 pending tool / approval 强制 inspection，禁止不安全 replay；
-   - 已完成 Cloud JobRunner → RuntimeClient 第一层分离，继续补 reconnect、session resume 与统一 runtime event cursor；
+   - 已完成 Cloud JobRunner → RuntimeClient 第一层分离、attempt/generation fencing、ACP child failure propagation 和按 attempt 持久化的 session resume，继续补 reconnect 事件 cursor 与可靠事件重试；
    - 增加 worker restart、ACP reconnect 和 crash recovery 集成测试。
 
 5. **持续质量门槛**

@@ -258,7 +258,18 @@ pub struct ClaimedRun {
     pub run: Run,
     pub attempt_id: Id,
     pub generation: i64,
+    /// Existing ACP session to resume after a worker replacement, if available.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resume_session_id: Option<String>,
     pub workspace_dir: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkerFence {
+    pub attempt_id: Id,
+    pub generation: i64,
+    pub worker_id: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -293,6 +304,8 @@ pub struct WorkerEventRequest {
     pub source_event_id: String,
     pub event_type: String,
     pub payload: serde_json::Value,
+    #[serde(flatten)]
+    pub fence: Option<WorkerFence>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -301,6 +314,24 @@ pub struct WorkerStatusRequest {
     pub status: RunStatus,
     pub head_sha: Option<String>,
     pub failure_code: Option<String>,
+    #[serde(flatten)]
+    pub fence: Option<WorkerFence>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkerFenceRequest {
+    pub attempt_id: Id,
+    pub generation: i64,
+    pub worker_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkerAcpSessionRequest {
+    pub session_id: String,
+    #[serde(flatten)]
+    pub fence: Option<WorkerFence>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

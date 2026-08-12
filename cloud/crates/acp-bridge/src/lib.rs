@@ -139,10 +139,14 @@ impl AcpBridge {
             loop {
                 line.clear();
                 match reader.read_line(&mut line).await {
-                    Ok(0) => break,
+                    Ok(0) => {
+                        fail_pending(&pending_pump, "ACP child exited before responding").await;
+                        break;
+                    }
                     Ok(_) => {}
                     Err(err) => {
                         warn!(error = %err, "acp stdout read failed");
+                        fail_pending(&pending_pump, "ACP child stdout failed before responding").await;
                         break;
                     }
                 }
@@ -209,13 +213,7 @@ impl AcpBridge {
     }
 
     pub async fn initialize_and_new_session(&self, cwd: &Path) -> Result<(String, Vec<AcpEvent>)> {
-        let mut events = Vec::new();
-        let init = self.initialize().await?;
-        events.push(AcpEvent {
-            source_event_id: format!("init-{}", Uuid::new_v4()),
-            event_type: "acp".into(),
-            payload: json!({ "method": "initialize", "result": init }),
-        });
+        let mut events = self.initialize_events().await?;
         let session_id = self.session_new(cwd).await?;
         events.push(AcpEvent {
             source_event_id: format!("session-new-{session_id}"),
@@ -226,6 +224,41 @@ impl AcpBridge {
             }),
         });
         Ok((session_id, events))
+    }
+
+    pub async fn initialize_and_resume_session(
+        &self,
+        cwd: &Path,
+        session_id: &str,
+    ) -> Result<(String, Vec<AcpEvent>)> {
+        let mut events = self.initialize_events().await?;
+        self.request(
+            "session/resume",
+            json!({
+                "sessionId": session_id,
+                "cwd": cwd.display().to_string(),
+            }),
+        )
+        .await?;
+        events.push(AcpEvent {
+            source_event_id: format!("session-resume-{session_id}"),
+            event_type: "acp".into(),
+            payload: json!({
+                "method": "session/resume",
+                "params": { "sessionId": session_id, "cwd": cwd.display().to_string() },
+                "result": { "sessionId": session_id }
+            }),
+        });
+        Ok((session_id.to_string(), events))
+    }
+
+    async fn initialize_events(&self) -> Result<Vec<AcpEvent>> {
+        let init = self.initialize().await?;
+        Ok(vec![AcpEvent {
+            source_event_id: format!("init-{}", Uuid::new_v4()),
+            event_type: "acp".into(),
+            payload: json!({ "method": "initialize", "result": init }),
+        }])
     }
 
     pub async fn prompt(&self, session_id: &str, text: &str) -> Result<Value> {
@@ -327,6 +360,23 @@ impl AcpBridge {
     }
 }
 
+async fn fail_pending(
+    pending: &Arc<Mutex<HashMap<String, oneshot::Sender<Value>>>>,
+    message: &str,
+) {
+    let senders = {
+        let mut pending = pending.lock().await;
+        pending.drain().map(|(_, sender)| sender).collect::<Vec<_>>()
+    };
+    let response = json!({
+        "jsonrpc": "2.0",
+        "error": { "code": -32000, "message": message }
+    });
+    for sender in senders {
+        let _ = sender.send(response.clone());
+    }
+}
+
 async fn dispatch_frame(
     pending: &Arc<Mutex<HashMap<String, oneshot::Sender<Value>>>>,
     msg_tx: &mpsc::UnboundedSender<BridgeMsg>,
@@ -370,6 +420,24 @@ async fn dispatch_frame(
         (false, None) => {
             warn!(frame = %value, "ignoring malformed ACP frame");
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn child_failure_releases_pending_requests() {
+        let (tx, rx) = oneshot::channel();
+        let pending = Arc::new(Mutex::new(HashMap::from([(String::from("1"), tx)])));
+
+        fail_pending(&pending, "child failed").await;
+
+        let response = rx.await.expect("pending request should be released");
+        assert_eq!(response["error"]["code"], -32000);
+        assert_eq!(response["error"]["message"], "child failed");
+        assert!(pending.lock().await.is_empty());
     }
 }
 

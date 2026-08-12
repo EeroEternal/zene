@@ -18,6 +18,22 @@ impl EventSequence {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProjectionToolOutput {
+    pub message_index: usize,
+    pub tool_call_id: Option<String>,
+    pub tool_name: Option<String>,
+    pub kind: String,
+    pub handle_reference: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProjectionInjectedSource {
+    pub message_index: usize,
+    pub kind: String,
+    pub source: String,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct RuntimeEvent {
     pub sequence: EventSequence,
@@ -74,6 +90,9 @@ pub enum RuntimeEventKind {
         dropped_event_count: usize,
         truncated_message_count: usize,
         compaction_event_ids: Vec<String>,
+        tool_output_provenance: Vec<ProjectionToolOutput>,
+        retained_turn_ids: Vec<String>,
+        injected_sources: Vec<ProjectionInjectedSource>,
         delivery: String,
         delivery_tail_start: Option<usize>,
         estimate_tokens: u32,

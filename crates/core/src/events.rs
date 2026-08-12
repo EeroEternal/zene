@@ -1,10 +1,11 @@
 use std::sync::Arc;
 
+use zene_context::{InjectedSource, ToolOutputProvenance};
 use zene_llm::TokenUsage;
 
 use zene_turn::{
-    EventSequence, RuntimeEvent, RuntimeEventHandler, RuntimeEventKind, SessionId, StepId,
-    ToolCallId, TurnId,
+    EventSequence, ProjectionInjectedSource, ProjectionToolOutput, RuntimeEvent,
+    RuntimeEventHandler, RuntimeEventKind, SessionId, StepId, ToolCallId, TurnId,
 };
 
 pub type EventHandler = Arc<dyn Fn(AgentEvent) + Send + Sync>;
@@ -134,6 +135,9 @@ pub fn runtime_event_handler(
                 dropped_event_count,
                 truncated_message_count,
                 compaction_event_ids,
+                tool_output_provenance,
+                retained_turn_ids,
+                injected_sources,
                 delivery,
                 delivery_tail_start,
                 estimate_tokens,
@@ -157,6 +161,25 @@ pub fn runtime_event_handler(
                     dropped_event_count: *dropped_event_count,
                     truncated_message_count: *truncated_message_count,
                     compaction_event_ids: compaction_event_ids.clone(),
+                    tool_output_provenance: tool_output_provenance
+                        .iter()
+                        .map(|item| ProjectionToolOutput {
+                            message_index: item.message_index,
+                            tool_call_id: item.tool_call_id.clone(),
+                            tool_name: item.tool_name.clone(),
+                            kind: item.kind.clone(),
+                            handle_reference: item.handle_reference.clone(),
+                        })
+                        .collect(),
+                    retained_turn_ids: retained_turn_ids.clone(),
+                    injected_sources: injected_sources
+                        .iter()
+                        .map(|item| ProjectionInjectedSource {
+                            message_index: item.message_index,
+                            kind: item.kind.clone(),
+                            source: item.source.clone(),
+                        })
+                        .collect(),
                     delivery: delivery.clone(),
                     delivery_tail_start: *delivery_tail_start,
                     estimate_tokens: *estimate_tokens,
@@ -254,6 +277,9 @@ pub enum AgentEvent {
         dropped_event_count: usize,
         truncated_message_count: usize,
         compaction_event_ids: Vec<String>,
+        tool_output_provenance: Vec<ToolOutputProvenance>,
+        retained_turn_ids: Vec<String>,
+        injected_sources: Vec<InjectedSource>,
         delivery: String,
         delivery_tail_start: Option<usize>,
         estimate_tokens: u32,
@@ -317,6 +343,19 @@ mod tests {
             dropped_event_count: 2,
             truncated_message_count: 1,
             compaction_event_ids: vec!["compact-1".into()],
+            tool_output_provenance: vec![ToolOutputProvenance {
+                message_index: 2,
+                tool_call_id: Some("call-1".into()),
+                tool_name: Some("Read".into()),
+                kind: "handle".into(),
+                handle_reference: Some("/tmp/output".into()),
+            }],
+            retained_turn_ids: vec![turn_id.to_string()],
+            injected_sources: vec![InjectedSource {
+                message_index: 0,
+                kind: "compaction_summary".into(),
+                source: "compaction_event".into(),
+            }],
             delivery: "full".into(),
             delivery_tail_start: None,
             estimate_tokens: 128,
@@ -346,6 +385,9 @@ mod tests {
                 dropped_event_count,
                 truncated_message_count,
                 compaction_event_ids,
+                tool_output_provenance,
+                retained_turn_ids,
+                injected_sources,
                 delivery,
                 delivery_tail_start,
                 estimate_tokens,
@@ -361,6 +403,10 @@ mod tests {
                 assert_eq!(active_branch_id.as_deref(), Some("branch"));
                 assert_eq!(*active_path_start_sequence, Some(3));
                 assert_eq!(injected, &["compaction_summary"]);
+                assert_eq!(tool_output_provenance.len(), 1);
+                assert_eq!(tool_output_provenance[0].kind, "handle");
+                assert_eq!(retained_turn_ids, &[turn_id.to_string()]);
+                assert_eq!(injected_sources[0].source, "compaction_event");
                 assert_eq!(*retained_message_count, 3);
                 assert_eq!(*retained_turn_count, 1);
                 assert_eq!(*dropped_event_count, 2);

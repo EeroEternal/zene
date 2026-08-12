@@ -22,7 +22,7 @@ use zene_cloud_runtime_client::{AcpRuntimeClient, RuntimeClient, RuntimeEvent};
 use zene_cloud_domain::{
     ApprovalRequest, ApprovalStatus, ClaimedRun, CloneAuthResponse, CreateApprovalRequest,
     LlmAuthResponse, RunStatus, WorkerCommand, WorkerCommandsResponse, WorkerEventRequest,
-    WorkerStatusRequest, WorkerTitleRequest,
+    WorkerFence, WorkerStatusRequest, WorkerTitleRequest, WorkerAcpSessionRequest,
 };
 
 #[derive(Debug, Clone, Parser)]
@@ -154,16 +154,21 @@ async fn run_executor(cli: Cli) -> Result<()> {
                 )
                 .await
                 {
-                    error!(error = %err, run_id = %claimed.run.id, "run failed");
-                    let _ = set_status(
-                        &client,
-                        &cli,
-                        claimed.run.id,
-                        RunStatus::Failed,
-                        None,
-                        Some(err.to_string()),
-                    )
-                    .await;
+                    if err.to_string().contains("stale_attempt") {
+                        warn!(error = %err, run_id = %claimed.run.id, "run lost attempt fence; stopping without overwriting replacement");
+                    } else {
+                        error!(error = %err, run_id = %claimed.run.id, "run failed");
+                        let _ = set_status(
+                            &client,
+                            &cli,
+                            claimed.run.id,
+                            &worker_fence(&claimed, &worker_id),
+                            RunStatus::Failed,
+                            None,
+                            Some(err.to_string()),
+                        )
+                        .await;
+                    }
                 }
                 if shutdown.load(Ordering::SeqCst) {
                     info!(%worker_id, "executor shutting down after run");
@@ -256,6 +261,14 @@ async fn claim_run(
     Ok(response.json().await?)
 }
 
+fn worker_fence(claimed: &ClaimedRun, worker_id: &str) -> WorkerFence {
+    WorkerFence {
+        attempt_id: claimed.attempt_id,
+        generation: claimed.generation,
+        worker_id: worker_id.to_string(),
+    }
+}
+
 async fn execute_run(
     client: &reqwest::Client,
     cli: &Cli,
@@ -266,7 +279,8 @@ async fn execute_run(
 ) -> Result<()> {
     let run_id = claimed.run.id;
     info!(%run_id, workspace = %claimed.workspace_dir, "claimed run");
-    set_status(client, cli, run_id, RunStatus::Starting, None, None).await?;
+    let fence = worker_fence(claimed, worker_id);
+    set_status(client, cli, run_id, &fence, RunStatus::Starting, None, None).await?;
 
     let workspace = PathBuf::from(&claimed.workspace_dir);
     std::fs::create_dir_all(&workspace)?;
@@ -276,23 +290,24 @@ async fn execute_run(
         cli.worker_token.clone(),
         worker_id.to_string(),
         run_id,
+        fence.clone(),
     );
 
     // a) clone credentials
     let clone_auth = fetch_clone_auth(client, cli, run_id).await?;
 
     // b) clone or mock workspace
-    set_status(client, cli, run_id, RunStatus::Cloning, None, None).await?;
+    set_status(client, cli, run_id, &fence, RunStatus::Cloning, None, None).await?;
     prepare_workspace(&cli.workspace_root, &workspace, &clone_auth).await?;
 
-    set_status(client, cli, run_id, RunStatus::Running, None, None).await?;
+    set_status(client, cli, run_id, &fence, RunStatus::Running, None, None).await?;
 
     let result = if let Some(bin) = zene_bin {
         info!(run_id = %run_id, agent_mode = "real", "starting agent");
-        run_with_real_acp(client, cli, claimed, &workspace, bin, shutdown).await
+        run_with_real_acp(client, cli, claimed, &fence, &workspace, bin, shutdown).await
     } else if cli.allow_mock {
         info!(run_id = %run_id, agent_mode = "mock", "starting agent");
-        run_with_mock(client, cli, claimed, &workspace).await
+        run_with_mock(client, cli, claimed, &fence, &workspace).await
     } else {
         bail!("zene binary not found and mock agent is disabled")
     };
@@ -311,6 +326,7 @@ async fn execute_run(
                 client,
                 cli,
                 run_id,
+                &fence,
                 RunStatus::Completed,
                 head_sha,
                 None,
@@ -557,6 +573,7 @@ async fn run_with_mock(
     client: &reqwest::Client,
     cli: &Cli,
     claimed: &ClaimedRun,
+    fence: &WorkerFence,
     workspace: &Path,
 ) -> Result<()> {
     let run_id = claimed.run.id;
@@ -566,6 +583,7 @@ async fn run_with_mock(
     let client_bg = client.clone();
     let cli_api = cli.api_url.clone();
     let token = cli.worker_token.clone();
+    let event_fence = (*fence).clone();
     let event_task = tokio::spawn(async move {
         while let Some(msg) = msg_rx.recv().await {
             match msg {
@@ -579,7 +597,9 @@ async fn run_with_mock(
                             source_event_id: event.source_event_id,
                             event_type: event.event_type,
                             payload: event.payload,
+                            fence: Some(event_fence.clone()),
                         },
+                        &event_fence,
                     )
                     .await;
                 }
@@ -620,9 +640,10 @@ async fn run_with_mock(
     let client_cmd = client.clone();
     let cli_cmd = cli.api_url.clone();
     let token_cmd = cli.worker_token.clone();
+    let command_fence = (*fence).clone();
     let cmd_task = tokio::spawn(async move {
         loop {
-            if let Ok(commands) = fetch_commands(&client_cmd, &cli_cmd, &token_cmd, run_id).await {
+            if let Ok(commands) = fetch_commands(&client_cmd, &cli_cmd, &token_cmd, run_id, &command_fence).await {
                 for cmd in commands {
                     if cmd.kind == "cancel" {
                         cancel_flag.store(true, std::sync::atomic::Ordering::SeqCst);
@@ -636,12 +657,12 @@ async fn run_with_mock(
 
     let mut prompts = vec![claimed.run.prompt.clone()];
     // Drain any follow-ups already waiting.
-    if let Ok(commands) = fetch_commands(client, &cli.api_url, &cli.worker_token, run_id).await {
+    if let Ok(commands) = fetch_commands(client, &cli.api_url, &cli.worker_token, run_id, &fence).await {
         for cmd in commands {
             if cmd.kind == "cancel" {
                 cmd_task.abort();
                 event_task.abort();
-                set_status(client, cli, run_id, RunStatus::Cancelled, None, None).await?;
+                set_status(client, cli, run_id, &fence, RunStatus::Cancelled, None, None).await?;
                 return Ok(());
             }
             if cmd.kind == "prompt" {
@@ -665,7 +686,7 @@ async fn run_with_mock(
         if cancelled.load(std::sync::atomic::Ordering::SeqCst) {
             break;
         }
-        if let Ok(commands) = fetch_commands(client, &cli.api_url, &cli.worker_token, run_id).await {
+        if let Ok(commands) = fetch_commands(client, &cli.api_url, &cli.worker_token, run_id, &fence).await {
             for cmd in commands {
                 if cmd.kind == "cancel" {
                     cancelled.store(true, std::sync::atomic::Ordering::SeqCst);
@@ -687,7 +708,7 @@ async fn run_with_mock(
     cmd_task.abort();
 
     if cancelled.load(std::sync::atomic::Ordering::SeqCst) {
-        set_status(client, cli, run_id, RunStatus::Cancelled, None, None).await?;
+        set_status(client, cli, run_id, &fence, RunStatus::Cancelled, None, None).await?
     }
     Ok(())
 }
@@ -760,6 +781,7 @@ async fn run_with_real_acp(
     client: &reqwest::Client,
     cli: &Cli,
     claimed: &ClaimedRun,
+    fence: &WorkerFence,
     workspace: &Path,
     zene_bin: &Path,
     shutdown: Arc<AtomicBool>,
@@ -813,13 +835,24 @@ async fn run_with_real_acp(
     );
 
     let runtime = Arc::new(
-        AcpRuntimeClient::connect(zene_bin, workspace, yolo, &llm_env)
-            .await
-            .context("connect runtime client")?,
+        AcpRuntimeClient::connect_with_session(
+            zene_bin,
+            workspace,
+            yolo,
+            &llm_env,
+            claimed.resume_session_id.as_deref(),
+        )
+        .await
+        .context("connect runtime client")?,
     );
+    let session_id = runtime.session_id().await?;
+    persist_acp_session(client, cli, run_id, fence, &session_id).await?;
     let client_bg = client.clone();
     let cli_api = cli.api_url.clone();
     let token = cli.worker_token.clone();
+    let pump_fence = (*fence).clone();
+    let child_failed = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let child_failed_pump = child_failed.clone();
     let runtime_bg = runtime.clone();
     let pump = tokio::spawn(async move {
         while let Some(event) = runtime_bg.next_event().await {
@@ -832,6 +865,7 @@ async fn run_with_real_acp(
                         &token,
                         run_id,
                         event_to_req(event),
+                        &pump_fence,
                     )
                     .await;
                 }
@@ -842,6 +876,7 @@ async fn run_with_real_acp(
                         &token,
                         run_id,
                         event_to_req(event),
+                        &pump_fence,
                     )
                     .await;
                     if method == "session/request_permission" {
@@ -877,6 +912,7 @@ async fn run_with_real_acp(
                 }
                 RuntimeEvent::ChildExited => {
                     info!(run_id = %run_id, "runtime child exited");
+                    child_failed_pump.store(true, Ordering::SeqCst);
                     break;
                 }
             }
@@ -891,9 +927,10 @@ async fn run_with_real_acp(
     let client_cmd = client.clone();
     let cli_cmd = cli.api_url.clone();
     let token_cmd = cli.worker_token.clone();
+    let command_fence = (*fence).clone();
     let cmd_task = tokio::spawn(async move {
         loop {
-            match fetch_commands(&client_cmd, &cli_cmd, &token_cmd, run_id).await {
+            match fetch_commands(&client_cmd, &cli_cmd, &token_cmd, run_id, &command_fence).await {
                 Ok(commands) => {
                     for cmd in commands {
                         if cmd.kind == "cancel" {
@@ -912,6 +949,7 @@ async fn run_with_real_acp(
                                     &cli_cmd,
                                     &token_cmd,
                                     run_id,
+                                    &command_fence,
                                     RunStatus::Running,
                                 )
                                 .await;
@@ -928,6 +966,7 @@ async fn run_with_real_acp(
                                         &cli_cmd,
                                         &token_cmd,
                                         run_id,
+                                        &command_fence,
                                         RunStatus::WaitingForUser,
                                     )
                                     .await;
@@ -949,7 +988,7 @@ async fn run_with_real_acp(
     }
     // Turn finished — free the UI for follow-ups while ACP session stays warm.
     if !cancelled.load(std::sync::atomic::Ordering::SeqCst) {
-        set_status(client, cli, run_id, RunStatus::WaitingForUser, None, None).await?;
+        set_status(client, cli, run_id, &fence, RunStatus::WaitingForUser, None, None).await?;
         if let Err(err) =
             maybe_refresh_run_title(client, cli, run_id, &claimed.run.prompt, &llm_env).await
         {
@@ -969,6 +1008,7 @@ async fn run_with_real_acp(
         }
         if !runtime.is_alive().await {
             info!(run_id = %run_id, "runtime child exited");
+            child_failed.store(true, Ordering::SeqCst);
             break;
         }
         let elapsed = {
@@ -987,7 +1027,13 @@ async fn run_with_real_acp(
     pump.abort();
 
     if cancelled.load(std::sync::atomic::Ordering::SeqCst) {
-        set_status(client, cli, run_id, RunStatus::Cancelled, None, None).await?;
+        set_status(client, cli, run_id, &fence, RunStatus::Cancelled, None, None).await?;
+    }
+    if child_failed.load(Ordering::SeqCst)
+        && !cancelled.load(Ordering::SeqCst)
+        && !shutdown.load(Ordering::SeqCst)
+    {
+        bail!("ACP runtime child exited unexpectedly");
     }
     Ok(())
 }
@@ -1059,14 +1105,40 @@ async fn resolve_permission(
     bail!("approval {approval_id} timed out")
 }
 
+async fn persist_acp_session(
+    client: &reqwest::Client,
+    cli: &Cli,
+    run_id: Uuid,
+    fence: &WorkerFence,
+    session_id: &str,
+) -> Result<()> {
+    let request = WorkerAcpSessionRequest {
+        session_id: session_id.to_string(),
+        fence: Some(fence.clone()),
+    };
+    client
+        .post(format!("{}/internal/v1/runs/{run_id}/acp-session", cli.api_url))
+        .bearer_auth(&cli.worker_token)
+        .json(&request)
+        .send()
+        .await?
+        .error_for_status()
+        .context("persist ACP session")?;
+    Ok(())
+}
+
 async fn fetch_commands(
     client: &reqwest::Client,
     api_url: &str,
     token: &str,
     run_id: Uuid,
+    fence: &WorkerFence,
 ) -> Result<Vec<WorkerCommand>> {
     let response: WorkerCommandsResponse = client
-        .get(format!("{api_url}/internal/v1/runs/{run_id}/commands"))
+        .get(format!(
+            "{api_url}/internal/v1/runs/{run_id}/commands?attemptId={}&generation={}&workerId={}",
+            fence.attempt_id, fence.generation, fence.worker_id
+        ))
         .bearer_auth(token)
         .send()
         .await?
@@ -1081,6 +1153,7 @@ fn event_to_req(event: AcpEvent) -> WorkerEventRequest {
         source_event_id: event.source_event_id,
         event_type: event.event_type,
         payload: event.payload,
+        fence: None,
     }
 }
 
@@ -1098,6 +1171,7 @@ fn heartbeat_loop(
     token: String,
     worker_id: String,
     run_id: Uuid,
+    fence: WorkerFence,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         loop {
@@ -1106,6 +1180,8 @@ fn heartbeat_loop(
                 .bearer_auth(&token)
                 .json(&serde_json::json!({
                     "workerId": worker_id,
+                    "attemptId": fence.attempt_id,
+                    "generation": fence.generation,
                     "workspaceRoot": "."
                 }))
                 .send()
@@ -1120,8 +1196,10 @@ async fn post_event_raw(
     api_url: &str,
     token: &str,
     run_id: Uuid,
-    event: WorkerEventRequest,
+    mut event: WorkerEventRequest,
+    fence: &WorkerFence,
 ) -> Result<()> {
+    event.fence = Some(fence.clone());
     client
         .post(format!("{api_url}/internal/v1/runs/{run_id}/events"))
         .bearer_auth(token)
@@ -1269,6 +1347,7 @@ async fn set_status(
     client: &reqwest::Client,
     cli: &Cli,
     run_id: Uuid,
+    fence: &WorkerFence,
     status: RunStatus,
     head_sha: Option<String>,
     failure_code: Option<String>,
@@ -1278,6 +1357,7 @@ async fn set_status(
         &cli.api_url,
         &cli.worker_token,
         run_id,
+        fence,
         status,
         head_sha,
         failure_code,
@@ -1290,9 +1370,10 @@ async fn set_status_raw(
     api_url: &str,
     token: &str,
     run_id: Uuid,
+    fence: &WorkerFence,
     status: RunStatus,
 ) -> Result<()> {
-    post_run_status(client, api_url, token, run_id, status, None, None).await
+    post_run_status(client, api_url, token, run_id, fence, status, None, None).await
 }
 
 async fn post_run_status(
@@ -1300,6 +1381,7 @@ async fn post_run_status(
     api_url: &str,
     token: &str,
     run_id: Uuid,
+    fence: &WorkerFence,
     status: RunStatus,
     head_sha: Option<String>,
     failure_code: Option<String>,
@@ -1308,6 +1390,7 @@ async fn post_run_status(
         status,
         head_sha,
         failure_code,
+        fence: Some(fence.clone()),
     };
     client
         .post(format!("{api_url}/internal/v1/runs/{run_id}/status"))

@@ -14,8 +14,9 @@ use zene_cloud_domain::{
     CreateRunRequest, DecideApprovalRequest, GithubBranchSummary, GithubProviderConfigView,
     LlmAuthResponse, LlmSettingsView, LoginRequest, PostMessageRequest, QueueStats, RegisterRequest,
     RunStatus, UpdateGithubProviderConfigRequest, UpdateLlmSettingsRequest, UpdateRunRequest,
-    WorkerCommandsResponse, WorkerEventRequest, WorkerPullRequestRequest, WorkerPushRequest,
-    WorkerStatusRequest, WorkerTitleRequest,
+    WorkerCommandsResponse, WorkerEventRequest, WorkerFence, WorkerFenceRequest,
+    WorkerAcpSessionRequest,
+    WorkerPullRequestRequest, WorkerPushRequest, WorkerStatusRequest, WorkerTitleRequest,
 };
 
 use crate::auth::{AuthUser, WorkerAuth};
@@ -84,6 +85,7 @@ pub fn router(state: AppState) -> Router {
         .route("/internal/v1/runs/claim", post(claim_run))
         .route("/internal/v1/queue/stats", get(queue_stats))
         .route("/internal/v1/runs/{run_id}/heartbeat", post(heartbeat))
+        .route("/internal/v1/runs/{run_id}/acp-session", post(worker_acp_session))
         .route("/internal/v1/runs/{run_id}/events", post(worker_event))
         .route("/internal/v1/runs/{run_id}/status", post(worker_status))
         .route("/internal/v1/runs/{run_id}/title", post(worker_title))
@@ -1111,11 +1113,12 @@ async fn claim_run(
         .db
         .claim_next_run(&req.worker_id, std::path::Path::new(&req.workspace_root))
         .await?;
-    Ok(Json(claimed.map(|(run, attempt_id, generation, workspace_dir)| {
+    Ok(Json(claimed.map(|(run, attempt_id, generation, resume_session_id, workspace_dir)| {
         ClaimedRun {
             run,
             attempt_id,
             generation,
+            resume_session_id,
             workspace_dir,
         }
     })))
@@ -1132,9 +1135,30 @@ async fn heartbeat(
     State(state): State<AppState>,
     _worker: WorkerAuth,
     Path(run_id): Path<Uuid>,
-    Json(req): Json<ClaimRequest>,
+    Json(req): Json<WorkerFenceRequest>,
 ) -> Result<impl IntoResponse, AppError> {
-    state.db.heartbeat(run_id, &req.worker_id).await?;
+    let fence = WorkerFence {
+        attempt_id: req.attempt_id,
+        generation: req.generation,
+        worker_id: req.worker_id,
+    };
+    state.db.heartbeat_fenced(run_id, &fence).await?;
+    Ok(Json(serde_json::json!({ "ok": true })))
+}
+
+async fn worker_acp_session(
+    State(state): State<AppState>,
+    _worker: WorkerAuth,
+    Path(run_id): Path<Uuid>,
+    Json(req): Json<WorkerAcpSessionRequest>,
+) -> Result<impl IntoResponse, AppError> {
+    let fence = req
+        .fence
+        .ok_or_else(|| AppError::bad_request("worker fence is required"))?;
+    state
+        .db
+        .set_acp_session_id_fenced(run_id, &fence, &req.session_id)
+        .await?;
     Ok(Json(serde_json::json!({ "ok": true })))
 }
 
@@ -1144,12 +1168,15 @@ async fn worker_event(
     Path(run_id): Path<Uuid>,
     Json(req): Json<WorkerEventRequest>,
 ) -> Result<impl IntoResponse, AppError> {
+    let fence = req
+        .fence
+        .ok_or_else(|| AppError::bad_request("worker fence is required"))?;
     Ok(Json(
         state
             .db
-            .append_event(
+            .append_event_fenced(
                 run_id,
-                0,
+                &fence,
                 Some(&req.source_event_id),
                 &req.event_type,
                 req.payload,
@@ -1164,10 +1191,19 @@ async fn worker_status(
     Path(run_id): Path<Uuid>,
     Json(req): Json<WorkerStatusRequest>,
 ) -> Result<impl IntoResponse, AppError> {
+    let fence = req
+        .fence
+        .ok_or_else(|| AppError::bad_request("worker fence is required"))?;
     Ok(Json(
         state
             .db
-            .update_run_status(run_id, req.status, req.head_sha, req.failure_code)
+            .update_run_status_fenced(
+                run_id,
+                &fence,
+                req.status,
+                req.head_sha,
+                req.failure_code,
+            )
             .await?,
     ))
 }
@@ -1219,9 +1255,15 @@ async fn worker_commands(
     State(state): State<AppState>,
     _worker: WorkerAuth,
     Path(run_id): Path<Uuid>,
+    Query(req): Query<WorkerFenceRequest>,
 ) -> Result<impl IntoResponse, AppError> {
+    let fence = WorkerFence {
+        attempt_id: req.attempt_id,
+        generation: req.generation,
+        worker_id: req.worker_id,
+    };
     Ok(Json(WorkerCommandsResponse {
-        commands: state.db.poll_worker_commands(run_id).await?,
+        commands: state.db.poll_worker_commands_fenced(run_id, &fence).await?,
     }))
 }
 

@@ -291,6 +291,73 @@ impl AgentRecordWriter {
         Ok(true)
     }
 
+    /// Atomically claim a safe model-boundary resume candidate.
+    ///
+    /// The claim marker is created with `create_new`, so concurrent or stale
+    /// runtime instances cannot both claim the same candidate. The recovery
+    /// view is re-read after claiming to ensure the candidate is still the
+    /// current open execution. A marker is intentionally retained after a
+    /// failed write: refusing a potentially duplicate resume is safer than
+    /// replaying a model request after an uncertain crash.
+    pub fn claim_safe_resume(&self, candidate: &ResumeCandidate) -> Result<bool> {
+        let fence_dir = self
+            .path
+            .parent()
+            .unwrap_or_else(|| Path::new("."))
+            .join("resume-fences");
+        fs::create_dir_all(&fence_dir).with_context(|| {
+            format!("create resume fence dir: {}", fence_dir.display())
+        })?;
+        let fence_path = fence_dir.join(format!("{}.claim", resume_fence_key(candidate)));
+        match OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&fence_path)
+        {
+            Ok(mut fence) => {
+                writeln!(
+                    fence,
+                    "turn_id={} claimed_at={}",
+                    candidate.turn_id,
+                    Utc::now().to_rfc3339()
+                )
+                .context("write resume fence")?;
+                fence.sync_all().context("persist resume fence")?;
+            }
+            Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => return Ok(false),
+            Err(err) => {
+                return Err(err).with_context(|| {
+                    format!("create resume fence: {}", fence_path.display())
+                });
+            }
+        }
+
+        let snapshot = self.recovery_snapshot()?;
+        let current = if snapshot.disposition() == RecoveryDisposition::SafeToResume
+            && snapshot.active_tools.is_empty()
+            && snapshot.active_turns.len() == 1
+        {
+            snapshot.resume_candidates.into_iter().next()
+        } else {
+            None
+        };
+        if current.as_ref() != Some(candidate) {
+            return Ok(false);
+        }
+
+        let checkpoint = RecordEntry::ExecutionCheckpoint {
+            turn_id: candidate.turn_id.clone(),
+            step_id: None,
+            tool_call_id: None,
+            state: ExecutionCheckpointState::TurnResumed,
+            idempotency_key: format!("resume/{}", resume_fence_key(candidate)),
+            context_epoch: candidate.context_epoch,
+            model_request_hash: candidate.model_request_hash.clone(),
+            ts: Utc::now(),
+        };
+        self.append_execution_checkpoint(&checkpoint)
+    }
+
     /// Return all durable execution checkpoints in record order.
     pub fn execution_checkpoints(&self) -> Result<Vec<RecordEntry>> {
         Ok(self
@@ -470,6 +537,25 @@ impl AgentRecordWriter {
         }
         Ok(entries)
     }
+}
+
+fn resume_fence_key(candidate: &ResumeCandidate) -> String {
+    // Keep the durable fence name stable across processes and restarts. The
+    // standard library's hasher is not a persistence format, so use a small
+    // deterministic FNV-1a digest over the candidate identity instead.
+    let identity = format!(
+        "{}\0{}\0{:?}\0{:?}",
+        candidate.turn_id,
+        candidate.prompt,
+        candidate.context_epoch,
+        candidate.model_request_hash
+    );
+    let mut hash = 0xcbf29ce484222325u64;
+    for byte in identity.as_bytes() {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    format!("{hash:016x}")
 }
 
 pub fn session_record_dir(session_id: &str) -> PathBuf {
@@ -805,6 +891,136 @@ mod tests {
                 .append_execution_checkpoint(&checkpoint)
                 .expect("dedupe"));
             assert_eq!(writer.read_all().expect("read").len(), 1);
+        });
+    }
+
+    #[test]
+    fn safe_resume_claim_accepts_once_and_rejects_duplicate_or_stale_claims() {
+        with_temp_home(|| {
+            let writer = AgentRecordWriter::for_session("resume-fence-test").expect("writer");
+            let ts = Utc::now();
+            writer
+                .append(&RecordEntry::TurnPrompt {
+                    turn_id: "turn-1".into(),
+                    prompt: "resume me".into(),
+                    ts,
+                })
+                .expect("prompt");
+            writer
+                .append(&RecordEntry::ExecutionCheckpoint {
+                    turn_id: "turn-1".into(),
+                    step_id: None,
+                    tool_call_id: None,
+                    state: ExecutionCheckpointState::TurnStarted,
+                    idempotency_key: "turn-1/started".into(),
+                    context_epoch: Some(3),
+                    model_request_hash: Some("request-hash".into()),
+                    ts,
+                })
+                .expect("turn checkpoint");
+
+            let candidate = writer.resume_candidate().expect("candidate").expect("safe");
+            assert!(writer.claim_safe_resume(&candidate).expect("first claim"));
+            assert!(!writer.claim_safe_resume(&candidate).expect("duplicate claim"));
+            assert!(writer.resume_candidate().expect("recovery read").is_none());
+
+            let stale = ResumeCandidate {
+                model_request_hash: Some("different-request".into()),
+                ..candidate
+            };
+            assert!(!writer.claim_safe_resume(&stale).expect("stale claim"));
+            assert_eq!(
+                writer
+                    .execution_checkpoints()
+                    .expect("checkpoints")
+                    .iter()
+                    .filter(|entry| matches!(
+                        entry,
+                        RecordEntry::ExecutionCheckpoint {
+                            state: ExecutionCheckpointState::TurnResumed,
+                            ..
+                        }
+                    ))
+                    .count(),
+                1
+            );
+        });
+    }
+
+    #[test]
+    fn safe_resume_claim_is_serialized_for_concurrent_writers() {
+        with_temp_home(|| {
+            let writer = AgentRecordWriter::for_session("resume-concurrent-test").expect("writer");
+            let ts = Utc::now();
+            writer
+                .append(&RecordEntry::TurnPrompt {
+                    turn_id: "turn-1".into(),
+                    prompt: "resume me".into(),
+                    ts,
+                })
+                .expect("prompt");
+            writer
+                .append(&RecordEntry::ExecutionCheckpoint {
+                    turn_id: "turn-1".into(),
+                    step_id: None,
+                    tool_call_id: None,
+                    state: ExecutionCheckpointState::TurnStarted,
+                    idempotency_key: "turn-1/started".into(),
+                    context_epoch: None,
+                    model_request_hash: None,
+                    ts,
+                })
+                .expect("turn checkpoint");
+            let candidate = writer.resume_candidate().expect("candidate").expect("safe");
+            let writers = [writer.clone(), writer.clone()];
+            let candidates = [candidate.clone(), candidate];
+            let results = std::thread::scope(|scope| {
+                writers
+                    .into_iter()
+                    .zip(candidates)
+                    .map(|(writer, candidate)| {
+                        scope.spawn(move || writer.claim_safe_resume(&candidate).expect("claim"))
+                    })
+                    .map(|thread| thread.join().expect("claim thread"))
+                    .collect::<Vec<_>>()
+            });
+            assert_eq!(results.iter().filter(|claimed| **claimed).count(), 1);
+            assert_eq!(
+                writer
+                    .execution_checkpoints()
+                    .expect("checkpoints")
+                    .iter()
+                    .filter(|entry| matches!(
+                        entry,
+                        RecordEntry::ExecutionCheckpoint {
+                            state: ExecutionCheckpointState::TurnResumed,
+                            ..
+                        }
+                    ))
+                    .count(),
+                1
+            );
+        });
+    }
+
+    #[test]
+    fn legacy_execution_checkpoint_without_optional_fields_remains_readable() {
+        with_temp_home(|| {
+            let writer = AgentRecordWriter::for_session("legacy-checkpoint-test").expect("writer");
+            let raw = r#"{"type":"execution_checkpoint","turn_id":"legacy-turn","state":"turn_started","idempotency_key":"legacy/start","ts":"2026-01-01T00:00:00Z"}"#;
+            fs::write(writer.path(), format!("{raw}\n")).expect("legacy record");
+            let entries = writer.read_all().expect("read legacy record");
+            assert!(matches!(
+                entries.as_slice(),
+                [RecordEntry::ExecutionCheckpoint {
+                    turn_id,
+                    step_id: None,
+                    tool_call_id: None,
+                    context_epoch: None,
+                    model_request_hash: None,
+                    ..
+                }] if turn_id == "legacy-turn"
+            ));
         });
     }
 

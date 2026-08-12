@@ -25,6 +25,7 @@ use zene_tools::{
 
 mod agent_builder;
 mod agent_turn;
+mod agent_runtime;
 mod context_config;
 pub use zene_model_executor as model_executor;
 mod context_events;
@@ -797,6 +798,9 @@ impl Agent {
                 dropped_event_count: prepared.explain.dropped_event_count,
                 truncated_message_count: prepared.explain.truncated_message_count,
                 compaction_event_ids: prepared.explain.compaction_event_ids.clone(),
+                tool_output_provenance: prepared.explain.tool_output_provenance.clone(),
+                retained_turn_ids: prepared.explain.retained_turn_ids.clone(),
+                injected_sources: prepared.explain.injected_sources.clone(),
                 delivery: prepared.explain.delivery.as_str().to_string(),
                 delivery_tail_start: prepared.explain.delivery_tail_start,
                 estimate_tokens: prepared.explain.estimate_tokens,

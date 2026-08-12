@@ -57,6 +57,15 @@ impl AppError {
         }
     }
 
+    pub fn stale_attempt(message: impl Into<String>) -> Self {
+        Self {
+            status: StatusCode::CONFLICT,
+            error: "stale_attempt".into(),
+            message: message.into(),
+            retryable: false,
+        }
+    }
+
     pub fn internal(err: impl std::fmt::Display) -> Self {
         Self {
             status: StatusCode::INTERNAL_SERVER_ERROR,
@@ -75,6 +84,9 @@ impl From<anyhow::Error> for AppError {
         }
         if msg.contains("not found") {
             return Self::not_found(msg);
+        }
+        if msg.contains("stale_attempt") {
+            return Self::stale_attempt(msg);
         }
         if msg.contains("already exist") {
             return Self::conflict(msg);

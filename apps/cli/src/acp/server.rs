@@ -24,7 +24,8 @@ use super::terminal_bridge::AcpRemoteTerminal;
 use super::transport::{AcpWriter, SharedState};
 use super::updates::{
     agent_message_chunk, agent_thought_chunk, available_commands_update, current_mode_update,
-    modes_state, plan_from_todo_arguments, projection_ready_update, replay_updates_from_messages,
+    modes_state, plan_from_todo_arguments, projection_ready_update_with_provenance,
+    replay_updates_from_messages,
     tool_call_result_update, tool_call_update, tool_kind, tool_title, usage_update,
 };
 
@@ -380,8 +381,8 @@ impl AcpServer {
             .ok_or_else(|| anyhow!("sessionId required"))?
             .to_string();
         let cwd = resolve_cwd(&params, &self.workdir)?;
-        let session = SessionRecord::load(&sid).context("load session")?;
-        let updates = replay_updates_from_messages(&session.messages);
+        let session = SessionRecord::repair_legacy(&sid).context("load session")?;
+        let updates = replay_updates_from_messages(&session.view().messages);
         let acp_session = self.build_session(session, &cwd, &sid).await?;
         let mode = acp_session.runtime.current_mode().await?;
         let response = with_recovery_metadata(
@@ -413,7 +414,7 @@ impl AcpServer {
             .ok_or_else(|| anyhow!("sessionId required"))?
             .to_string();
         let cwd = resolve_cwd(&params, &self.workdir)?;
-        let session = SessionRecord::load(&sid).context("resume session")?;
+        let session = SessionRecord::repair_legacy(&sid).context("resume session")?;
         // Resume restores context without replaying history.
         let acp_session = self.build_session(session, &cwd, &sid).await?;
         let mode = acp_session.runtime.current_mode().await?;
@@ -793,11 +794,14 @@ fn project_runtime_event(
             dropped_event_count,
             truncated_message_count,
             compaction_event_ids,
+            tool_output_provenance,
+            retained_turn_ids,
+            injected_sources,
             delivery,
             delivery_tail_start,
             estimate_tokens,
             context_epoch,
-        } => Some(projection_ready_update(
+        } => Some(projection_ready_update_with_provenance(
             *source_message_count,
             *projected_message_count,
             *source_event_count,
@@ -813,6 +817,25 @@ fn project_runtime_event(
             *dropped_event_count,
             *truncated_message_count,
             compaction_event_ids,
+            &tool_output_provenance
+                .iter()
+                .map(|item| json!({
+                    "messageIndex": item.message_index,
+                    "toolCallId": item.tool_call_id,
+                    "toolName": item.tool_name,
+                    "kind": item.kind,
+                    "handleReference": item.handle_reference,
+                }))
+                .collect::<Vec<_>>(),
+            retained_turn_ids,
+            &injected_sources
+                .iter()
+                .map(|item| json!({
+                    "messageIndex": item.message_index,
+                    "kind": item.kind,
+                    "source": item.source,
+                }))
+                .collect::<Vec<_>>(),
             delivery,
             *delivery_tail_start,
             *estimate_tokens,
