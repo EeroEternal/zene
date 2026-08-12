@@ -4,7 +4,7 @@ use anyhow::Result;
 use async_trait::async_trait;
 
 use crate::events::ContextEvent;
-use crate::memory::FlushResult;
+use crate::FlushResult;
 use crate::segment_store::CompactionSegmentWrite;
 
 /// Outcome of handling a single [`ContextEvent`].

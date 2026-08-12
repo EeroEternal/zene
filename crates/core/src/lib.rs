@@ -74,7 +74,7 @@ fn make_context_deps<'a>(
     session: &'a mut SessionRecord,
     compaction_config: &'a zene_context::CompactionConfig,
     model: &'a str,
-    client: &'a ChatClient,
+    client: &'a dyn zene_context::ContextModel,
     hooks: Option<&'a dyn zene_context::ContextHooks>,
     system_prompt: &'a str,
     estimator: &'a TokenEstimator,
@@ -587,7 +587,10 @@ impl Agent {
         let config = self.config.clone();
         Some(std::sync::Arc::new(move || {
             let config = config.clone();
-            Box::pin(async move { ChatClient::from_config(&config).await })
+            Box::pin(async move {
+                let client = ChatClient::from_config(&config).await?;
+                Ok(std::sync::Arc::new(client) as std::sync::Arc<dyn zene_context::ContextModel>)
+            })
         }))
     }
 

@@ -9,7 +9,9 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use tracing::{info, warn};
-use zene_llm::{ChatClient, ChatRequest, Message, ToolDefinition};
+use zene_llm::{ChatRequest, Message, ToolDefinition};
+
+use crate::model::ContextModel;
 
 use crate::memory_store::{FsMemoryStore, MemoryStore};
 
@@ -171,7 +173,7 @@ pub fn format_flush_input(messages: &[Message]) -> String {
 
 /// Run a flush LLM call and append to the daily log when accepted.
 pub async fn run_memory_flush(
-    client: &ChatClient,
+    client: &dyn ContextModel,
     model: &str,
     conversation: &str,
     store: &dyn MemoryStore,
@@ -196,7 +198,10 @@ pub async fn run_memory_flush(
         context: None,
     };
 
-    let response = client.chat(request).await.context("memory flush chat")?;
+    let response = client
+        .complete(request)
+        .await
+        .context("memory flush chat")?;
     let text = response.message.content.unwrap_or_default();
 
     match process_flush_response(&text) {

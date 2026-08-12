@@ -22,6 +22,7 @@ mod gateway_stub;
 mod memory;
 #[cfg(not(feature = "memory"))]
 mod memory_stub;
+mod model;
 
 #[cfg(feature = "prefire")]
 mod prefire;
@@ -48,6 +49,7 @@ pub use engine::{
     ContextDeps, ContextEngine, ContextObservation, ForcedCompactResult, OverflowHandleResult,
     PrefireClientFactory, PrepareStepResult, ProjectionExplain, StepContext,
 };
+pub use model::ContextModel;
 pub use event_handler::{
     write_compaction_segment_via, ContextEventHandler, EventOutcome,
     NoopContextEventHandler, RecordingContextEventHandler,

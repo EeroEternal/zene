@@ -46,7 +46,7 @@ pub fn should_flush(_usage_percent: u8, _threshold: u8, _already_flushed: bool) 
 }
 
 pub async fn run_memory_flush(
-    _client: &zene_llm::ChatClient,
+    _client: &dyn crate::model::ContextModel,
     _model: &str,
     _conversation: &str,
     _store: &dyn crate::memory_store::MemoryStore,

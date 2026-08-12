@@ -7,19 +7,19 @@ use async_trait::async_trait;
 use tracing::{info, warn};
 use zene_context::{
     publish_prefix, CompactionSegmentStore, CompactionSegmentWrite, ContextEvent,
-    ContextEventHandler, EventOutcome, FsCompactionSegmentStore, FsMemoryStore, run_memory_flush,
+    ContextEventHandler, ContextModel, EventOutcome, FsCompactionSegmentStore, FsMemoryStore,
+    run_memory_flush,
 };
-use zene_llm::ChatClient;
 
 pub struct AgentContextHandler<'a> {
-    client: &'a ChatClient,
+    client: &'a dyn ContextModel,
     model: &'a str,
     segment_store: FsCompactionSegmentStore,
     memory_store: FsMemoryStore,
 }
 
 impl<'a> AgentContextHandler<'a> {
-    pub fn new(client: &'a ChatClient, model: &'a str, workdir: &'a Path) -> Self {
+    pub fn new(client: &'a dyn ContextModel, model: &'a str, workdir: &'a Path) -> Self {
         Self {
             client,
             model,

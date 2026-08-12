@@ -1,13 +1,15 @@
 use anyhow::{bail, Context, Result};
 use tracing::info;
 use crate::config::CompactionConfig;
-use zene_llm::{ChatClient, ChatRequest, ChatResponse, Message, MessageKind, Role, ToolDefinition};
+use zene_llm::{ChatRequest, ChatResponse, Message, MessageKind, Role, ToolDefinition};
+
+use crate::model::ContextModel;
 
 use crate::hooks::ContextHooks;
 use crate::segment_store::CompactionSegmentWrite;
 use crate::input_ladder::{prepare_summary_input, InputLadderStage};
 use crate::session::ContextSession;
-use crate::prefire::PrefireCache;
+use crate::PrefireCache;
 use crate::tokens::{self, TokenEstimator};
 use crate::two_pass::{
     note_for_pass2, pass2_user_prompt, split_messages_for_two_pass, TWO_PASS_DEFAULT_SPLIT_FRACTION,
@@ -200,7 +202,7 @@ fn format_messages_for_summary(messages: &[Message]) -> String {
 /// Summarize with input ladder + degenerate-summary retries.
 #[allow(dead_code)]
 pub async fn summarize_messages(
-    client: &ChatClient,
+    client: &dyn ContextModel,
     model: &str,
     messages: &[Message],
 ) -> Result<String> {
@@ -208,7 +210,7 @@ pub async fn summarize_messages(
 }
 
 pub async fn summarize_messages_with_ladder(
-    client: &ChatClient,
+    client: &dyn ContextModel,
     model: &str,
     messages: &[Message],
     context_window: Option<u32>,
@@ -226,7 +228,7 @@ pub async fn summarize_messages_with_ladder(
 }
 
 async fn summarize_prepared_input(
-    client: &ChatClient,
+    client: &dyn ContextModel,
     model: &str,
     messages: &[Message],
     context_window: Option<u32>,
@@ -250,7 +252,7 @@ async fn summarize_prepared_input(
             context: None,
         };
 
-        match client.chat(request).await {
+        match client.complete(request).await {
             Ok(response) => {
                 let summary = response
                     .message
@@ -291,7 +293,7 @@ async fn summarize_prepared_input(
 
 /// Pass2 of two-pass compaction: merge NOTE₁ with recent tail messages.
 pub async fn summarize_pass2(
-    client: &ChatClient,
+    client: &dyn ContextModel,
     model: &str,
     system: Option<&Message>,
     note1: &str,
@@ -326,7 +328,7 @@ pub async fn summarize_pass2(
 /// Summarize a compactable prefix, using prefire NOTE₁ when valid, else sync two-pass
 /// for large prefixes, else single-pass ladder.
 pub async fn summarize_prefix(
-    client: &ChatClient,
+    client: &dyn ContextModel,
     model: &str,
     prefix: &[Message],
     context_window: Option<u32>,
@@ -967,7 +969,7 @@ where
 
 pub async fn compact_session<S: ContextSession + ?Sized>(
     session: &mut S,
-    client: &ChatClient,
+    client: &dyn ContextModel,
     model: &str,
     config: &CompactionConfig,
     reason: &str,
@@ -1048,7 +1050,7 @@ pub async fn compact_session<S: ContextSession + ?Sized>(
 /// `force_summarize` is true.
 pub async fn compact_session_forced<S: ContextSession + ?Sized>(
     session: &mut S,
-    client: &ChatClient,
+    client: &dyn ContextModel,
     model: &str,
     config: &CompactionConfig,
     reason: &str,

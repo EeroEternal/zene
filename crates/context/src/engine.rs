@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use tracing::{info, warn};
-use zene_llm::{ChatClient, ContextMetadata, Message, TokenUsage, ToolDefinition};
+use zene_llm::{ContextMetadata, Message, TokenUsage, ToolDefinition};
 
 use crate::assemble::{assemble_outbound, delivery_mode_from_env, stable_system_boundary, DeliveryMode};
 use crate::compaction::{
@@ -18,6 +18,7 @@ use crate::context_water::ContextWaterLevel;
 use crate::event_handler::{ContextEventHandler, EventOutcome};
 use crate::events::ContextEvent;
 use crate::hooks::ContextHooks;
+use crate::model::ContextModel;
 #[cfg(feature = "memory")]
 use crate::memory;
 #[cfg(not(feature = "memory"))]
@@ -25,13 +26,14 @@ use crate::memory_stub as memory;
 #[cfg(feature = "prefire")]
 use crate::prefire::{self, PrefireCache, PrefireState};
 #[cfg(not(feature = "prefire"))]
-use crate::prefire_stub::{self, PrefireCache, PrefireState};
+use crate::prefire_stub::{PrefireCache, PrefireState};
 use crate::session::ContextSession;
 use crate::tokens::{self, TokenEstimator};
 #[cfg(feature = "gateway")]
 use crate::gateway::gateway_configured;
 #[cfg(not(feature = "gateway"))]
 use crate::gateway_stub::gateway_configured;
+#[cfg(feature = "prefire")]
 use crate::two_pass;
 
 fn projection_injected_labels(messages: &[Message]) -> Vec<String> {
@@ -55,7 +57,7 @@ fn projection_injected_labels(messages: &[Message]) -> Vec<String> {
 
 /// Builds a dedicated client for prefire pass1 (runtime-provided; avoids `ZeneConfig` in this crate).
 pub type PrefireClientFactory = Arc<
-    dyn Fn() -> Pin<Box<dyn Future<Output = Result<ChatClient>> + Send>> + Send + Sync,
+    dyn Fn() -> Pin<Box<dyn Future<Output = Result<Arc<dyn ContextModel>>> + Send>> + Send + Sync,
 >;
 
 /// Outbound view for one LLM step after context preparation.
@@ -129,7 +131,7 @@ pub struct ContextDeps<'a> {
     pub session: &'a mut dyn ContextSession,
     pub compaction_config: &'a CompactionConfig,
     pub model: &'a str,
-    pub client: &'a ChatClient,
+    pub client: &'a dyn crate::model::ContextModel,
     pub hooks: Option<&'a dyn ContextHooks>,
     pub system_prompt: &'a str,
     pub estimator: &'a TokenEstimator,
@@ -802,6 +804,8 @@ impl ContextEngine {
     }
 
     fn maybe_start_prefire(&self, deps: &ContextDeps<'_>, _tools: &[ToolDefinition]) {
+        #[cfg(not(feature = "prefire"))]
+        let _ = deps;
         #[cfg(feature = "prefire")]
         {
             let Some(factory) = deps.prefire_client_factory.as_ref() else {
