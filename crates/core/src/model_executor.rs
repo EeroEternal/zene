@@ -1,6 +1,42 @@
 use std::collections::HashSet;
+use std::pin::Pin;
 
-use zene_llm::{Message, ToolCall};
+use anyhow::Result;
+use async_trait::async_trait;
+use futures::Stream;
+use zene_llm::{ChatClient, ChatRequest, ChatResponse, Message, StreamEvent, ToolCall};
+
+pub(crate) type ModelStream = Pin<Box<dyn Stream<Item = Result<StreamEvent>> + Send>>;
+
+/// Runtime-facing model boundary. Provider-specific details stay behind this seam.
+#[async_trait]
+pub(crate) trait ModelExecutor: Send + Sync {
+    async fn complete(&self, request: ChatRequest) -> Result<ChatResponse>;
+
+    async fn stream(&self, request: ChatRequest) -> Result<ModelStream>;
+}
+
+/// Default executor backed by the existing unified ChatClient.
+pub(crate) struct ChatClientExecutor<'a> {
+    client: &'a ChatClient,
+}
+
+impl<'a> ChatClientExecutor<'a> {
+    pub(crate) fn new(client: &'a ChatClient) -> Self {
+        Self { client }
+    }
+}
+
+#[async_trait]
+impl ModelExecutor for ChatClientExecutor<'_> {
+    async fn complete(&self, request: ChatRequest) -> Result<ChatResponse> {
+        self.client.chat(request).await
+    }
+
+    async fn stream(&self, request: ChatRequest) -> Result<ModelStream> {
+        self.client.chat_stream(request).await
+    }
+}
 
 #[derive(Default)]
 pub(crate) struct ToolCallBuilder {
@@ -66,6 +102,44 @@ fn normalize_tool_calls(mut calls: Vec<ToolCall>) -> Vec<ToolCall> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use futures::{stream, StreamExt};
+
+    struct FakeExecutor;
+
+    #[async_trait]
+    impl ModelExecutor for FakeExecutor {
+        async fn complete(&self, request: ChatRequest) -> Result<ChatResponse> {
+            Ok(ChatResponse {
+                message: Message::assistant(request.messages.len().to_string()),
+                usage: None,
+            })
+        }
+
+        async fn stream(&self, _request: ChatRequest) -> Result<ModelStream> {
+            Ok(Box::pin(stream::iter([Ok(StreamEvent::Done { usage: None })])))
+        }
+    }
+
+    fn request() -> ChatRequest {
+        ChatRequest {
+            model: "fake".into(),
+            messages: vec![Message::user("hello")],
+            tools: Vec::new(),
+            stream: false,
+            context: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn fake_executor_covers_complete_and_stream_boundaries() {
+        let executor = FakeExecutor;
+        let response = executor.complete(request()).await.unwrap();
+        assert_eq!(response.message.content.as_deref(), Some("1"));
+
+        let mut stream = executor.stream(request()).await.unwrap();
+        let event = stream.next().await.unwrap().unwrap();
+        assert!(matches!(event, StreamEvent::Done { usage: None }));
+    }
 
     #[test]
     fn assembles_streamed_text() {

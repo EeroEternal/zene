@@ -83,6 +83,7 @@ pub fn runtime_event_handler(
                 projected_message_count,
                 source_event_count,
                 active_event_count,
+                cache_drift_detected,
                 used_materialized_fallback,
                 fallback_reason,
                 active_branch_id,
@@ -100,6 +101,7 @@ pub fn runtime_event_handler(
                     projected_message_count: *projected_message_count,
                     source_event_count: *source_event_count,
                     active_event_count: *active_event_count,
+                    cache_drift_detected: *cache_drift_detected,
                     used_materialized_fallback: *used_materialized_fallback,
                     fallback_reason: fallback_reason.clone(),
                     active_branch_id: active_branch_id.clone(),
@@ -165,6 +167,7 @@ pub enum AgentEvent {
         projected_message_count: usize,
         source_event_count: usize,
         active_event_count: usize,
+        cache_drift_detected: bool,
         used_materialized_fallback: bool,
         fallback_reason: Option<String>,
         active_branch_id: Option<String>,
@@ -220,6 +223,7 @@ mod tests {
             projected_message_count: 3,
             source_event_count: 7,
             active_event_count: 5,
+            cache_drift_detected: false,
             used_materialized_fallback: false,
             fallback_reason: None,
             active_branch_id: Some("branch".into()),
@@ -243,6 +247,7 @@ mod tests {
                 projected_message_count,
                 source_event_count,
                 active_event_count,
+                cache_drift_detected,
                 used_materialized_fallback,
                 fallback_reason,
                 active_branch_id,
@@ -257,6 +262,7 @@ mod tests {
                 assert_eq!(*projected_message_count, 3);
                 assert_eq!(*source_event_count, 7);
                 assert_eq!(*active_event_count, 5);
+                assert!(!cache_drift_detected);
                 assert!(!used_materialized_fallback);
                 assert_eq!(fallback_reason, &None);
                 assert_eq!(active_branch_id.as_deref(), Some("branch"));

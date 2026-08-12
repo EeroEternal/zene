@@ -43,6 +43,7 @@ pub enum RuntimeEventKind {
         projected_message_count: usize,
         source_event_count: usize,
         active_event_count: usize,
+        cache_drift_detected: bool,
         used_materialized_fallback: bool,
         fallback_reason: Option<String>,
         active_branch_id: Option<String>,

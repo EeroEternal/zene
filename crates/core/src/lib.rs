@@ -10,6 +10,8 @@ use zene_context::{
     ContextDeps, ContextEngine, PrefireClientFactory, StepContext,
 };
 use zene_llm::{ChatClient, ChatRequest, Message, StreamEvent, TokenUsage, ToolCall};
+
+use crate::model_executor::ModelExecutor;
 use zene_sandbox::{LocalSandbox, Sandbox};
 use zene_session::{
     fork_session, latest_checkpoint_id, load_checkpoint, restore_checkpoint, save_checkpoint,
@@ -398,6 +400,48 @@ impl Agent {
             delivery.as_str(),
             self.context.gateway_prefix_len()
         ));
+        let estimator = self.token_estimator();
+        let tools = self.tool_definitions_for_llm();
+        let explain = self
+            .context
+            .explain_projection(&self.session, &tools, &estimator);
+        lines.extend([
+            format!(
+                "projection: source_messages={} projected_messages={} source_events={} active_events={}",
+                explain.source_message_count,
+                explain.projected_message_count,
+                explain.source_event_count,
+                explain.active_event_count,
+            ),
+            format!(
+                "projection_path: branch={} start_sequence={}",
+                explain.active_branch_id.as_deref().unwrap_or("-"),
+                explain
+                    .active_path_start_sequence
+                    .map(|sequence| sequence.to_string())
+                    .unwrap_or_else(|| "-".into()),
+            ),
+            format!(
+                "projection_fallback: used={} reason={} cache_drift={}",
+                explain.used_materialized_fallback,
+                explain.fallback_reason.as_deref().unwrap_or("-"),
+                explain.cache_drift_detected,
+            ),
+            format!(
+                "projection_decorations: injected={} delivery={} tail_start={} estimate_tokens={}",
+                if explain.injected.is_empty() {
+                    "-".to_string()
+                } else {
+                    explain.injected.join(",")
+                },
+                explain.delivery.as_str(),
+                explain
+                    .delivery_tail_start
+                    .map(|start| start.to_string())
+                    .unwrap_or_else(|| "-".into()),
+                explain.estimate_tokens,
+            ),
+        ]);
         if water.auto_compact_suppressed {
             lines.push(
                 "auto-compact: suppressed (last summarize failed; use /compact to retry)"
@@ -723,6 +767,7 @@ impl Agent {
                 projected_message_count: prepared.explain.projected_message_count,
                 source_event_count: prepared.explain.source_event_count,
                 active_event_count: prepared.explain.active_event_count,
+                cache_drift_detected: prepared.explain.cache_drift_detected,
                 used_materialized_fallback: prepared.explain.used_materialized_fallback,
                 fallback_reason: prepared.explain.fallback_reason.clone(),
                 active_branch_id: prepared.explain.active_branch_id.clone(),
@@ -792,11 +837,12 @@ impl Agent {
                 context: Some(metadata.clone()),
             };
 
+            let executor = model_executor::ChatClientExecutor::new(&self.client);
             let result = if options.stream {
-                self.run_streaming_step(request, options, cancel).await
+                self.run_streaming_step(&executor, request, options, cancel).await
             } else {
-                self.client
-                    .chat(request)
+                executor
+                    .complete(request)
                     .await
                     .map(|response| (response.message, response.usage))
             };
@@ -863,6 +909,7 @@ impl Agent {
 
     async fn run_streaming_step(
         &self,
+        executor: &dyn model_executor::ModelExecutor,
         request: ChatRequest,
         options: &PromptOptions,
         cancel: Option<&CancellationToken>,
@@ -871,7 +918,7 @@ impl Agent {
             return Err(zene_turn::aborted_error());
         }
 
-        let mut stream = self.client.chat_stream(request).await?;
+        let mut stream = executor.stream(request).await?;
         let mut text = String::new();
         let mut tool_calls: Vec<model_executor::ToolCallBuilder> = Vec::new();
         let mut usage = None;

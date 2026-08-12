@@ -27,7 +27,7 @@
 但当前 `Agent` 仍是一个较大的具体对象，且不同层次之间仍存在职责重叠：
 
 1. `TurnEngine` 已统一主 Agent 和 Subagent 的循环，但 `Agent` 仍承担默认能力组装和兼容 facade 职责；
-2. `Provider`、`ChatClient`、`ChatBackend` 仍存在相近但不统一的模型抽象，ModelExecutor 尚未独立落地；
+2. `Provider`、`ChatClient`、`ChatBackend` 仍存在相近但不统一的模型抽象；core 内已建立 `ModelExecutor` 请求边界，但统一模型抽象和完整职责迁移尚未完成；
 3. ACP、Cloud event 和 Core `AgentEvent` 仍存在语义转换，RuntimeEvent 适配已建立但消费方尚未完全统一；
 4. Session 可以恢复历史和评估未完成 execution，但不能自动恢复一个正在执行的 turn；
 5. `RuntimeHandle` 已成为 active turn、prompt queue、cancel 的控制所有者，但 ACP 仍保留 transport 层请求/响应和 session bookkeeping；
@@ -59,7 +59,7 @@ Local CLI / ACP Server
   zene_turn::TurnEngine
         │
         ├── ContextEngine (observe/commit/project)
-        ├── ChatClient (ModelExecutor boundary pending)
+        ├── ModelExecutor (ChatClient default adapter)
         ├── DefaultToolExecutor
         ├── PermissionGate
         ├── Sandbox
@@ -943,9 +943,9 @@ crates/
 
 当前实现已经完成了控制面的大部分地基，但还不是最终的 `AgentRuntime + 可投影 Session` 架构：
 
-1. **Conversation SoT 仍是过渡态**：`SessionEvent` 已覆盖 message、system prefix、compaction、tool call/result、permission、model change、branch/fork/rewind 等事实，但旧 session 仍需 materialized fallback。
+1. **Conversation SoT 正在从过渡态收口**：`SessionEvent` 已覆盖 message、system prefix、compaction、tool call/result、permission、model change、branch/fork/rewind 等事实；完整事件日志现在优先于 `messages` cache，cache drift 仅作为诊断暴露。旧 session、无 snapshot 的 legacy compaction/rewind 和不完整事件日志仍需 materialized fallback。
 2. **Context 事件投影已进入过渡实现**：`observe / commit / project` 已拆分，`SessionView` 已选择 active branch path 并驱动 Context 只读 projection；当前已补充 rewind target boundary、active path 过滤、fork parent lineage、fallback reason，以及 `activeBranchId` / `activePathStartSequence` / `activeEventCount` explain；compaction 序列化 reload 等价测试已加入。`injected`、`delivery` 和 `deliveryTailStart` 已通过 RuntimeEvent/ACP 暴露；仍需继续移除旧 cache fallback，并补充 tool truncation/handle 与 kept-turn explain。
-3. **ModelExecutor 尚未独立实现**：Wave 11.1 已将 stream tool-call delta 累积、ID 规范化和 `Message` 组装移入 core 内部 `model_executor` seam；`Agent` 仍直接持有 `ChatClient` 并承担请求、context preparation、overflow retry 和 usage 处理，`TurnEngine` 的 port 仍通过兼容适配层接入。
+3. **ModelExecutor 正在独立化**：Wave 11.1 已将 stream tool-call delta 累积、ID 规范化和 `Message` 组装移入 core 内部 `model_executor` seam；当前新增 `ModelExecutor` 请求边界和 `ChatClientExecutor` 默认适配器，stream / non-stream 请求均经过该 seam，并已有 fake executor 测试。`Agent` 仍直接持有 `ChatClient`，context preparation、overflow retry 和 usage 处理尚未完全抽离。
 4. **Recovery 仍是安全计划评估**：`RecoveryDisposition` 与 `RecoveryPlan` 能区分 safe resume、tool inspection 和 manual intervention；rewind 会清除旧 execution 边界，但目前仍不会自动恢复未完成 turn、pending approval 或 crash 后的 tool step。
 5. **Cloud JobRunner / RuntimeClient 尚未完全解耦**：目标中的 Cloud Job → RuntimeClient → ACP client 分层仍需落地，Cloud 不应解析 ACP 的底层 session/update 语义。
 6. **Runtime 尚未拆成独立 crate**：`RuntimeHandle` 当前在 `zene-core`，`Agent` 仍是默认 wiring、运行状态和兼容 facade 的大型 composition root。
@@ -1051,12 +1051,13 @@ Wave 12  Execution resume 与 Cloud RuntimeClient
    - 已完成：fallback reason、active branch ID、active path start sequence 和 active event count 通过 RuntimeEvent 和 ACP `projection_update` 暴露；
    - 已完成：fork parent lineage metadata，以及 nested/sibling fork projection regression tests；
    - 已完成：compaction 后 SessionRecord 序列化 reload 与 event-backed projection 等价测试；
-   - 继续完成：旧 cache fallback 的迁移清理、`/context` injected-item explain，以及更完整的跨层重建等价测试。
+   - 已完成：完整事件日志优先于 materialized cache；cache drift 通过 `cacheDriftDetected` 诊断，不再覆盖 event-backed projection；空的新 session 不再误报 fallback；
+   - 继续完成：旧格式 fallback 的最终迁移清理、`/context` injected-item explain，以及更完整的跨层重建等价测试。
 
 3. **Wave 11：ModelExecutor 与 runtime crate（P1）**
    - 已完成第一切片：core 内部 `model_executor` seam 负责 stream tool-call delta 累积、ID 规范化和消息组装；
-   - 继续抽离 ChatClient、stream assembly、overflow retry、usage 更新；
-   - 为 fake model executor 增加独立测试；
+   - 已完成请求边界切片：`ModelExecutor` / `ChatClientExecutor` 接管 stream 与 non-stream 模型请求，并提供 fake executor 测试；
+   - 继续抽离 ChatClient 持有关系、stream assembly、overflow retry、usage 更新；
    - 将 RuntimeHandle/command/event 逐步移入独立 runtime crate；
    - 保留 `zene-core::Agent` 作为默认 wiring 和兼容 facade。
 

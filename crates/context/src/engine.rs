@@ -80,6 +80,7 @@ pub struct ProjectionExplain {
     pub projected_message_count: usize,
     pub source_event_count: usize,
     pub active_event_count: usize,
+    pub cache_drift_detected: bool,
     pub used_materialized_fallback: bool,
     pub fallback_reason: Option<String>,
     pub active_branch_id: Option<String>,
@@ -276,27 +277,7 @@ impl ContextEngine {
         );
         let commit = self.commit(deps, tools, &observation).await?;
         let step = self.project(deps.session, tools, deps.estimator);
-        let view = deps.session.view();
-        let explain = ProjectionExplain {
-            source_message_count: view.messages.len(),
-            projected_message_count: step.messages.len(),
-            source_event_count: view.source_event_count,
-            active_event_count: view.active_events.len(),
-            used_materialized_fallback: view.used_materialized_fallback,
-            fallback_reason: view
-                .fallback_reason
-                .map(|reason| reason.as_str().to_string()),
-            active_branch_id: view.active_branch_id,
-            active_path_start_sequence: view.active_path_start_sequence,
-            injected: projection_injected_labels(&step.messages),
-            delivery: match step.metadata.delivery {
-                zene_llm::ContextDelivery::Full => DeliveryMode::Full,
-                zene_llm::ContextDelivery::Delta => DeliveryMode::Delta,
-            },
-            delivery_tail_start: step.metadata.tail_start,
-            estimate_tokens: step.estimate_tokens,
-            context_epoch: step.metadata.context_epoch,
-        };
+        let explain = self.explain_projection_for_step(deps.session, &step);
         Ok(PrepareStepResult {
             step,
             compaction: commit.compaction,
@@ -601,6 +582,46 @@ impl ContextEngine {
 
     pub fn is_context_overflow_error(err: &anyhow::Error) -> bool {
         is_context_overflow_error(err)
+    }
+
+    /// Explain the current outbound projection without mutating the session.
+    pub fn explain_projection(
+        &self,
+        session: &dyn ContextSession,
+        tools: &[ToolDefinition],
+        estimator: &TokenEstimator,
+    ) -> ProjectionExplain {
+        let step = self.project(session, tools, estimator);
+        self.explain_projection_for_step(session, &step)
+    }
+
+    fn explain_projection_for_step(
+        &self,
+        session: &dyn ContextSession,
+        step: &StepContext,
+    ) -> ProjectionExplain {
+        let view = session.view();
+        ProjectionExplain {
+            source_message_count: view.messages.len(),
+            projected_message_count: step.messages.len(),
+            source_event_count: view.source_event_count,
+            active_event_count: view.active_events.len(),
+            cache_drift_detected: view.cache_drift_detected,
+            used_materialized_fallback: view.used_materialized_fallback,
+            fallback_reason: view
+                .fallback_reason
+                .map(|reason| reason.as_str().to_string()),
+            active_branch_id: view.active_branch_id,
+            active_path_start_sequence: view.active_path_start_sequence,
+            injected: projection_injected_labels(&step.messages),
+            delivery: match step.metadata.delivery {
+                zene_llm::ContextDelivery::Full => DeliveryMode::Full,
+                zene_llm::ContextDelivery::Delta => DeliveryMode::Delta,
+            },
+            delivery_tail_start: step.metadata.tail_start,
+            estimate_tokens: step.estimate_tokens,
+            context_epoch: step.metadata.context_epoch,
+        }
     }
 
     fn project(

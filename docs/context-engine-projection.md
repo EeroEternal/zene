@@ -279,7 +279,8 @@ function project_llm(path, policy):
 - 只有 **稳定 prefix 集合** 变化才 `epoch++`（system 基座、compaction 边界、pinned 区）
 - 每步都变的 reminder（todos 计数、bg task）**尽量不 bump epoch**，避免 cache 抖动
 - `ProjectionExplain.injected` 标明本步装饰，供 UI / ACP 展示「模型额外看到了什么」；当前已识别 `compaction_summary` 和 `system_reminder`
-- RuntimeEvent / ACP `projection_update` 当前暴露 `sourceEventCount`、`activeEventCount`、分支路径、fallback、`injected`、`delivery` 和 `deliveryTailStart`
+- RuntimeEvent / ACP `projection_update` 当前暴露 `sourceEventCount`、`activeEventCount`、`cacheDriftDetected`、分支路径、fallback、`injected`、`delivery` 和 `deliveryTailStart`
+- 完整事件日志优先于 materialized `messages` cache；cache drift 只进入 explain，不覆盖 event-backed projection；仅 legacy / incomplete event log 触发兼容 fallback
 
 与现有 `pinned_boundary` / `PublishPrefix` / delta `tail_start` 一致：把「什么算 pinned prefix」写进投影契约，而不是散落在 assemble 细节里。见 [context-engine.md](./context-engine.md) Phase 3–5。
 
@@ -301,7 +302,7 @@ struct StepContext {
 }
 ```
 
-**Console / ACP `/context`（或等价调试通道）建议展示：**
+**Console / ACP `/context`（或等价调试通道）展示：**
 
 - estimate vs provider `prompt_tokens` vs water level
 - 最近一次 compact 原因、`tokens_before` / `tokens_after`
@@ -310,7 +311,7 @@ struct StepContext {
 - 多少 tool 结果被 truncate / handle 化
 - full 还是 delta、`tail_start`、`context_epoch`
 
-没有 explain，Context Engine 是黑盒优化器；有了 explain，才是可治理的投影层。
+`Agent::context_report()` 已展示上述 projection explain 摘要；ACP `projection_update` 提供结构化明细。没有 explain，Context Engine 是黑盒优化器；有了 explain，才是可治理的投影层。
 
 ---
 

@@ -319,6 +319,7 @@ pub fn projection_ready_update(
     projected_message_count: usize,
     source_event_count: usize,
     active_event_count: usize,
+    cache_drift_detected: bool,
     used_materialized_fallback: bool,
     fallback_reason: Option<&str>,
     active_branch_id: Option<&str>,
@@ -336,6 +337,7 @@ pub fn projection_ready_update(
             "projectedMessageCount": projected_message_count,
             "sourceEventCount": source_event_count,
             "activeEventCount": active_event_count,
+            "cacheDriftDetected": cache_drift_detected,
             "usedMaterializedFallback": used_materialized_fallback,
             "fallbackReason": fallback_reason,
             "activeBranchId": active_branch_id,
@@ -555,6 +557,7 @@ mod tests {
             12,
             9,
             false,
+            false,
             None,
             Some("branch-1"),
             Some(4),
@@ -566,6 +569,7 @@ mod tests {
         );
         assert_eq!(update["sessionUpdate"], "projection_update");
         assert_eq!(update["_meta"]["activeEventCount"], 9);
+        assert_eq!(update["_meta"]["cacheDriftDetected"], false);
         assert_eq!(update["_meta"]["activeBranchId"], "branch-1");
         assert_eq!(update["_meta"]["delivery"], "delta");
         assert_eq!(update["_meta"]["deliveryTailStart"], 5);

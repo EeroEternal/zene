@@ -219,6 +219,8 @@ pub struct SessionView {
     pub active_branch_id: Option<String>,
     pub active_path_start_sequence: Option<u64>,
     pub source_event_count: usize,
+    /// Whether the compatibility `messages` cache differs from the event projection.
+    pub cache_drift_detected: bool,
     pub used_materialized_fallback: bool,
     pub fallback_reason: Option<ProjectionFallbackReason>,
 }
@@ -333,14 +335,14 @@ impl SessionView {
             }
         }
         if events.is_empty() {
-            fallback_reason = Some(ProjectionFallbackReason::NoEvents);
+            if !fallback.is_empty() {
+                fallback_reason = Some(ProjectionFallbackReason::NoEvents);
+            }
         } else if !has_message_fact && fallback_reason.is_none() {
             fallback_reason = Some(ProjectionFallbackReason::IncompleteEventLog);
-        } else if fallback_reason.is_none()
-            && serde_json::to_vec(&messages).ok() != serde_json::to_vec(fallback).ok()
-        {
-            fallback_reason = Some(ProjectionFallbackReason::IncompleteEventLog);
         }
+        let cache_drift_detected = serde_json::to_vec(&messages).ok()
+            != serde_json::to_vec(fallback).ok();
         let used_materialized_fallback = fallback_reason.is_some();
         if used_materialized_fallback {
             messages = fallback.to_vec();
@@ -352,6 +354,7 @@ impl SessionView {
             active_branch_id,
             active_path_start_sequence,
             source_event_count: events.len(),
+            cache_drift_detected,
             used_materialized_fallback,
             fallback_reason,
         }
@@ -1288,20 +1291,27 @@ mod tests {
     }
 
     #[test]
-    fn event_projection_detects_inconsistent_materialized_cache() {
+    fn event_projection_prefers_facts_when_materialized_cache_drifts() {
         let mut session = SessionRecord::new(Path::new("."));
         session.push_message(Message::user("event fact"));
         session.messages.push(Message::assistant("cache drift"));
         let view = session.view();
-        assert!(view.used_materialized_fallback);
-        assert_eq!(
-            view.fallback_reason,
-            Some(ProjectionFallbackReason::IncompleteEventLog)
-        );
+        assert!(!view.used_materialized_fallback);
+        assert!(view.cache_drift_detected);
+        assert_eq!(view.fallback_reason, None);
         assert_eq!(
             serde_json::to_vec(&view.messages).unwrap(),
-            serde_json::to_vec(&session.messages).unwrap()
+            serde_json::to_vec(&[Message::user("event fact")]).unwrap()
         );
+    }
+
+    #[test]
+    fn empty_new_session_has_no_projection_fallback() {
+        let session = SessionRecord::new(Path::new("."));
+        let view = session.view();
+        assert!(!view.used_materialized_fallback);
+        assert!(!view.cache_drift_detected);
+        assert_eq!(view.fallback_reason, None);
     }
 
     #[test]
