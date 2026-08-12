@@ -4061,6 +4061,7 @@ dependencies = [
  "zene-mcp",
  "zene-model-executor",
  "zene-permission",
+ "zene-runtime",
  "zene-sandbox",
  "zene-session",
  "zene-tool-runtime",
@@ -4167,6 +4168,7 @@ dependencies = [
  "anyhow",
  "async-trait",
  "tokio",
+ "zene-turn",
 ]
 
 [[package]]

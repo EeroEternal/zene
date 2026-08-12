@@ -16,7 +16,11 @@ use tokio::task::{JoinError, JoinHandle};
 use tokio_util::sync::CancellationToken;
 
 use crate::{RecoveryDisposition, RecoverySnapshot};
+#[cfg(test)]
 use zene_permission::PromptChoice;
+#[cfg(test)]
+use zene_runtime::ApprovalDecision;
+use zene_runtime::{ExecutionState, RuntimeCommand, RuntimeResponse};
 use zene_session::{AgentRecordWriter, ExecutionCheckpointState, RecoveryPlan};
 use zene_turn::{
     EventSequence, RuntimeEvent, RuntimeEventHandler, RuntimeEventKind, SessionId, SteerBuffer,
@@ -25,68 +29,13 @@ use zene_turn::{
 
 use crate::{Agent, PromptOptions};
 
-/// Product-independent command accepted by a runtime actor.
-#[derive(Debug)]
-pub enum RuntimeCommand {
-    Prompt {
-        text: String,
-    },
-    /// Resume the single safe model-boundary candidate without replaying tools.
-    ResumeSafeTurn,
-    Steer {
-        text: String,
-    },
-    Cancel,
-    Approval {
-        request_id: String,
-        decision: ApprovalDecision,
-    },
-    SetMode {
-        mode_id: String,
-    },
-    GetMode,
-    Shutdown,
-}
-
-/// Decision sent by an external approval broker.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ApprovalDecision {
-    AllowOnce,
-    AllowSession,
-    Deny,
-}
-
-impl From<ApprovalDecision> for PromptChoice {
-    fn from(value: ApprovalDecision) -> Self {
-        match value {
-            ApprovalDecision::AllowOnce => Self::AllowOnce,
-            ApprovalDecision::AllowSession => Self::AllowSession,
-            ApprovalDecision::Deny => Self::Deny,
-        }
+#[cfg(test)]
+fn prompt_choice(decision: ApprovalDecision) -> PromptChoice {
+    match decision {
+        ApprovalDecision::AllowOnce => PromptChoice::AllowOnce,
+        ApprovalDecision::AllowSession => PromptChoice::AllowSession,
+        ApprovalDecision::Deny => PromptChoice::Deny,
     }
-}
-
-/// Runtime-level execution state. It is deliberately independent from Cloud
-/// Run state, which may aggregate multiple turns and follow-up commands.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ExecutionState {
-    Idle,
-    Starting,
-    Running { turn_id: TurnId, step: u32 },
-    AwaitingApproval { request_id: String },
-    AwaitingUser,
-    Completed,
-    Failed { message: String },
-    Cancelled,
-    Shutdown,
-}
-
-/// Result returned by a control command.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum RuntimeResponse {
-    Accepted,
-    Prompt { text: String },
-    Mode { mode_id: String },
 }
 
 struct RuntimeMessage {
@@ -683,17 +632,14 @@ mod tests {
     #[test]
     fn approval_decisions_map_to_permission_choices() {
         assert_eq!(
-            PromptChoice::from(ApprovalDecision::AllowOnce),
+            prompt_choice(ApprovalDecision::AllowOnce),
             PromptChoice::AllowOnce
         );
         assert_eq!(
-            PromptChoice::from(ApprovalDecision::AllowSession),
+            prompt_choice(ApprovalDecision::AllowSession),
             PromptChoice::AllowSession
         );
-        assert_eq!(
-            PromptChoice::from(ApprovalDecision::Deny),
-            PromptChoice::Deny
-        );
+        assert_eq!(prompt_choice(ApprovalDecision::Deny), PromptChoice::Deny);
     }
 
     #[test]

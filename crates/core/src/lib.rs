@@ -50,9 +50,7 @@ pub use agent_builder::AgentBuilder;
 pub use events::{emit_event, runtime_event_handler, AgentEvent, EventHandler};
 pub use plan_mode::PlanApprovalPrompter;
 use plan_mode::{build_effective_system_prompt, tool_visible_in_definitions};
-pub use runtime::{
-    ApprovalDecision, ExecutionState, RuntimeCommand, RuntimeHandle, RuntimeResponse,
-};
+pub use runtime::RuntimeHandle;
 pub use subagent::{run_subagent, ChatBackend, CoreSubagentRunner};
 pub use tool_dedup::{append_reminder, ToolDedup};
 pub use tool_scheduler::{classify_tool_accesses, ToolScheduler};
@@ -61,6 +59,7 @@ pub use zene_permission::{
     approve_tool_call, policy_denied, PermissionGate, PermissionMode, PermissionPrompter,
     PermissionRule, PromptChoice, RuleAction, SharedToolPermission, ToolPermission,
 };
+pub use zene_runtime::{ApprovalDecision, ExecutionState, RuntimeCommand, RuntimeResponse};
 pub use zene_turn::{
     aborted_error, begin_turn, end_turn, max_turns_notice, steer_requires_active_turn,
     EventSequence, RuntimeEvent, RuntimeEventHandler, RuntimeEventKind, SessionId, SteerBuffer,
