@@ -33,6 +33,7 @@ mod plan_mode;
 mod subagent;
 mod tool_dedup;
 mod tool_executor;
+mod runtime;
 pub mod tool_scheduler;
 mod worktree;
 
@@ -44,6 +45,9 @@ pub use zene_context::{
 
 pub use agent_builder::AgentBuilder;
 pub use events::{emit_event, runtime_event_handler, AgentEvent, EventHandler};
+pub use runtime::{
+    ApprovalDecision, ExecutionState, RuntimeCommand, RuntimeHandle, RuntimeResponse,
+};
 pub use zene_hooks::{HookBlock, HookRunner, HookSpec};
 pub use zene_permission::{
     approve_tool_call, policy_denied, PermissionGate, PermissionMode, PermissionPrompter,
