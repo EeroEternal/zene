@@ -58,6 +58,7 @@ pub struct AgentBuilder {
     todos: Option<SharedTodoStore>,
     ask_user: Option<SharedAskUserPrompter>,
     background: Option<SharedBackgroundTasks>,
+    record_writer: Option<AgentRecordWriter>,
     external_session_id: Option<String>,
     include_workspace_context: Option<bool>,
 }
@@ -86,6 +87,7 @@ impl AgentBuilder {
             todos: None,
             ask_user: None,
             background: None,
+            record_writer: None,
             external_session_id: None,
             include_workspace_context: None,
         }
@@ -124,6 +126,12 @@ impl AgentBuilder {
     /// Inject a custom [`ContextEngine`] (window size taken from config unless you set it on the engine).
     pub fn context_engine(mut self, context: ContextEngine) -> Self {
         self.context = Some(context);
+        self
+    }
+
+    /// Inject the durable execution record store.
+    pub fn record_writer(mut self, writer: AgentRecordWriter) -> Self {
+        self.record_writer = Some(writer);
         self
     }
 
@@ -204,7 +212,10 @@ impl AgentBuilder {
             Some(client) => client,
             None => ChatClient::from_config(&self.config).await?,
         };
-        let record_writer = AgentRecordWriter::for_session(&self.session.meta.id)?;
+        let record_writer = match self.record_writer {
+            Some(writer) => writer,
+            None => AgentRecordWriter::for_session(&self.session.meta.id)?,
+        };
 
         let mut tools = match self.tools {
             Some(tools) => tools,

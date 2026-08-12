@@ -178,12 +178,17 @@ pub struct AgentRecordWriter {
 
 impl AgentRecordWriter {
     pub fn for_session(session_id: &str) -> Result<Self> {
-        let dir = session_record_dir(session_id);
-        fs::create_dir_all(&dir)
-            .with_context(|| format!("create session record dir: {}", dir.display()))?;
-        Ok(Self {
-            path: record_path(session_id),
-        })
+        Self::from_path(record_path(session_id))
+    }
+
+    /// Construct a writer at an explicit path, primarily for injected stores and tests.
+    pub fn from_path(path: impl Into<PathBuf>) -> Result<Self> {
+        let path = path.into();
+        if let Some(dir) = path.parent() {
+            fs::create_dir_all(dir)
+                .with_context(|| format!("create session record dir: {}", dir.display()))?;
+        }
+        Ok(Self { path })
     }
 
     pub fn path(&self) -> &Path {

@@ -13,7 +13,7 @@ use zene_core::{
     RuntimeEventKind, RuntimeHandle,
 };
 use zene_sandbox::LocalSandbox;
-use zene_session::{list_sessions_for_workdir, SessionRecord};
+use zene_session::{list_sessions_for_workdir, RecoverySnapshot, SessionRecord};
 
 use super::fs_bridge::AcpRemoteFs;
 use super::protocol::{
@@ -354,12 +354,16 @@ impl AcpServer {
         let id = session.meta.id.clone();
         let acp_session = self.build_session(session, &cwd, &id).await?;
         let mode = acp_session.runtime.current_mode().await?;
+        let response = with_recovery_metadata(
+            json!({
+                "sessionId": id,
+                "modes": modes_state(&mode),
+            }),
+            &acp_session.runtime,
+        )?;
         self.sessions.insert(id.clone(), acp_session);
         self.advertise_session(&id)?;
-        Ok(json!({
-            "sessionId": id,
-            "modes": modes_state(&mode),
-        }))
+        Ok(response)
     }
 
     async fn handle_session_load(&mut self, params: Value) -> Result<Value> {
@@ -373,6 +377,13 @@ impl AcpServer {
         let updates = replay_updates_from_messages(&session.messages);
         let acp_session = self.build_session(session, &cwd, &sid).await?;
         let mode = acp_session.runtime.current_mode().await?;
+        let response = with_recovery_metadata(
+            json!({
+                "sessionId": sid,
+                "modes": modes_state(&mode),
+            }),
+            &acp_session.runtime,
+        )?;
         self.sessions.insert(sid.clone(), acp_session);
 
         // ACP requires replaying history via session/update before responding.
@@ -385,10 +396,7 @@ impl AcpServer {
         }
         self.advertise_session(&sid)?;
 
-        Ok(json!({
-            "sessionId": sid,
-            "modes": modes_state(&mode),
-        }))
+        Ok(response)
     }
 
     async fn handle_session_resume(&mut self, params: Value) -> Result<Value> {
@@ -402,12 +410,16 @@ impl AcpServer {
         // Resume restores context without replaying history.
         let acp_session = self.build_session(session, &cwd, &sid).await?;
         let mode = acp_session.runtime.current_mode().await?;
+        let response = with_recovery_metadata(
+            json!({
+                "sessionId": sid,
+                "modes": modes_state(&mode),
+            }),
+            &acp_session.runtime,
+        )?;
         self.sessions.insert(sid.clone(), acp_session);
         self.advertise_session(&sid)?;
-        Ok(json!({
-            "sessionId": sid,
-            "modes": modes_state(&mode),
-        }))
+        Ok(response)
     }
 
     fn handle_session_list(&self, params: Value) -> Result<Value> {
@@ -785,6 +797,37 @@ fn attach_meta(update: &mut Value, meta: Value) {
     }
 }
 
+fn recovery_disposition_name(disposition: zene_session::RecoveryDisposition) -> &'static str {
+    match disposition {
+        zene_session::RecoveryDisposition::Clean => "clean",
+        zene_session::RecoveryDisposition::AlreadyCompleted => "already_completed",
+        zene_session::RecoveryDisposition::SafeToResume => "safe_to_resume",
+        zene_session::RecoveryDisposition::RequiresToolInspection => "requires_tool_inspection",
+        zene_session::RecoveryDisposition::RequiresManualIntervention => "requires_manual_intervention",
+    }
+}
+
+fn recovery_metadata(snapshot: &RecoverySnapshot) -> Value {
+    let disposition = recovery_disposition_name(snapshot.disposition());
+    json!({
+        "disposition": disposition,
+        "hasIncompleteExecution": snapshot.has_incomplete_execution(),
+        "activeTurnCount": snapshot.active_turns.len(),
+        "activeToolCount": snapshot.active_tools.len(),
+        "automaticResume": false,
+    })
+}
+
+fn with_recovery_metadata(mut response: Value, runtime: &RuntimeHandle) -> Result<Value> {
+    let snapshot = runtime.recovery_snapshot()?;
+    if let Some(obj) = response.as_object_mut() {
+        obj.insert("_meta".into(), json!({
+            "recovery": recovery_metadata(&snapshot),
+        }));
+    }
+    Ok(response)
+}
+
 fn resolve_cwd(params: &Value, fallback: &Path) -> Result<PathBuf> {
     let cwd = params
         .get("cwd")
@@ -980,6 +1023,34 @@ fn acp_permission_prompt(
         "allow-once" => PromptChoice::AllowOnce,
         _ => PromptChoice::Deny,
     })
+}
+
+#[cfg(test)]
+mod recovery_tests {
+    use super::*;
+    use zene_session::RecoveryDisposition;
+
+    #[test]
+    fn recovery_disposition_names_are_protocol_stable() {
+        let cases = [
+            (RecoveryDisposition::Clean, "clean"),
+            (RecoveryDisposition::AlreadyCompleted, "already_completed"),
+            (RecoveryDisposition::SafeToResume, "safe_to_resume"),
+            (RecoveryDisposition::RequiresToolInspection, "requires_tool_inspection"),
+            (RecoveryDisposition::RequiresManualIntervention, "requires_manual_intervention"),
+        ];
+        for (disposition, expected) in cases {
+            assert_eq!(recovery_disposition_name(disposition), expected);
+        }
+    }
+
+    #[test]
+    fn recovery_metadata_declares_no_automatic_resume() {
+        let metadata = recovery_metadata(&RecoverySnapshot::default());
+        assert_eq!(metadata["disposition"], "clean");
+        assert_eq!(metadata["hasIncompleteExecution"], false);
+        assert_eq!(metadata["automaticResume"], false);
+    }
 }
 
 #[derive(Debug)]
