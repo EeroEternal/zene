@@ -216,10 +216,10 @@ impl AgentBuilder {
             &FsMemoryStore::new(&workdir),
         );
 
-        let client = match self.client {
+        let client = Arc::new(match self.client {
             Some(client) => client,
             None => ChatClient::from_config(&self.config).await?,
-        };
+        });
         let record_writer = match self.record_writer {
             Some(writer) => writer,
             None => AgentRecordWriter::for_session(&self.session.meta.id)?,
@@ -294,6 +294,7 @@ impl AgentBuilder {
 
         Ok(Agent {
             config: self.config,
+            model_executor: Arc::new(crate::model_executor::ChatClientExecutor::new(Arc::clone(&client))),
             client,
             tools: Arc::new(tools),
             sandbox,

@@ -73,7 +73,8 @@ pub use worktree::ensure_session_worktree;
 
 pub struct Agent {
     config: ZeneConfig,
-    client: ChatClient,
+    client: Arc<ChatClient>,
+    model_executor: Arc<dyn ModelExecutor>,
     tools: Arc<ToolRegistry>,
     sandbox: Arc<dyn Sandbox>,
     session: SessionRecord,
@@ -308,7 +309,8 @@ impl Agent {
             .set_window(self.config.compaction.context_window_tokens);
 
         // Recreate the client
-        self.client = zene_llm::ChatClient::from_config(&self.config).await?;
+        self.client = Arc::new(zene_llm::ChatClient::from_config(&self.config).await?);
+        self.model_executor = Arc::new(model_executor::ChatClientExecutor::new(Arc::clone(&self.client)));
         self.config
             .persist_connection_settings()
             .context("save model settings to ~/.zene/config.toml")?;
@@ -836,11 +838,10 @@ impl Agent {
                 Some(metadata.clone()),
             );
 
-            let executor = model_executor::ChatClientExecutor::new(&self.client);
             let result = if options.stream {
-                self.run_streaming_step(&executor, request, options, cancel).await
+                self.run_streaming_step(self.model_executor.as_ref(), request, options, cancel).await
             } else {
-                executor
+                self.model_executor
                     .complete(request)
                     .await
                     .map(|response| (response.message, response.usage))
@@ -849,50 +850,10 @@ impl Agent {
             match result {
                 Ok(value) => return Ok(value),
                 Err(err) if ContextEngine::is_context_overflow_error(&err) => {
-                    self.sync_todos_to_session();
-                    let estimator = self.token_estimator();
-                    let background_tasks = self.background.lock().list();
-                    let hooks = context_hooks::ZeneContextHooks::new(&self.session, &background_tasks);
-                    let compaction_config =
-                        context_config::context_compaction_config(&self.config.compaction);
-                    let mut handler = context_events::AgentContextHandler::new(
-                        &self.client,
-                        &self.config.model,
-                        self.sandbox.workdir(),
-                    );
-                    let prefire_factory = self.prefire_client_factory();
-                    let (mut overflow_truncated, mut overflow_summarized) = overflow_state.flags();
-                    let overflow = {
-                        let mut deps = ContextDeps {
-                            session: &mut self.session,
-                            compaction_config: &compaction_config,
-                            model: &self.config.model,
-                            client: &self.client,
-                            hooks: Some(&hooks),
-                            system_prompt: &self.system_prompt,
-                            estimator: &estimator,
-                            handler: &mut handler,
-                            prefire_client_factory: prefire_factory,
-                        };
-                        self.context
-                            .handle_overflow(
-                                &mut deps,
-                                tools,
-                                &mut overflow_truncated,
-                                &mut overflow_summarized,
-                            )
-                            .await?
-                    };
-                    overflow_state.set_flags(overflow_truncated, overflow_summarized);
-                    if let Some(result) = &overflow.compaction {
-                        self.record_compaction(result)?;
-                    }
-                    if overflow.retry {
-                        let refreshed = self.context.assemble_step(
-                            &self.session,
-                            tools,
-                            &estimator,
-                        );
+                    if let Some(refreshed) = self
+                        .recover_overflow(tools, &mut overflow_state)
+                        .await?
+                    {
                         messages = refreshed.messages;
                         metadata = refreshed.metadata;
                         continue;
@@ -902,6 +863,55 @@ impl Agent {
                 Err(err) => return Err(err),
             }
         }
+    }
+
+    async fn recover_overflow(
+        &mut self,
+        tools: &[zene_llm::ToolDefinition],
+        overflow_state: &mut model_executor::OverflowRetryState,
+    ) -> Result<Option<StepContext>> {
+        self.sync_todos_to_session();
+        let estimator = self.token_estimator();
+        let background_tasks = self.background.lock().list();
+        let hooks = context_hooks::ZeneContextHooks::new(&self.session, &background_tasks);
+        let compaction_config =
+            context_config::context_compaction_config(&self.config.compaction);
+        let mut handler = context_events::AgentContextHandler::new(
+            &self.client,
+            &self.config.model,
+            self.sandbox.workdir(),
+        );
+        let prefire_factory = self.prefire_client_factory();
+        let (mut overflow_truncated, mut overflow_summarized) = overflow_state.flags();
+        let overflow = {
+            let mut deps = ContextDeps {
+                session: &mut self.session,
+                compaction_config: &compaction_config,
+                model: &self.config.model,
+                client: &self.client,
+                hooks: Some(&hooks),
+                system_prompt: &self.system_prompt,
+                estimator: &estimator,
+                handler: &mut handler,
+                prefire_client_factory: prefire_factory,
+            };
+            self.context
+                .handle_overflow(
+                    &mut deps,
+                    tools,
+                    &mut overflow_truncated,
+                    &mut overflow_summarized,
+                )
+                .await?
+        };
+        overflow_state.set_flags(overflow_truncated, overflow_summarized);
+        if let Some(result) = &overflow.compaction {
+            self.record_compaction(result)?;
+        }
+        Ok(overflow.retry.then(|| {
+            self.context
+                .assemble_step(&self.session, tools, &estimator)
+        }))
     }
 
     fn check_cancelled(cancel: Option<&CancellationToken>) -> Result<bool> {

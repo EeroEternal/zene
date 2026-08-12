@@ -1,5 +1,6 @@
 use std::collections::HashSet;
 use std::pin::Pin;
+use std::sync::Arc;
 
 use anyhow::Result;
 use async_trait::async_trait;
@@ -50,18 +51,18 @@ pub(crate) trait ModelExecutor: Send + Sync {
 }
 
 /// Default executor backed by the existing unified ChatClient.
-pub(crate) struct ChatClientExecutor<'a> {
-    client: &'a ChatClient,
+pub(crate) struct ChatClientExecutor {
+    client: Arc<ChatClient>,
 }
 
-impl<'a> ChatClientExecutor<'a> {
-    pub(crate) fn new(client: &'a ChatClient) -> Self {
+impl ChatClientExecutor {
+    pub(crate) fn new(client: Arc<ChatClient>) -> Self {
         Self { client }
     }
 }
 
 #[async_trait]
-impl ModelExecutor for ChatClientExecutor<'_> {
+impl ModelExecutor for ChatClientExecutor {
     async fn complete(&self, request: ChatRequest) -> Result<ChatResponse> {
         self.client.chat(request).await
     }
