@@ -8,6 +8,39 @@ use zene_llm::{ChatClient, ChatRequest, ChatResponse, Message, StreamEvent, Tool
 
 pub(crate) type ModelStream = Pin<Box<dyn Stream<Item = Result<StreamEvent>> + Send>>;
 
+pub(crate) fn build_request(
+    model: &str,
+    messages: Vec<Message>,
+    tools: Vec<zene_llm::ToolDefinition>,
+    stream: bool,
+    context: Option<zene_llm::ContextMetadata>,
+) -> ChatRequest {
+    ChatRequest {
+        model: model.to_string(),
+        messages,
+        tools,
+        stream,
+        context,
+    }
+}
+
+#[derive(Debug, Default)]
+pub(crate) struct OverflowRetryState {
+    truncated: bool,
+    summarized: bool,
+}
+
+impl OverflowRetryState {
+    pub(crate) fn flags(&self) -> (bool, bool) {
+        (self.truncated, self.summarized)
+    }
+
+    pub(crate) fn set_flags(&mut self, truncated: bool, summarized: bool) {
+        self.truncated = truncated;
+        self.summarized = summarized;
+    }
+}
+
 /// Runtime-facing model boundary. Provider-specific details stay behind this seam.
 #[async_trait]
 pub(crate) trait ModelExecutor: Send + Sync {
@@ -35,6 +68,51 @@ impl ModelExecutor for ChatClientExecutor<'_> {
 
     async fn stream(&self, request: ChatRequest) -> Result<ModelStream> {
         self.client.chat_stream(request).await
+    }
+}
+
+#[derive(Default)]
+pub(crate) struct StreamAccumulator {
+    text: String,
+    tool_calls: Vec<ToolCallBuilder>,
+    usage: Option<zene_llm::TokenUsage>,
+}
+
+impl StreamAccumulator {
+    pub(crate) fn apply(&mut self, event: &StreamEvent) -> bool {
+        match event {
+            StreamEvent::TextDelta(delta) => self.text.push_str(delta),
+            StreamEvent::ToolCallDelta {
+                index,
+                id,
+                name,
+                arguments,
+            } => {
+                while self.tool_calls.len() <= *index {
+                    self.tool_calls.push(ToolCallBuilder::default());
+                }
+                apply_tool_call_delta(
+                    &mut self.tool_calls[*index],
+                    id.clone(),
+                    name.clone(),
+                    arguments.clone(),
+                );
+            }
+            StreamEvent::Done { usage } => {
+                self.usage = usage.clone();
+                return true;
+            }
+            StreamEvent::ThoughtDelta(_) => {}
+        }
+        false
+    }
+
+    pub(crate) fn has_text(&self) -> bool {
+        !self.text.is_empty()
+    }
+
+    pub(crate) fn finish(self) -> (Message, Option<zene_llm::TokenUsage>) {
+        (assemble_message(self.text, self.tool_calls), self.usage)
     }
 }
 
@@ -121,13 +199,7 @@ mod tests {
     }
 
     fn request() -> ChatRequest {
-        ChatRequest {
-            model: "fake".into(),
-            messages: vec![Message::user("hello")],
-            tools: Vec::new(),
-            stream: false,
-            context: None,
-        }
+        build_request("fake", vec![Message::user("hello")], Vec::new(), false, None)
     }
 
     #[tokio::test]
@@ -139,6 +211,47 @@ mod tests {
         let mut stream = executor.stream(request()).await.unwrap();
         let event = stream.next().await.unwrap().unwrap();
         assert!(matches!(event, StreamEvent::Done { usage: None }));
+    }
+
+    #[test]
+    fn overflow_retry_state_round_trips_flags() {
+        let mut state = OverflowRetryState::default();
+        assert_eq!(state.flags(), (false, false));
+        state.set_flags(true, false);
+        assert_eq!(state.flags(), (true, false));
+        state.set_flags(true, true);
+        assert_eq!(state.flags(), (true, true));
+    }
+
+    #[test]
+    fn request_builder_preserves_model_input() {
+        let request = build_request(
+            "fake",
+            vec![Message::user("hello")],
+            Vec::new(),
+            true,
+            None,
+        );
+        assert_eq!(request.model, "fake");
+        assert_eq!(request.messages.len(), 1);
+        assert!(request.stream);
+    }
+
+    #[test]
+    fn accumulator_collects_text_tools_and_usage() {
+        let mut accumulator = StreamAccumulator::default();
+        assert!(!accumulator.apply(&StreamEvent::TextDelta("hello ".into())));
+        assert!(!accumulator.apply(&StreamEvent::ToolCallDelta {
+            index: 0,
+            id: Some("call-1".into()),
+            name: Some("Read".into()),
+            arguments: Some("{}".into()),
+        }));
+        assert!(accumulator.apply(&StreamEvent::Done { usage: None }));
+        let (message, usage) = accumulator.finish();
+        assert_eq!(message.content.as_deref(), Some("hello "));
+        assert_eq!(message.tool_calls.unwrap()[0].name, "Read");
+        assert!(usage.is_none());
     }
 
     #[test]

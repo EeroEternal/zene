@@ -813,8 +813,7 @@ impl Agent {
         options: &PromptOptions,
         cancel: Option<&CancellationToken>,
     ) -> Result<(Message, Option<TokenUsage>)> {
-        let mut overflow_truncated = false;
-        let mut overflow_summarized = false;
+        let mut overflow_state = model_executor::OverflowRetryState::default();
         let mut messages = step.messages.clone();
         let mut metadata = step.metadata.clone();
 
@@ -829,13 +828,13 @@ impl Agent {
                 "llm step context estimate"
             );
 
-            let request = ChatRequest {
-                model: self.config.model.clone(),
-                messages: messages.clone(),
-                tools: tools.to_vec(),
-                stream: options.stream,
-                context: Some(metadata.clone()),
-            };
+            let request = model_executor::build_request(
+                &self.config.model,
+                messages.clone(),
+                tools.to_vec(),
+                options.stream,
+                Some(metadata.clone()),
+            );
 
             let executor = model_executor::ChatClientExecutor::new(&self.client);
             let result = if options.stream {
@@ -862,6 +861,7 @@ impl Agent {
                         self.sandbox.workdir(),
                     );
                     let prefire_factory = self.prefire_client_factory();
+                    let (mut overflow_truncated, mut overflow_summarized) = overflow_state.flags();
                     let overflow = {
                         let mut deps = ContextDeps {
                             session: &mut self.session,
@@ -883,6 +883,7 @@ impl Agent {
                             )
                             .await?
                     };
+                    overflow_state.set_flags(overflow_truncated, overflow_summarized);
                     if let Some(result) = &overflow.compaction {
                         self.record_compaction(result)?;
                     }
@@ -919,15 +920,14 @@ impl Agent {
         }
 
         let mut stream = executor.stream(request).await?;
-        let mut text = String::new();
-        let mut tool_calls: Vec<model_executor::ToolCallBuilder> = Vec::new();
-        let mut usage = None;
+        let mut accumulator = model_executor::StreamAccumulator::default();
 
         while let Some(event) = stream.next().await {
             if Self::check_cancelled(cancel)? {
                 return Err(zene_turn::aborted_error());
             }
-            match event.context("stream event")? {
+            let event = event.context("stream event")?;
+            match &event {
                 StreamEvent::TextDelta(delta) => {
                     emit_event(
                         &options.event_handler,
@@ -939,7 +939,6 @@ impl Agent {
                         print!("{delta}");
                         let _ = io::stdout().flush();
                     }
-                    text.push_str(&delta);
                 }
                 StreamEvent::ThoughtDelta(delta) => {
                     emit_event(
@@ -949,36 +948,19 @@ impl Agent {
                         },
                     );
                 }
-                StreamEvent::ToolCallDelta {
-                    index,
-                    id,
-                    name,
-                    arguments,
-                } => {
-                    while tool_calls.len() <= index {
-                        tool_calls.push(model_executor::ToolCallBuilder::default());
-                    }
-                    model_executor::apply_tool_call_delta(
-                        &mut tool_calls[index],
-                        id,
-                        name,
-                        arguments,
-                    );
-                }
-                StreamEvent::Done { usage: step_usage } => {
-                    usage = step_usage;
-                    break;
-                }
+                StreamEvent::ToolCallDelta { .. } => {}
+                StreamEvent::Done { .. } => {}
+            }
+            if accumulator.apply(&event) {
+                break;
             }
         }
 
-        if !text.is_empty() && !options.quiet {
+        if accumulator.has_text() && !options.quiet {
             println!();
         }
 
-        let message = model_executor::assemble_message(text, tool_calls);
-
-        Ok((message, usage))
+        Ok(accumulator.finish())
     }
 
     async fn run_tools(
