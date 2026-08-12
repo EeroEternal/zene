@@ -69,6 +69,13 @@ pub struct StepContext {
 }
 
 /// Read-only decision before context mutations are committed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ContextUsageUpdate {
+    pub context_tokens: u32,
+    pub context_window: u32,
+    pub context_percent: u8,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ContextObservation {
     pub estimated_tokens: u32,
@@ -383,7 +390,7 @@ impl ContextEngine {
         tools: &[ToolDefinition],
         estimator: &TokenEstimator,
         compaction_config: &CompactionConfig,
-    ) {
+    ) -> ContextUsageUpdate {
         self.water.record_usage(usage);
         if let Some(cached) = usage.cached_tokens {
             let effective = self.water.effective_tokens();
@@ -401,10 +408,14 @@ impl ContextEngine {
         }
         let view = session.view();
         let estimated = tokens::estimate_context(&view.messages, tools, estimator) as u32;
-        session.update_context_usage(
-            self.water.usage_update(estimated),
-            compaction_config.context_window_tokens,
-        );
+        let context_tokens = self.water.usage_update(estimated);
+        let context_window = compaction_config.context_window_tokens;
+        session.update_context_usage(context_tokens, context_window);
+        ContextUsageUpdate {
+            context_tokens,
+            context_window,
+            context_percent: self.water.usage_percent(),
+        }
     }
 
     pub async fn compact_forced(

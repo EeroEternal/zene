@@ -299,7 +299,7 @@ impl AgentBuilder {
             tools: Arc::new(tools),
             sandbox,
             session: self.session,
-            usage_accumulator: crate::model_executor::UsageAccumulator::default(),
+            usage_accumulator: crate::usage::UsageAccumulator::default(),
             context,
             active_turn: None,
             steer_buffer: Arc::new(Mutex::new(SteerBuffer::default())),

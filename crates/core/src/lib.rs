@@ -30,6 +30,7 @@ mod agent_builder;
 mod agent_turn;
 mod context_config;
 mod model_executor;
+mod usage;
 mod context_events;
 mod context_hooks;
 mod events;
@@ -102,7 +103,7 @@ pub struct Agent {
     tools: Arc<ToolRegistry>,
     sandbox: Arc<dyn Sandbox>,
     session: SessionRecord,
-    usage_accumulator: model_executor::UsageAccumulator,
+    usage_accumulator: usage::UsageAccumulator,
     context: ContextEngine,
     active_turn: Option<TurnState>,
     steer_buffer: Arc<Mutex<SteerBuffer>>,

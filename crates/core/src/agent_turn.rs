@@ -84,7 +84,7 @@ impl TurnRuntime for Agent {
         let estimator = self.token_estimator();
         let compaction_config =
             crate::context_config::context_compaction_config(&self.config.compaction);
-        self.context.record_step_usage(
+        let context_usage = self.context.record_step_usage(
             usage,
             &mut self.session,
             &tools,
@@ -92,9 +92,9 @@ impl TurnRuntime for Agent {
             &compaction_config,
         );
         let snapshot = self.usage_accumulator.snapshot(
-            self.context.water().effective_tokens(),
-            self.config.compaction.context_window_tokens,
-            self.context.water().usage_percent(),
+            context_usage.context_tokens,
+            context_usage.context_window,
+            context_usage.context_percent,
             self.context.epoch(),
         );
         emit_event(

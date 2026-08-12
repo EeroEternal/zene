@@ -46,7 +46,7 @@ pub use assemble::{
     DeliveryMode,
 };
 pub use engine::{
-    ContextDeps, ContextEngine, ContextObservation, ForcedCompactResult, OverflowHandleResult,
+    ContextDeps, ContextEngine, ContextObservation, ContextUsageUpdate, ForcedCompactResult, OverflowHandleResult,
     PrefireClientFactory, PrepareStepResult, ProjectionExplain, StepContext,
 };
 pub use model::ContextModel;
