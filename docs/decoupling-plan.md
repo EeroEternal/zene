@@ -42,7 +42,7 @@ The implementation slices for Wave 9–12 are complete for the current design sc
 
 - **Conversation SoT**: `SessionEvent` covers message, system prefix, compaction, tool call/result, permission, mode/model change, and branch/fork/rewind facts. `SessionView` projects the active event path; `messages` remains a materialized compatibility cache, with explicit migration and fallback reasons for legacy data.
 - **Context projection**: `observe` / `commit` / `project` use the event-backed view by default. `ProjectionExplain` and RuntimeEvent / ACP projection updates expose active path, fallback, injected content, tool truncation/handles, retained turns, and delivery provenance.
-- **Model/runtime boundaries**: `zene-model-executor` owns model request assembly and retry seams; `zene-runtime` owns the transport-neutral command/state/response contract and `RuntimeControl`. The Agent-specific actor remains in core behind the private `agent_runtime` module and the `RuntimeHandle` re-export.
+- **Model/runtime boundaries**: `zene-model-executor` owns model request assembly and retry seams; `zene-runtime` owns the transport-neutral command/state/response contract and `RuntimeControl`. The Agent-specific actor lives in `zene-agent-runtime` (`RuntimeHandle`).
 - **Recovery / Cloud**: safe model-boundary resume is gated by durable recovery state; `zene-cloud-runtime-client` owns the worker's ACP session, command, event normalization, reconnect, and replay boundary. Attempt/generation fencing and durable event outbox protections are in place.
 
 ## Remaining external boundaries

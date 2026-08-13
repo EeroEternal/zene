@@ -1,7 +1,4 @@
-//! Agent-specific actor implementation for the core runtime.
-//!
-//! The public `RuntimeHandle` facade remains exported by `runtime.rs`; this
-//! module owns the Agent-specific actor state and command handling.
+//! Agent-specific actor that exclusively owns a [`zene_core::Agent`].
 
 use std::collections::VecDeque;
 use std::sync::Arc;
@@ -11,7 +8,6 @@ use tokio::sync::{broadcast, oneshot, watch};
 use tokio::task::{JoinError, JoinHandle};
 use tokio_util::sync::CancellationToken;
 
-use crate::{RecoveryDisposition, RecoverySnapshot};
 use zene_runtime::{
     ApprovalDecision, ApprovalWaiters, ExecutionState, RuntimeCommand, RuntimeCommandMessage,
     RuntimeCommandReceiver, RuntimeCommandRouter, RuntimeControl, RuntimeEventPublisher,
@@ -20,7 +16,28 @@ use zene_runtime::{
 use zene_session::{AgentRecordWriter, ExecutionCheckpointState, RecoveryPlan};
 use zene_turn::{RuntimeEvent, SessionId, SteerBuffer};
 
-use crate::{Agent, PromptOptions};
+use zene_core::{Agent, PromptOptions, RecoveryDisposition, RecoverySnapshot};
+
+async fn record_runtime_checkpoint(
+    writer: &AgentRecordWriter,
+    session_id: &str,
+    state: ExecutionCheckpointState,
+    detail: Option<&str>,
+) -> Result<()> {
+    use zene_session::RecordEntry;
+    let suffix = detail.unwrap_or("shutdown");
+    writer.append_execution_checkpoint(&RecordEntry::ExecutionCheckpoint {
+        turn_id: session_id.to_string(),
+        step_id: None,
+        tool_call_id: None,
+        state,
+        idempotency_key: format!("runtime/{session_id}/{suffix}"),
+        context_epoch: None,
+        model_request_hash: None,
+        ts: chrono::Utc::now(),
+    })?;
+    Ok(())
+}
 
 type RuntimeMessage = RuntimeCommandMessage;
 
@@ -61,7 +78,7 @@ impl RuntimeHandle {
         candidate: Option<zene_session::ResumeCandidate>,
     ) -> (Self, JoinHandle<Result<()>>) {
         if candidate.is_some() {
-            agent.resume_existing_turn = true;
+            agent.set_resume_existing_turn(true);
         }
         let record_writer = agent.execution_record_writer();
         let (router, command_rx, events, state_tx) = RuntimeCommandRouter::channel(32);
@@ -300,7 +317,7 @@ async fn run_actor(
                 while let Some(prompt) = queued.pop_front() {
                     let _ = prompt.reply.send(Err("runtime is shutting down".into()));
                 }
-                let _ = Agent::record_runtime_checkpoint(
+                let _ = record_runtime_checkpoint(
                     &record_writer,
                     session_id.as_str(),
                     ExecutionCheckpointState::RuntimeShutdown,
@@ -389,7 +406,7 @@ async fn run_actor(
                         // The task owned the Agent; after a panic it cannot be
                         // recovered. Stop cleanly instead of panicking again
                         // in the shutdown path.
-                        let _ = Agent::record_runtime_checkpoint(
+                        let _ = record_runtime_checkpoint(
                             &record_writer,
                             session_id.as_str(),
                             ExecutionCheckpointState::RuntimeFailed,
@@ -516,7 +533,7 @@ fn handle_idle_command(
                 }
             }
             let mut resumed = agent.take().expect("idle actor owns agent");
-            resumed.resume_existing_turn = true;
+            resumed.set_resume_existing_turn(true);
             Some(start_prompt(
                 resumed,
                 PendingPrompt {
@@ -768,7 +785,7 @@ mod tests {
         let mut config = ZeneConfig::default();
         config.provider = "anthropic".into();
         config.anthropic_api_key = Some("test-key".into());
-        let agent = crate::AgentBuilder::new(
+        let agent = zene_core::AgentBuilder::new(
             config,
             LocalSandbox::new(workdir.path()),
             session,
@@ -826,7 +843,7 @@ mod tests {
         let mut config = ZeneConfig::default();
         config.provider = "anthropic".into();
         config.anthropic_api_key = Some("test-key".into());
-        let agent = crate::AgentBuilder::new(
+        let agent = zene_core::AgentBuilder::new(
             config,
             LocalSandbox::new(workdir.path()),
             session,
