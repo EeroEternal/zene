@@ -293,7 +293,7 @@ async fn run_actor(
                     Some("shutdown"),
                 )
                 .await;
-                let _ = state.send(ExecutionState::Shutdown);
+                publisher.set_state(ExecutionState::Shutdown);
                 if let Some(mut agent) = agent.take() {
                     agent.shutdown().await?;
                 }
@@ -318,7 +318,6 @@ async fn run_actor(
                 message,
                 &mut queued,
                 &steer_buffer,
-                &state,
                 &mut shutdown_requested,
                 &publisher,
             );
@@ -342,20 +341,20 @@ async fn run_actor(
                         agent = Some(finished_agent);
                         let response = match prompt_result {
                             Ok(text) if !cancelled => {
-                                let _ = state.send(ExecutionState::Completed);
+                                publisher.set_state(ExecutionState::Completed);
                                 Ok(RuntimeResponse::Prompt { text })
                             }
                             Ok(_text) => {
-                                let _ = state.send(ExecutionState::Cancelled);
+                                publisher.set_state(ExecutionState::Cancelled);
                                 Err("turn cancelled".into())
                             }
                             Err(err) if cancelled || err.to_string().contains("aborted") => {
-                                let _ = state.send(ExecutionState::Cancelled);
+                                publisher.set_state(ExecutionState::Cancelled);
                                 Err("turn cancelled".into())
                             }
                             Err(err) => {
                                 let message = err.to_string();
-                                let _ = state.send(ExecutionState::Failed {
+                                publisher.set_state(ExecutionState::Failed {
                                     message: message.clone(),
                                 });
                                 Err(message)
@@ -365,7 +364,7 @@ async fn run_actor(
                     }
                     Err(err) => {
                         let message = format!("runtime turn task failed: {err}");
-                        let _ = state.send(ExecutionState::Failed {
+                        publisher.set_state(ExecutionState::Failed {
                             message: message.clone(),
                         });
                         let _ = current.reply.send(Err(message));
@@ -379,7 +378,7 @@ async fn run_actor(
                             Some("task_failed"),
                         )
                         .await;
-                        let _ = state.send(ExecutionState::Shutdown);
+                        publisher.set_state(ExecutionState::Shutdown);
                         return Ok(());
                     }
                 }
@@ -444,7 +443,6 @@ fn handle_idle_command(
     message: RuntimeMessage,
     _queued: &mut VecDeque<PendingPrompt>,
     _steer_buffer: &std::sync::Arc<parking_lot::Mutex<SteerBuffer>>,
-    state: &watch::Sender<ExecutionState>,
     shutdown_requested: &mut bool,
     publisher: &RuntimeEventPublisher,
 ) -> Option<ActivePrompt> {
@@ -547,11 +545,11 @@ fn handle_idle_command(
             }
         },
         RuntimeCommand::Approval { request_id, .. } => {
-            let _ = state.send(ExecutionState::AwaitingApproval { request_id });
+            publisher.set_state(ExecutionState::AwaitingApproval { request_id });
             let _ = message
                 .reply
                 .send(Err("no approval request is pending".into()));
-            let _ = state.send(ExecutionState::Idle);
+            publisher.set_state(ExecutionState::Idle);
             None
         }
         RuntimeCommand::GetMode => {
