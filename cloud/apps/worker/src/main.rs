@@ -23,7 +23,8 @@ use zene_cloud_runtime_client::{
 };
 use zene_cloud_domain::{
     ApprovalRequest, ApprovalStatus, ClaimedRun, CloneAuthResponse, CreateApprovalRequest,
-    LlmAuthResponse, RunStatus, WorkerCommand, WorkerCommandAckRequest, WorkerCommandsResponse,
+    LlmAuthResponse, RunStatus, WorkerCommand, WorkerCommandAckRequest, WorkerCommandKind,
+    WorkerCommandsResponse,
     WorkerEventRequest, WorkerFence, WorkerStatusRequest, WorkerTitleRequest,
     WorkerAcpSessionRequest,
 };
@@ -725,11 +726,11 @@ async fn run_with_mock(
         loop {
             if let Ok(commands) = fetch_commands(&client_cmd, &cli_cmd, &token_cmd, run_id, &command_fence).await {
                 for cmd in commands {
-                    if cmd.kind == "cancel" {
+                    if cmd.kind == WorkerCommandKind::Cancel {
                         cancel_flag.store(true, std::sync::atomic::Ordering::SeqCst);
                         return;
                     }
-                    if cmd.kind == "prompt" {
+                    if cmd.kind == WorkerCommandKind::Prompt {
                         if let (Some(text), Some(message_id)) = (cmd.text, cmd.message_id) {
                             match command_agent.run_prompt(&text, command_tx.clone()).await {
                                 Ok(()) => {
@@ -754,7 +755,7 @@ async fn run_with_mock(
     // Drain any follow-ups already waiting.
     if let Ok(commands) = fetch_commands(client, &cli.api_url, &cli.worker_token, run_id, &fence).await {
         for cmd in commands {
-            if cmd.kind == "cancel" {
+            if cmd.kind == WorkerCommandKind::Cancel {
                 cmd_task.abort();
                 drop(msg_tx);
                 event_task.await.context("event pump")?;
@@ -764,7 +765,7 @@ async fn run_with_mock(
                 set_status(client, cli, run_id, &fence, RunStatus::Cancelled, None, None).await?;
                 return Ok(RunOutcome::Cancelled);
             }
-            if cmd.kind == "prompt" {
+            if cmd.kind == WorkerCommandKind::Prompt {
                 if let Some(text) = cmd.text {
                     prompts.push((text, cmd.message_id));
                 }
@@ -799,12 +800,12 @@ async fn run_with_mock(
         }
         if let Ok(commands) = fetch_commands(client, &cli.api_url, &cli.worker_token, run_id, &fence).await {
             for cmd in commands {
-                if cmd.kind == "cancel" {
+                if cmd.kind == WorkerCommandKind::Cancel {
                     cancelled.store(true, std::sync::atomic::Ordering::SeqCst);
                     break;
                 }
                 if let Some(text) = cmd.text {
-                    if cmd.kind == "prompt" {
+                    if cmd.kind == WorkerCommandKind::Prompt {
                         agent.run_prompt(&text, msg_tx.clone()).await?;
                         if let Some(message_id) = cmd.message_id {
                             ack_command(client, &cli.api_url, &cli.worker_token, run_id, &fence, message_id)
@@ -1065,12 +1066,12 @@ async fn run_with_real_acp(
             match fetch_commands(&client_cmd, &cli_cmd, &token_cmd, run_id, &command_fence).await {
                 Ok(commands) => {
                     for cmd in commands {
-                        if cmd.kind == "cancel" {
+                        if cmd.kind == WorkerCommandKind::Cancel {
                             cancel_flag.store(true, std::sync::atomic::Ordering::SeqCst);
                             let _ = runtime_cancel.send(RuntimeCommand::Cancel).await;
                             return;
                         }
-                        if cmd.kind == "prompt" {
+                        if cmd.kind == WorkerCommandKind::Prompt {
                             if let Some(text) = cmd.text {
                                 {
                                     let mut ts = activity_cmd.lock().await;

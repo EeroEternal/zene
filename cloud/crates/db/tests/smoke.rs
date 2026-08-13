@@ -3,7 +3,7 @@ use uuid::Uuid;
 use zene_cloud_db::Db;
 use zene_cloud_domain::{
     ApprovalStatus, CreateApprovalRequest, CreateRepositoryRequest, CreateRunRequest,
-    RegisterRequest, RunStatus, WorkerFence,
+    RegisterRequest, RunStatus, WorkerCommandKind, WorkerFence,
 };
 
 #[tokio::test]
@@ -437,6 +437,7 @@ async fn worker_command_is_retried_until_fenced_ack() {
     let message = db.add_message(run.id, Some(auth.user.id), "user", "follow-up", None).await.unwrap();
     let commands = db.poll_worker_commands_fenced(run.id, &fence).await.unwrap();
     assert_eq!(commands.iter().filter_map(|command| command.message_id).collect::<Vec<_>>(), vec![message.id]);
+    assert!(commands.iter().all(|command| command.kind == WorkerCommandKind::Prompt));
     assert!(db.poll_worker_commands_fenced(run.id, &fence).await.unwrap().iter().all(|command| command.message_id != Some(message.id)));
     let mut stale_fence = fence.clone();
     stale_fence.generation += 1;

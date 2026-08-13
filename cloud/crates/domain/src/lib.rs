@@ -314,7 +314,9 @@ pub struct WorkerEventRequest {
 
 #[cfg(test)]
 mod tests {
-    use super::{WorkerCommandAckRequest, WorkerEventRequest, WorkerFence};
+    use super::{
+        WorkerCommand, WorkerCommandAckRequest, WorkerCommandKind, WorkerEventRequest, WorkerFence,
+    };
 
     #[test]
     fn worker_command_ack_round_trips_fence() {
@@ -343,6 +345,28 @@ mod tests {
 
         let encoded = serde_json::to_value(request).expect("event request should serialize");
         assert!(encoded.get("cursor").is_none());
+    }
+
+    #[test]
+    fn worker_command_kind_round_trips_as_prompt_cancel() {
+        let prompt = WorkerCommand::prompt("msg-1", "hello".into(), uuid::Uuid::nil());
+        let encoded = serde_json::to_value(&prompt).expect("prompt should serialize");
+        assert_eq!(encoded["kind"], "prompt");
+        assert_eq!(encoded["text"], "hello");
+        assert_eq!(encoded["messageId"], uuid::Uuid::nil().to_string());
+
+        let parsed: WorkerCommand = serde_json::from_value(encoded).expect("prompt should deserialize");
+        assert_eq!(parsed.kind, WorkerCommandKind::Prompt);
+        assert_eq!(parsed.text.as_deref(), Some("hello"));
+
+        let cancel = WorkerCommand::cancel("cancel-stopping");
+        let encoded = serde_json::to_value(&cancel).expect("cancel should serialize");
+        assert_eq!(encoded["kind"], "cancel");
+        assert!(encoded["text"].is_null());
+        assert!(encoded["messageId"].is_null());
+
+        let parsed: WorkerCommand = serde_json::from_value(encoded).expect("cancel should deserialize");
+        assert_eq!(parsed.kind, WorkerCommandKind::Cancel);
     }
 }
 
@@ -397,14 +421,42 @@ pub struct CloneAuthResponse {
     pub mock: bool,
 }
 
+/// API → worker command. Wire JSON stays `"prompt"` / `"cancel"`.
+/// Approval and shutdown are not API→worker commands.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkerCommandKind {
+    Prompt,
+    Cancel,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WorkerCommand {
     pub id: String,
-    /// `prompt` | `cancel`
-    pub kind: String,
+    pub kind: WorkerCommandKind,
     pub text: Option<String>,
     pub message_id: Option<Id>,
+}
+
+impl WorkerCommand {
+    pub fn prompt(id: impl Into<String>, text: String, message_id: Id) -> Self {
+        Self {
+            id: id.into(),
+            kind: WorkerCommandKind::Prompt,
+            text: Some(text),
+            message_id: Some(message_id),
+        }
+    }
+
+    pub fn cancel(id: impl Into<String>) -> Self {
+        Self {
+            id: id.into(),
+            kind: WorkerCommandKind::Cancel,
+            text: None,
+            message_id: None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
