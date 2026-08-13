@@ -356,6 +356,7 @@ impl AgentBuilder {
             mcp,
             background: self.background.unwrap_or_else(shared_background_tasks),
             approval_broker: self.approval_broker,
+            runtime_approval_waiters: false,
         })
     }
 }

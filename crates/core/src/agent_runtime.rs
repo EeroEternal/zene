@@ -4,10 +4,7 @@
 //! module owns the Agent-specific actor state and command handling.
 
 use std::collections::VecDeque;
-#[cfg(test)]
 use std::sync::Arc;
-#[cfg(test)]
-use zene_turn::TurnId;
 
 use anyhow::{anyhow, Result};
 use tokio::sync::{broadcast, oneshot, watch};
@@ -15,28 +12,15 @@ use tokio::task::{JoinError, JoinHandle};
 use tokio_util::sync::CancellationToken;
 
 use crate::{RecoveryDisposition, RecoverySnapshot};
-#[cfg(test)]
-use zene_permission::PromptChoice;
-#[cfg(test)]
-use zene_runtime::ApprovalDecision;
 use zene_runtime::{
-    ExecutionState, RuntimeCommand, RuntimeCommandMessage, RuntimeCommandReceiver,
-    RuntimeCommandRouter, RuntimeControl, RuntimeEventPublisher, RuntimeLifecycle,
-    RuntimeRecoveryInfo, RuntimeResponse,
+    ApprovalDecision, ApprovalWaiters, ExecutionState, RuntimeCommand, RuntimeCommandMessage,
+    RuntimeCommandReceiver, RuntimeCommandRouter, RuntimeControl, RuntimeEventPublisher,
+    RuntimeLifecycle, RuntimeRecoveryInfo, RuntimeResponse,
 };
 use zene_session::{AgentRecordWriter, ExecutionCheckpointState, RecoveryPlan};
 use zene_turn::{RuntimeEvent, SessionId, SteerBuffer};
 
 use crate::{Agent, PromptOptions};
-
-#[cfg(test)]
-fn prompt_choice(decision: ApprovalDecision) -> PromptChoice {
-    match decision {
-        ApprovalDecision::AllowOnce => PromptChoice::AllowOnce,
-        ApprovalDecision::AllowSession => PromptChoice::AllowSession,
-        ApprovalDecision::Deny => PromptChoice::Deny,
-    }
-}
 
 type RuntimeMessage = RuntimeCommandMessage;
 
@@ -151,6 +135,19 @@ impl RuntimeHandle {
         self.command(RuntimeCommand::Shutdown).await.map(|_| ())
     }
 
+    pub async fn approve(
+        &self,
+        request_id: impl Into<String>,
+        decision: ApprovalDecision,
+    ) -> Result<()> {
+        self.command(RuntimeCommand::Approval {
+            request_id: request_id.into(),
+            decision,
+        })
+        .await
+        .map(|_| ())
+    }
+
     /// Subscribe to the ordered runtime event stream.
     pub fn subscribe(&self) -> broadcast::Receiver<RuntimeEvent> {
         self.router.subscribe()
@@ -177,10 +174,7 @@ impl RuntimeHandle {
     }
 }
 
-fn terminal_lifecycle(
-    cancelled: bool,
-    result: &Result<String>,
-) -> RuntimeLifecycle {
+fn terminal_lifecycle(cancelled: bool, result: &Result<String>) -> RuntimeLifecycle {
     match result {
         Ok(_) if !cancelled => RuntimeLifecycle::Completed,
         Ok(_) | Err(_) if cancelled => RuntimeLifecycle::Cancelled,
@@ -234,6 +228,10 @@ impl RuntimeControl for RuntimeHandle {
         RuntimeHandle::shutdown(self).await
     }
 
+    async fn approve(&self, request_id: String, decision: ApprovalDecision) -> Result<()> {
+        RuntimeHandle::approve(self, request_id, decision).await
+    }
+
     fn subscribe(&self) -> broadcast::Receiver<RuntimeEvent> {
         RuntimeHandle::subscribe(self)
     }
@@ -262,6 +260,7 @@ struct ActivePrompt {
     cancel: CancellationToken,
     reply: oneshot::Sender<std::result::Result<RuntimeResponse, String>>,
     task: JoinHandle<(Agent, Result<String>)>,
+    waiters: Arc<ApprovalWaiters>,
 }
 
 enum ActivePoll {
@@ -403,15 +402,13 @@ async fn run_actor(
                 }
             }
             ActivePoll::Command(Some(message)) => {
+                let current = active.as_ref().expect("active prompt exists");
                 handle_active_command(
                     message,
                     &mut queued,
                     &steer_buffer,
-                    active
-                        .as_ref()
-                        .expect("active prompt exists")
-                        .cancel
-                        .clone(),
+                    current.cancel.clone(),
+                    &current.waiters,
                     &mut shutdown_requested,
                 );
             }
@@ -426,12 +423,19 @@ async fn run_actor(
 }
 
 fn start_prompt(
-    agent: Agent,
+    mut agent: Agent,
     prompt: PendingPrompt,
     publisher: &RuntimeEventPublisher,
 ) -> ActivePrompt {
     publisher.set_state(ExecutionState::Starting);
     let event_handler = publisher.handler();
+    let waiters = Arc::new(ApprovalWaiters::new());
+    if agent.runtime_approval_waiters() {
+        agent.set_approval_broker(Arc::new(crate::approval::RuntimeOwnedBroker::new(
+            Arc::clone(&waiters),
+            publisher.clone(),
+        )));
+    }
     let cancel = CancellationToken::new();
     let task_cancel = cancel.clone();
     let task = tokio::spawn(async move {
@@ -454,6 +458,7 @@ fn start_prompt(
         cancel,
         reply: prompt.reply,
         task,
+        waiters,
     }
 }
 
@@ -564,11 +569,9 @@ fn handle_idle_command(
             }
         },
         RuntimeCommand::Approval { request_id, .. } => {
-            publisher.set_state(ExecutionState::AwaitingApproval { request_id });
             let _ = message
                 .reply
-                .send(Err("no approval request is pending".into()));
-            publisher.set_state(ExecutionState::Idle);
+                .send(Err(format!("no approval request {request_id} is pending")));
             None
         }
         RuntimeCommand::GetMode => {
@@ -593,6 +596,7 @@ fn handle_active_command(
     queued: &mut VecDeque<PendingPrompt>,
     steer_buffer: &std::sync::Arc<parking_lot::Mutex<SteerBuffer>>,
     cancel: CancellationToken,
+    waiters: &ApprovalWaiters,
     shutdown_requested: &mut bool,
 ) {
     match message.command {
@@ -623,6 +627,7 @@ fn handle_active_command(
             }
         }
         RuntimeCommand::Cancel => {
+            waiters.cancel_all();
             cancel.cancel();
             let _ = message.reply.send(Ok(RuntimeResponse::Accepted));
         }
@@ -631,13 +636,20 @@ fn handle_active_command(
                 "cannot change or read mode while a turn is active".into()
             ));
         }
-        RuntimeCommand::Approval { request_id, .. } => {
-            let _ = message.reply.send(Err(format!(
-                "approval request {request_id} cannot be handled by this runtime"
-            )));
-        }
+        RuntimeCommand::Approval {
+            request_id,
+            decision,
+        } => match waiters.resolve(&request_id, decision) {
+            Ok(()) => {
+                let _ = message.reply.send(Ok(RuntimeResponse::Accepted));
+            }
+            Err(err) => {
+                let _ = message.reply.send(Err(err.to_string()));
+            }
+        },
         RuntimeCommand::Shutdown => {
             *shutdown_requested = true;
+            waiters.cancel_all();
             cancel.cancel();
             let _ = message.reply.send(Ok(RuntimeResponse::Accepted));
         }
@@ -651,6 +663,8 @@ fn publish_state_event(publisher: &RuntimeEventPublisher, state: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use zene_permission::PromptChoice;
+    use zene_turn::TurnId;
 
     #[test]
     fn recovery_disposition_names_are_protocol_stable() {
@@ -681,14 +695,17 @@ mod tests {
     #[test]
     fn approval_decisions_map_to_permission_choices() {
         assert_eq!(
-            prompt_choice(ApprovalDecision::AllowOnce),
+            crate::approval::prompt_choice(ApprovalDecision::AllowOnce),
             PromptChoice::AllowOnce
         );
         assert_eq!(
-            prompt_choice(ApprovalDecision::AllowSession),
+            crate::approval::prompt_choice(ApprovalDecision::AllowSession),
             PromptChoice::AllowSession
         );
-        assert_eq!(prompt_choice(ApprovalDecision::Deny), PromptChoice::Deny);
+        assert_eq!(
+            crate::approval::prompt_choice(ApprovalDecision::Deny),
+            PromptChoice::Deny
+        );
     }
 
     #[test]
@@ -784,7 +801,9 @@ mod tests {
         use tempfile::tempdir;
         use zene_config::ZeneConfig;
         use zene_sandbox::LocalSandbox;
-        use zene_session::{AgentRecordWriter, ExecutionCheckpointState, RecordEntry, SessionRecord};
+        use zene_session::{
+            AgentRecordWriter, ExecutionCheckpointState, RecordEntry, SessionRecord,
+        };
 
         let workdir = tempdir().expect("workdir");
         let record_dir = tempdir().expect("record dir");
@@ -841,6 +860,8 @@ mod tests {
         let cancel_for_assertion = cancel.clone();
         let mut queued = VecDeque::new();
         let steer = Arc::new(parking_lot::Mutex::new(SteerBuffer::default()));
+        let waiters = ApprovalWaiters::new();
+        let pending = waiters.register("req-1".into());
 
         handle_active_command(
             RuntimeMessage {
@@ -850,6 +871,7 @@ mod tests {
             &mut queued,
             &steer,
             cancel,
+            &waiters,
             &mut false,
         );
 
@@ -859,6 +881,8 @@ mod tests {
             Ok(RuntimeResponse::Accepted)
         ));
         assert!(queued.is_empty());
+        assert!(pending.await.is_err());
+        assert!(waiters.is_empty());
     }
 
     #[tokio::test]
@@ -879,6 +903,7 @@ mod tests {
                 &mut queued,
                 &steer,
                 cancel,
+                &ApprovalWaiters::new(),
                 &mut false,
             );
 
@@ -904,6 +929,7 @@ mod tests {
             &mut queued,
             &steer,
             cancel.clone(),
+            &ApprovalWaiters::new(),
             &mut false,
         );
         assert!(matches!(
@@ -921,6 +947,7 @@ mod tests {
             &mut queued,
             &steer,
             cancel,
+            &ApprovalWaiters::new(),
             &mut false,
         );
         assert!(response.await.unwrap().unwrap_err().contains("empty"));
@@ -941,6 +968,7 @@ mod tests {
             &mut queued,
             &steer,
             cancel.clone(),
+            &ApprovalWaiters::new(),
             &mut false,
         );
         assert!(response.await.unwrap().unwrap_err().contains("empty"));
@@ -957,10 +985,62 @@ mod tests {
             &mut queued,
             &steer,
             cancel,
+            &ApprovalWaiters::new(),
             &mut false,
         );
         assert_eq!(queued.len(), 1);
         assert_eq!(queued.front().unwrap().text, "next");
     }
 
+    #[tokio::test]
+    async fn active_approval_resolves_registered_waiter() {
+        let waiters = ApprovalWaiters::new();
+        let rx = waiters.register("req-1".into());
+        let (reply, response) = oneshot::channel();
+        handle_active_command(
+            RuntimeMessage {
+                command: RuntimeCommand::Approval {
+                    request_id: "req-1".into(),
+                    decision: ApprovalDecision::AllowOnce,
+                },
+                reply,
+            },
+            &mut VecDeque::new(),
+            &Arc::new(parking_lot::Mutex::new(SteerBuffer::default())),
+            CancellationToken::new(),
+            &waiters,
+            &mut false,
+        );
+        assert!(matches!(
+            response.await.unwrap(),
+            Ok(RuntimeResponse::Accepted)
+        ));
+        assert_eq!(rx.await.unwrap(), ApprovalDecision::AllowOnce);
+        assert!(waiters.is_empty());
+    }
+
+    #[tokio::test]
+    async fn active_approval_unknown_request_is_rejected() {
+        let waiters = ApprovalWaiters::new();
+        let (reply, response) = oneshot::channel();
+        handle_active_command(
+            RuntimeMessage {
+                command: RuntimeCommand::Approval {
+                    request_id: "missing".into(),
+                    decision: ApprovalDecision::Deny,
+                },
+                reply,
+            },
+            &mut VecDeque::new(),
+            &Arc::new(parking_lot::Mutex::new(SteerBuffer::default())),
+            CancellationToken::new(),
+            &waiters,
+            &mut false,
+        );
+        assert!(response
+            .await
+            .unwrap()
+            .unwrap_err()
+            .contains("no approval request missing is pending"));
+    }
 }

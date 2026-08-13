@@ -26,6 +26,7 @@ use zene_tools::{
 mod agent_builder;
 mod agent_runtime;
 mod agent_turn;
+mod approval;
 mod context_config;
 pub use zene_model_executor as model_executor;
 mod context_events;
@@ -125,6 +126,7 @@ pub struct Agent {
     mcp: Option<McpManager>,
     background: SharedBackgroundTasks,
     approval_broker: Option<zene_permission::SharedApprovalBroker>,
+    runtime_approval_waiters: bool,
 }
 
 pub struct PromptOptions {
@@ -632,6 +634,18 @@ impl Agent {
     /// Inject the async approval waiter used when policy returns `Ask`.
     pub fn set_approval_broker(&mut self, broker: zene_permission::SharedApprovalBroker) {
         self.approval_broker = Some(broker);
+    }
+
+    /// Ask the runtime actor to own approval waiters for this session.
+    ///
+    /// Transports then send [`zene_runtime::RuntimeCommand::Approval`] instead
+    /// of injecting an ACP/Cloud-specific broker.
+    pub fn enable_runtime_approval_waiters(&mut self) {
+        self.runtime_approval_waiters = true;
+    }
+
+    pub(crate) fn runtime_approval_waiters(&self) -> bool {
+        self.runtime_approval_waiters
     }
 
     /// Replace the AskUserQuestion prompter (e.g. TUI modal).

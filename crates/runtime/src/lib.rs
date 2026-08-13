@@ -1,6 +1,7 @@
+use std::collections::HashMap;
 use std::sync::{
     atomic::{AtomicU64, Ordering},
-    Arc,
+    Arc, Mutex,
 };
 
 use anyhow::{anyhow, Result};
@@ -36,6 +37,59 @@ pub enum ApprovalDecision {
     AllowOnce,
     AllowSession,
     Deny,
+}
+
+impl ApprovalDecision {
+    pub fn allowed(self) -> bool {
+        !matches!(self, Self::Deny)
+    }
+}
+
+/// Oneshot registry for in-flight tool approvals.
+///
+/// The turn task waits here; the actor resolves entries when a transport
+/// sends [`RuntimeCommand::Approval`].
+#[derive(Default)]
+pub struct ApprovalWaiters {
+    inner: Mutex<HashMap<String, oneshot::Sender<ApprovalDecision>>>,
+}
+
+impl ApprovalWaiters {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn register(&self, request_id: String) -> oneshot::Receiver<ApprovalDecision> {
+        let (tx, rx) = oneshot::channel();
+        self.inner
+            .lock()
+            .expect("approval waiters")
+            .insert(request_id, tx);
+        rx
+    }
+
+    pub fn resolve(&self, request_id: &str, decision: ApprovalDecision) -> Result<()> {
+        match self
+            .inner
+            .lock()
+            .expect("approval waiters")
+            .remove(request_id)
+        {
+            Some(tx) => {
+                let _ = tx.send(decision);
+                Ok(())
+            }
+            None => Err(anyhow!("no approval request {request_id} is pending")),
+        }
+    }
+
+    pub fn cancel_all(&self) {
+        self.inner.lock().expect("approval waiters").clear();
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.inner.lock().expect("approval waiters").is_empty()
+    }
 }
 
 /// Runtime execution state, independent from Cloud Run state.
@@ -113,6 +167,7 @@ pub trait RuntimeControl: Send + Sync {
     async fn set_mode(&self, mode_id: String) -> Result<String>;
     async fn current_mode(&self) -> Result<String>;
     async fn shutdown(&self) -> Result<()>;
+    async fn approve(&self, request_id: String, decision: ApprovalDecision) -> Result<()>;
     fn subscribe(&self) -> tokio::sync::broadcast::Receiver<RuntimeEvent>;
     fn recovery_info(&self) -> Result<RuntimeRecoveryInfo>;
 }
@@ -266,10 +321,33 @@ impl RuntimeEventPublisher {
                         });
                     }
                 }
+                RuntimeEventKind::ApprovalRequested { request_id, .. } => {
+                    let _ = publisher.state.send(ExecutionState::AwaitingApproval {
+                        request_id: request_id.clone(),
+                    });
+                }
                 _ => {}
             }
             let _ = publisher.events.send(event);
         })
+    }
+
+    pub fn publish_kind(&self, kind: RuntimeEventKind) {
+        let event = RuntimeEvent {
+            sequence: zene_turn::EventSequence::new(
+                self.sequence.fetch_add(1, Ordering::Relaxed) + 1,
+            ),
+            session_id: self.session_id.clone(),
+            turn_id: None,
+            step_id: None,
+            kind,
+        };
+        if let RuntimeEventKind::ApprovalRequested { request_id, .. } = &event.kind {
+            self.set_state(ExecutionState::AwaitingApproval {
+                request_id: request_id.clone(),
+            });
+        }
+        let _ = self.events.send(event);
     }
 }
 
@@ -433,7 +511,12 @@ mod tests {
                 .unwrap();
         });
         let response = router.command(RuntimeCommand::GetMode).await.unwrap();
-        assert_eq!(response, RuntimeResponse::Mode { mode_id: "default".into() });
+        assert_eq!(
+            response,
+            RuntimeResponse::Mode {
+                mode_id: "default".into()
+            }
+        );
         task.await.unwrap();
     }
 
@@ -488,11 +571,8 @@ mod tests {
     async fn event_publisher_mirrors_terminal_state_before_event() {
         let (events, mut receiver) = broadcast::channel(4);
         let (state, state_receiver) = watch::channel(ExecutionState::Idle);
-        let publisher = RuntimeEventPublisher::new(
-            events,
-            state,
-            SessionId::from_string("runtime-session"),
-        );
+        let publisher =
+            RuntimeEventPublisher::new(events, state, SessionId::from_string("runtime-session"));
 
         let handler = publisher.handler();
         handler(RuntimeEvent {
@@ -529,11 +609,8 @@ mod tests {
         let (events, _receiver) = broadcast::channel(4);
         let (state, state_receiver) = watch::channel(ExecutionState::Idle);
         let turn_id = TurnId::new();
-        let publisher = RuntimeEventPublisher::new(
-            events,
-            state,
-            SessionId::from_string("runtime-session"),
-        );
+        let publisher =
+            RuntimeEventPublisher::new(events, state, SessionId::from_string("runtime-session"));
         let handler = publisher.handler();
         handler(RuntimeEvent {
             sequence: zene_turn::EventSequence::new(0),
@@ -577,5 +654,25 @@ mod tests {
         assert_eq!(*runtime.state().borrow(), DriverState::Idle);
         runtime.command(DriverCommand::Shutdown).await.unwrap();
         task.await.unwrap().unwrap();
+    }
+
+    #[tokio::test]
+    async fn approval_waiters_resolve_registered_request() {
+        let waiters = ApprovalWaiters::new();
+        let rx = waiters.register("req-1".into());
+        waiters
+            .resolve("req-1", ApprovalDecision::AllowOnce)
+            .unwrap();
+        assert_eq!(rx.await.unwrap(), ApprovalDecision::AllowOnce);
+        assert!(waiters.is_empty());
+    }
+
+    #[tokio::test]
+    async fn approval_waiters_cancel_drops_receivers() {
+        let waiters = ApprovalWaiters::new();
+        let rx = waiters.register("req-2".into());
+        waiters.cancel_all();
+        assert!(rx.await.is_err());
+        assert!(waiters.resolve("req-2", ApprovalDecision::Deny).is_err());
     }
 }
