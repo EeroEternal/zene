@@ -1631,8 +1631,9 @@ mod title_tests {
         chat_completions_url, event_file_key, sanitize_run_title, EventOutbox,
     };
     use serde_json::json;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use uuid::Uuid;
-    use zene_cloud_domain::WorkerEventRequest;
+    use zene_cloud_domain::{WorkerEventRequest, WorkerFence};
 
     #[test]
     fn completions_url_appends_path() {
@@ -1732,6 +1733,76 @@ mod title_tests {
         .unwrap();
         let error = outbox.enqueue(&first).await.expect_err("collision must fail");
         assert!(error.to_string().contains("collision"));
+        tokio::fs::remove_dir_all(root).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn event_outbox_reopen_flushes_pending_event_and_removes_acknowledged_file() {
+        let root = std::env::temp_dir().join(format!("zene-worker-outbox-{}", Uuid::new_v4()));
+        let run_id = Uuid::new_v4();
+        let first_worker = EventOutbox::open(&root, run_id).await.unwrap();
+        first_worker.enqueue(&event("restart-event")).await.unwrap();
+        drop(first_worker);
+
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut request = Vec::new();
+            let mut buffer = [0_u8; 4096];
+            let body_start = loop {
+                let read = stream.read(&mut buffer).await.unwrap();
+                assert!(read > 0, "client closed before sending request");
+                request.extend_from_slice(&buffer[..read]);
+                if let Some(position) = request.windows(4).position(|window| window == b"\r\n\r\n") {
+                    break position + 4;
+                }
+            };
+            let headers = String::from_utf8_lossy(&request[..body_start]);
+            let content_length = headers
+                .lines()
+                .find_map(|line| line.strip_prefix("Content-Length:").or_else(|| line.strip_prefix("content-length:")))
+                .and_then(|value| value.trim().parse::<usize>().ok())
+                .expect("event POST should include content length");
+            while request.len() < body_start + content_length {
+                let read = stream.read(&mut buffer).await.unwrap();
+                assert!(read > 0, "client closed before sending request body");
+                request.extend_from_slice(&buffer[..read]);
+            }
+            let payload: WorkerEventRequest =
+                serde_json::from_slice(&request[body_start..body_start + content_length]).unwrap();
+            assert_eq!(payload.source_event_id, "restart-event");
+            assert_eq!(payload.cursor, Some(7));
+            stream
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}")
+                .await
+                .unwrap();
+        });
+
+        let reopened = EventOutbox::open(&root, run_id).await.unwrap();
+        let fence = WorkerFence {
+            attempt_id: Uuid::new_v4(),
+            generation: 2,
+            worker_id: "replacement-worker".into(),
+        };
+        tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            reopened.flush(
+                &reqwest::Client::new(),
+                &format!("http://{address}"),
+                "worker-token",
+                run_id,
+                &fence,
+            ),
+        )
+        .await
+        .expect("outbox flush should complete")
+        .unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(10), server)
+            .await
+            .expect("mock server should complete")
+            .unwrap();
+        assert_eq!(reopened.stats().await.unwrap(), (0, 0));
         tokio::fs::remove_dir_all(root).await.unwrap();
     }
 }
