@@ -274,9 +274,11 @@ async fn concurrent_approval_creation_has_one_row_and_event() {
     let first = approval_request("permission-stable");
     let second = approval_request("permission-stable");
 
+    let left_db = db.clone();
+    let right_db = db.clone();
     let (left, right) = tokio::join!(
-        db.clone().create_approval(run_id, first),
-        db.clone().create_approval(run_id, second),
+        left_db.create_approval(run_id, first),
+        right_db.create_approval(run_id, second),
     );
     let left = left.unwrap();
     let right = right.unwrap();
@@ -301,11 +303,11 @@ async fn concurrent_approval_decisions_have_one_winner_event() {
         .await
         .unwrap();
 
+    let left_db = db.clone();
+    let right_db = db.clone();
     let (left, right) = tokio::join!(
-        db.clone()
-            .decide_approval(approval.id, "allow-once", Some("user-a")),
-        db.clone()
-            .decide_approval(approval.id, "reject-once", Some("user-b")),
+        left_db.decide_approval(approval.id, "allow-once", Some("user-a")),
+        right_db.decide_approval(approval.id, "reject-once", Some("user-b")),
     );
     let left = left.unwrap();
     let right = right.unwrap();

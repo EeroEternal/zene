@@ -1782,8 +1782,10 @@ fn split_sql_statements(sql: &str) -> Vec<String> {
 }
 
 fn is_ignorable_alter_error(err: &sqlx::Error, statement: &str) -> bool {
-    let upper = statement.trim_start().to_ascii_uppercase();
-    if !upper.starts_with("ALTER TABLE") {
+    // Migration statements may retain leading SQL comments from the file.
+    // Look for the actual ALTER verb rather than requiring it at byte zero.
+    let upper = statement.to_ascii_uppercase();
+    if !upper.contains("ALTER TABLE") {
         return false;
     }
     let msg = err.to_string().to_ascii_lowercase();
