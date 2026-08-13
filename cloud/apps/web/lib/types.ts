@@ -91,6 +91,12 @@ export interface RunEvent {
     role?: string;
     text?: string;
     title?: string;
+    toolCallId?: string;
+    toolName?: string;
+    kind?: string;
+    rawInput?: unknown;
+    rawOutput?: { text?: string; isError?: boolean };
+    isError?: boolean;
     params?: {
       update?: AcpSessionUpdate;
     };

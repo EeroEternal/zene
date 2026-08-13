@@ -121,8 +121,10 @@ pub enum RuntimeCommand {
 
 /// A runtime notification with the stable fields persisted by the worker.
 ///
-/// `event_type` is the product kind. `payload` remains the original ACP JSON so
-/// existing event records and the Console can replay without a migration.
+/// `event_type` is the product kind. Timeline kinds (`text_delta`,
+/// `thought_delta`, `tool_call`, `tool_result`) store a denormalized product
+/// payload. Other frames keep the original ACP JSON. Records written before
+/// this change still have ACP JSON; Console falls back to `params.update`.
 #[derive(Debug, Clone, PartialEq)]
 pub struct RuntimeNotification {
     pub source_event_id: String,
@@ -185,8 +187,95 @@ fn runtime_notification(event: AcpEvent) -> RuntimeNotification {
         source_event_id: event.source_event_id,
         cursor: event.cursor,
         event_type: kind.as_event_type().into(),
-        payload: event.payload,
+        payload: product_payload(kind, &event.payload),
     }
+}
+
+fn product_payload(kind: RuntimeEventKind, raw: &Value) -> Value {
+    let Some(update) = raw.pointer("/params/update") else {
+        return raw.clone();
+    };
+    match kind {
+        RuntimeEventKind::TextDelta | RuntimeEventKind::ThoughtDelta => {
+            serde_json::json!({ "text": text_from_update(update) })
+        }
+        RuntimeEventKind::ToolCall => {
+            Value::Object(take_fields(
+                update,
+                &["toolCallId", "title", "toolName", "kind", "status", "rawInput"],
+            ))
+        }
+        RuntimeEventKind::ToolResult => {
+            let mut map = take_fields(
+                update,
+                &[
+                    "toolCallId",
+                    "title",
+                    "toolName",
+                    "kind",
+                    "status",
+                    "rawOutput",
+                ],
+            );
+            let text = tool_result_text(update);
+            if !text.is_empty() {
+                map.insert("text".into(), Value::String(text));
+            }
+            if let Some(is_error) = update.pointer("/rawOutput/isError") {
+                map.insert("isError".into(), is_error.clone());
+            }
+            Value::Object(map)
+        }
+        _ => raw.clone(),
+    }
+}
+
+fn take_fields(update: &Value, keys: &[&str]) -> serde_json::Map<String, Value> {
+    let mut map = serde_json::Map::new();
+    for key in keys {
+        if let Some(value) = update.get(*key) {
+            if !value.is_null() {
+                map.insert((*key).to_string(), value.clone());
+            }
+        }
+    }
+    map
+}
+
+fn text_from_update(update: &Value) -> String {
+    if let Some(text) = update.get("text").and_then(Value::as_str) {
+        return text.to_string();
+    }
+    match update.get("content") {
+        Some(content) if content.is_object() => content
+            .get("text")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string(),
+        Some(content) if content.is_array() => content_array_text(content),
+        _ => String::new(),
+    }
+}
+
+fn tool_result_text(update: &Value) -> String {
+    if let Some(text) = update.pointer("/rawOutput/text").and_then(Value::as_str) {
+        return text.to_string();
+    }
+    text_from_update(update)
+}
+
+fn content_array_text(content: &Value) -> String {
+    content
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|item| {
+            item.pointer("/content/text")
+                .and_then(Value::as_str)
+                .or_else(|| item.get("text").and_then(Value::as_str))
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 fn runtime_request(id: &Value, method: &str, params: &Value) -> RuntimeRequest {
@@ -380,28 +469,101 @@ mod tests {
     }
 
     #[test]
-    fn notification_contract_preserves_stored_event_shape() {
+    fn text_delta_stores_product_text_not_acp_envelope() {
         let raw = serde_json::json!({
             "jsonrpc": "2.0",
             "method": "session/update",
             "params": {
                 "sessionId": "session-1",
-                "update": { "sessionUpdate": "agent_message_chunk", "text": "hello" }
+                "update": {
+                    "sessionUpdate": "agent_message_chunk",
+                    "content": { "type": "text", "text": "hello" }
+                }
             }
         });
         let event = runtime_notification(AcpEvent::from_notification(&raw));
         assert_eq!(event.event_type, "text_delta");
         assert!(event.source_event_id.starts_with("acp-"));
         assert_eq!(event.cursor, None);
-        assert_eq!(event.payload, raw);
+        assert_eq!(event.payload, serde_json::json!({ "text": "hello" }));
     }
 
     #[test]
-    fn session_update_kinds_are_classified_without_changing_payload() {
+    fn thought_delta_reads_content_text() {
+        let raw = serde_json::json!({
+            "method": "session/update",
+            "params": {
+                "update": {
+                    "sessionUpdate": "agent_thought_chunk",
+                    "content": { "type": "text", "text": "hmm" }
+                }
+            }
+        });
+        let event = runtime_notification(AcpEvent::from_notification(&raw));
+        assert_eq!(event.event_type, "thought_delta");
+        assert_eq!(event.payload, serde_json::json!({ "text": "hmm" }));
+    }
+
+    #[test]
+    fn tool_call_stores_product_fields() {
+        let raw = serde_json::json!({
+            "method": "session/update",
+            "params": {
+                "update": {
+                    "sessionUpdate": "tool_call",
+                    "toolCallId": "call-1",
+                    "title": "Read lib.rs",
+                    "kind": "read",
+                    "status": "pending",
+                    "rawInput": { "path": "lib.rs" }
+                }
+            }
+        });
+        let event = runtime_notification(AcpEvent::from_notification(&raw));
+        assert_eq!(event.event_type, "tool_call");
+        assert_eq!(
+            event.payload,
+            serde_json::json!({
+                "toolCallId": "call-1",
+                "title": "Read lib.rs",
+                "kind": "read",
+                "status": "pending",
+                "rawInput": { "path": "lib.rs" }
+            })
+        );
+    }
+
+    #[test]
+    fn tool_result_stores_product_fields() {
+        let raw = serde_json::json!({
+            "method": "session/update",
+            "params": {
+                "update": {
+                    "sessionUpdate": "tool_call_update",
+                    "toolCallId": "call-1",
+                    "status": "completed",
+                    "content": [{
+                        "type": "content",
+                        "content": { "type": "text", "text": "ok" }
+                    }],
+                    "rawOutput": { "text": "ok", "isError": false }
+                }
+            }
+        });
+        let event = runtime_notification(AcpEvent::from_notification(&raw));
+        assert_eq!(event.event_type, "tool_result");
+        assert_eq!(event.payload["toolCallId"], "call-1");
+        assert_eq!(event.payload["status"], "completed");
+        assert_eq!(event.payload["text"], "ok");
+        assert_eq!(event.payload["isError"], false);
+        assert_eq!(event.payload["rawOutput"]["text"], "ok");
+        assert!(event.payload.get("sessionUpdate").is_none());
+        assert!(event.payload.get("method").is_none());
+    }
+
+    #[test]
+    fn non_timeline_kinds_keep_original_payload() {
         let cases = [
-            ("agent_thought_chunk", "thought_delta"),
-            ("tool_call", "tool_call"),
-            ("tool_call_update", "tool_result"),
             ("current_mode_update", "state_changed"),
             ("usage_update", "usage_update"),
             ("projection_update", "projection_ready"),
