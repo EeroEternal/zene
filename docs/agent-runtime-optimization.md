@@ -1096,7 +1096,7 @@ Wave 16  统一 transport command/event  ← 当前工作
 | Wave 11 | 已完成第一阶段 | ModelExecutor、ContextModel、usage boundary、runtime protocol 和 lifecycle publisher 已落地；Agent-specific actor 尚在 core |
 | Wave 12 | 已完成第一阶段 | safe resume、Cloud RuntimeClient、neutral runtime notifications、fenced command lease/ack、atomic state/event writes、outbox replay 和真实 replacement 测试已落地 |
 | Wave 13 | 已完成 | 默认 Agent/Subagent 路径消费 `PreparedContext`；PR #60 |
-| Wave 14 | 未开始 | RuntimeScope、ToolCatalog 拆分、Agent 退回 wiring |
+| Wave 14 | 进行中 | RuntimeScope + ToolCatalog 第一刀已接到 Subagent；Agent 退回 wiring 仍待做 |
 | Wave 15 | 已完成 | `evaluate` + `ApprovalBroker` + runtime-owned waiter；PR #61 / #62 |
 | Wave 16 | 进行中 | Cloud git/queue 剩余产品枚举已收口；Steer/SetMode 与整型 crate 仍待统一 |
 
@@ -1442,3 +1442,9 @@ Wave 16  统一 transport command/event  ← 当前工作
 - installation `account_type` / `status` 使用 `GithubAccountType`（wire 仍为 `User` / `Organization`）与 `GithubInstallationStatus`。
 - 未知历史值分别读成 `failed` / `open` / `Organization` / `active`。不补 Steer/SetMode。不把 `zene-runtime` 引入 Cloud。
 
+
+### 2026-08-13 — Wave 14 RuntimeScope / ToolCatalog
+
+- 新增 `zene_tools::RuntimeScope`：Subagent 经 scope 注入 profile / depth / max_depth / tool catalog。
+- 新增 `ToolCatalog` trait；`ToolRegistry` 实现该 trait。Subagent `PreparedContext.tools` 经 catalog 取定义。
+- 保留 `SubagentRunner` facade。不搬 Agent actor。不做 Cloud 改动。

@@ -8,7 +8,7 @@ use zene_config::ZeneConfig;
 use zene_llm::{ChatClient, ChatRequest, ChatResponse, Message, TokenUsage, ToolCall};
 use zene_sandbox::Sandbox;
 use zene_tools::{
-    tools_for_profile, SubagentEnv, SubagentProfile, SubagentRunner, ToolContext,
+    RuntimeScope, SubagentEnv, SubagentProfile, SubagentRunner, ToolCatalog, ToolContext,
     ToolRegistry, DEFAULT_SUBAGENT_MAX_DEPTH,
 };
 
@@ -125,23 +125,13 @@ pub(crate) async fn run_subagent_with_runner(
     runner: Option<Arc<dyn SubagentRunner>>,
     broker: Option<zene_permission::SharedApprovalBroker>,
 ) -> Result<String> {
-    let subagent_depth = parent_depth + 1;
-    if subagent_depth > DEFAULT_SUBAGENT_MAX_DEPTH {
-        anyhow::bail!(
-            "Subagent nesting limit reached (max depth {DEFAULT_SUBAGENT_MAX_DEPTH})"
-        );
-    }
-
+    let scope = RuntimeScope::subagent(profile, parent_depth)?;
     let runner = runner.unwrap_or_else(|| {
         Arc::new(CoreSubagentRunner::new(config.clone()).with_broker(broker.clone()))
     });
-    let subagent_env = SubagentEnv {
-        depth: subagent_depth,
-        max_depth: DEFAULT_SUBAGENT_MAX_DEPTH,
-        runner,
-    };
+    let subagent_env = scope.env(runner);
     let mut runtime = SubagentTurnRuntime::new(
-        profile,
+        scope,
         sandbox,
         config,
         backend,
@@ -160,10 +150,15 @@ pub(crate) async fn run_subagent_with_runner(
 ///
 /// Subagents share the generic turn state machine. Conversation stays in
 /// memory; they do not publish the parent runtime's events or checkpoints.
+/// Tools come from [`RuntimeScope`] so Explore/Coder differ by scope, not a
+/// parallel wiring path.
 struct SubagentTurnRuntime<'a> {
     sandbox: Arc<dyn Sandbox>,
     config: &'a ZeneConfig,
     backend: &'a dyn ChatBackend,
+    /// Retained for later ToolPolicy / SessionPolicy injection.
+    #[allow(dead_code)]
+    scope: RuntimeScope,
     subagent_env: SubagentEnv,
     permission: Option<SharedToolPermission>,
     broker: Option<zene_permission::SharedApprovalBroker>,
@@ -175,7 +170,7 @@ struct SubagentTurnRuntime<'a> {
 
 impl<'a> SubagentTurnRuntime<'a> {
     fn new(
-        profile: SubagentProfile,
+        scope: RuntimeScope,
         sandbox: Arc<dyn Sandbox>,
         config: &'a ZeneConfig,
         backend: &'a dyn ChatBackend,
@@ -183,15 +178,17 @@ impl<'a> SubagentTurnRuntime<'a> {
         permission: Option<SharedToolPermission>,
         broker: Option<zene_permission::SharedApprovalBroker>,
     ) -> Self {
-        let system_prompt = subagent_system_prompt(profile, sandbox.workdir());
+        let system_prompt = subagent_system_prompt(scope.profile, sandbox.workdir());
+        let tools = scope.tools();
         Self {
             sandbox,
             config,
             backend,
+            scope,
             subagent_env,
             permission,
             broker,
-            tools: tools_for_profile(profile),
+            tools,
             messages: vec![Message::system(&system_prompt)],
             compaction_config: subagent_compaction_config(
                 &context_config::context_compaction_config(&config.compaction),
@@ -217,7 +214,7 @@ impl<'a> SubagentTurnRuntime<'a> {
         .await?;
         Ok(PreparedContext {
             messages: self.messages.clone(),
-            tools: self.tools.definitions(),
+            tools: ToolCatalog::definitions(&self.tools),
             context_epoch: None,
             metadata: None,
             estimate_tokens: None,
@@ -795,7 +792,8 @@ mod tests {
         .await
         .expect("subagent should complete");
 
-        let explore_tools: Vec<_> = tools_for_profile(SubagentProfile::Explore)
+        let explore_tools: Vec<_> = RuntimeScope::subagent(SubagentProfile::Explore, 0)
+            .expect("explore scope")
             .definitions()
             .into_iter()
             .map(|t| t.name)
@@ -808,7 +806,9 @@ mod tests {
         assert!(result.contains("beta.txt"));
         assert!(!result.contains("notes.md"));
 
-        let write_attempt = tools_for_profile(SubagentProfile::Explore)
+        let write_attempt = RuntimeScope::subagent(SubagentProfile::Explore, 0)
+            .expect("explore scope")
+            .tools()
             .execute(
                 "Write",
                 r#"{"path":"blocked.txt","content":"nope"}"#,

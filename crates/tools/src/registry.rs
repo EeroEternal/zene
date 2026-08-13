@@ -77,6 +77,26 @@ pub struct ToolRegistry {
     tools: Vec<Box<dyn Tool>>,
 }
 
+/// Read-only tool definitions for a runtime scope.
+///
+/// Wave 14 splits catalog (what the model may see) from execution. Existing
+/// [`ToolRegistry`] remains the concrete catalog+executor; callers that only
+/// need definitions should depend on this trait.
+pub trait ToolCatalog: Send + Sync {
+    fn definitions(&self) -> Vec<ToolDefinition>;
+    fn contains(&self, name: &str) -> bool;
+}
+
+impl ToolCatalog for ToolRegistry {
+    fn definitions(&self) -> Vec<ToolDefinition> {
+        ToolRegistry::definitions(self)
+    }
+
+    fn contains(&self, name: &str) -> bool {
+        ToolRegistry::contains(self, name)
+    }
+}
+
 impl ToolRegistry {
     pub fn new(tools: Vec<Box<dyn Tool>>) -> Self {
         Self { tools }
