@@ -1,7 +1,8 @@
 use crate::config::CompactionConfig;
 use anyhow::{bail, Context, Result};
 use tracing::info;
-use zene_llm::{ChatRequest, ChatResponse, Message, MessageKind, Role, ToolDefinition};
+use zene_llm::{Message, MessageKind, Role, ToolDefinition};
+use zene_model_executor::{ModelRequest, ModelResponse};
 
 use crate::model::ContextModel;
 
@@ -237,7 +238,7 @@ async fn summarize_prepared_input(
     loop {
         let input = prepare_summary_input(messages, stage, budget, estimator);
         let conversation = format_messages_for_summary(&input);
-        let request = ChatRequest {
+        let request = ModelRequest {
             model: model.to_string(),
             messages: vec![
                 Message::system(SUMMARY_SYSTEM_PROMPT),
@@ -799,8 +800,8 @@ async fn compact_with_phases<F, Fut>(
     chat: F,
 ) -> Result<Option<CompactionResult>>
 where
-    F: Fn(ChatRequest) -> Fut,
-    Fut: std::future::Future<Output = Result<ChatResponse>>,
+    F: Fn(ModelRequest) -> Fut,
+    Fut: std::future::Future<Output = Result<ModelResponse>>,
 {
     let tokens_before = tokens::estimate_context(messages, tools, estimator) as u32;
 
@@ -819,7 +820,7 @@ where
 
     let prefix_start = system_prefix_start(messages);
     let prefix = messages[prefix_start..plan.tail_start].to_vec();
-    let request = ChatRequest {
+    let request = ModelRequest {
         model: model.to_string(),
         messages: vec![
             Message::system(SUMMARY_SYSTEM_PROMPT),
@@ -939,8 +940,8 @@ pub async fn compact_message_list_with_chat<F, Fut>(
     chat: F,
 ) -> Result<Option<CompactionResult>>
 where
-    F: Fn(ChatRequest) -> Fut,
-    Fut: std::future::Future<Output = Result<ChatResponse>>,
+    F: Fn(ModelRequest) -> Fut,
+    Fut: std::future::Future<Output = Result<ModelResponse>>,
 {
     compact_with_phases(messages, model, config, reason, tools, estimator, chat).await
 }
@@ -952,11 +953,11 @@ pub async fn summarize_messages_with_chat<F, Fut>(
     chat: F,
 ) -> Result<String>
 where
-    F: FnOnce(ChatRequest) -> Fut,
-    Fut: std::future::Future<Output = Result<ChatResponse>>,
+    F: FnOnce(ModelRequest) -> Fut,
+    Fut: std::future::Future<Output = Result<ModelResponse>>,
 {
     let conversation = format_messages_for_summary(messages);
-    let request = ChatRequest {
+    let request = ModelRequest {
         model: model.to_string(),
         messages: vec![
             Message::system(SUMMARY_SYSTEM_PROMPT),

@@ -27,6 +27,7 @@ tracing.workspace = true
 tiktoken-rs = "0.12"
 reqwest = { workspace = true, default-features = false, features = ["json", "rustls-tls"], optional = true }
 zene-llm = { workspace = true }
+zene-model-executor = { workspace = true }
 zene-session = { workspace = true }
 
 [dev-dependencies]

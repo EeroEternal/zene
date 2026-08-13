@@ -526,7 +526,7 @@ async fn maybe_compact_subagent_messages(
         &estimator,
         |request| {
             let model_executor = Arc::clone(&model_executor);
-            async move { Ok(model_executor.complete(request.into()).await?.into()) }
+            async move { model_executor.complete(request).await }
         },
     )
     .await?

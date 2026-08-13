@@ -4131,6 +4131,7 @@ dependencies = [
  "tokio",
  "tracing",
  "zene-llm",
+ "zene-model-executor",
  "zene-session",
 ]
 
