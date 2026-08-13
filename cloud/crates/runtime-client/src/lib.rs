@@ -126,11 +126,10 @@ pub enum RuntimeCommand {
 
 /// A runtime notification with the stable fields persisted by the worker.
 ///
-/// `event_type` is the product kind. Timeline kinds (`text_delta`,
-/// `thought_delta`, `tool_call`, `tool_result`) and control kinds
-/// (`approval_requested`, `session_started`) store a denormalized product
-/// payload. Other frames keep the original ACP JSON. Records written before
-/// this change still have ACP JSON; Console falls back to `params.update`.
+/// `event_type` is the product kind. Timeline, control, usage, and state
+/// kinds store a denormalized product payload. Other frames keep the original
+/// ACP JSON. Records written before this change still have ACP JSON; Console
+/// falls back to `params.update`.
 #[derive(Debug, Clone, PartialEq)]
 pub struct RuntimeNotification {
     pub source_event_id: String,
@@ -192,7 +191,9 @@ fn runtime_notification(event: AcpEvent) -> RuntimeNotification {
 
 fn product_payload(kind: RuntimeEventKind, raw: &Value) -> Value {
     match kind {
-        RuntimeEventKind::TextDelta | RuntimeEventKind::ThoughtDelta => {
+        RuntimeEventKind::TextDelta
+        | RuntimeEventKind::ThoughtDelta
+        | RuntimeEventKind::UserMessage => {
             let Some(update) = raw.pointer("/params/update") else {
                 return raw.clone();
             };
@@ -233,6 +234,8 @@ fn product_payload(kind: RuntimeEventKind, raw: &Value) -> Value {
         }
         RuntimeEventKind::ApprovalRequested => approval_product(raw),
         RuntimeEventKind::SessionStarted => session_started_product(raw),
+        RuntimeEventKind::StateChanged => state_product(raw),
+        RuntimeEventKind::UsageUpdate => usage_product(raw),
         _ => raw.clone(),
     }
 }
@@ -267,6 +270,36 @@ fn session_started_product(raw: &Value) -> Value {
     }
     if map.is_empty() {
         return raw.clone();
+    }
+    Value::Object(map)
+}
+
+fn state_product(raw: &Value) -> Value {
+    let Some(update) = raw.pointer("/params/update") else {
+        return raw.clone();
+    };
+    match update.get("modeId") {
+        Some(state) if !state.is_null() => serde_json::json!({ "state": state }),
+        _ => serde_json::json!({}),
+    }
+}
+
+fn usage_product(raw: &Value) -> Value {
+    let Some(update) = raw.pointer("/params/update") else {
+        return raw.clone();
+    };
+    let mut map = take_fields(update, &["used", "size"]);
+    if let Some(meta) = update.get("_meta") {
+        map.extend(take_fields(
+            meta,
+            &[
+                "promptTokens",
+                "completionTokens",
+                "contextPercent",
+                "contextEpoch",
+                "cachedTokens",
+            ],
+        ));
     }
     Value::Object(map)
 }
@@ -631,10 +664,81 @@ mod tests {
     }
 
     #[test]
-    fn non_timeline_kinds_keep_original_payload() {
+    fn user_message_stores_product_text() {
+        let raw = serde_json::json!({
+            "method": "session/update",
+            "params": {
+                "update": {
+                    "sessionUpdate": "user_message_chunk",
+                    "content": { "type": "text", "text": "hi" }
+                }
+            }
+        });
+        let event = runtime_notification(AcpEvent::from_notification(&raw));
+        assert_eq!(event.event_type, "user_message");
+        assert_eq!(event.payload, serde_json::json!({ "text": "hi" }));
+    }
+
+    #[test]
+    fn state_changed_stores_mode_as_state() {
+        let raw = serde_json::json!({
+            "method": "session/update",
+            "params": {
+                "update": {
+                    "sessionUpdate": "current_mode_update",
+                    "modeId": "plan"
+                }
+            }
+        });
+        let event = runtime_notification(AcpEvent::from_notification(&raw));
+        assert_eq!(event.event_type, "state_changed");
+        assert_eq!(event.payload, serde_json::json!({ "state": "plan" }));
+        assert!(event.payload.get("modeId").is_none());
+        assert!(event.payload.get("sessionUpdate").is_none());
+    }
+
+    #[test]
+    fn usage_update_lifts_meta_to_product_fields() {
+        let raw = serde_json::json!({
+            "jsonrpc": "2.0",
+            "method": "session/update",
+            "params": {
+                "sessionId": "session-1",
+                "update": {
+                    "sessionUpdate": "usage_update",
+                    "used": 1200,
+                    "size": 8000,
+                    "_meta": {
+                        "promptTokens": 900,
+                        "completionTokens": 300,
+                        "contextPercent": 15,
+                        "contextEpoch": 2,
+                        "cachedTokens": 40
+                    }
+                }
+            }
+        });
+        let event = runtime_notification(AcpEvent::from_notification(&raw));
+        assert_eq!(event.event_type, "usage_update");
+        assert_eq!(
+            event.payload,
+            serde_json::json!({
+                "used": 1200,
+                "size": 8000,
+                "promptTokens": 900,
+                "completionTokens": 300,
+                "contextPercent": 15,
+                "contextEpoch": 2,
+                "cachedTokens": 40
+            })
+        );
+        assert!(event.payload.get("_meta").is_none());
+        assert!(event.payload.get("method").is_none());
+    }
+
+    #[test]
+    fn unclassified_session_updates_keep_original_payload() {
         let cases = [
-            ("current_mode_update", "state_changed"),
-            ("usage_update", "usage_update"),
             ("projection_update", "projection_ready"),
             ("unknown_update", "acp"),
         ];
