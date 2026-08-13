@@ -7,15 +7,83 @@ use crate::builtin::{agent_tools, tools_for_profile};
 use crate::registry::ToolRegistry;
 use crate::subagent::{SubagentEnv, SubagentProfile, SubagentRunner, DEFAULT_SUBAGENT_MAX_DEPTH};
 
+/// Tool capability switches for a runtime scope.
+///
+/// Catalog selection already limits which tools exist; these flags control
+/// execute-time / prepare-time behavior that previously branched on
+/// Agent-vs-Subagent hardcoding.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ToolPolicy {
+    /// Enter/Exit plan mode tooling and plan-mode definition filtering.
+    pub plan_mode: bool,
+    /// AskUserQuestion prompter wiring (catalog still gates the tool).
+    pub ask_user: bool,
+    /// Whether HookRunner from config should run for tool batches.
+    pub hooks: bool,
+}
+
+impl ToolPolicy {
+    pub const fn agent() -> Self {
+        Self {
+            plan_mode: true,
+            ask_user: true,
+            hooks: true,
+        }
+    }
+
+    pub const fn subagent() -> Self {
+        Self {
+            plan_mode: false,
+            ask_user: false,
+            hooks: false,
+        }
+    }
+}
+
+/// How conversation / execution state is retained for a scope.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SessionPersistence {
+    /// SessionRecord + execution checkpoints + session_store writeback.
+    Durable,
+    /// In-memory messages only; no parent events/checkpoints.
+    Ephemeral,
+}
+
+/// Session / control-plane capability switches for a runtime scope.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SessionPolicy {
+    pub persistence: SessionPersistence,
+    /// Mid-turn steer buffer injection.
+    pub steer: bool,
+}
+
+impl SessionPolicy {
+    pub const fn agent() -> Self {
+        Self {
+            persistence: SessionPersistence::Durable,
+            steer: true,
+        }
+    }
+
+    pub const fn subagent() -> Self {
+        Self {
+            persistence: SessionPersistence::Ephemeral,
+            steer: false,
+        }
+    }
+}
+
 /// Capability boundary for a main-agent or child runtime turn.
 ///
-/// Wave 14: construction goes through a scope so profile, nesting depth, and
-/// tool catalog stay one injection point. ToolPolicy/SessionPolicy land later.
+/// Wave 14: construction goes through a scope so profile, nesting depth, tool
+/// catalog, and ToolPolicy/SessionPolicy stay one injection point.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RuntimeScope {
     kind: RuntimeKind,
     pub depth: u32,
     pub max_depth: u32,
+    pub tool_policy: ToolPolicy,
+    pub session_policy: SessionPolicy,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -42,6 +110,8 @@ impl RuntimeScope {
             },
             depth: 0,
             max_depth: DEFAULT_SUBAGENT_MAX_DEPTH,
+            tool_policy: ToolPolicy::agent(),
+            session_policy: SessionPolicy::agent(),
         }
     }
 
@@ -55,6 +125,8 @@ impl RuntimeScope {
             kind: RuntimeKind::Subagent { profile },
             depth,
             max_depth: DEFAULT_SUBAGENT_MAX_DEPTH,
+            tool_policy: ToolPolicy::subagent(),
+            session_policy: SessionPolicy::subagent(),
         })
     }
 
@@ -101,6 +173,8 @@ mod tests {
     fn explore_scope_exposes_read_only_catalog() {
         let scope = RuntimeScope::subagent(SubagentProfile::Explore, 0).expect("scope");
         assert_eq!(scope.depth, 1);
+        assert_eq!(scope.tool_policy, ToolPolicy::subagent());
+        assert_eq!(scope.session_policy, SessionPolicy::subagent());
         let names: Vec<_> = scope
             .definitions()
             .into_iter()
@@ -135,6 +209,12 @@ mod tests {
         let scope = RuntimeScope::agent(AgentProfile::Explore, WebSearchConfig::default());
         assert_eq!(scope.depth, 0);
         assert!(scope.subagent_profile().is_none());
+        assert_eq!(scope.tool_policy, ToolPolicy::agent());
+        assert_eq!(scope.session_policy, SessionPolicy::agent());
+        assert_eq!(
+            scope.session_policy.persistence,
+            SessionPersistence::Durable
+        );
         let names: Vec<_> = scope
             .definitions()
             .into_iter()
@@ -157,5 +237,18 @@ mod tests {
             .collect();
         assert!(names.contains(&"Write".into()));
         assert!(names.contains(&"Task".into()));
+    }
+
+    #[test]
+    fn subagent_scope_is_ephemeral_without_steer() {
+        let scope = RuntimeScope::subagent(SubagentProfile::Explore, 0).expect("scope");
+        assert_eq!(
+            scope.session_policy.persistence,
+            SessionPersistence::Ephemeral
+        );
+        assert!(!scope.session_policy.steer);
+        assert!(!scope.tool_policy.plan_mode);
+        assert!(!scope.tool_policy.ask_user);
+        assert!(!scope.tool_policy.hooks);
     }
 }

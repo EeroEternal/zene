@@ -344,9 +344,11 @@ impl<'a> DefaultToolExecutor<'a> {
 
 /// Run one Subagent tool batch through the same executor as the main Agent.
 ///
-/// Plan mode stays inactive; hooks are empty. Missing permission inherits
-/// bypass so Explore/Coder keep prior auto-allow behavior unless a gate is
-/// passed from the parent.
+/// Capability switches come from [`zene_tools::ToolPolicy`]. Subagent scopes
+/// pass [`zene_tools::ToolPolicy::subagent`]: plan mode stays inactive, hooks
+/// stay empty, and ask-user uses the default prompter while the catalog omits
+/// those tools. Missing permission inherits bypass so Explore/Coder keep prior
+/// auto-allow unless a gate is passed from the parent.
 pub(crate) async fn execute_subagent_tool_batch(
     tools: Arc<ToolRegistry>,
     sandbox: Arc<dyn Sandbox>,
@@ -355,7 +357,12 @@ pub(crate) async fn execute_subagent_tool_batch(
     subagent_env: SubagentEnv,
     permission: Option<SharedToolPermission>,
     broker: Option<SharedApprovalBroker>,
+    tool_policy: zene_tools::ToolPolicy,
 ) -> Result<ToolBatchResult> {
+    debug_assert!(
+        !tool_policy.plan_mode && !tool_policy.ask_user && !tool_policy.hooks,
+        "subagent tool batch expects ToolPolicy::subagent()"
+    );
     let permission = permission.unwrap_or_else(|| {
         Arc::new(Mutex::new(PermissionGate::new(
             PermissionMode::BypassPermissions,
@@ -367,6 +374,7 @@ pub(crate) async fn execute_subagent_tool_batch(
     let ask_user = default_ask_user_prompter();
     let background = shared_background_tasks();
     let hooks = HookRunner::with_bash(Vec::new(), sandbox.workdir().to_path_buf());
+    let _ = tool_policy;
     let options = PromptOptions {
         stream: false,
         quiet: true,

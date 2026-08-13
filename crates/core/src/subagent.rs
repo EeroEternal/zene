@@ -153,8 +153,6 @@ struct SubagentTurnRuntime<'a> {
     sandbox: Arc<dyn Sandbox>,
     config: &'a ZeneConfig,
     model_executor: Arc<dyn ModelExecutor>,
-    /// Retained for later ToolPolicy / SessionPolicy injection.
-    #[allow(dead_code)]
     scope: RuntimeScope,
     subagent_env: SubagentEnv,
     permission: Option<SharedToolPermission>,
@@ -234,6 +232,7 @@ impl<'a> SubagentTurnRuntime<'a> {
             self.subagent_env.clone(),
             self.permission.clone(),
             self.broker.clone(),
+            self.scope.tool_policy,
         )
         .await?;
         for message in batch.messages {
@@ -300,7 +299,8 @@ impl TurnSessionPort<()> for SubagentTurnRuntime<'_> {
     }
 
     fn inject_steer(&mut self, _options: &()) -> Result<bool> {
-        Ok(false)
+        // Ephemeral child scopes disable steer via SessionPolicy.
+        Ok(self.scope.session_policy.steer)
     }
 
     fn push_assistant(&mut self, message: Message) {
@@ -436,7 +436,7 @@ impl TurnRuntime for SubagentTurnRuntime<'_> {
     }
 
     fn inject_steer(&mut self, _options: &Self::Options) -> Result<bool> {
-        Ok(false)
+        Ok(self.scope.session_policy.steer)
     }
 
     fn push_assistant(&mut self, message: Message) {

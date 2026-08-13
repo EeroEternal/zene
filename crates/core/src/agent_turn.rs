@@ -2,13 +2,14 @@
 
 use async_trait::async_trait;
 use tokio_util::sync::CancellationToken;
-use zene_llm::{Message, TokenUsage, ToolCall};
+use zene_llm::{TokenUsage, ToolCall};
 use zene_turn::{
-    max_turns_notice, ContextAssemblerPort, EventSinkPort, ModelExecutorPort, PreparedContext,
-    StepResult, ToolBatchOutcome, ToolExecutorPort, TurnEnginePorts, TurnRuntime, TurnSessionPort,
+    ContextAssemblerPort, EventSinkPort, ModelExecutorPort, PreparedContext, StepResult,
+    ToolBatchOutcome, ToolExecutorPort, TurnEnginePorts, TurnRuntime, TurnSessionPort,
 };
 
 use crate::events::{emit_event, AgentEvent};
+use crate::turn_session;
 use crate::Agent;
 
 /// Native turn-engine ports for the primary agent runtime.
@@ -48,7 +49,7 @@ impl TurnSessionPort<crate::PromptOptions> for AgentTurnPorts<'_> {
         <Agent as TurnRuntime>::inject_steer(self.agent, options)
     }
 
-    fn push_assistant(&mut self, message: Message) {
+    fn push_assistant(&mut self, message: zene_llm::Message) {
         <Agent as TurnRuntime>::push_assistant(self.agent, message);
     }
 
@@ -152,14 +153,16 @@ impl TurnRuntime for Agent {
     }
 
     async fn prepare_turn(&mut self, user_input: &str) -> Result<(), anyhow::Error> {
-        self.usage_accumulator.reset();
-        self.tool_dedup.reset();
-        self.session.ensure_system_message(&self.system_prompt);
-        if !self.resume_existing_turn {
-            self.session.set_title_from_prompt(user_input);
-            self.session.push_message(Message::user(user_input));
-        }
-        self.resume_existing_turn = false;
+        turn_session::prepare_turn(
+            turn_session::PrepareTurnDeps {
+                session: &mut self.session,
+                system_prompt: &self.system_prompt,
+                usage_accumulator: &mut self.usage_accumulator,
+                tool_dedup: &mut self.tool_dedup,
+                resume_existing_turn: &mut self.resume_existing_turn,
+            },
+            user_input,
+        );
         Ok(())
     }
 
@@ -178,35 +181,20 @@ impl TurnRuntime for Agent {
         usage: &TokenUsage,
         options: &Self::Options,
     ) -> Result<(), anyhow::Error> {
-        self.usage_accumulator.record(usage);
-        let tools = self.tool_definitions_for_llm();
-        let estimator = self.token_estimator();
-        let compaction_config =
-            crate::context_config::context_compaction_config(&self.config.compaction);
-        let context_usage = self.context.record_step_usage(
-            usage,
-            &mut self.session,
-            &tools,
-            &estimator,
-            &compaction_config,
-        )?;
-        let snapshot = self.usage_accumulator.snapshot(
-            context_usage.context_tokens,
-            context_usage.context_window,
-            context_usage.context_percent,
-            self.context.epoch(),
-        );
-        emit_event(
-            &options.event_handler,
-            AgentEvent::UsageUpdate {
-                usage: snapshot.usage,
-                context_tokens: snapshot.context_tokens,
-                context_window: snapshot.context_window,
-                context_percent: snapshot.context_percent,
-                context_epoch: snapshot.context_epoch,
+        let plan_mode_active = self.is_plan_mode_active();
+        turn_session::record_step_usage(
+            turn_session::StepUsageDeps {
+                config: &self.config,
+                context: &mut self.context,
+                session: &mut self.session,
+                tools: self.tools.as_ref(),
+                tool_policy: self.runtime_scope.tool_policy,
+                plan_mode_active,
+                usage_accumulator: &mut self.usage_accumulator,
             },
-        );
-        Ok(())
+            usage,
+            options,
+        )
     }
 
     async fn run_tools(
@@ -222,7 +210,7 @@ impl TurnRuntime for Agent {
         self.inject_pending_steer(options)
     }
 
-    fn push_assistant(&mut self, message: Message) {
+    fn push_assistant(&mut self, message: zene_llm::Message) {
         self.session.push_message(message);
     }
 
@@ -232,20 +220,7 @@ impl TurnRuntime for Agent {
         final_text: &mut String,
         options: &Self::Options,
     ) -> Result<(), anyhow::Error> {
-        let notice = max_turns_notice(max_steps);
-        let delta = if final_text.trim().is_empty() {
-            format!("\n{notice}\n")
-        } else {
-            format!("\n\n{notice}")
-        };
-        *final_text = if final_text.trim().is_empty() {
-            notice
-        } else {
-            format!("{final_text}\n\n{notice}")
-        };
-        self.session
-            .push_message(Message::assistant(final_text.clone()));
-        emit_event(&options.event_handler, AgentEvent::TextDelta { delta });
+        turn_session::on_incomplete_turn(&mut self.session, max_steps, final_text, options);
         Ok(())
     }
 

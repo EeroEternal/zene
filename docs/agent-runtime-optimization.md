@@ -2,9 +2,9 @@
 
 > 状态：持续演进。Wave 0–12 把控制面/数据面的 **接口边界** 建起来了；Wave 13 起让默认执行路径真正走这些边界。
 >
-> **进度快照：2026-08-13，基线 `0eb889c`（PR #101 已合并）。**
+> **进度快照：2026-08-13，基线 `d2184e5`（PR #102 已合并）。**
 > 本文同时记录目标架构、已实现能力和剩余工作。
-> Wave 16 的 Steer/SetMode 已对齐；Wave 14 进行中（主 Agent prepare/model/tool-batch 已抽出；Subagent 经 RuntimeScope + DefaultToolExecutor + ModelExecutor）。
+> Wave 16 的 Steer/SetMode 已对齐；**Wave 14 已完成**（RuntimeScope + ToolPolicy/SessionPolicy + ToolCatalog；Subagent/主 Agent 共用 executors；Agent 退回 composition-root facade；actor 仍在 core）。
 >
 > 本文基于当前 zene runtime 实现，描述如何将 `Agent`、`Turn`、`Step`、`Session`、Cloud `Run` 和 ACP transport 拉开，并给出渐进式迁移方案。
 >
@@ -33,7 +33,7 @@
 4. Session 可以恢复历史并在安全 model-boundary 上自动恢复未完成 execution；pending tool、approval 和 failure 仍必须 inspection/manual intervention。
 5. `RuntimeHandle` 已成为 active turn、prompt queue、cancel 的控制所有者，但 Agent-specific actor 仍在 `zene-core`，ACP 仍保留 transport 层 session bookkeeping。
 6. 权限已拆成纯 `evaluate` + 异步 `ApprovalBroker`。ACP 监听 `ApprovalRequested` 再发 `RuntimeCommand::Approval`。Cloud JobRunner 经 `RuntimeClient::send(RuntimeCommand::Approval)` 回复；ACP jsonrpc id 与 option 列表只留在 adapter。Cloud 产品审批类型不再携带 `jsonrpc_id`。存库/API/Console/RuntimeCommand 共用 domain `ApprovalDecision`，并带 `ApprovalKind` / `ApprovalRisk`。已分类 Cloud payload 与审批表 payload 已是产品字段；未识别帧仍为 ACP JSON。API→worker `WorkerCommand.kind` 是 `Prompt` / `Cancel` 枚举。
-7. `ToolRegistry` 仍同时承担目录与执行；`ToolCatalog` 已抽出定义端口；主 Agent / Subagent 均经 `RuntimeScope` 注入 catalog。Agent 仍持有 registry 执行面，尚未完全退回 composition root。
+7. `ToolRegistry` 仍同时承担目录与执行；`ToolCatalog` 已抽出定义端口；主 Agent / Subagent 均经 `RuntimeScope`（含 `ToolPolicy` / `SessionPolicy`）注入。Agent 为 composition-root facade，step 算法在 prepare/model/tool-batch/turn_session 模块。
 
 本文目标不是立刻重写 runtime，而是建立一个可以渐进落地的目标架构：
 
@@ -101,7 +101,7 @@ RuntimeHandle → Agent → TurnEngine
 | Session | `crates/session` | `SessionRecord` + `SessionStore`；events 优先，messages 为 materialized cache |
 | Context | `crates/context` | observe/commit/project；`SessionView` 驱动 event-backed projection |
 | Permission | `crates/permission` | `evaluate` 纯判定；`Ask` 走 `ApprovalBroker`。Runtime 挂 waiter，transport 发 `RuntimeCommand::Approval` |
-| Subagent | `crates/core/src/subagent.rs` | 经 `RuntimeScope` 注入工具目录；工具执行走 `DefaultToolExecutor`；模型走 `ModelExecutor`；仍用内存消息 |
+| Subagent | `crates/core/src/subagent.rs` | 经 `RuntimeScope`（含 ToolPolicy/SessionPolicy）注入；工具走 `DefaultToolExecutor`；模型走 `ModelExecutor`；`SessionPersistence::Ephemeral` |
 | Runtime | `crates/runtime` + `crates/core/src/agent_runtime.rs` | 公共 command/event 在 `zene-runtime`；Agent actor 仍在 core |
 | ACP | `apps/cli/src/acp/server.rs` | transport adapter；创建/加载 session，并把请求接入 `RuntimeHandle` |
 | Cloud Job | `cloud/apps/worker` + `cloud/crates/runtime-client` | Job 经 `RuntimeClient::send` 发 Prompt/Cancel/Approval/Shutdown；API→worker `WorkerCommand` 为 Prompt/Cancel；审批产品面（决策/kind/risk）从 DB 到 Console 到 RuntimeCommand 共用 domain 类型；ACP `optionId` 只在 adapter 内映射 |
@@ -1097,7 +1097,7 @@ Wave 16  统一 transport command/event  ← 已完成（含 Steer/SetMode）
 | Wave 11 | 已完成第一阶段 | ModelExecutor、ContextModel、usage boundary、runtime protocol 和 lifecycle publisher 已落地；Agent-specific actor 尚在 core |
 | Wave 12 | 已完成第一阶段 | safe resume、Cloud RuntimeClient、neutral runtime notifications、fenced command lease/ack、atomic state/event writes、outbox replay 和真实 replacement 测试已落地 |
 | Wave 13 | 已完成 | 默认 Agent/Subagent 路径消费 `PreparedContext`；PR #60 |
-| Wave 14 | 进行中 | RuntimeScope + ToolCatalog + Subagent executors + 主 Agent prepare/model-step 抽出；tool writeback / ToolPolicy / 完全退回 composition root 仍待做 |
+| Wave 14 | 已完成 | RuntimeScope + ToolCatalog + ToolPolicy/SessionPolicy；Subagent DefaultToolExecutor/ModelExecutor；主 Agent prepare/model/tool-batch/turn_session facade；actor 仍在 core |
 | Wave 15 | 已完成 | `evaluate` + `ApprovalBroker` + runtime-owned waiter；PR #61 / #62 |
 | Wave 16 | 已完成 command 对齐 | Cloud RuntimeCommand 含 Prompt/Steer/Cancel/Approval/SetMode/Shutdown；仍不依赖 `zene-runtime` |
 
@@ -1132,11 +1132,11 @@ Wave 16  统一 transport command/event  ← 已完成（含 Steer/SetMode）
 
 4. **仍明确未自动完成的项目**
    - pending tool / approval 的任意副作用自动 replay：继续采用 inspection/manual intervention，避免重复写操作。
-   - `Agent` 从 step orchestrator 完全退回 composition root（catalog / prepare_step / model-step 已抽出；tool writeback 仍在 Agent）。
-   - Subagent 通过 `RuntimeScope` 复用 `DefaultToolExecutor` / `ModelExecutor`（已落地）；仍用内存消息。
+   - Subagent 仍用内存消息（`SessionPersistence::Ephemeral`）；未做 durable child session。
    - 本地与 Cloud 共用同一套 `RuntimeCommand` / `RuntimeEvent`（Cloud 已有 Prompt/Steer/Cancel/Approval/SetMode/Shutdown；API→worker 仍是 Prompt/Cancel；不依赖 `zene-runtime`）。`GetMode` / `ResumeSafeTurn` 仍仅本地。未识别 Cloud 帧仍为 ACP JSON。
-   - Agent-specific actor 从 `zene-core` 移入独立 runtime implementation crate（应在 ports/审批稳定之后）。
+   - Agent-specific actor 从 `zene-core` 移入独立 runtime implementation crate（应在 ports/审批稳定之后；Wave 14 明确不搬）。
    - 跨 VM outbox 的共享持久化实现；当前部署文档要求共享 POSIX volume 或后续 DB/object spool。
+   - Turn 侧中性 `ModelRequest`（仍吃 `ChatRequest`）。
 
 以上未完成项不是本轮测试覆盖的小修复；在没有明确协议、存储和迁移策略前，不应声称已经完成。
 
@@ -1234,11 +1234,11 @@ Wave 16  统一 transport command/event  ← 已完成（含 Steer/SetMode）
 
 | 选择 | Wave | 理由 |
 | --- | --- | --- |
-| 当前最大杠杆 | **Wave 14** | RuntimeScope、ToolCatalog 拆分、Agent 退回 wiring |
-| 结构清理 | Wave 14 | command 面已稳定，可开始能力注入 |
+| 当前最大杠杆 | actor 搬迁 / ModelRequest | Wave 14 已完成；下一步是 runtime crate 边界或中性模型请求 |
+| 结构清理 | actor 出 core | ports/审批已稳定，可评估搬迁 |
 | 可选后续 | 整型 crate / GetMode | Cloud 仍不引入 `zene-runtime`；本地 GetMode/ResumeSafeTurn 仍仅本地 |
 
-推荐组合：**Steer/SetMode 已对齐**。下一步做 Wave 14 的 `RuntimeScope` + `ToolCatalog` 第一刀，不要先搬 Agent actor。
+推荐组合：**Wave 14 已收口**。下一步不要碎片化；若继续做结构清理，优先评估 Agent actor 出 core，或 Turn 侧 `ModelRequest`，不要先动 Console。
 
 **不要一上来做** actor 全量重写、完整 Event Sourcing、或再抽一层没有调用方的 crate。
 
@@ -1485,3 +1485,16 @@ Wave 16  统一 transport command/event  ← 已完成（含 Steer/SetMode）
 - 新增 `crates/core/src/prepare_step.rs`：todos sync → ContextEngine prepare → ProjectionReady / water 日志经 `PrepareStepDeps`。
 - `Agent::prepare_step_context` 退回 wiring；`record_step_started` 仍留在 Agent/ports。
 - 不搬 Agent actor。不抽 tool writeback。不做 Cloud 改动。
+
+### 2026-08-13 — Wave 14 主 Agent tool-batch writeback 抽出
+
+- 新增 `crates/core/src/tool_batch.rs`：ToolStarted/Completed checkpoint、session event、mode/permission 写回经 `run_tool_batch`；执行仍走 `DefaultToolExecutor`。
+- `Agent::run_tools` 退回 wiring。
+- 不搬 Agent actor。不做 Cloud 改动。
+
+### 2026-08-13 — Wave 14 收口（ToolPolicy / SessionPolicy + facade）
+
+- `RuntimeScope` 携带 `ToolPolicy`（plan_mode / ask_user / hooks）与 `SessionPolicy`（Durable|Ephemeral、steer）。
+- Agent / Subagent 构造器写入预设；prepare / tool-batch / Subagent 执行经 policy 接线。
+- 新增 `turn_session.rs`：prepare_turn / step usage / steer / incomplete-turn / step-started 抽出；`Agent` + `AgentTurnPorts` 为 composition-root facade。
+- **Wave 14 标记完成**。不搬 Agent actor。不做 Cloud。不引入 `ModelRequest`。不做 pending tool 自动 replay。
