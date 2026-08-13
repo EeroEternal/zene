@@ -324,6 +324,28 @@ impl AcpBridge {
         .await
     }
 
+    pub async fn steer(&self, session_id: &str, text: &str) -> Result<Value> {
+        self.request(
+            "session/steer",
+            json!({
+                "sessionId": session_id,
+                "text": text
+            }),
+        )
+        .await
+    }
+
+    pub async fn set_mode(&self, session_id: &str, mode_id: &str) -> Result<Value> {
+        self.request(
+            "session/set_mode",
+            json!({
+                "sessionId": session_id,
+                "modeId": mode_id
+            }),
+        )
+        .await
+    }
+
     pub async fn cancel(&self, session_id: &str) -> Result<()> {
         self.notify("session/cancel", json!({ "sessionId": session_id }))
             .await
@@ -599,6 +621,39 @@ impl MockAgent {
         &self.session_id
     }
 
+    pub fn emit_steer(&self, text: &str, msg_tx: mpsc::UnboundedSender<MockMsg>) -> Result<()> {
+        let raw = json!({
+            "jsonrpc": "2.0",
+            "method": "session/update",
+            "params": {
+                "sessionId": self.session_id,
+                "update": {
+                    "sessionUpdate": "user_message_chunk",
+                    "content": { "type": "text", "text": text }
+                }
+            }
+        });
+        let _ = msg_tx.send(MockMsg::Event(AcpEvent::from_notification(&raw)));
+        Ok(())
+    }
+
+    pub fn emit_mode(&self, mode_id: &str, msg_tx: mpsc::UnboundedSender<MockMsg>) -> Result<()> {
+        let mode_id = normalize_mock_mode(mode_id)?;
+        let raw = json!({
+            "jsonrpc": "2.0",
+            "method": "session/update",
+            "params": {
+                "sessionId": self.session_id,
+                "update": {
+                    "sessionUpdate": "current_mode_update",
+                    "currentModeId": mode_id
+                }
+            }
+        });
+        let _ = msg_tx.send(MockMsg::Event(AcpEvent::from_notification(&raw)));
+        Ok(())
+    }
+
     /// Run a prompt, streaming mock ACP events and a permission request.
     pub async fn run_prompt(
         &self,
@@ -769,6 +824,16 @@ impl MockAgent {
         );
 
         Ok(())
+    }
+}
+
+fn normalize_mock_mode(mode_id: &str) -> Result<String> {
+    let mode_id = mode_id.trim();
+    match mode_id {
+        "plan" | "architect" => Ok("plan".into()),
+        "default" | "agent" | "code" | "ask" => Ok("default".into()),
+        other if !other.is_empty() => Ok(other.to_string()),
+        _ => Err(anyhow!("mode_id cannot be empty")),
     }
 }
 
