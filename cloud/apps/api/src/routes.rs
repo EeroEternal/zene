@@ -956,13 +956,13 @@ async fn decide_approval(
     {
         return Err(AppError::conflict(format!(
             "decision {} not allowed",
-            req.decision
+            req.decision.as_str()
         )));
     }
     Ok(Json(
         state
             .db
-            .decide_approval(approval_id, &req.decision, Some(&user.id.to_string()))
+            .decide_approval(approval_id, req.decision, Some(&user.id.to_string()))
             .await?,
     ))
 }

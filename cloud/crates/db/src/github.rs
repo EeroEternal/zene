@@ -2,7 +2,7 @@ use anyhow::{Context, Result};
 use chrono::{Duration, Utc};
 use uuid::Uuid;
 use zene_cloud_domain::{
-    ApprovalRequest, AuditLog, GitOperation, GitOperationKind, GitOperationStatus,
+    ApprovalDecision, ApprovalRequest, AuditLog, GitOperation, GitOperationKind, GitOperationStatus,
     GithubAccount, GithubInstallation, GithubRepoSummary, OauthState, PullRequest, Repository,
 };
 
@@ -392,7 +392,7 @@ impl Db {
         &self,
         approval_id: Uuid,
         resolved_by: Uuid,
-        decision: &str,
+        decision: ApprovalDecision,
     ) -> Result<ApprovalRequest> {
         self.decide_approval(approval_id, decision, Some(&resolved_by.to_string()))
             .await
