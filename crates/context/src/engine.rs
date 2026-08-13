@@ -4,7 +4,7 @@ use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
 
-use anyhow::Result;
+use anyhow::{anyhow, Result};
 use serde::{Deserialize, Serialize};
 use tracing::{info, warn};
 use zene_llm::{ContextMetadata, Message, TokenUsage, ToolDefinition};
@@ -115,13 +115,11 @@ fn projection_tool_output_provenance(messages: &[Message]) -> Vec<ToolOutputProv
                 return None;
             }
             let content = message.content.as_deref()?;
-            let handle_reference = tool_handle_reference(content)
-                .or_else(|| saved_output_reference(content));
+            let handle_reference =
+                tool_handle_reference(content).or_else(|| saved_output_reference(content));
             let kind = if content.contains("[zene-tool-output ") {
                 "handle"
-            } else if content.contains("[truncated ")
-                || content.contains("…[steps-truncated ")
-            {
+            } else if content.contains("[truncated ") || content.contains("…[steps-truncated ") {
                 "truncated"
             } else {
                 return None;
@@ -327,9 +325,15 @@ mod projection_tests {
         let provenance = projection_tool_output_provenance(&messages);
         assert_eq!(provenance.len(), 2);
         assert_eq!(provenance[0].kind, "truncated");
-        assert_eq!(provenance[0].handle_reference.as_deref(), Some("/tmp/out.txt"));
+        assert_eq!(
+            provenance[0].handle_reference.as_deref(),
+            Some("/tmp/out.txt")
+        );
         assert_eq!(provenance[1].kind, "handle");
-        assert_eq!(provenance[1].handle_reference.as_deref(), Some("/tmp/handle.txt"));
+        assert_eq!(
+            provenance[1].handle_reference.as_deref(),
+            Some("/tmp/handle.txt")
+        );
     }
 
     #[test]
@@ -438,6 +442,22 @@ impl ContextEngine {
         self.project(session, tools, estimator)
     }
 
+    /// Strict event-backed variant used by new model requests.
+    pub fn try_assemble_step(
+        &self,
+        session: &dyn ContextSession,
+        tools: &[ToolDefinition],
+        estimator: &TokenEstimator,
+    ) -> Result<StepContext> {
+        let _ = session.try_view().map_err(|reason| {
+            anyhow!(
+                "event-backed context projection unavailable: {}",
+                reason.as_str()
+            )
+        })?;
+        Ok(self.project(session, tools, estimator))
+    }
+
     /// Observe session pressure without mutating the session.
     pub fn observe(
         &mut self,
@@ -464,6 +484,12 @@ impl ContextEngine {
         deps: &mut ContextDeps<'_>,
         tools: &[ToolDefinition],
     ) -> Result<PrepareStepResult> {
+        let _ = deps.session.try_view().map_err(|reason| {
+            anyhow!(
+                "event-backed context projection unavailable: {}",
+                reason.as_str()
+            )
+        })?;
         let observation = self.observe(deps.session, tools, deps.estimator, deps.compaction_config);
         let commit = self.commit(deps, tools, &observation).await?;
         let step = self.project(deps.session, tools, deps.estimator);
@@ -579,7 +605,7 @@ impl ContextEngine {
         tools: &[ToolDefinition],
         estimator: &TokenEstimator,
         compaction_config: &CompactionConfig,
-    ) -> ContextUsageUpdate {
+    ) -> Result<ContextUsageUpdate> {
         self.water.record_usage(usage);
         if let Some(cached) = usage.cached_tokens {
             let effective = self.water.effective_tokens();
@@ -595,16 +621,21 @@ impl ContextEngine {
                 tracing::debug!(cached_tokens = cached, "provider cache usage");
             }
         }
-        let view = session.view();
+        let view = session.try_view().map_err(|reason| {
+            anyhow!(
+                "event-backed context projection unavailable: {}",
+                reason.as_str()
+            )
+        })?;
         let estimated = tokens::estimate_context(&view.messages, tools, estimator) as u32;
         let context_tokens = self.water.usage_update(estimated);
         let context_window = compaction_config.context_window_tokens;
         session.update_context_usage(context_tokens, context_window);
-        ContextUsageUpdate {
+        Ok(ContextUsageUpdate {
             context_tokens,
             context_window,
             context_percent: self.water.usage_percent(),
-        }
+        })
     }
 
     pub async fn compact_forced(
@@ -792,6 +823,22 @@ impl ContextEngine {
     ) -> ProjectionExplain {
         let step = self.project(session, tools, estimator);
         self.explain_projection_for_step(session, &step)
+    }
+
+    /// Strict event-backed explain variant for new integrations.
+    pub fn try_explain_projection(
+        &self,
+        session: &dyn ContextSession,
+        tools: &[ToolDefinition],
+        estimator: &TokenEstimator,
+    ) -> Result<ProjectionExplain> {
+        let _ = session.try_view().map_err(|reason| {
+            anyhow!(
+                "event-backed context projection unavailable: {}",
+                reason.as_str()
+            )
+        })?;
+        Ok(self.explain_projection(session, tools, estimator))
     }
 
     fn explain_projection_for_step(

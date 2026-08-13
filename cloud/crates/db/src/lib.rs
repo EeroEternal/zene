@@ -1004,10 +1004,9 @@ impl Db {
         if let Some(source_id) = source_event_id {
             let existing: Option<(i64, Option<i64>, String, String, String)> = sqlx::query_as(
                 "SELECT seq, cursor, event_type, payload_json, created_at FROM run_events
-                 WHERE run_id = ? AND attempt_generation = ? AND source_event_id = ?",
+                 WHERE run_id = ? AND source_event_id = ?",
             )
             .bind(run_id.to_string())
-            .bind(attempt_generation)
             .bind(source_id)
             .fetch_optional(&mut **tx)
             .await?;
@@ -1117,30 +1116,22 @@ impl Db {
             .collect())
     }
 
-    /// Read provider-cursor events for reconnect/replay. Events without a
-    /// provider cursor remain available through the canonical `seq` cursor.
+    /// Read the complete canonical event stream after a provider cursor.
+    ///
+    /// Provider cursors are only present on some runtime events, so replay must
+    /// retain every event and use `seq` for ordering. The cursor is translated
+    /// to the greatest canonical sequence observed at or before that provider
+    /// position; callers therefore cannot lose platform events without a cursor.
     pub async fn events_after_cursor(&self, run_id: Uuid, after_cursor: u64) -> Result<Vec<RunEvent>> {
-        let rows: Vec<(i64, Option<i64>, String, String, String)> = sqlx::query_as(
-            "SELECT seq, cursor, event_type, payload_json, created_at
-             FROM run_events
-             WHERE run_id = ? AND cursor IS NOT NULL AND cursor > ?
-             ORDER BY cursor ASC, seq ASC LIMIT 500",
+        let after_seq: i64 = sqlx::query_scalar(
+            "SELECT COALESCE(MAX(seq), 0) FROM run_events
+             WHERE run_id = ? AND cursor IS NOT NULL AND cursor <= ?",
         )
         .bind(run_id.to_string())
         .bind(after_cursor as i64)
-        .fetch_all(&self.pool)
+        .fetch_one(&self.pool)
         .await?;
-        Ok(rows
-            .into_iter()
-            .map(|(seq, cursor, event_type, payload_json, created_at)| RunEvent {
-                run_id,
-                seq,
-                cursor: cursor.and_then(|value| u64::try_from(value).ok()),
-                event_type,
-                payload: serde_json::from_str(&payload_json).unwrap_or(serde_json::json!({})),
-                created_at: parse_time(&created_at),
-            })
-            .collect())
+        self.events_after(run_id, after_seq).await
     }
 
     pub async fn add_message(

@@ -635,9 +635,7 @@ impl SessionRecord {
 
     /// Strict event-backed view for new integrations. Legacy compatibility
     /// callers should use [`Self::view`] and inspect its fallback reason.
-    pub fn try_view(
-        &self,
-    ) -> std::result::Result<SessionView, ProjectionFallbackReason> {
+    pub fn try_view(&self) -> std::result::Result<SessionView, ProjectionFallbackReason> {
         SessionView::try_from_events(&self.events, &self.messages, Some(&self.meta.id))
     }
 
@@ -1292,6 +1290,26 @@ mod tests {
     }
 
     #[test]
+    fn event_backed_compaction_projection_does_not_need_materialized_cache() {
+        let mut session = SessionRecord::new(Path::new("."));
+        session.push_message(Message::system("sys"));
+        session.push_message(Message::user("before"));
+        session.replace_messages_after_compaction("summary".into(), 1, 1);
+        session.push_message(Message::assistant("after"));
+        let expected = session.view().messages;
+        session.messages.clear();
+
+        let strict = session
+            .try_view()
+            .expect("compaction snapshot is event-backed");
+        assert_eq!(
+            serde_json::to_vec(&strict.messages).unwrap(),
+            serde_json::to_vec(&expected).unwrap()
+        );
+        assert!(!strict.used_materialized_fallback);
+    }
+
+    #[test]
     fn compaction_projection_survives_session_reload() {
         let mut session = SessionRecord::new(Path::new("."));
         session.push_message(Message::system("sys"));
@@ -1660,8 +1678,13 @@ mod tests {
         let error = SessionRecord::load_migrated_with_store("repair-fails", &FailingStore)
             .expect_err("migration persistence should fail");
         assert!(error.to_string().contains("persist migrated session"));
-        assert_eq!(fs::read_to_string(session_path("repair-fails")).unwrap(), raw);
-        assert!(!SessionRecord::load("repair-fails").unwrap().is_event_backed());
+        assert_eq!(
+            fs::read_to_string(session_path("repair-fails")).unwrap(),
+            raw
+        );
+        assert!(!SessionRecord::load("repair-fails")
+            .unwrap()
+            .is_event_backed());
 
         std::env::remove_var("ZENE_HOME");
     }

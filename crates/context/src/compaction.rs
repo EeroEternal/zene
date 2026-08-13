@@ -567,13 +567,15 @@ fn record_compaction_result<S: ContextSession + ?Sized>(
     session: &mut S,
     result: &CompactionResult,
     summary: Option<String>,
+    messages_after: Vec<Message>,
 ) {
-    session.record_compaction_event(
+    session.commit_compaction_snapshot(
         &result.reason,
         result.compacted_count,
         summary,
         Some(result.stats.tokens_before),
         Some(result.stats.tokens_after),
+        messages_after,
     );
 }
 
@@ -586,8 +588,9 @@ fn try_truncate_only_compaction<S: ContextSession + ?Sized>(
     let tokens_before = estimate_session_tokens(session, tools, estimator);
     let plan = plan_compaction(session.messages(), config, estimator)?;
     let prefix_start = system_prefix_start(session.messages());
+    let mut projected = session.messages().to_vec();
     let truncated = truncate_old_message_bodies(
-        session.messages_mut(),
+        &mut projected,
         prefix_start,
         plan.tail_start,
         TRUNCATE_TOOL_RESULT_MAX_CHARS,
@@ -597,7 +600,7 @@ fn try_truncate_only_compaction<S: ContextSession + ?Sized>(
         return None;
     }
 
-    let tokens_after = estimate_session_tokens(session, tools, estimator);
+    let tokens_after = tokens::estimate_context(&projected, tools, estimator) as u32;
     if should_compact(tokens_after, config) {
         return None;
     }
@@ -619,7 +622,7 @@ fn try_truncate_only_compaction<S: ContextSession + ?Sized>(
         },
         segment: None,
     };
-    record_compaction_result(session, &result, None);
+    record_compaction_result(session, &result, None, projected);
     Some(result)
 }
 
@@ -638,7 +641,8 @@ fn try_slice_keep_compaction<S: ContextSession + ?Sized>(
         return None;
     }
 
-    let removed = apply_slice_keep(session.messages_mut(), plan.tail_start);
+    let mut projected = session.messages().to_vec();
+    let removed = apply_slice_keep(&mut projected, plan.tail_start);
     if removed == 0 {
         return None;
     }
@@ -660,7 +664,7 @@ fn try_slice_keep_compaction<S: ContextSession + ?Sized>(
         },
         segment: None,
     };
-    record_compaction_result(session, &result, None);
+    record_compaction_result(session, &result, None, projected);
     Some(result)
 }
 
@@ -676,8 +680,9 @@ pub fn apply_overflow_truncate_pass<S: ContextSession + ?Sized>(
         return false;
     };
     let prefix_start = system_prefix_start(session.messages());
+    let mut projected = session.messages().to_vec();
     let truncated = truncate_old_message_bodies(
-        session.messages_mut(),
+        &mut projected,
         prefix_start,
         plan.tail_start,
         TRUNCATE_TOOL_RESULT_MAX_CHARS,
@@ -687,17 +692,14 @@ pub fn apply_overflow_truncate_pass<S: ContextSession + ?Sized>(
         return false;
     }
 
-    let tokens_after = estimate_session_tokens(session, tools, estimator);
-    // Overflow truncation mutates the materialized cache, so record the exact
-    // post-mutation snapshot just like the regular compaction paths. Without
-    // this fact, the next event-backed projection would silently drift and
-    // fall back to the cache.
-    session.record_compaction_event(
+    let tokens_after = tokens::estimate_context(&projected, tools, estimator) as u32;
+    session.commit_compaction_snapshot(
         "context_overflow_truncate",
         truncated,
         None,
         Some(tokens_before),
         Some(tokens_after),
+        projected,
     );
     true
 }
@@ -727,8 +729,9 @@ pub fn apply_steps_truncate_pass<S: ContextSession + ?Sized>(
     let Some(user_idx) = last_user_query_index(session.messages()) else {
         return false;
     };
+    let mut projected = session.messages().to_vec();
     let mut changed = 0usize;
-    for message in session.messages_mut().iter_mut().skip(user_idx + 1) {
+    for message in projected.iter_mut().skip(user_idx + 1) {
         if message.role != Role::Tool {
             continue;
         }
@@ -745,7 +748,7 @@ pub fn apply_steps_truncate_pass<S: ContextSession + ?Sized>(
     }
     if changed > 0 {
         info!(changed, "intra steps-first truncated tool results");
-        session.record_compaction_event("steps_truncate", changed, None, None, None);
+        session.commit_compaction_snapshot("steps_truncate", changed, None, None, None, projected);
     }
     changed > 0
 }
@@ -1172,14 +1175,15 @@ fn apply_full_replace_to_session<S: ContextSession + ?Sized>(
         .unwrap_or_default();
     let extra_refs: Vec<&str> = extra.iter().map(String::as_str).collect();
     let reminder = build_compaction_reminder(&extra_refs, memory_block);
-    *session.messages_mut() =
+    let projected =
         assemble_full_replace_history(system, last_user, recent, summary.clone(), reminder);
-    session.record_compaction_event(
+    session.commit_compaction_snapshot(
         reason,
         compacted_count,
         Some(summary),
         Some(tokens_before),
         None,
+        projected,
     );
 }
 

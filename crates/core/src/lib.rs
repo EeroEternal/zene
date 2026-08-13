@@ -24,8 +24,8 @@ use zene_tools::{
 };
 
 mod agent_builder;
-mod agent_turn;
 mod agent_runtime;
+mod agent_turn;
 mod context_config;
 pub use zene_model_executor as model_executor;
 mod context_events;
@@ -429,7 +429,15 @@ impl Agent {
         let tools = self.tool_definitions_for_llm();
         let explain = self
             .context
-            .explain_projection(&self.session, &tools, &estimator);
+            .try_explain_projection(&self.session, &tools, &estimator)
+            .unwrap_or_else(|err| {
+                let mut explain =
+                    self.context
+                        .explain_projection(&self.session, &tools, &estimator);
+                explain.fallback_reason = Some(format!("strict_projection_error: {err}"));
+                explain.used_materialized_fallback = true;
+                explain
+            });
         lines.extend([
             format!(
                 "projection: source_messages={} projected_messages={} source_events={} active_events={}",
@@ -933,9 +941,13 @@ impl Agent {
         if let Some(result) = &overflow.compaction {
             self.record_compaction(result)?;
         }
-        Ok(overflow
+        overflow
             .retry
-            .then(|| self.context.assemble_step(&self.session, tools, &estimator)))
+            .then(|| {
+                self.context
+                    .try_assemble_step(&self.session, tools, &estimator)
+            })
+            .transpose()
     }
 
     fn check_cancelled(cancel: Option<&CancellationToken>) -> Result<bool> {

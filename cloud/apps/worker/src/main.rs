@@ -9,7 +9,7 @@ use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
 use clap::Parser;
-use tokio::io::{AsyncBufReadExt, BufReader};
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::Command;
 use tokio::sync::mpsc;
 use tracing::{error, info, warn};
@@ -18,7 +18,9 @@ use uuid::Uuid;
 use zene_cloud_acp_bridge::{
     resolve_zene_bin, AcpEvent, MockAgent, MockMsg, PermissionDecision,
 };
-use zene_cloud_runtime_client::{AcpRuntimeClient, RuntimeClient, RuntimeEvent};
+use zene_cloud_runtime_client::{
+    AcpRuntimeClient, RuntimeClient, RuntimeEvent, RuntimeRequest,
+};
 use zene_cloud_domain::{
     ApprovalRequest, ApprovalStatus, ClaimedRun, CloneAuthResponse, CreateApprovalRequest,
     LlmAuthResponse, RunStatus, WorkerCommand, WorkerCommandsResponse, WorkerEventRequest,
@@ -304,10 +306,28 @@ async fn execute_run(
 
     let result = if let Some(bin) = zene_bin {
         info!(run_id = %run_id, agent_mode = "real", "starting agent");
-        run_with_real_acp(client, cli, claimed, &fence, &workspace, bin, shutdown).await
+        run_with_real_acp(
+            client,
+            cli,
+            claimed,
+            &fence,
+            &workspace,
+            &cli.workspace_root,
+            bin,
+            shutdown,
+        )
+        .await
     } else if cli.allow_mock {
         info!(run_id = %run_id, agent_mode = "mock", "starting agent");
-        run_with_mock(client, cli, claimed, &fence, &workspace).await
+        run_with_mock(
+            client,
+            cli,
+            claimed,
+            &fence,
+            &workspace,
+            &cli.workspace_root,
+        )
+        .await
     } else {
         bail!("zene binary not found and mock agent is disabled")
     };
@@ -575,8 +595,14 @@ async fn run_with_mock(
     claimed: &ClaimedRun,
     fence: &WorkerFence,
     workspace: &Path,
+    outbox_root: &Path,
 ) -> Result<()> {
     let run_id = claimed.run.id;
+    let outbox = EventOutbox::open(outbox_root, run_id).await?;
+    outbox
+        .flush(client, &cli.api_url, &cli.worker_token, run_id, fence)
+        .await
+        .context("flush recovered event outbox")?;
     let agent = MockAgent::new(workspace.to_path_buf());
     let (msg_tx, mut msg_rx) = mpsc::unbounded_channel::<MockMsg>();
 
@@ -584,11 +610,15 @@ async fn run_with_mock(
     let cli_api = cli.api_url.clone();
     let token = cli.worker_token.clone();
     let event_fence = (*fence).clone();
+    let event_outbox = outbox.clone();
+    let event_error = Arc::new(tokio::sync::Mutex::new(None::<String>));
+    let event_error_task = event_error.clone();
     let event_task = tokio::spawn(async move {
         while let Some(msg) = msg_rx.recv().await {
             match msg {
                 MockMsg::Event(event) => {
-                    let _ = post_event_raw(
+                    if let Err(err) = deliver_event(
+                        &event_outbox,
                         &client_bg,
                         &cli_api,
                         &token,
@@ -602,7 +632,12 @@ async fn run_with_mock(
                         },
                         &event_fence,
                     )
-                    .await;
+                    .await
+                    {
+                        warn!(run_id = %run_id, error = %err, "event delivery failed");
+                        *event_error_task.lock().await = Some(err.to_string());
+                        break;
+                    }
                 }
                 MockMsg::Permission {
                     request_key,
@@ -662,7 +697,11 @@ async fn run_with_mock(
         for cmd in commands {
             if cmd.kind == "cancel" {
                 cmd_task.abort();
-                event_task.abort();
+                drop(msg_tx);
+                event_task.await.context("event pump")?;
+                if let Some(err) = event_error.lock().await.clone() {
+                    bail!("event delivery failed: {err}");
+                }
                 set_status(client, cli, run_id, &fence, RunStatus::Cancelled, None, None).await?;
                 return Ok(());
             }
@@ -705,9 +744,12 @@ async fn run_with_mock(
     }
 
     drop(msg_tx);
-    let _ = event_task.await;
+    event_task.await.context("event pump")?;
     cmd_task.abort();
 
+    if let Some(err) = event_error.lock().await.clone() {
+        bail!("event delivery failed: {err}");
+    }
     if cancelled.load(std::sync::atomic::Ordering::SeqCst) {
         set_status(client, cli, run_id, &fence, RunStatus::Cancelled, None, None).await?
     }
@@ -784,10 +826,16 @@ async fn run_with_real_acp(
     claimed: &ClaimedRun,
     fence: &WorkerFence,
     workspace: &Path,
+    outbox_root: &Path,
     zene_bin: &Path,
     shutdown: Arc<AtomicBool>,
 ) -> Result<()> {
     let run_id = claimed.run.id;
+    let outbox = EventOutbox::open(outbox_root, run_id).await?;
+    outbox
+        .flush(client, &cli.api_url, &cli.worker_token, run_id, fence)
+        .await
+        .context("flush recovered event outbox")?;
     let yolo = cli.acp_yolo
         || claimed.run.permission_mode == "yolo"
         || std::env::var("ZENE_YOLO").ok().as_deref() == Some("1");
@@ -852,15 +900,19 @@ async fn run_with_real_acp(
     let cli_api = cli.api_url.clone();
     let token = cli.worker_token.clone();
     let pump_fence = (*fence).clone();
+    let pump_outbox = outbox.clone();
     let child_failed = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let child_failed_pump = child_failed.clone();
+    let event_error = Arc::new(tokio::sync::Mutex::new(None::<String>));
+    let event_error_pump = event_error.clone();
     let runtime_bg = runtime.clone();
     let pump = tokio::spawn(async move {
         while let Some(event) = runtime_bg.next_event().await {
             match event {
                 RuntimeEvent::Initialized { event, .. }
                 | RuntimeEvent::Notification(event) => {
-                    let _ = post_event_raw(
+                    if let Err(err) = deliver_event(
+                        &pump_outbox,
                         &client_bg,
                         &cli_api,
                         &token,
@@ -868,10 +920,16 @@ async fn run_with_real_acp(
                         event_to_req(event),
                         &pump_fence,
                     )
-                    .await;
+                    .await
+                    {
+                        warn!(run_id = %run_id, error = %err, "event delivery failed");
+                        *event_error_pump.lock().await = Some(err.to_string());
+                        break;
+                    }
                 }
-                RuntimeEvent::ApprovalRequest { id, method, params, event } => {
-                    let _ = post_event_raw(
+                RuntimeEvent::Request { request, event } => {
+                    if let Err(err) = deliver_event(
+                        &pump_outbox,
                         &client_bg,
                         &cli_api,
                         &token,
@@ -879,36 +937,43 @@ async fn run_with_real_acp(
                         event_to_req(event),
                         &pump_fence,
                     )
-                    .await;
-                    if method == "session/request_permission" {
-                        let request_key = params
-                            .pointer("/toolCall/toolCallId")
-                            .and_then(|v| v.as_str())
-                            .map(|s| s.to_string())
-                            .unwrap_or_else(|| format!("perm-{}", Uuid::new_v4()));
-                        let decision = match resolve_permission(
-                            &client_bg,
-                            &cli_api,
-                            &token,
-                            run_id,
-                            &request_key,
-                            Some(&id_to_string(&id)),
-                            "permission",
-                            &params,
-                        )
-                        .await
-                        {
-                            Ok(d) => d,
-                            Err(err) => {
-                                warn!(error = %err, "permission resolve failed");
-                                PermissionDecision { option_id: "reject-once".into() }
-                            }
-                        };
-                        let _ = runtime_bg.respond_approval(&id, decision.to_result()).await;
-                    } else {
-                        let _ = runtime_bg
-                            .reject_request(&id, -32601, &format!("unsupported: {method}"))
-                            .await;
+                    .await
+                    {
+                        warn!(run_id = %run_id, error = %err, "event delivery failed");
+                        *event_error_pump.lock().await = Some(err.to_string());
+                        break;
+                    }
+                    match request {
+                        RuntimeRequest::Permission {
+                            id,
+                            request_key,
+                            params,
+                        } => {
+                            let decision = match resolve_permission(
+                                &client_bg,
+                                &cli_api,
+                                &token,
+                                run_id,
+                                &request_key,
+                                Some(&id_to_string(&id)),
+                                "permission",
+                                &params,
+                            )
+                            .await
+                            {
+                                Ok(d) => d,
+                                Err(err) => {
+                                    warn!(error = %err, "permission resolve failed");
+                                    PermissionDecision { option_id: "reject-once".into() }
+                                }
+                            };
+                            let _ = runtime_bg.respond_approval(&id, decision.to_result()).await;
+                        }
+                        RuntimeRequest::Unsupported { id, method } => {
+                            let _ = runtime_bg
+                                .reject_request(&id, -32601, &format!("unsupported: {method}"))
+                                .await;
+                        }
                     }
                 }
                 RuntimeEvent::ChildExited => {
@@ -1007,6 +1072,10 @@ async fn run_with_real_acp(
             info!(run_id = %run_id, "ending hold due to shutdown signal");
             break;
         }
+        if event_error.lock().await.is_some() {
+            warn!(run_id = %run_id, "ending hold after event delivery failure");
+            break;
+        }
         if !runtime.is_alive().await {
             info!(run_id = %run_id, "runtime child exited");
             child_failed.store(true, Ordering::SeqCst);
@@ -1025,8 +1094,11 @@ async fn run_with_real_acp(
 
     cmd_task.abort();
     let _ = runtime.shutdown().await;
-    pump.abort();
+    let _ = pump.await;
 
+    if let Some(err) = event_error.lock().await.clone() {
+        bail!("event delivery failed: {err}");
+    }
     if cancelled.load(std::sync::atomic::Ordering::SeqCst) {
         set_status(client, cli, run_id, &fence, RunStatus::Cancelled, None, None).await?;
     }
@@ -1191,6 +1263,259 @@ fn heartbeat_loop(
             tokio::time::sleep(Duration::from_secs(20)).await;
         }
     })
+}
+
+mod event_outbox {
+    use super::*;
+
+    const MAX_OUTBOX_EVENTS: usize = 10_000;
+    const MAX_OUTBOX_BYTES: u64 = 128 * 1024 * 1024;
+
+    #[derive(Debug, Clone)]
+    pub(crate) struct EventOutbox {
+        pub(crate) dir: PathBuf,
+    }
+
+    #[allow(dead_code)]
+    struct OutboxLock(std::fs::File);
+
+    impl EventOutbox {
+        async fn acquire_lock(&self) -> Result<OutboxLock> {
+            let path = self.dir.join(".lock");
+            tokio::task::spawn_blocking(move || {
+                let file = std::fs::OpenOptions::new()
+                    .create(true)
+                    .read(true)
+                    .write(true)
+                    .open(&path)
+                    .with_context(|| format!("open event outbox lock {}", path.display()))?;
+                #[cfg(unix)]
+                {
+                    use std::os::fd::AsRawFd;
+                    let result = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX) };
+                    if result != 0 {
+                        return Err(std::io::Error::last_os_error())
+                            .with_context(|| format!("lock event outbox {}", path.display()));
+                    }
+                }
+                Ok(OutboxLock(file))
+            })
+            .await
+            .context("join event outbox lock")?
+        }
+
+        pub(crate) async fn open(root: &Path, run_id: Uuid) -> Result<Self> {
+            let dir = root.join(".event-outbox").join(run_id.to_string());
+            tokio::fs::create_dir_all(&dir)
+                .await
+                .with_context(|| format!("create event outbox {}", dir.display()))?;
+            let outbox = Self { dir };
+            let _lock = outbox.acquire_lock().await?;
+            Self::remove_orphaned_temporary_files(&outbox.dir).await?;
+            Ok(outbox)
+        }
+
+    async fn remove_orphaned_temporary_files(dir: &Path) -> Result<()> {
+        let mut entries = tokio::fs::read_dir(dir).await?;
+        while let Some(entry) = entries.next_entry().await? {
+            let path = entry.path();
+            let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+                continue;
+            };
+            if name.starts_with('.') && name.contains(".tmp-") {
+                tokio::fs::remove_file(&path)
+                    .await
+                    .with_context(|| format!("remove orphaned event outbox file {}", path.display()))?;
+            }
+        }
+        Ok(())
+    }
+
+    pub(crate) async fn enqueue(&self, event: &WorkerEventRequest) -> Result<()> {
+        let _lock = self.acquire_lock().await?;
+        let path = self.event_path(&event.source_event_id);
+        if tokio::fs::try_exists(&path).await? {
+            let existing: WorkerEventRequest = serde_json::from_slice(
+                &tokio::fs::read(&path)
+                    .await
+                    .with_context(|| format!("read existing event outbox {}", path.display()))?,
+            )
+            .with_context(|| format!("decode existing event outbox {}", path.display()))?;
+            if existing.source_event_id == event.source_event_id {
+                return Ok(());
+            }
+            bail!(
+                "event outbox key collision between source IDs {:?} and {:?}",
+                existing.source_event_id,
+                event.source_event_id
+            );
+        }
+        let tmp = self
+            .dir
+            .join(format!(".{}.tmp-{}", path.file_name().unwrap().to_string_lossy(), Uuid::new_v4()));
+        let bytes = serde_json::to_vec(event).context("serialize event outbox entry")?;
+        let (event_count, byte_count) = self.stats().await?;
+        if event_count >= MAX_OUTBOX_EVENTS {
+            bail!("event outbox capacity exceeded: {MAX_OUTBOX_EVENTS} events");
+        }
+        if byte_count.saturating_add(bytes.len() as u64) > MAX_OUTBOX_BYTES {
+            bail!("event outbox capacity exceeded: {MAX_OUTBOX_BYTES} bytes");
+        }
+        let mut file = tokio::fs::File::create(&tmp)
+            .await
+            .with_context(|| format!("create event outbox {}", tmp.display()))?;
+        file.write_all(&bytes)
+            .await
+            .with_context(|| format!("write event outbox {}", tmp.display()))?;
+        file.sync_all()
+            .await
+            .with_context(|| format!("sync event outbox {}", tmp.display()))?;
+        drop(file);
+        match tokio::fs::hard_link(&tmp, &path).await {
+            Ok(()) => {
+                tokio::fs::remove_file(&tmp).await.with_context(|| {
+                    format!("remove committed event outbox temporary file {}", tmp.display())
+                })?;
+                sync_outbox_directory(&self.dir).await?;
+                Ok(())
+            }
+            Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {
+                let existing: WorkerEventRequest = serde_json::from_slice(
+                    &tokio::fs::read(&path)
+                        .await
+                        .with_context(|| format!("read raced event outbox {}", path.display()))?,
+                )
+                .with_context(|| format!("decode raced event outbox {}", path.display()))?;
+                tokio::fs::remove_file(&tmp).await.with_context(|| {
+                    format!("remove raced event outbox temporary file {}", tmp.display())
+                })?;
+                if existing.source_event_id == event.source_event_id {
+                    Ok(())
+                } else {
+                    bail!(
+                        "event outbox key collision between source IDs {:?} and {:?}",
+                        existing.source_event_id,
+                        event.source_event_id
+                    );
+                }
+            }
+            Err(err) => Err(err).with_context(|| {
+                format!("commit event outbox {}", path.display())
+            }),
+        }
+    }
+
+    pub(crate) async fn stats(&self) -> Result<(usize, u64)> {
+        let mut entries = tokio::fs::read_dir(&self.dir).await?;
+        let mut count = 0usize;
+        let mut bytes = 0u64;
+        while let Some(entry) = entries.next_entry().await? {
+            let path = entry.path();
+            if path.extension().and_then(|ext| ext.to_str()) != Some("json") {
+                continue;
+            }
+            count = count.saturating_add(1);
+            bytes = bytes.saturating_add(entry.metadata().await?.len());
+        }
+        Ok((count, bytes))
+    }
+
+    pub(crate) async fn flush(
+        &self,
+        client: &reqwest::Client,
+        api_url: &str,
+        token: &str,
+        run_id: Uuid,
+        fence: &WorkerFence,
+    ) -> Result<()> {
+        let mut entries = tokio::fs::read_dir(&self.dir).await?;
+        let mut paths = Vec::new();
+        while let Some(entry) = entries.next_entry().await? {
+            let path = entry.path();
+            if path.extension().and_then(|ext| ext.to_str()) == Some("json") {
+                paths.push(path);
+            }
+        }
+        paths.sort();
+
+        for path in paths {
+            let bytes = tokio::fs::read(&path)
+                .await
+                .with_context(|| format!("read event outbox {}", path.display()))?;
+            let event: WorkerEventRequest = serde_json::from_slice(&bytes)
+                .with_context(|| format!("decode event outbox {}", path.display()))?;
+            post_event_raw(client, api_url, token, run_id, event, fence).await?;
+            match tokio::fs::remove_file(&path).await {
+                Ok(()) => sync_outbox_directory(&self.dir).await?,
+                Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+                    // A replacement worker may have acknowledged and removed
+                    // the same idempotent event concurrently.
+                }
+                Err(err) => {
+                    return Err(err)
+                        .with_context(|| format!("remove event outbox {}", path.display()));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    pub(crate) fn event_path(&self, source_event_id: &str) -> PathBuf {
+        self.dir.join(format!("{}.json", event_file_key(source_event_id)))
+    }
+}
+
+    async fn sync_outbox_directory(path: &Path) -> Result<()> {
+    #[cfg(unix)]
+    {
+        let path = path.to_path_buf();
+        tokio::task::spawn_blocking(move || -> Result<()> {
+            let directory = std::fs::File::open(&path)
+                .with_context(|| format!("open event outbox directory {}", path.display()))?;
+            directory
+                .sync_all()
+                .with_context(|| format!("sync event outbox directory {}", path.display()))?;
+            Ok(())
+        })
+        .await
+        .context("join event outbox directory sync")??;
+    }
+    #[cfg(not(unix))]
+    let _ = path;
+    Ok(())
+}
+
+    pub(crate) fn event_file_key(source_event_id: &str) -> String {
+    // Keep filenames bounded and deterministic across worker restarts. The
+    // fixed FNV-1a pair avoids DefaultHasher's process-specific seed and keeps
+    // arbitrary provider event IDs below filesystem filename limits.
+    let mut first = 0xcbf29ce484222325u64;
+    let mut second = 0x84222325cbf29ce4u64;
+    for byte in source_event_id.as_bytes() {
+        first ^= u64::from(*byte);
+        first = first.wrapping_mul(0x100000001b3);
+        second ^= u64::from(*byte).rotate_left(17);
+        second = second.wrapping_mul(0x100000001b3);
+    }
+        format!("{first:016x}{second:016x}")
+    }
+}
+
+use event_outbox::EventOutbox;
+#[cfg(test)]
+use event_outbox::event_file_key;
+
+async fn deliver_event(
+    outbox: &EventOutbox,
+    client: &reqwest::Client,
+    api_url: &str,
+    token: &str,
+    run_id: Uuid,
+    event: WorkerEventRequest,
+    fence: &WorkerFence,
+) -> Result<()> {
+    outbox.enqueue(&event).await?;
+    outbox.flush(client, api_url, token, run_id, fence).await
 }
 
 async fn post_event_raw(
@@ -1537,7 +1862,12 @@ async fn drain_stderr_lines(stderr: tokio::process::ChildStderr) {
 
 #[cfg(test)]
 mod title_tests {
-    use super::{chat_completions_url, sanitize_run_title};
+    use super::{
+        chat_completions_url, event_file_key, sanitize_run_title, EventOutbox,
+    };
+    use serde_json::json;
+    use uuid::Uuid;
+    use zene_cloud_domain::WorkerEventRequest;
 
     #[test]
     fn completions_url_appends_path() {
@@ -1559,5 +1889,84 @@ mod title_tests {
     fn sanitize_strips_wrapping() {
         assert_eq!(sanitize_run_title("  \"项目总结\"  "), "项目总结");
         assert_eq!(sanitize_run_title("# Fix login bug\nmore"), "Fix login bug");
+    }
+
+    #[test]
+    fn event_file_key_is_stable_and_safe() {
+        let key = event_file_key("acp/event/1");
+        assert_eq!(key.len(), 32);
+        assert!(!key.contains('/'));
+        assert_eq!(event_file_key("acp/event/1"), key);
+        assert_eq!(event_file_key(&"x".repeat(100_000)).len(), 32);
+    }
+
+    fn event(source_event_id: &str) -> WorkerEventRequest {
+        WorkerEventRequest {
+            source_event_id: source_event_id.into(),
+            cursor: Some(7),
+            event_type: "acp".into(),
+            payload: json!({"ok": true}),
+            fence: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn event_outbox_survives_reopen_without_tmp_files() {
+        let root = std::env::temp_dir().join(format!("zene-worker-outbox-{}", Uuid::new_v4()));
+        let run_id = Uuid::new_v4();
+        let outbox = EventOutbox::open(&root, run_id).await.unwrap();
+        let event = event("event-1");
+        outbox.enqueue(&event).await.unwrap();
+        outbox.enqueue(&event).await.unwrap();
+        assert_eq!(outbox.stats().await.unwrap().0, 1);
+        let orphan = outbox.dir.join(".orphan.json.tmp-crashed");
+        tokio::fs::write(&orphan, b"partial").await.unwrap();
+
+        let reopened = EventOutbox::open(&root, run_id).await.unwrap();
+        let path = reopened.event_path("event-1");
+        let stored: WorkerEventRequest =
+            serde_json::from_slice(&tokio::fs::read(&path).await.unwrap()).unwrap();
+        assert_eq!(stored.source_event_id, "event-1");
+        assert_eq!(stored.cursor, Some(7));
+        assert!(!orphan.exists());
+        let mut entries = tokio::fs::read_dir(&reopened.dir).await.unwrap();
+        let mut event_files = Vec::new();
+        while let Some(entry) = entries.next_entry().await.unwrap() {
+            if entry.path().extension().and_then(|ext| ext.to_str()) == Some("json") {
+                event_files.push(entry.path());
+            }
+        }
+        assert_eq!(event_files.len(), 1);
+
+        tokio::fs::remove_dir_all(root).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn event_outbox_concurrent_same_event_is_idempotent() {
+        let root = std::env::temp_dir().join(format!("zene-worker-outbox-{}", Uuid::new_v4()));
+        let outbox = EventOutbox::open(&root, Uuid::new_v4()).await.unwrap();
+        let event = event("concurrent-event");
+        let (left, right) = tokio::join!(outbox.enqueue(&event), outbox.enqueue(&event));
+        left.unwrap();
+        right.unwrap();
+        assert_eq!(outbox.stats().await.unwrap(), (1, outbox.event_path("concurrent-event").metadata().unwrap().len()));
+        tokio::fs::remove_dir_all(root).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn event_outbox_rejects_source_id_collision() {
+        let root = std::env::temp_dir().join(format!("zene-worker-outbox-{}", Uuid::new_v4()));
+        let outbox = EventOutbox::open(&root, Uuid::new_v4()).await.unwrap();
+        let first = event("first");
+        let second = event("second");
+        tokio::fs::write(
+            outbox.event_path("first"),
+            serde_json::to_vec(&second).unwrap(),
+        )
+        .await
+        .unwrap();
+        let error = outbox.enqueue(&first).await.expect_err("collision must fail");
+        assert!(error.to_string().contains("collision"));
+        tokio::fs::remove_dir_all(root).await.unwrap();
     }
 }

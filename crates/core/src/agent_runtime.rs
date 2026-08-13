@@ -4,10 +4,10 @@
 //! module owns the Agent-specific actor state and command handling.
 
 use std::collections::VecDeque;
-use std::sync::{
-    atomic::{AtomicU64, Ordering},
-    Arc,
-};
+#[cfg(test)]
+use std::sync::Arc;
+#[cfg(test)]
+use zene_turn::TurnId;
 
 use anyhow::{anyhow, Context, Result};
 use tokio::sync::{broadcast, mpsc, oneshot, watch};
@@ -19,12 +19,12 @@ use crate::{RecoveryDisposition, RecoverySnapshot};
 use zene_permission::PromptChoice;
 #[cfg(test)]
 use zene_runtime::ApprovalDecision;
-use zene_runtime::{ExecutionState, RuntimeCommand, RuntimeResponse};
-use zene_session::{AgentRecordWriter, ExecutionCheckpointState, RecoveryPlan};
-use zene_turn::{
-    EventSequence, RuntimeEvent, RuntimeEventHandler, RuntimeEventKind, SessionId, SteerBuffer,
-    TurnId,
+use zene_runtime::{
+    ExecutionState, RuntimeCommand, RuntimeControl, RuntimeEventPublisher, RuntimeRecoveryInfo,
+    RuntimeResponse,
 };
+use zene_session::{AgentRecordWriter, ExecutionCheckpointState, RecoveryPlan};
+use zene_turn::{RuntimeEvent, SessionId, SteerBuffer};
 
 use crate::{Agent, PromptOptions};
 
@@ -199,6 +199,67 @@ impl RuntimeHandle {
     }
 }
 
+fn recovery_disposition_name(disposition: zene_session::RecoveryDisposition) -> &'static str {
+    match disposition {
+        zene_session::RecoveryDisposition::Clean => "clean",
+        zene_session::RecoveryDisposition::AlreadyCompleted => "already_completed",
+        zene_session::RecoveryDisposition::SafeToResume => "safe_to_resume",
+        zene_session::RecoveryDisposition::RequiresToolInspection => "requires_tool_inspection",
+        zene_session::RecoveryDisposition::RequiresManualIntervention => {
+            "requires_manual_intervention"
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl RuntimeControl for RuntimeHandle {
+    async fn prompt(&self, text: String) -> Result<String> {
+        RuntimeHandle::prompt(self, text).await
+    }
+
+    async fn steer(&self, text: String) -> Result<()> {
+        RuntimeHandle::steer(self, text).await
+    }
+
+    async fn resume_safe_turn(&self) -> Result<String> {
+        RuntimeHandle::resume_safe_turn(self).await
+    }
+
+    async fn cancel(&self) -> Result<()> {
+        RuntimeHandle::cancel(self).await
+    }
+
+    async fn set_mode(&self, mode_id: String) -> Result<String> {
+        RuntimeHandle::set_mode(self, mode_id).await
+    }
+
+    async fn current_mode(&self) -> Result<String> {
+        RuntimeHandle::current_mode(self).await
+    }
+
+    async fn shutdown(&self) -> Result<()> {
+        RuntimeHandle::shutdown(self).await
+    }
+
+    fn subscribe(&self) -> broadcast::Receiver<RuntimeEvent> {
+        RuntimeHandle::subscribe(self)
+    }
+
+    fn recovery_info(&self) -> Result<RuntimeRecoveryInfo> {
+        let snapshot = self.recovery_snapshot()?;
+        let plan = snapshot.plan();
+        Ok(RuntimeRecoveryInfo {
+            disposition: recovery_disposition_name(plan.disposition).into(),
+            has_incomplete_execution: snapshot.has_incomplete_execution(),
+            active_turn_count: snapshot.active_turns.len(),
+            active_tool_count: snapshot.active_tools.len(),
+            safe_resume_allowed: plan.safe_resume_allowed,
+            automatic_resume: plan.automatic_resume_implemented,
+            reason: plan.reason,
+        })
+    }
+}
+
 struct PendingPrompt {
     text: String,
     reply: oneshot::Sender<std::result::Result<RuntimeResponse, String>>,
@@ -225,7 +286,7 @@ async fn run_actor(
 ) -> Result<()> {
     let steer_buffer = agent.steer_buffer();
     let session_id = SessionId::from_string(agent.session().meta.id.clone());
-    let sequence = Arc::new(AtomicU64::new(0));
+    let publisher = RuntimeEventPublisher::new(events.clone(), state.clone(), session_id.clone());
     let mut agent = Some(agent);
     let mut queued: VecDeque<PendingPrompt> = VecDeque::new();
     let mut active: Option<ActivePrompt> = initial_resume.map(|candidate| {
@@ -236,10 +297,7 @@ async fn run_actor(
                 text: candidate.prompt,
                 reply,
             },
-            &events,
-            &state,
-            &session_id,
-            &sequence,
+            &publisher,
         )
     });
     let mut shutdown_requested = false;
@@ -268,10 +326,7 @@ async fn run_actor(
                 active = Some(start_prompt(
                     agent.take().expect("idle actor owns agent"),
                     prompt,
-                    &events,
-                    &state,
-                    &session_id,
-                    &sequence,
+                    &publisher,
                 ));
                 continue;
             }
@@ -285,11 +340,9 @@ async fn run_actor(
                 message,
                 &mut queued,
                 &steer_buffer,
-                &events,
                 &state,
                 &mut shutdown_requested,
-                &session_id,
-                &sequence,
+                &publisher,
             );
             continue;
         }
@@ -379,18 +432,10 @@ async fn run_actor(
 fn start_prompt(
     agent: Agent,
     prompt: PendingPrompt,
-    events: &broadcast::Sender<RuntimeEvent>,
-    state: &watch::Sender<ExecutionState>,
-    session_id: &SessionId,
-    sequence: &Arc<AtomicU64>,
+    publisher: &RuntimeEventPublisher,
 ) -> ActivePrompt {
-    let _ = state.send(ExecutionState::Starting);
-    let event_handler = runtime_event_sink(
-        events.clone(),
-        state.clone(),
-        session_id.clone(),
-        Arc::clone(sequence),
-    );
+    publisher.set_state(ExecutionState::Starting);
+    let event_handler = publisher.handler();
     let cancel = CancellationToken::new();
     let task_cancel = cancel.clone();
     let task = tokio::spawn(async move {
@@ -421,11 +466,9 @@ fn handle_idle_command(
     message: RuntimeMessage,
     _queued: &mut VecDeque<PendingPrompt>,
     _steer_buffer: &std::sync::Arc<parking_lot::Mutex<SteerBuffer>>,
-    events: &broadcast::Sender<RuntimeEvent>,
     state: &watch::Sender<ExecutionState>,
     shutdown_requested: &mut bool,
-    session_id: &SessionId,
-    sequence: &Arc<AtomicU64>,
+    publisher: &RuntimeEventPublisher,
 ) -> Option<ActivePrompt> {
     match message.command {
         RuntimeCommand::ResumeSafeTurn => {
@@ -442,12 +485,15 @@ fn handle_idle_command(
                 }
             };
             let plan = snapshot.plan();
-            let Some(candidate) = snapshot.resume_candidates.into_iter().next()
+            let Some(candidate) = snapshot
+                .resume_candidates
+                .into_iter()
+                .next()
                 .filter(|_| plan.automatic_resume_implemented)
             else {
-                let _ = message
-                    .reply
-                    .send(Err("no unique prompt-backed safe resume candidate is available".into()));
+                let _ = message.reply.send(Err(
+                    "no unique prompt-backed safe resume candidate is available".into(),
+                ));
                 return None;
             };
             let writer = agent
@@ -477,10 +523,7 @@ fn handle_idle_command(
                     text: candidate.prompt,
                     reply: message.reply,
                 },
-                events,
-                state,
-                session_id,
-                sequence,
+                publisher,
             ))
         }
         RuntimeCommand::Prompt { text } => {
@@ -494,10 +537,7 @@ fn handle_idle_command(
                         text,
                         reply: message.reply,
                     },
-                    events,
-                    state,
-                    session_id,
-                    sequence,
+                    publisher,
                 ))
             }
         }
@@ -520,7 +560,7 @@ fn handle_idle_command(
                 let _ = message.reply.send(Ok(RuntimeResponse::Mode {
                     mode_id: active.clone(),
                 }));
-                publish_state_event(events, session_id, sequence, &active);
+                publish_state_event(publisher, &active);
                 None
             }
             Err(err) => {
@@ -593,7 +633,7 @@ fn handle_active_command(
         }
         RuntimeCommand::SetMode { .. } | RuntimeCommand::GetMode => {
             let _ = message.reply.send(Err(
-                "cannot change or read mode while a turn is active".into(),
+                "cannot change or read mode while a turn is active".into()
             ));
         }
         RuntimeCommand::Approval { request_id, .. } => {
@@ -609,56 +649,39 @@ fn handle_active_command(
     }
 }
 
-fn publish_state_event(
-    events: &broadcast::Sender<RuntimeEvent>,
-    session_id: &SessionId,
-    sequence: &Arc<AtomicU64>,
-    state: &str,
-) {
-    let _ = events.send(RuntimeEvent {
-        sequence: EventSequence::new(sequence.fetch_add(1, Ordering::Relaxed) + 1),
-        session_id: session_id.clone(),
-        turn_id: None,
-        step_id: None,
-        kind: RuntimeEventKind::StateChanged {
-            state: state.to_string(),
-        },
-    });
-}
-
-fn runtime_event_sink(
-    events: broadcast::Sender<RuntimeEvent>,
-    state: watch::Sender<ExecutionState>,
-    session_id: SessionId,
-    sequence: Arc<AtomicU64>,
-) -> RuntimeEventHandler {
-    std::sync::Arc::new(move |mut event| {
-        event.sequence = EventSequence::new(sequence.fetch_add(1, Ordering::Relaxed) + 1);
-        event.session_id = session_id.clone();
-        match &event.kind {
-            RuntimeEventKind::TurnStarted { .. } => {
-                let _ = state.send(ExecutionState::Running {
-                    turn_id: event.turn_id.unwrap_or_else(TurnId::new),
-                    step: 0,
-                });
-            }
-            RuntimeEventKind::StepStarted { step } => {
-                if let Some(turn_id) = event.turn_id {
-                    let _ = state.send(ExecutionState::Running {
-                        turn_id,
-                        step: *step,
-                    });
-                }
-            }
-            _ => {}
-        }
-        let _ = events.send(event);
-    })
+fn publish_state_event(publisher: &RuntimeEventPublisher, state: &str) {
+    publisher.publish_state(state);
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn recovery_disposition_names_are_protocol_stable() {
+        let cases = [
+            (zene_session::RecoveryDisposition::Clean, "clean"),
+            (
+                zene_session::RecoveryDisposition::AlreadyCompleted,
+                "already_completed",
+            ),
+            (
+                zene_session::RecoveryDisposition::SafeToResume,
+                "safe_to_resume",
+            ),
+            (
+                zene_session::RecoveryDisposition::RequiresToolInspection,
+                "requires_tool_inspection",
+            ),
+            (
+                zene_session::RecoveryDisposition::RequiresManualIntervention,
+                "requires_manual_intervention",
+            ),
+        ];
+        for (disposition, expected) in cases {
+            assert_eq!(recovery_disposition_name(disposition), expected);
+        }
+    }
 
     #[test]
     fn approval_decisions_map_to_permission_choices() {
@@ -867,32 +890,4 @@ mod tests {
         assert_eq!(queued.front().unwrap().text, "next");
     }
 
-    #[test]
-    fn runtime_event_sink_assigns_session_scope_and_monotonic_sequence() {
-        let (events, mut receiver) = broadcast::channel(4);
-        let (state, _state_receiver) = watch::channel(ExecutionState::Idle);
-        let session_id = SessionId::from_string("runtime-session");
-        let sink = runtime_event_sink(
-            events,
-            state,
-            session_id.clone(),
-            Arc::new(AtomicU64::new(0)),
-        );
-        let event = || RuntimeEvent {
-            sequence: EventSequence::new(999),
-            session_id: SessionId::from_string("wrong-session"),
-            turn_id: None,
-            step_id: None,
-            kind: RuntimeEventKind::TextDelta { delta: "x".into() },
-        };
-
-        sink(event());
-        sink(event());
-        let first = receiver.try_recv().expect("first event");
-        let second = receiver.try_recv().expect("second event");
-        assert_eq!(first.sequence.value(), 1);
-        assert_eq!(second.sequence.value(), 2);
-        assert_eq!(first.session_id, session_id);
-        assert_eq!(second.session_id, session_id);
-    }
 }

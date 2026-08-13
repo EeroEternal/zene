@@ -93,7 +93,7 @@ impl TurnRuntime for Agent {
             &tools,
             &estimator,
             &compaction_config,
-        );
+        )?;
         let snapshot = self.usage_accumulator.snapshot(
             context_usage.context_tokens,
             context_usage.context_window,

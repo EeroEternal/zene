@@ -5,6 +5,7 @@ use anyhow::{Context, Result};
 use async_trait::async_trait;
 use serde_json::Value;
 use tokio::sync::{mpsc, Mutex};
+use uuid::Uuid;
 use zene_cloud_acp_bridge::{AcpBridge, AcpEvent, BridgeMsg};
 
 #[derive(Debug, Clone)]
@@ -19,8 +20,23 @@ pub enum RuntimeCommand {
 pub enum RuntimeEvent {
     Initialized { session_id: String, event: AcpEvent },
     Notification(AcpEvent),
-    ApprovalRequest { id: Value, method: String, params: Value, event: AcpEvent },
+    Request { request: RuntimeRequest, event: AcpEvent },
     ChildExited,
+}
+
+/// Runtime-level meaning of an ACP reverse request. ACP method names and
+/// parameter paths stay inside this adapter instead of leaking into workers.
+#[derive(Debug)]
+pub enum RuntimeRequest {
+    Permission {
+        id: Value,
+        request_key: String,
+        params: Value,
+    },
+    Unsupported {
+        id: Value,
+        method: String,
+    },
 }
 
 #[async_trait]
@@ -39,6 +55,26 @@ pub struct AcpRuntimeClient {
     bridge: Arc<Mutex<Option<AcpBridge>>>,
     session_id: String,
     events: Arc<Mutex<mpsc::UnboundedReceiver<RuntimeEvent>>>,
+}
+
+fn runtime_request(id: &Value, method: &str, params: &Value) -> RuntimeRequest {
+    if method == "session/request_permission" {
+        let request_key = params
+            .pointer("/toolCall/toolCallId")
+            .and_then(Value::as_str)
+            .map(str::to_string)
+            .unwrap_or_else(|| format!("permission-{}", Uuid::new_v4()));
+        RuntimeRequest::Permission {
+            id: id.clone(),
+            request_key,
+            params: params.clone(),
+        }
+    } else {
+        RuntimeRequest::Unsupported {
+            id: id.clone(),
+            method: method.to_string(),
+        }
+    }
 }
 
 impl AcpRuntimeClient {
@@ -85,7 +121,8 @@ impl AcpRuntimeClient {
                     BridgeMsg::Notification { raw, .. } => RuntimeEvent::Notification(AcpEvent::from_notification(&raw)),
                     BridgeMsg::ReverseRequest { id, method, params } => {
                         let event = AcpEvent::from_reverse_request(&id, &method, &params);
-                        RuntimeEvent::ApprovalRequest { id, method, params, event }
+                        let request = runtime_request(&id, &method, &params);
+                        RuntimeEvent::Request { request, event }
                     }
                 };
                 if event_tx.send(event).is_err() { break; }
@@ -130,6 +167,33 @@ impl RuntimeClient for AcpRuntimeClient {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn permission_request_is_normalized_without_exposing_method_paths() {
+        let request = runtime_request(
+            &serde_json::json!(42),
+            "session/request_permission",
+            &serde_json::json!({"toolCall": {"toolCallId": "call-7"}}),
+        );
+        assert!(matches!(
+            request,
+            RuntimeRequest::Permission { request_key, .. } if request_key == "call-7"
+        ));
+    }
+
+    #[test]
+    fn unsupported_reverse_request_is_classified_at_adapter_boundary() {
+        let request = runtime_request(
+            &serde_json::json!(42),
+            "session/unknown",
+            &serde_json::json!({}),
+        );
+        assert!(matches!(
+            request,
+            RuntimeRequest::Unsupported { method, .. } if method == "session/unknown"
+        ));
+    }
+
     #[test]
     fn reconnect_can_target_an_existing_session() {
         assert_eq!(Some("session-1"), Some("session-1"));

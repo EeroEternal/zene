@@ -82,6 +82,17 @@ async fn register_create_run_and_claim() {
         .await
         .unwrap();
     assert_eq!(event.cursor, Some(17));
+    let platform_event = db
+        .append_event_fenced(
+            run.id,
+            &fence,
+            Some("platform-event-1"),
+            "platform",
+            serde_json::json!({"platform": true}),
+        )
+        .await
+        .unwrap();
+    assert_eq!(platform_event.cursor, None);
     let duplicate = db
         .append_event_fenced_with_cursor(
             run.id,
@@ -137,6 +148,25 @@ async fn register_create_run_and_claim() {
         .unwrap()
         .expect("failed run should be re-claimable after queueing");
     assert_eq!(reclaimed.3.as_deref(), Some("acp-session-1"));
+    let replacement_fence = WorkerFence {
+        attempt_id: reclaimed.1,
+        generation: reclaimed.2,
+        worker_id: "worker-2".into(),
+    };
+    let replayed = db
+        .append_event_fenced_with_cursor(
+            run.id,
+            &replacement_fence,
+            Some("fenced-event-1"),
+            Some(99),
+            "runtime-replayed",
+            serde_json::json!({"replayed": true}),
+        )
+        .await
+        .unwrap();
+    assert_eq!(replayed.seq, event.seq);
+    assert_eq!(replayed.cursor, Some(17));
+    assert_eq!(replayed.event_type, "runtime");
 
     let events = db.events_after(run.id, 0).await.unwrap();
     let event = events
@@ -145,7 +175,16 @@ async fn register_create_run_and_claim() {
         .expect("runtime event should be persisted");
     assert_eq!(event.cursor, Some(17));
     let replay = db.events_after_cursor(run.id, 0).await.unwrap();
-    assert_eq!(replay.len(), 1);
-    assert_eq!(replay[0].cursor, Some(17));
-    assert_eq!(replay[0].seq, event.seq);
+    let replayed_seqs: Vec<i64> = replay.iter().map(|item| item.seq).collect();
+    assert!(replayed_seqs.windows(2).all(|window| window[0] < window[1]));
+    let replayed_event = replay
+        .iter()
+        .find(|item| item.seq == event.seq)
+        .expect("cursor event should be replayed");
+    assert_eq!(replayed_event.cursor, Some(17));
+    let replayed_platform = replay
+        .iter()
+        .find(|item| item.seq == platform_event.seq)
+        .expect("platform event without cursor should be replayed");
+    assert_eq!(replayed_platform.cursor, None);
 }

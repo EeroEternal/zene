@@ -25,3 +25,4 @@ zene-sandbox = { workspace = true }
 zene-session = { workspace = true }
 zene-llm = { workspace = true }
 zene-mcp = { workspace = true }
+zene-runtime = { version = "0.1.11", path = "../../crates/runtime" }

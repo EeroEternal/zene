@@ -945,10 +945,10 @@ crates/
 
 1. **Conversation SoT 已完成新路径收口**：`SessionEvent` 已覆盖 message、system prefix、compaction、tool call/result、permission、model change、branch/fork/rewind 等事实；完整事件日志现在优先于 `messages` cache，cache drift 仅作为诊断暴露。cache-only legacy session 已支持显式、幂等、加载边界迁移并在 ACP load/resume 中启用；缺少历史 snapshot 的 legacy compaction/rewind 和不完整事件日志保留明确的 materialized compatibility fallback，并可通过 `SessionRecord::try_view` 严格拒绝 fallback。
 2. **Context 事件投影已完成可观测性切片**：`observe / commit / project` 已拆分，`SessionView` 已选择 active branch path 并驱动 Context 只读 projection；已补充 rewind target boundary、active path 过滤、fork parent lineage、fallback reason，以及 `activeBranchId` / `activePathStartSequence` / `activeEventCount` explain；compaction 序列化 reload 等价测试已加入。`injected`、tool handle/truncation、retained turns、`delivery` 和 `deliveryTailStart` 已通过 RuntimeEvent/ACP 暴露；旧历史数据仍通过显式兼容 fallback 处理。
-3. **ModelExecutor 已完成独立 crate 第一切片**：`zene-model-executor` 提供 `ModelExecutor`、`ChatClientExecutor`、request builder、stream assembly、ID 规范化和 fake executor 测试；`zene-core` 保留兼容 re-export。`Agent` 已不再直接持有具体 `ChatClient`；ContextModel 与 ModelExecutor 分别承担 context complete 和 runtime stream/complete。仍需继续抽离 overflow policy、Context water 写入和 usage 事件编排。
+3. **ModelExecutor 已完成独立 crate 收口**：`zene-model-executor` 提供 `ModelExecutor`、`ChatClientExecutor`、request builder、stream assembly、overflow retry state、ID 规范化和 fake executor 测试；`zene-core` 保留兼容 re-export。`Agent` 已不再直接持有具体 `ChatClient`；ContextModel 与 ModelExecutor 分别承担 context complete 和 runtime stream/complete；Context water/usage 写回已由 ContextEngine 统一计算并通过 strict projection 校验。
 4. **Recovery 已支持安全 model-boundary 自动恢复**：durable `TurnPrompt` 可生成 `ResumeCandidate`，新增 `ResumeSafeTurn`，只允许无 pending tool/approval 的 model-boundary turn，且通过 `TurnResumed` 幂等 checkpoint 和 durable fence 后进入普通 pipeline；ACP `session/resume` 会自动触发该安全恢复，pending tool、approval 和 failure 仍必须 inspection/manual intervention。
-5. **Cloud RuntimeClient 已完成 reconnect 基础切片**：新增 `zene-cloud-runtime-client`，负责 ACP child、session、prompt/cancel、事件归一化和 approval response；worker real ACP 路径不再直接匹配 `BridgeMsg`。attempt/generation 已贯通 worker status/event/heartbeat/command fencing，stale worker 不再覆盖 replacement attempt；ACP child failure 会立即释放 pending requests 并使 worker 进入失败路径；ACP session ID 已按 attempt 持久化，replacement claim 会调用 `session/resume`；ACP event identity 优先采用 `_meta.eventId`/`_meta.sequence`，无 metadata 时使用 raw frame 的确定性 hash，并通过可选 `cursor` 贯通 Cloud DB；HTTP/SSE 支持按 cursor replay，worker event POST 具备有限退避重试。
-6. **Runtime 边界已完成第一阶段拆分**：公共 command/state/response 协议位于 `zene-runtime`，Agent-specific actor 已移入 core 私有 `agent_runtime` 模块，`zene-core::RuntimeHandle` 保留兼容 facade；后续仍可继续抽离完整 Agent driver wiring 和 runtime event sink。
+5. **Cloud RuntimeClient 已完成 reconnect 基础切片**：新增 `zene-cloud-runtime-client`，负责 ACP child、session、prompt/cancel、事件归一化和 approval response；worker real ACP 路径不再直接匹配 `BridgeMsg`。attempt/generation 已贯通 worker status/event/heartbeat/command fencing，stale worker 不再覆盖 replacement attempt；ACP child failure 会立即释放 pending requests 并使 worker 进入失败路径；ACP session ID 已按 attempt 持久化，replacement claim 会调用 `session/resume`；ACP event identity 优先采用 `_meta.eventId`/`_meta.sequence`，无 metadata 时使用 raw frame 的确定性 hash，并通过可选 `cursor` 贯通 Cloud DB；HTTP/SSE 使用 canonical `seq` 完整 replay 并支持 `Last-Event-ID`，worker event POST 具备有限退避重试，event pump 失败会阻止 run 静默完成并在结束前等待 flush。
+6. **Runtime 边界已完成协议与公共控制契约切片**：公共 command/state/response、`RuntimeControl`、recovery info 和 runtime-owned `RuntimeEventPublisher` 位于 `zene-runtime`；publisher 统一负责 session scope、单调 event sequence、广播以及 Turn/Step 到 execution state 的镜像。Agent-specific actor 位于 core 私有 `agent_runtime` 模块，`zene-core::RuntimeHandle` 通过 trait 实现接入；剩余工作是将完整 Agent driver wiring 迁入独立 runtime crate，这属于后续架构拆分而非协议缺口。
 7. **投影可观测性已完成当前设计范围**：`ProjectionExplain` 已通过 RuntimeEvent 和 ACP `projection_update` 暴露 source/active event、分支路径、fallback、注入标签、tool handle/truncation、保留 turn 和 full/delta delivery 信息；后续只需按 Console 产品需求扩展新的 provenance 类型。
 
 ### 15.3 完成标准
@@ -1065,17 +1065,17 @@ Wave 12  Execution resume 与 Cloud RuntimeClient
    - 已完成请求 executor 共享持有关系：Agent 通过 `Arc<dyn ModelExecutor>` 复用 `ChatClientExecutor`，模型配置切换时同步替换 client/executor；
    - 已完成 Context 模型边界切片：`zene-context::ContextModel` 只暴露 `complete(ChatRequest)`，compaction、memory flush、prefire factory 和 `ContextDeps` 不再要求具体 `ChatClient`；
    - 已完成 Agent client 持有关系切片：Agent 仅保存 `Arc<dyn ContextModel>` 与 `Arc<dyn ModelExecutor>`，具体 `ChatClient` 只在 builder / model adapter 内部持有；
-   - 继续抽离 Context water 写入和 usage 事件编排；
-   - 已完成公共 runtime command/state/response 协议迁移到独立 `zene-runtime` crate；`zene-core::RuntimeHandle` 继续保留 Agent-specific actor、event broadcast、recovery 和兼容 facade；
+   - 已完成 Context water/usage 写回由 ContextEngine 统一计算，并对 event-backed projection 执行 strict 校验；
+   - 已完成公共 runtime command/state/response、`RuntimeControl` 和 recovery info 迁移到独立 `zene-runtime` crate；`zene-core::RuntimeHandle` 继续保留 Agent-specific actor、event broadcast、recovery 和兼容 facade；
    - 已完成独立 `zene-model-executor` 的唯一实现收口，删除 core 内未使用的历史重复实现；
-   - 继续将 Agent-specific actor wiring 与 runtime protocol 解耦；保留 `zene-core::Agent` 作为默认 wiring 和兼容 facade。
+   - 已完成 runtime protocol、公共 control contract 与 Agent actor wiring 的依赖隔离；后续可将 Agent-specific actor/event sink 迁入独立 runtime crate，保留 `zene-core::Agent` 作为默认 wiring 和兼容 facade。
 
 4. **Wave 12：Execution resume 与 Cloud transport（P1）**
    - 已完成安全门控第一切片：`RecoveryPlan`、rewind execution boundary 和 ACP recovery metadata；
    - 已完成显式 safe model-boundary resume 第一切片；
    - 已完成安全启动恢复：ACP `session/resume` 自动触发 safe model-boundary resume；pending tool / approval 仍强制 inspection，禁止不安全 replay；
-   - 已完成 Cloud JobRunner → RuntimeClient 第一层分离、attempt/generation fencing、ACP child failure propagation、按 attempt 持久化的 session resume、稳定 ACP event identity、cursor replay 和 worker event retry；后续仅需按生产负载补充更完整的跨重连 replay/ack 集成测试。
-   - 增加 worker restart、ACP reconnect 和 crash recovery 集成测试。
+   - 已完成 Cloud JobRunner → RuntimeClient 第一层分离、attempt/generation fencing、ACP child failure propagation、按 attempt 持久化的 session resume、稳定 ACP event identity、run-level dedupe、canonical seq/cursor replay、Last-Event-ID、worker event retry、event pump failure propagation/flush barrier，以及本地 crash-safe durable event outbox；outbox 事件先经文件 `sync_all` 和目录同步后原子落盘，使用固定长度稳定 key 和原子 hard-link 占位，成功 POST 后删除，新 attempt 启动时按 source event ID 重放，并清理崩溃遗留临时文件；同时具备 10,000 事件/128 MiB 背压上限。EventOutbox 已内聚为 worker 内部模块，并使用跨进程 advisory lock 将容量检查与原子占位合并为一个临界区，避免 replacement worker 并发 enqueue 突破背压限制。RuntimeClient 还将 ACP reverse request 归一化为 `Permission` / `Unsupported` runtime request，worker 不再解析 ACP method/parameter 路径。
+   - 继续增加跨重连 replay/ack、worker restart 和 crash recovery 集成测试，并评估多 worker 共享持久化 outbox 的部署策略。
 
 5. **持续质量门槛**
    - 每个 wave 保持 `cargo test --workspace --locked`；

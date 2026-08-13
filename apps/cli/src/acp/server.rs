@@ -12,8 +12,9 @@ use zene_core::{
     Agent, AskUserOption, PermissionGate, PermissionMode, PromptChoice, RuntimeEvent,
     RuntimeEventKind, RuntimeHandle,
 };
+use zene_runtime::{RuntimeControl, RuntimeRecoveryInfo};
 use zene_sandbox::LocalSandbox;
-use zene_session::{list_sessions_for_workdir, RecoverySnapshot, SessionRecord};
+use zene_session::{list_sessions_for_workdir, SessionRecord};
 
 use super::fs_bridge::AcpRemoteFs;
 use super::protocol::{
@@ -25,8 +26,8 @@ use super::transport::{AcpWriter, SharedState};
 use super::updates::{
     agent_message_chunk, agent_thought_chunk, available_commands_update, current_mode_update,
     modes_state, plan_from_todo_arguments, projection_ready_update_with_provenance,
-    replay_updates_from_messages,
-    tool_call_result_update, tool_call_update, tool_kind, tool_title, usage_update,
+    replay_updates_from_messages, tool_call_result_update, tool_call_update, tool_kind, tool_title,
+    usage_update,
 };
 
 /// Tracks the tool call currently awaiting permission so ACP can reuse its id.
@@ -54,7 +55,7 @@ struct ActivePrompt {
 }
 
 struct AcpSession {
-    runtime: RuntimeHandle,
+    runtime: Arc<dyn RuntimeControl>,
     busy: bool,
     /// Last tool call id observed via runtime events (used by permission prompts).
     pending_tool: Arc<Mutex<PendingToolCall>>,
@@ -367,7 +368,7 @@ impl AcpServer {
                 "sessionId": id,
                 "modes": modes_state(&mode),
             }),
-            &acp_session.runtime,
+            acp_session.runtime.as_ref(),
         )?;
         self.sessions.insert(id.clone(), acp_session);
         self.advertise_session(&id)?;
@@ -390,7 +391,7 @@ impl AcpServer {
                 "sessionId": sid,
                 "modes": modes_state(&mode),
             }),
-            &acp_session.runtime,
+            acp_session.runtime.as_ref(),
         )?;
         self.sessions.insert(sid.clone(), acp_session);
 
@@ -423,7 +424,7 @@ impl AcpServer {
                 "sessionId": sid,
                 "modes": modes_state(&mode),
             }),
-            &acp_session.runtime,
+            acp_session.runtime.as_ref(),
         )?;
         self.sessions.insert(sid.clone(), acp_session);
         self.advertise_session(&sid)?;
@@ -538,7 +539,7 @@ impl AcpServer {
             RuntimeHandle::spawn(agent)
         };
         Ok(AcpSession {
-            runtime,
+            runtime: Arc::new(runtime),
             busy: false,
             pending_tool,
             prompt_queue: VecDeque::new(),
@@ -672,7 +673,7 @@ fn configure_agent_brokers(
 }
 
 async fn run_prompt_job(
-    runtime: RuntimeHandle,
+    runtime: Arc<dyn RuntimeControl>,
     writer: AcpWriter,
     sid: String,
     text: String,
@@ -824,22 +825,26 @@ fn project_runtime_event(
             compaction_event_ids,
             &tool_output_provenance
                 .iter()
-                .map(|item| json!({
-                    "messageIndex": item.message_index,
-                    "toolCallId": item.tool_call_id,
-                    "toolName": item.tool_name,
-                    "kind": item.kind,
-                    "handleReference": item.handle_reference,
-                }))
+                .map(|item| {
+                    json!({
+                        "messageIndex": item.message_index,
+                        "toolCallId": item.tool_call_id,
+                        "toolName": item.tool_name,
+                        "kind": item.kind,
+                        "handleReference": item.handle_reference,
+                    })
+                })
                 .collect::<Vec<_>>(),
             retained_turn_ids,
             &injected_sources
                 .iter()
-                .map(|item| json!({
-                    "messageIndex": item.message_index,
-                    "kind": item.kind,
-                    "source": item.source,
-                }))
+                .map(|item| {
+                    json!({
+                        "messageIndex": item.message_index,
+                        "kind": item.kind,
+                        "source": item.source,
+                    })
+                })
                 .collect::<Vec<_>>(),
             delivery,
             *delivery_tail_start,
@@ -872,43 +877,29 @@ fn attach_meta(update: &mut Value, meta: Value) {
     }
 }
 
-fn recovery_disposition_name(disposition: zene_session::RecoveryDisposition) -> &'static str {
-    match disposition {
-        zene_session::RecoveryDisposition::Clean => "clean",
-        zene_session::RecoveryDisposition::AlreadyCompleted => "already_completed",
-        zene_session::RecoveryDisposition::SafeToResume => "safe_to_resume",
-        zene_session::RecoveryDisposition::RequiresToolInspection => "requires_tool_inspection",
-        zene_session::RecoveryDisposition::RequiresManualIntervention => {
-            "requires_manual_intervention"
-        }
-    }
-}
-
-fn recovery_metadata(snapshot: &RecoverySnapshot) -> Value {
-    let plan = snapshot.plan();
-    let disposition = recovery_disposition_name(plan.disposition);
-    json!({
-        "disposition": disposition,
-        "hasIncompleteExecution": snapshot.has_incomplete_execution(),
-        "activeTurnCount": snapshot.active_turns.len(),
-        "activeToolCount": snapshot.active_tools.len(),
-        "safeResumeAllowed": plan.safe_resume_allowed,
-        "automaticResume": plan.automatic_resume_implemented,
-        "reason": plan.reason,
-    })
-}
-
-fn with_recovery_metadata(mut response: Value, runtime: &RuntimeHandle) -> Result<Value> {
-    let snapshot = runtime.recovery_snapshot()?;
+fn with_recovery_metadata(mut response: Value, runtime: &dyn RuntimeControl) -> Result<Value> {
+    let info = runtime.recovery_info()?;
     if let Some(obj) = response.as_object_mut() {
         obj.insert(
             "_meta".into(),
             json!({
-                "recovery": recovery_metadata(&snapshot),
+                "recovery": recovery_info_metadata(&info),
             }),
         );
     }
     Ok(response)
+}
+
+fn recovery_info_metadata(info: &RuntimeRecoveryInfo) -> Value {
+    json!({
+        "disposition": info.disposition,
+        "hasIncompleteExecution": info.has_incomplete_execution,
+        "activeTurnCount": info.active_turn_count,
+        "activeToolCount": info.active_tool_count,
+        "safeResumeAllowed": info.safe_resume_allowed,
+        "automaticResume": info.automatic_resume,
+        "reason": info.reason,
+    })
 }
 
 fn resolve_cwd(params: &Value, fallback: &Path) -> Result<PathBuf> {
@@ -1108,31 +1099,19 @@ fn acp_permission_prompt(
 #[cfg(test)]
 mod recovery_tests {
     use super::*;
-    use zene_session::RecoveryDisposition;
-
-    #[test]
-    fn recovery_disposition_names_are_protocol_stable() {
-        let cases = [
-            (RecoveryDisposition::Clean, "clean"),
-            (RecoveryDisposition::AlreadyCompleted, "already_completed"),
-            (RecoveryDisposition::SafeToResume, "safe_to_resume"),
-            (
-                RecoveryDisposition::RequiresToolInspection,
-                "requires_tool_inspection",
-            ),
-            (
-                RecoveryDisposition::RequiresManualIntervention,
-                "requires_manual_intervention",
-            ),
-        ];
-        for (disposition, expected) in cases {
-            assert_eq!(recovery_disposition_name(disposition), expected);
-        }
-    }
+    use zene_runtime::RuntimeRecoveryInfo;
 
     #[test]
     fn recovery_metadata_declares_no_automatic_resume() {
-        let metadata = recovery_metadata(&RecoverySnapshot::default());
+        let metadata = recovery_info_metadata(&RuntimeRecoveryInfo {
+            disposition: "clean".into(),
+            has_incomplete_execution: false,
+            active_turn_count: 0,
+            active_tool_count: 0,
+            safe_resume_allowed: false,
+            automatic_resume: false,
+            reason: "no incomplete execution".into(),
+        });
         assert_eq!(metadata["disposition"], "clean");
         assert_eq!(metadata["hasIncompleteExecution"], false);
         assert_eq!(metadata["automaticResume"], false);
@@ -1140,28 +1119,15 @@ mod recovery_tests {
 
     #[test]
     fn recovery_metadata_advertises_only_a_prompt_backed_safe_resume() {
-        let snapshot = RecoverySnapshot {
-            active_turns: vec![zene_session::RecoveryExecution {
-                checkpoint_index: 1,
-                turn_id: "turn".into(),
-                step_id: None,
-                tool_call_id: None,
-                state: zene_session::ExecutionCheckpointState::TurnStarted,
-                idempotency_key: "turn/start".into(),
-                context_epoch: None,
-                model_request_hash: None,
-                ts: serde_json::from_value(serde_json::json!("2026-01-01T00:00:00Z"))
-                    .expect("timestamp fixture"),
-            }],
-            resume_candidates: vec![zene_session::ResumeCandidate {
-                turn_id: "turn".into(),
-                prompt: "continue".into(),
-                context_epoch: None,
-                model_request_hash: None,
-            }],
-            ..RecoverySnapshot::default()
-        };
-        let metadata = recovery_metadata(&snapshot);
+        let metadata = recovery_info_metadata(&RuntimeRecoveryInfo {
+            disposition: "safe_to_resume".into(),
+            has_incomplete_execution: true,
+            active_turn_count: 1,
+            active_tool_count: 0,
+            safe_resume_allowed: true,
+            automatic_resume: true,
+            reason: "only a model-boundary turn is open".into(),
+        });
         assert_eq!(metadata["safeResumeAllowed"], true);
         assert_eq!(metadata["automaticResume"], true);
     }

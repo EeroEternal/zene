@@ -2,6 +2,7 @@ use std::convert::Infallible;
 use std::time::Duration;
 
 use axum::extract::{Path, Query, State};
+use axum::http::HeaderMap;
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{IntoResponse, Redirect};
 use axum::routing::{get, post};
@@ -854,10 +855,17 @@ async fn stream_events(
     State(state): State<AppState>,
     AuthUser(user): AuthUser,
     Path(run_id): Path<Uuid>,
+    headers: HeaderMap,
     Query(query): Query<EventsQuery>,
 ) -> Result<impl IntoResponse, AppError> {
     let _ = authorize_run(&state, user.id, run_id).await?;
-    let mut after = query.after_seq.unwrap_or(0);
+    let last_event_id = headers
+        .get("last-event-id")
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.parse::<i64>().ok());
+    let mut after = last_event_id
+        .or(query.after_seq)
+        .unwrap_or(0);
     let mut after_cursor = query.after_cursor;
     let (tx, rx) = tokio::sync::mpsc::channel::<Result<Event, Infallible>>(32);
     tokio::spawn(async move {
@@ -873,11 +881,15 @@ async fn stream_events(
                             break;
                         }
                     } else {
+                        // Provider cursor is only needed to establish the
+                        // initial canonical position. Continue by seq so
+                        // mixed platform/runtime events are never skipped.
+                        after_cursor = None;
                         for event in events {
                             after = event.seq;
-                            if let Some(cursor) = event.cursor {
-                                after_cursor = Some(cursor);
-                            }
+                            // `seq` is the canonical stream cursor. Do not
+                            // switch to provider cursor mode after observing a
+                            // partially annotated event stream.
                             let data = serde_json::to_string(&event).unwrap_or_default();
                             if tx
                                 .send(Ok(Event::default().id(event.seq.to_string()).data(data)))
