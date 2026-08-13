@@ -150,6 +150,66 @@ pub struct UpdateRunRequest {
     pub archived: Option<bool>,
 }
 
+/// Product `event_type` written by RuntimeClient for classified frames.
+/// Unrecognized ACP frames are `acp`. Platform / legacy `runtime` rows stay
+/// plain strings on `RunEvent`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CloudEventKind {
+    TextDelta,
+    ThoughtDelta,
+    UserMessage,
+    ToolCall,
+    ToolResult,
+    StateChanged,
+    UsageUpdate,
+    ProjectionReady,
+    Plan,
+    AvailableCommands,
+    SessionStarted,
+    ApprovalRequested,
+    Acp,
+}
+
+impl CloudEventKind {
+    pub fn as_event_type(self) -> &'static str {
+        match self {
+            Self::TextDelta => "text_delta",
+            Self::ThoughtDelta => "thought_delta",
+            Self::UserMessage => "user_message",
+            Self::ToolCall => "tool_call",
+            Self::ToolResult => "tool_result",
+            Self::StateChanged => "state_changed",
+            Self::UsageUpdate => "usage_update",
+            Self::ProjectionReady => "projection_ready",
+            Self::Plan => "plan",
+            Self::AvailableCommands => "available_commands",
+            Self::SessionStarted => "session_started",
+            Self::ApprovalRequested => "approval_requested",
+            Self::Acp => "acp",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        Some(match value {
+            "text_delta" => Self::TextDelta,
+            "thought_delta" => Self::ThoughtDelta,
+            "user_message" => Self::UserMessage,
+            "tool_call" => Self::ToolCall,
+            "tool_result" => Self::ToolResult,
+            "state_changed" => Self::StateChanged,
+            "usage_update" => Self::UsageUpdate,
+            "projection_ready" => Self::ProjectionReady,
+            "plan" => Self::Plan,
+            "available_commands" => Self::AvailableCommands,
+            "session_started" => Self::SessionStarted,
+            "approval_requested" => Self::ApprovalRequested,
+            "acp" => Self::Acp,
+            _ => return None,
+        })
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RunEvent {
@@ -315,8 +375,8 @@ pub struct WorkerEventRequest {
 #[cfg(test)]
 mod tests {
     use super::{
-        ApprovalDecision, ApprovalKind, ApprovalRisk, CreateApprovalRequest, WorkerCommand,
-        WorkerCommandAckRequest, WorkerCommandKind, WorkerEventRequest, WorkerFence,
+        ApprovalDecision, ApprovalKind, ApprovalRisk, CloudEventKind, CreateApprovalRequest,
+        WorkerCommand, WorkerCommandAckRequest, WorkerCommandKind, WorkerEventRequest, WorkerFence,
     };
 
     #[test]
@@ -420,6 +480,31 @@ mod tests {
         assert_eq!(ApprovalRisk::parse("high"), Some(ApprovalRisk::High));
         assert_eq!(ApprovalKind::parse("other"), None);
         assert_eq!(ApprovalDecision::parse("unknown"), None);
+    }
+
+    #[test]
+    fn cloud_event_kind_round_trips_classified_strings() {
+        for kind in [
+            CloudEventKind::TextDelta,
+            CloudEventKind::ThoughtDelta,
+            CloudEventKind::UserMessage,
+            CloudEventKind::ToolCall,
+            CloudEventKind::ToolResult,
+            CloudEventKind::StateChanged,
+            CloudEventKind::UsageUpdate,
+            CloudEventKind::ProjectionReady,
+            CloudEventKind::Plan,
+            CloudEventKind::AvailableCommands,
+            CloudEventKind::SessionStarted,
+            CloudEventKind::ApprovalRequested,
+            CloudEventKind::Acp,
+        ] {
+            let encoded = serde_json::to_value(kind).expect("serialize");
+            assert_eq!(encoded, serde_json::json!(kind.as_event_type()));
+            assert_eq!(CloudEventKind::parse(kind.as_event_type()), Some(kind));
+        }
+        assert_eq!(CloudEventKind::parse("platform"), None);
+        assert_eq!(CloudEventKind::parse("runtime"), None);
     }
 }
 

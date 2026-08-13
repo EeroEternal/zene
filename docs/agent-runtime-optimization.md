@@ -2,9 +2,9 @@
 
 > 状态：持续演进。Wave 0–12 把控制面/数据面的 **接口边界** 建起来了；Wave 13 起让默认执行路径真正走这些边界。
 >
-> **进度快照：2026-08-13，基线 `bf8bdfa`（PR #76 已合并）。**
+> **进度快照：2026-08-13，基线 `1d53100`（PR #77 已合并）。**
 > 本文同时记录目标架构、已实现能力和剩余工作。
-> Wave 16 当前工作是收口 Cloud 审批产品面（决策/kind/risk 一套类型，Console 到 RuntimeCommand）。
+> Wave 16 当前工作是 Console 时间线直接消费产品事件（`CloudEventKind`）；Steer/SetMode 与整型 crate 仍未做。
 >
 > 本文基于当前 zene runtime 实现，描述如何将 `Agent`、`Turn`、`Step`、`Session`、Cloud `Run` 和 ACP transport 拉开，并给出渐进式迁移方案。
 >
@@ -953,7 +953,8 @@ Wave 0–12 的价值是把 **所有权和语义** 分开：Runtime 控制面、
 3. **模型抽象仍偏 provider**：`ModelExecutor` 吃 `ChatRequest`；Subagent 另有 `ChatBackend`。目标是 Turn 只看见 `PreparedContext` → `ModelRequest`。
 4. **审批 waiter 已打通（Wave 15）**：`PermissionGate::evaluate` 只做 allow/deny/ask；`Ask` 交给 `ApprovalBroker`。Runtime actor 持有 oneshot waiter，`RuntimeCommand::Approval` 唤醒 in-flight tool。ACP 只做事件适配。
 5. **Cloud 审批 command 已中性化（Wave 16）**：JobRunner 用 `send(RuntimeCommand::Approval { request_id, decision })` 回复审批。ACP jsonrpc id 与 `optionId` 只留在 adapter。Cloud 产品审批类型不再携带 `jsonrpc_id`。API→worker `WorkerCommand.kind` 是 Prompt/Cancel 枚举。存库/API/Console/RuntimeCommand 共用 domain `ApprovalDecision` / `ApprovalKind` / `ApprovalRisk`。Cloud 仍不是 `zene-runtime::RuntimeCommand`（无 Steer/SetMode，不引入该 crate）。
-6. **不要再为干净拆 crate**：在审批 waiter 和事件语义统一之前，把 actor 搬到新 crate 只会搬耦合。
+6. **Cloud 事件产品面已接到 Console（Wave 16）**：domain `CloudEventKind` 是 RuntimeClient 分类结果；已分类 payload 存产品字段。Console 时间线按 `event_type` 渲染 `text_delta` / `thought_delta` / `user_message` / `tool_call` / `tool_result`（含 legacy `params.update` 回放）。plan/usage/projection 等不进时间线。未识别帧仍为 `acp`。
+7. **不要再为干净拆 crate**：在审批 waiter 和事件语义统一之前，把 actor 搬到新 crate 只会搬耦合。
 
 Conversation event 与 materialized `messages` cache 的双轨可以保留，直到 legacy session 可证明无损迁移。不要为了架构干净上完整 Event Sourcing。
 
@@ -1053,7 +1054,8 @@ Wave 16  统一 transport command/event  ← 当前工作
          API→worker WorkerCommand kind 使用 Prompt/Cancel 枚举
          Cloud 存库/API 审批决策使用 ApprovalDecision 枚举
          Cloud 产品审批类型不再携带 jsonrpc_id
-         Cloud 审批产品面（决策/kind/risk）从 Console 到 RuntimeCommand 收口（本轮）
+         Cloud 审批产品面（决策/kind/risk）从 Console 到 RuntimeCommand 收口
+         Console 时间线按 event_type 消费产品字段（含 user_message；本轮）
          Cloud payload 不再以 ACP JSON 为产品语义
          本地与 Cloud 共用同一套 RuntimeCommand / RuntimeEvent
 ```
@@ -1078,13 +1080,13 @@ Wave 16  统一 transport command/event  ← 当前工作
 | Wave 13 | 已完成 | 默认 Agent/Subagent 路径消费 `PreparedContext`；PR #60 |
 | Wave 14 | 未开始 | RuntimeScope、ToolCatalog 拆分、Agent 退回 wiring |
 | Wave 15 | 已完成 | `evaluate` + `ApprovalBroker` + runtime-owned waiter；PR #61 / #62 |
-| Wave 16 | 进行中 | Cloud 审批产品面已收口；Steer/SetMode 与整型 crate 仍待统一 |
+| Wave 16 | 进行中 | Console 已按产品 `event_type` 渲染时间线；Steer/SetMode 与整型 crate 仍待统一 |
 
 ### 当前收口状态与剩余边界
 
 本轮已完成仓库内可以安全验证的主要优化，并保持旧协议兼容。当前剩余项分为三类：
 
-- **本轮已完成的审批/事件收口**：runtime-owned waiter 与 Cloud `RuntimeCommand::Approval`；已分类 Cloud payload 与审批表 payload 已是产品字段；API→worker `WorkerCommand` 为 Prompt/Cancel；Cloud 审批产品面（决策/kind/risk）从 DB 到 Console 到 RuntimeCommand 共用 domain 类型；产品审批类型不再携带 `jsonrpc_id`；未识别帧仍为 ACP JSON。
+- **本轮已完成的审批/事件收口**：runtime-owned waiter 与 Cloud `RuntimeCommand::Approval`；已分类 Cloud payload 与审批表 payload 已是产品字段；API→worker `WorkerCommand` 为 Prompt/Cancel；Cloud 审批产品面（决策/kind/risk）从 DB 到 Console 到 RuntimeCommand 共用 domain 类型；产品审批类型不再携带 `jsonrpc_id`；domain `CloudEventKind` 与 Console 时间线共用分类结果；未识别帧仍为 ACP JSON。
 - **可继续做但需要协议的产品面解耦**：本地/Cloud 统一 `RuntimeCommand`/`RuntimeEvent`、`RuntimeScope`。这些改动跨 transport，不应通过局部兼容代码伪装完成。
 - **需要部署基础设施决策**：本地 EventOutbox 不能单独提供跨 VM durability。跨 VM replacement 必须使用共享 POSIX 持久卷，或实现 DB/object-backed spool。
 
@@ -1179,8 +1181,8 @@ Wave 16  统一 transport command/event  ← 当前工作
 7. **Wave 16：统一 command/event（进行中）**
    - JobRunner 经 `RuntimeClient::send` 发送 Prompt/Cancel/Approval/Shutdown；`Approval` 携带 `request_id` + `ApprovalDecision`。
    - ACP jsonrpc id 与 `optionId` 只留在 RuntimeClient adapter。审批表 payload 存产品字段，不再存 ACP params。Cloud 产品审批类型不再携带 `jsonrpc_id`；DB 列保留但不读写。
-   - RuntimeClient 把 ACP `sessionUpdate` 分类为中性 `event_type`；已分类 payload 存产品字段。
-   - Console 按 `event_type` 分发；新产品 payload 直接渲染，legacy `params.update` 仍可回放。
+   - RuntimeClient 把 ACP `sessionUpdate` 分类为 domain `CloudEventKind`；已分类 payload 存产品字段。
+   - Console 按 `event_type` 分发时间线：`text_delta` / `thought_delta` / `user_message` / `tool_call` / `tool_result` 直接渲染产品字段，legacy `params.update` 仍可回放。plan/usage/projection/session_started/approval_requested 不进时间线。
    - API→worker `WorkerCommand.kind` 是 `Prompt` / `Cancel` 枚举，wire JSON 仍为 `"prompt"` / `"cancel"`。不包含 Approval/Shutdown/Steer。
    - Cloud 存库/API/Console/RuntimeCommand 共用 domain `ApprovalDecision`；`ApprovalKind` / `ApprovalRisk` 同样是产品枚举。ACP `optionId` 仍只在 adapter 内映射到 `PermissionDecision`。
    - 未做：Cloud 补齐 Steer/SetMode 并与 `zene-runtime` 合成一套类型。
@@ -1208,10 +1210,10 @@ Wave 16  统一 transport command/event  ← 当前工作
 
 | 选择 | Wave | 理由 |
 | --- | --- | --- |
-| 当前最大杠杆 | **Wave 16 剩余 command** | Cloud 审批产品面已收口；Steer/SetMode 与整型 crate 仍分叉 |
+| 当前最大杠杆 | **Wave 16 剩余 command** | Console 已按产品事件渲染时间线；Steer/SetMode 与整型 crate 仍分叉 |
 | 结构清理 | Wave 14 | Agent 退回 wiring，应在审批/事件稳定之后 |
 
-推荐组合：**事件语义已收口到未识别帧**；下一步不要先补无调用方的 Steer/SetMode，也不要先搬 runtime crate。Wave 14 把 `Agent` 收成 wiring 仍应在 command 稳定之后。
+推荐组合：**事件语义已收到 Console 时间线**；下一步不要先补无调用方的 Steer/SetMode，也不要先搬 runtime crate。Wave 14 把 `Agent` 收成 wiring 仍应在 command 稳定之后。
 
 **不要一上来做** actor 全量重写、完整 Event Sourcing、或再抽一层没有调用方的 crate。
 

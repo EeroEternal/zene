@@ -31,8 +31,8 @@ import {
   saveSelectedModel,
 } from "@/lib/models";
 import { allowsDeny, allowsOnce, extraDecisions } from "@/lib/approval";
-import type { AcpSessionUpdate, Approval, ApprovalDecision, LlmSettingsView, Repo, Run, RunEvent, RunMessage } from "@/lib/types";
-import { timelineUpdateFromEvent } from "@/lib/runtimeEvent";
+import type { Approval, ApprovalDecision, LlmSettingsView, Repo, Run, RunEvent, RunMessage } from "@/lib/types";
+import { timelineProductFromEvent, timelineToolOutput, type TimelineProduct } from "@/lib/runtimeEvent";
 import { CodePanel, useCodePanelWidth } from "./CodePanel";
 import { Markdown } from "./Markdown";
 import { repoLabel } from "./Sidebar";
@@ -185,11 +185,11 @@ function draftAppendThought(draft: TimelineDraft, text: string) {
   });
 }
 
-function draftUpsertTool(draft: TimelineDraft, update: AcpSessionUpdate) {
-  const toolCallId = update.toolCallId || `tool-${draft.nextId}`;
-  const title = update.title || update.toolName || "tool";
-  const status = update.status || "pending";
-  const input = formatJsonish(update.rawInput);
+function draftUpsertTool(draft: TimelineDraft, product: TimelineProduct) {
+  const toolCallId = product.toolCallId || `tool-${draft.nextId}`;
+  const title = product.title || product.toolName || "tool";
+  const status = product.status || "pending";
+  const input = formatJsonish(product.rawInput);
   draft.hasAssistantTail = false;
   const idx = draft.items.findIndex((it) => it.kind === "tool" && it.toolCallId === toolCallId);
   if (idx >= 0) {
@@ -197,7 +197,7 @@ function draftUpsertTool(draft: TimelineDraft, update: AcpSessionUpdate) {
     draft.items[idx] = {
       ...cur,
       title: title || cur.title,
-      toolKind: update.kind || cur.toolKind,
+      toolKind: product.toolKind || cur.toolKind,
       status,
       input: input || cur.input,
     };
@@ -209,18 +209,18 @@ function draftUpsertTool(draft: TimelineDraft, update: AcpSessionUpdate) {
     id: draft.nextId++,
     toolCallId,
     title,
-    toolKind: update.kind,
+    toolKind: product.toolKind,
     status,
     input: input || undefined,
     expanded: false,
   });
 }
 
-function draftApplyToolUpdate(draft: TimelineDraft, update: AcpSessionUpdate) {
-  const toolCallId = update.toolCallId;
+function draftApplyToolUpdate(draft: TimelineDraft, product: TimelineProduct) {
+  const toolCallId = product.toolCallId;
   if (!toolCallId) return;
-  const status = update.status || "completed";
-  const output = toolOutputText(update);
+  const status = product.status || "completed";
+  const output = timelineToolOutput(product);
   draft.hasAssistantTail = false;
   const idx = draft.items.findIndex((it) => it.kind === "tool" && it.toolCallId === toolCallId);
   if (idx < 0) {
@@ -229,8 +229,8 @@ function draftApplyToolUpdate(draft: TimelineDraft, update: AcpSessionUpdate) {
       kind: "tool",
       id: draft.nextId++,
       toolCallId,
-      title: update.title || update.toolName || "tool",
-      toolKind: update.kind,
+      title: product.title || product.toolName || "tool",
+      toolKind: product.toolKind,
       status,
       output: output || undefined,
       expanded: false,
@@ -240,27 +240,24 @@ function draftApplyToolUpdate(draft: TimelineDraft, update: AcpSessionUpdate) {
   const cur = draft.items[idx] as Extract<TimelineItem, { kind: "tool" }>;
   draft.items[idx] = {
     ...cur,
-    title: update.title || cur.title,
-    toolKind: update.kind || cur.toolKind,
+    title: product.title || cur.title,
+    toolKind: product.toolKind || cur.toolKind,
     status,
     output: output || cur.output,
   };
 }
 
-function applySessionUpdateToDraft(draft: TimelineDraft, update: AcpSessionUpdate) {
-  if (!update.sessionUpdate) return;
-  if (update.sessionUpdate === "agent_message_chunk") {
-    const text =
-      update.content && !Array.isArray(update.content) ? update.content.text || "" : "";
-    draftAppendAssistant(draft, text);
-  } else if (update.sessionUpdate === "agent_thought_chunk") {
-    const text =
-      update.content && !Array.isArray(update.content) ? update.content.text || "" : "";
-    draftAppendThought(draft, text);
-  } else if (update.sessionUpdate === "tool_call") {
-    draftUpsertTool(draft, update);
-  } else if (update.sessionUpdate === "tool_call_update") {
-    draftApplyToolUpdate(draft, update);
+function applyTimelineProductToDraft(draft: TimelineDraft, product: TimelineProduct) {
+  if (product.kind === "text_delta") {
+    draftAppendAssistant(draft, product.text || "");
+  } else if (product.kind === "thought_delta") {
+    draftAppendThought(draft, product.text || "");
+  } else if (product.kind === "user_message") {
+    draftAppendUser(draft, product.text || "");
+  } else if (product.kind === "tool_call") {
+    draftUpsertTool(draft, product);
+  } else if (product.kind === "tool_result") {
+    draftApplyToolUpdate(draft, product);
   }
 }
 
@@ -297,8 +294,8 @@ function buildTimelineFromEvents(events: RunEvent[]): TimelineDraft {
   const draft: TimelineDraft = { items: [], nextId: 1, hasAssistantTail: false };
   for (const event of events) {
     applyPlatformEventToDraft(draft, event.payload || {});
-    const update = timelineUpdateFromEvent(event);
-    if (update) applySessionUpdateToDraft(draft, update);
+    const product = timelineProductFromEvent(event);
+    if (product) applyTimelineProductToDraft(draft, product);
   }
   draft.items = finalizeTimelineDraft(draft);
   return draft;
@@ -312,21 +309,6 @@ function formatJsonish(value: unknown): string {
   } catch {
     return String(value);
   }
-}
-
-function toolOutputText(update: AcpSessionUpdate): string {
-  if (update.rawOutput?.text) return update.rawOutput.text;
-  const content = update.content;
-  if (Array.isArray(content)) {
-    return content
-      .map((c) => c.content?.text || c.text || "")
-      .filter(Boolean)
-      .join("\n");
-  }
-  if (content && typeof content === "object" && "text" in content) {
-    return content.text || "";
-  }
-  return "";
 }
 
 type MetaItem = Extract<TimelineItem, { kind: "thought" | "tool" }>;
@@ -1040,12 +1022,29 @@ export function RunView({
     [scrollMessages, sealOpenMeta],
   );
 
+  const appendUserBubble = useCallback(
+    (text: string) => {
+      if (!text) return;
+      hasAssistantTail.current = false;
+      setItems((prev) => {
+        for (let i = prev.length - 1; i >= 0; i--) {
+          const it = prev[i];
+          if (it.kind === "bubble" && it.role === "user" && it.text === text) return prev;
+          if (it.kind === "bubble" && it.role === "assistant") break;
+        }
+        return [...prev, { kind: "bubble", id: nextId.current++, role: "user", text }];
+      });
+      scrollMessages();
+    },
+    [scrollMessages],
+  );
+
   const upsertToolCall = useCallback(
-    (update: AcpSessionUpdate) => {
-      const toolCallId = update.toolCallId || `tool-${nextId.current}`;
-      const title = update.title || update.toolName || "tool";
-      const status = update.status || "pending";
-      const input = formatJsonish(update.rawInput);
+    (product: TimelineProduct) => {
+      const toolCallId = product.toolCallId || `tool-${nextId.current}`;
+      const title = product.title || product.toolName || "tool";
+      const status = product.status || "pending";
+      const input = formatJsonish(product.rawInput);
       hasAssistantTail.current = false;
       setItems((prev) => {
         const idx = prev.findIndex((it) => it.kind === "tool" && it.toolCallId === toolCallId);
@@ -1055,7 +1054,7 @@ export function RunView({
           copy[idx] = {
             ...cur,
             title: title || cur.title,
-            toolKind: update.kind || cur.toolKind,
+            toolKind: product.toolKind || cur.toolKind,
             status,
             input: input || cur.input,
           };
@@ -1068,7 +1067,7 @@ export function RunView({
             id: nextId.current++,
             toolCallId,
             title,
-            toolKind: update.kind,
+            toolKind: product.toolKind,
             status,
             input: input || undefined,
             expanded: false,
@@ -1081,11 +1080,11 @@ export function RunView({
   );
 
   const applyToolUpdate = useCallback(
-    (update: AcpSessionUpdate) => {
-      const toolCallId = update.toolCallId;
+    (product: TimelineProduct) => {
+      const toolCallId = product.toolCallId;
       if (!toolCallId) return;
-      const status = update.status || "completed";
-      const output = toolOutputText(update);
+      const status = product.status || "completed";
+      const output = timelineToolOutput(product);
       hasAssistantTail.current = false;
       setItems((prev) => {
         const idx = prev.findIndex((it) => it.kind === "tool" && it.toolCallId === toolCallId);
@@ -1096,8 +1095,8 @@ export function RunView({
               kind: "tool",
               id: nextId.current++,
               toolCallId,
-              title: update.title || update.toolName || "tool",
-              toolKind: update.kind,
+              title: product.title || product.toolName || "tool",
+              toolKind: product.toolKind,
               status,
               output: output || undefined,
               expanded: false,
@@ -1108,8 +1107,8 @@ export function RunView({
         const cur = copy[idx] as Extract<TimelineItem, { kind: "tool" }>;
         copy[idx] = {
           ...cur,
-          title: update.title || cur.title,
-          toolKind: update.kind || cur.toolKind,
+          title: product.title || cur.title,
+          toolKind: product.toolKind || cur.toolKind,
           status,
           output: output || cur.output,
         };
@@ -1206,41 +1205,28 @@ export function RunView({
       if (payload.event === "message.created") {
         const role = (payload as { role?: string }).role;
         const text = (payload as { text?: string }).text || "";
-        if (bubbleRole(role) === "user" && text) {
-          hasAssistantTail.current = false;
-          setItems((prev) => {
-            // Avoid duplicating the optimistic bubble from sendFollowUp.
-            for (let i = prev.length - 1; i >= 0; i--) {
-              const it = prev[i];
-              if (it.kind === "bubble" && it.role === "user" && it.text === text) return prev;
-              if (it.kind === "bubble" && it.role === "assistant") break;
-            }
-            return [...prev, { kind: "bubble", id: nextId.current++, role: "user", text }];
-          });
-          scrollMessages();
-        }
+        if (bubbleRole(role) === "user" && text) appendUserBubble(text);
       }
 
-      const update = timelineUpdateFromEvent(event);
-      if (!update?.sessionUpdate) return;
+      const product = timelineProductFromEvent(event);
+      if (!product) return;
 
-      if (update.sessionUpdate === "agent_message_chunk") {
-        const text =
-          update.content && !Array.isArray(update.content) ? update.content.text || "" : "";
-        appendAssistantChunk(text);
-      } else if (update.sessionUpdate === "agent_thought_chunk") {
-        const text =
-          update.content && !Array.isArray(update.content) ? update.content.text || "" : "";
-        appendThoughtChunk(text);
-      } else if (update.sessionUpdate === "tool_call") {
-        upsertToolCall(update);
-      } else if (update.sessionUpdate === "tool_call_update") {
-        applyToolUpdate(update);
+      if (product.kind === "text_delta") {
+        appendAssistantChunk(product.text || "");
+      } else if (product.kind === "thought_delta") {
+        appendThoughtChunk(product.text || "");
+      } else if (product.kind === "user_message") {
+        appendUserBubble(product.text || "");
+      } else if (product.kind === "tool_call") {
+        upsertToolCall(product);
+      } else if (product.kind === "tool_result") {
+        applyToolUpdate(product);
       }
     },
     [
       appendAssistantChunk,
       appendThoughtChunk,
+      appendUserBubble,
       upsertToolCall,
       applyToolUpdate,
       onRunsChanged,
