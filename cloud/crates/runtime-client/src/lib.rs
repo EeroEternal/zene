@@ -66,12 +66,16 @@ fn map_session_update(update: &str) -> CloudEventKind {
 /// Transport-neutral command accepted by Cloud's runtime client.
 ///
 /// Variant names match `zene_runtime::RuntimeCommand` where Cloud has a
-/// counterpart. ACP JSON-RPC ids stay inside this adapter.
+/// counterpart. Cloud does not depend on `zene-runtime`. ACP JSON-RPC ids
+/// stay inside this adapter. `ResumeSafeTurn` / `GetMode` stay local-only
+/// until Cloud has a reply-shaped control channel.
 #[derive(Debug, Clone)]
 pub enum RuntimeCommand {
     Prompt { text: String },
+    Steer { text: String },
     Cancel,
     Approval { request_id: String, decision: ApprovalDecision },
+    SetMode { mode_id: String },
     Shutdown,
 }
 
@@ -537,6 +541,15 @@ impl RuntimeClient for AcpRuntimeClient {
                     .await
                     .map(|_| ())
             }
+            RuntimeCommand::Steer { text } => {
+                let guard = self.bridge.lock().await;
+                guard
+                    .as_ref()
+                    .context("runtime bridge missing")?
+                    .steer(&self.session_id, &text)
+                    .await
+                    .map(|_| ())
+            }
             RuntimeCommand::Cancel => {
                 let guard = self.bridge.lock().await;
                 guard
@@ -558,6 +571,15 @@ impl RuntimeClient for AcpRuntimeClient {
                     .context("runtime bridge missing")?
                     .respond(&id, acp_permission_result(decision))
                     .await
+            }
+            RuntimeCommand::SetMode { mode_id } => {
+                let guard = self.bridge.lock().await;
+                guard
+                    .as_ref()
+                    .context("runtime bridge missing")?
+                    .set_mode(&self.session_id, &mode_id)
+                    .await
+                    .map(|_| ())
             }
             RuntimeCommand::Shutdown => {
                 let mut guard = self.bridge.lock().await;
@@ -673,6 +695,24 @@ impl RuntimeClient for MockRuntimeClient {
                     .ok_or_else(|| anyhow!("mock runtime shut down"))?;
                 self.agent.run_prompt(&text, msg_tx).await
             }
+            RuntimeCommand::Steer { text } => {
+                let text = text.trim();
+                if text.is_empty() {
+                    return Err(anyhow!("steer message cannot be empty"));
+                }
+                if self.prompt_lock.try_lock().is_ok() {
+                    return Err(anyhow!(
+                        "no turn in progress; use prompt() to start a new turn"
+                    ));
+                }
+                let msg_tx = self
+                    .msg_tx
+                    .lock()
+                    .await
+                    .clone()
+                    .ok_or_else(|| anyhow!("mock runtime shut down"))?;
+                self.agent.emit_steer(text, msg_tx)
+            }
             RuntimeCommand::Cancel => Ok(()),
             RuntimeCommand::Approval { request_id, decision } => {
                 let respond = self
@@ -683,6 +723,18 @@ impl RuntimeClient for MockRuntimeClient {
                     .ok_or_else(|| anyhow!("unknown approval request_id {request_id}"))?;
                 let _ = respond.send(to_permission_decision(decision));
                 Ok(())
+            }
+            RuntimeCommand::SetMode { mode_id } => {
+                if self.prompt_lock.try_lock().is_err() {
+                    return Err(anyhow!("cannot change or read mode while a turn is active"));
+                }
+                let msg_tx = self
+                    .msg_tx
+                    .lock()
+                    .await
+                    .clone()
+                    .ok_or_else(|| anyhow!("mock runtime shut down"))?;
+                self.agent.emit_mode(&mode_id, msg_tx)
             }
             RuntimeCommand::Shutdown => {
                 self.alive.store(false, Ordering::SeqCst);
@@ -1147,6 +1199,15 @@ mod tests {
     fn runtime_commands_are_transport_neutral() {
         let command = RuntimeCommand::Prompt { text: "hello".into() };
         assert!(matches!(command, RuntimeCommand::Prompt { text } if text == "hello"));
+        let command = RuntimeCommand::Steer { text: "nudge".into() };
+        assert!(matches!(command, RuntimeCommand::Steer { text } if text == "nudge"));
+        let command = RuntimeCommand::SetMode {
+            mode_id: "plan".into(),
+        };
+        assert!(matches!(
+            command,
+            RuntimeCommand::SetMode { mode_id } if mode_id == "plan"
+        ));
         let command = RuntimeCommand::Approval {
             request_id: "call-7".into(),
             decision: ApprovalDecision::AllowOnce,
@@ -1255,6 +1316,49 @@ mod tests {
         let (saw_text, saw_tool_approval) = pump_task.await.expect("pump");
         assert!(saw_text, "expected classified text_delta");
         assert!(saw_tool_approval, "expected tool approval request");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn mock_runtime_client_set_mode_when_idle() {
+        let dir = std::env::temp_dir().join(format!("zene-mock-mode-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let client = MockRuntimeClient::connect(&dir);
+        client
+            .send(RuntimeCommand::SetMode {
+                mode_id: "plan".into(),
+            })
+            .await
+            .expect("set mode");
+        let mut saw_mode = false;
+        while let Some(event) = client.next_event().await {
+            match event {
+                RuntimeEvent::Notification(event)
+                    if event.event_type == CloudEventKind::StateChanged =>
+                {
+                    saw_mode = true;
+                    break;
+                }
+                RuntimeEvent::ChildExited => break,
+                _ => {}
+            }
+        }
+        assert!(saw_mode, "expected current_mode_update");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn mock_runtime_client_rejects_idle_steer() {
+        let dir = std::env::temp_dir().join(format!("zene-mock-steer-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let client = MockRuntimeClient::connect(&dir);
+        let err = client
+            .send(RuntimeCommand::Steer {
+                text: "nudge".into(),
+            })
+            .await
+            .expect_err("idle steer");
+        assert!(err.to_string().contains("no turn in progress"));
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

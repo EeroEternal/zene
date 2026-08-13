@@ -549,6 +549,11 @@ pub struct CreateRunRequest {
     /// Agent step budget; `0` = unlimited. Defaults to 50.
     #[serde(default = "default_max_turns")]
     pub max_turns: u32,
+    /// Optional ACP session mode (`plan` / `default` / …). Applied via
+    /// `RuntimeCommand::SetMode` when the worker is idle. Orthogonal to
+    /// [`PermissionMode`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mode_id: Option<String>,
 }
 
 fn default_branch_name() -> String {
@@ -568,6 +573,13 @@ fn default_max_turns() -> u32 {
 pub struct PostMessageRequest {
     pub text: String,
     pub client_message_id: Option<String>,
+}
+
+/// Request to queue an ACP session mode change for the worker.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SetRunModeRequest {
+    pub mode_id: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1168,6 +1180,10 @@ impl WorkerCommand {
 #[serde(rename_all = "camelCase")]
 pub struct WorkerCommandsResponse {
     pub commands: Vec<WorkerCommand>,
+    /// Pending ACP session mode, if any. Worker applies via
+    /// `RuntimeCommand::SetMode` while idle. Not a [`WorkerCommandKind`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mode_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

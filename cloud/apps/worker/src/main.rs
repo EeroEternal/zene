@@ -23,7 +23,7 @@ use zene_cloud_runtime_client::{
 use zene_cloud_domain::{
     ApprovalDecision, ApprovalEventPayload, ApprovalKind, ApprovalRequest, ApprovalRisk,
     ApprovalStatus, ClaimedRun, CloneAuthResponse, CreateApprovalRequest, LlmAuthResponse,
-    PermissionMode, RunStatus, WorkerClaimRequest, WorkerCommand, WorkerCommandAckRequest,
+    PermissionMode, RunStatus, WorkerClaimRequest, WorkerCommandAckRequest,
     WorkerCommandKind, WorkerCommandsResponse, WorkerEventRequest, WorkerFence, WorkerPullRequestRequest,
     WorkerPushRequest, WorkerSessionRequest, WorkerStatusRequest, WorkerTitleRequest,
 };
@@ -735,12 +735,41 @@ fn spawn_command_poller<R: RuntimeClient + 'static>(
     fence: WorkerFence,
     cancelled: Arc<AtomicBool>,
     last_activity: Arc<tokio::sync::Mutex<tokio::time::Instant>>,
+    turn_busy: Arc<AtomicBool>,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         loop {
             match fetch_commands(&client, &api_url, &token, run_id, &fence).await {
-                Ok(commands) => {
-                    for cmd in commands {
+                Ok(response) => {
+                    if let Some(mode_id) = response.mode_id {
+                        if turn_busy.load(Ordering::SeqCst) {
+                            // SetMode is idle-only; put the mode back until the turn ends.
+                            let _ = set_pending_mode(
+                                &client, &api_url, &token, run_id, &mode_id,
+                            )
+                            .await;
+                        } else {
+                            match runtime
+                                .send(RuntimeCommand::SetMode {
+                                    mode_id: mode_id.clone(),
+                                })
+                                .await
+                            {
+                                Ok(()) => {
+                                    let mut ts = last_activity.lock().await;
+                                    *ts = tokio::time::Instant::now();
+                                }
+                                Err(err) => {
+                                    warn!(error = %err, "set_mode failed; re-queue pending mode");
+                                    let _ = set_pending_mode(
+                                        &client, &api_url, &token, run_id, &mode_id,
+                                    )
+                                    .await;
+                                }
+                            }
+                        }
+                    }
+                    for cmd in response.commands {
                         if cmd.kind == WorkerCommandKind::Cancel {
                             cancelled.store(true, Ordering::SeqCst);
                             let _ = runtime.send(RuntimeCommand::Cancel).await;
@@ -752,50 +781,84 @@ fn spawn_command_poller<R: RuntimeClient + 'static>(
                                     let mut ts = last_activity.lock().await;
                                     *ts = tokio::time::Instant::now();
                                 }
-                                let _ = set_status_raw(
-                                    &client,
-                                    &api_url,
-                                    &token,
-                                    run_id,
-                                    &fence,
-                                    RunStatus::Running,
-                                )
-                                .await;
-                                match runtime.send(RuntimeCommand::Prompt { text }).await {
-                                    Ok(()) => {
-                                        if let Some(message_id) = cmd.message_id {
-                                            if let Err(err) = ack_command(
-                                                &client,
-                                                &api_url,
-                                                &token,
-                                                run_id,
-                                                &fence,
-                                                message_id,
-                                            )
-                                            .await
-                                            {
-                                                warn!(error = %err, "follow-up command acknowledgement failed");
+                                let busy = turn_busy.load(Ordering::SeqCst);
+                                if busy {
+                                    match runtime
+                                        .send(RuntimeCommand::Steer { text })
+                                        .await
+                                    {
+                                        Ok(()) => {
+                                            if let Some(message_id) = cmd.message_id {
+                                                if let Err(err) = ack_command(
+                                                    &client,
+                                                    &api_url,
+                                                    &token,
+                                                    run_id,
+                                                    &fence,
+                                                    message_id,
+                                                )
+                                                .await
+                                                {
+                                                    warn!(error = %err, "steer command acknowledgement failed");
+                                                }
                                             }
                                         }
+                                        Err(err) => {
+                                            warn!(error = %err, "steer failed; command will be retried");
+                                        }
                                     }
-                                    Err(err) => {
-                                        warn!(error = %err, "follow-up prompt failed; command will be retried");
-                                    }
-                                }
-                                {
-                                    let mut ts = last_activity.lock().await;
-                                    *ts = tokio::time::Instant::now();
-                                }
-                                if !cancelled.load(Ordering::SeqCst) {
+                                } else {
                                     let _ = set_status_raw(
                                         &client,
                                         &api_url,
                                         &token,
                                         run_id,
                                         &fence,
-                                        RunStatus::WaitingForUser,
+                                        RunStatus::Running,
                                     )
                                     .await;
+                                    turn_busy.store(true, Ordering::SeqCst);
+                                    match runtime.send(RuntimeCommand::Prompt { text }).await {
+                                        Ok(()) => {
+                                            if let Some(message_id) = cmd.message_id {
+                                                if let Err(err) = ack_command(
+                                                    &client,
+                                                    &api_url,
+                                                    &token,
+                                                    run_id,
+                                                    &fence,
+                                                    message_id,
+                                                )
+                                                .await
+                                                {
+                                                    warn!(error = %err, "follow-up command acknowledgement failed");
+                                                }
+                                            }
+                                        }
+                                        Err(err) => {
+                                            warn!(error = %err, "follow-up prompt failed; command will be retried");
+                                        }
+                                    }
+                                    turn_busy.store(false, Ordering::SeqCst);
+                                    {
+                                        let mut ts = last_activity.lock().await;
+                                        *ts = tokio::time::Instant::now();
+                                    }
+                                    if !cancelled.load(Ordering::SeqCst) {
+                                        let _ = set_status_raw(
+                                            &client,
+                                            &api_url,
+                                            &token,
+                                            run_id,
+                                            &fence,
+                                            RunStatus::WaitingForUser,
+                                        )
+                                        .await;
+                                    }
+                                }
+                                {
+                                    let mut ts = last_activity.lock().await;
+                                    *ts = tokio::time::Instant::now();
                                 }
                             }
                         }
@@ -836,6 +899,7 @@ async fn run_runtime_session<R: RuntimeClient + 'static>(
     );
     let cancelled = Arc::new(AtomicBool::new(false));
     let last_activity = Arc::new(tokio::sync::Mutex::new(tokio::time::Instant::now()));
+    let turn_busy = Arc::new(AtomicBool::new(false));
     let cmd_task = spawn_command_poller(
         runtime.clone(),
         client.clone(),
@@ -845,14 +909,25 @@ async fn run_runtime_session<R: RuntimeClient + 'static>(
         (*fence).clone(),
         cancelled.clone(),
         last_activity.clone(),
+        turn_busy.clone(),
     );
 
-    runtime
+    if let Some(mode_id) = take_pending_mode(client, cli, run_id).await? {
+        runtime
+            .send(RuntimeCommand::SetMode { mode_id })
+            .await
+            .context("runtime set_mode")?;
+    }
+
+    turn_busy.store(true, Ordering::SeqCst);
+    let prompt_result = runtime
         .send(RuntimeCommand::Prompt {
             text: claimed.run.prompt.clone(),
         })
         .await
-        .context("runtime prompt")?;
+        .context("runtime prompt");
+    turn_busy.store(false, Ordering::SeqCst);
+    prompt_result?;
     {
         let mut ts = last_activity.lock().await;
         *ts = tokio::time::Instant::now();
@@ -1207,7 +1282,7 @@ async fn fetch_commands(
     token: &str,
     run_id: Uuid,
     fence: &WorkerFence,
-) -> Result<Vec<WorkerCommand>> {
+) -> Result<WorkerCommandsResponse> {
     let response: WorkerCommandsResponse = client
         .get(format!(
             "{api_url}/internal/v1/runs/{run_id}/commands?attemptId={}&generation={}&workerId={}",
@@ -1219,7 +1294,48 @@ async fn fetch_commands(
         .error_for_status()?
         .json()
         .await?;
-    Ok(response.commands)
+    Ok(response)
+}
+
+async fn take_pending_mode(
+    client: &reqwest::Client,
+    cli: &Cli,
+    run_id: Uuid,
+) -> Result<Option<String>> {
+    let resp = client
+        .post(format!(
+            "{}/internal/v1/runs/{run_id}/mode/take",
+            cli.api_url
+        ))
+        .bearer_auth(&cli.worker_token)
+        .send()
+        .await?
+        .error_for_status()?
+        .json::<serde_json::Value>()
+        .await?;
+    Ok(resp
+        .get("modeId")
+        .and_then(|v| v.as_str())
+        .map(str::to_string)
+        .filter(|s| !s.is_empty()))
+}
+
+async fn set_pending_mode(
+    client: &reqwest::Client,
+    api_url: &str,
+    token: &str,
+    run_id: Uuid,
+    mode_id: &str,
+) -> Result<()> {
+    client
+        .post(format!("{api_url}/internal/v1/runs/{run_id}/mode"))
+        .bearer_auth(token)
+        .json(&serde_json::json!({ "modeId": mode_id }))
+        .send()
+        .await?
+        .error_for_status()
+        .context("set pending mode")?;
+    Ok(())
 }
 
 fn event_to_req(event: RuntimeNotification) -> WorkerEventRequest {
@@ -1949,6 +2065,7 @@ mod title_tests {
                 model: "default".into(),
                 permission_mode: PermissionMode::Default,
                 max_turns: 10,
+                mode_id: None,
             })
             .send()
             .await

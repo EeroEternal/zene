@@ -48,6 +48,7 @@ async fn mock_clone_push_and_draft_pr() {
                 model: "default".into(),
                 permission_mode: PermissionMode::Default,
                 max_turns: 50,
+                mode_id: None,
             },
         )
         .await
