@@ -642,8 +642,14 @@ impl Agent {
             prompt: user_input.to_string(),
             ts: chrono::Utc::now(),
         })?;
-        self.session
+        let turn_event = self
+            .session
             .record_turn_started(&turn_id.to_string(), user_input);
+        self.record_writer.append_execution_link(
+            &format!("{turn_id}/turn/started"),
+            &turn_event.id,
+            turn_event.sequence,
+        )?;
 
         let event_handler = merge_event_handler(
             &self.record_writer,
@@ -1024,20 +1030,27 @@ impl Agent {
         for call in tool_calls {
             let turn_id = scope.as_ref().map(|(turn_id, _)| turn_id.as_str());
             let step_id = scope.as_ref().and_then(|(_, step_id)| step_id.as_deref());
-            self.session
+            let tool_event = self
+                .session
                 .record_tool_call(turn_id, step_id, &call.id, &call.name, &call.arguments);
+            let idempotency_key = format!(
+                "tool/{}/{}/{}/started",
+                turn_id.unwrap_or("unknown"),
+                step_id.unwrap_or("unknown"),
+                call.id
+            );
             self.session.record_checkpoint(
                 turn_id,
                 step_id,
                 Some(&call.id),
                 "tool_started",
-                &format!(
-                    "tool/{}/{}/{}/started",
-                    turn_id.unwrap_or("unknown"),
-                    step_id.unwrap_or("unknown"),
-                    call.id
-                ),
+                &idempotency_key,
             );
+            self.record_writer.append_execution_link(
+                &idempotency_key,
+                &tool_event.id,
+                tool_event.sequence,
+            )?;
         }
 
         let subagent_runner = Arc::new(CoreSubagentRunner::new(self.config.clone()));
@@ -1089,7 +1102,7 @@ impl Agent {
             let content = message.content;
             let turn_id = scope.as_ref().map(|(turn_id, _)| turn_id.as_str());
             let step_id = scope.as_ref().and_then(|(_, step_id)| step_id.as_deref());
-            self.session.record_tool_result(
+            let result_event = self.session.record_tool_result(
                 turn_id,
                 step_id,
                 &message.call.id,
@@ -1098,18 +1111,24 @@ impl Agent {
                 message.is_error,
                 message.duration_ms,
             );
+            let idempotency_key = format!(
+                "tool/{}/{}/{}/completed",
+                turn_id.unwrap_or("unknown"),
+                step_id.unwrap_or("unknown"),
+                message.call.id
+            );
             self.session.record_checkpoint(
                 turn_id,
                 step_id,
                 Some(&message.call.id),
                 "tool_completed",
-                &format!(
-                    "tool/{}/{}/{}/completed",
-                    turn_id.unwrap_or("unknown"),
-                    step_id.unwrap_or("unknown"),
-                    message.call.id
-                ),
+                &idempotency_key,
             );
+            self.record_writer.append_execution_link(
+                &idempotency_key,
+                &result_event.id,
+                result_event.sequence,
+            )?;
             self.session.push_message(Message::tool_result_with_error(
                 &message.call.id,
                 &message.call.name,
@@ -1264,20 +1283,26 @@ impl Agent {
             ExecutionCheckpointState::Failed => "failed",
             _ => "terminal",
         };
-        self.session.record_checkpoint(
+        let idempotency_key = format!("{turn_id}/turn/{state_name}");
+        let event = self.session.record_checkpoint(
             Some(&turn_id.to_string()),
             None,
             None,
             state_name,
-            &format!("{turn_id}/turn/{state_name}"),
+            &idempotency_key,
         );
+        self.record_writer.append_execution_link(
+            &idempotency_key,
+            &event.id,
+            event.sequence,
+        )?;
         self.record_writer
             .append_execution_checkpoint(&RecordEntry::ExecutionCheckpoint {
                 turn_id: turn_id.to_string(),
                 step_id: None,
                 tool_call_id: None,
                 state,
-                idempotency_key: format!("{turn_id}/turn/{state_name}"),
+                idempotency_key,
                 context_epoch: Some(self.context.epoch()),
                 model_request_hash: None,
                 ts: chrono::Utc::now(),

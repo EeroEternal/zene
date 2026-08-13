@@ -51,6 +51,13 @@ pub struct CompactionEntry {
     pub tokens_after: Option<u32>,
 }
 
+/// Identity of an append-only conversation fact.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ConversationEventIdentity {
+    pub id: String,
+    pub sequence: u64,
+}
+
 /// Conversation facts dual-written beside the materialized message cache.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -639,27 +646,46 @@ impl SessionRecord {
         SessionView::try_from_events(&self.events, &self.messages, Some(&self.meta.id))
     }
 
-    pub fn record_turn_started(&mut self, turn_id: &str, prompt: &str) {
+    pub fn record_turn_started(
+        &mut self,
+        turn_id: &str,
+        prompt: &str,
+    ) -> ConversationEventIdentity {
+        let id = Uuid::new_v4().to_string();
         self.append_event(SessionEvent::TurnStarted {
             sequence: 0,
-            id: Uuid::new_v4().to_string(),
+            id: id.clone(),
             turn_id: turn_id.to_string(),
             created_at: Utc::now(),
             prompt: prompt.to_string(),
         });
         self.meta.updated_at = Utc::now();
+        ConversationEventIdentity {
+            id,
+            sequence: self.event_sequence,
+        }
     }
 
-    pub fn record_step_started(&mut self, turn_id: &str, step_id: &str, step: u32) {
+    pub fn record_step_started(
+        &mut self,
+        turn_id: &str,
+        step_id: &str,
+        step: u32,
+    ) -> ConversationEventIdentity {
+        let id = Uuid::new_v4().to_string();
         self.append_event(SessionEvent::StepStarted {
             sequence: 0,
-            id: Uuid::new_v4().to_string(),
+            id: id.clone(),
             turn_id: turn_id.to_string(),
             step_id: step_id.to_string(),
             created_at: Utc::now(),
             step,
         });
         self.meta.updated_at = Utc::now();
+        ConversationEventIdentity {
+            id,
+            sequence: self.event_sequence,
+        }
     }
 
     pub fn record_turn_ended(&mut self, turn_id: &str, steps: u32, status: &str) {
@@ -681,10 +707,11 @@ impl SessionRecord {
         tool_call_id: Option<&str>,
         state: &str,
         idempotency_key: &str,
-    ) {
+    ) -> ConversationEventIdentity {
+        let id = Uuid::new_v4().to_string();
         self.append_event(SessionEvent::Checkpoint {
             sequence: 0,
-            id: Uuid::new_v4().to_string(),
+            id: id.clone(),
             turn_id: turn_id.map(str::to_string),
             step_id: step_id.map(str::to_string),
             tool_call_id: tool_call_id.map(str::to_string),
@@ -693,6 +720,10 @@ impl SessionRecord {
             idempotency_key: idempotency_key.to_string(),
         });
         self.meta.updated_at = Utc::now();
+        ConversationEventIdentity {
+            id,
+            sequence: self.event_sequence,
+        }
     }
 
     pub fn record_tool_call(
@@ -702,7 +733,7 @@ impl SessionRecord {
         tool_call_id: &str,
         name: &str,
         arguments: &str,
-    ) {
+    ) -> ConversationEventIdentity {
         self.append_event(SessionEvent::ToolCall {
             sequence: 0,
             id: tool_call_id.to_string(),
@@ -713,6 +744,10 @@ impl SessionRecord {
             arguments: arguments.to_string(),
         });
         self.meta.updated_at = Utc::now();
+        ConversationEventIdentity {
+            id: tool_call_id.to_string(),
+            sequence: self.event_sequence,
+        }
     }
 
     pub fn record_tool_result(
@@ -724,7 +759,7 @@ impl SessionRecord {
         content: &str,
         is_error: bool,
         duration_ms: Option<u64>,
-    ) {
+    ) -> ConversationEventIdentity {
         self.append_event(SessionEvent::ToolResult {
             sequence: 0,
             id: tool_call_id.to_string(),
@@ -737,6 +772,10 @@ impl SessionRecord {
             duration_ms,
         });
         self.meta.updated_at = Utc::now();
+        ConversationEventIdentity {
+            id: tool_call_id.to_string(),
+            sequence: self.event_sequence,
+        }
     }
 
     pub fn record_permission_decision(
@@ -1469,6 +1508,23 @@ mod tests {
             serde_json::to_vec(&view.messages).unwrap(),
             serde_json::to_vec(&session.messages).unwrap()
         );
+    }
+
+    #[test]
+    fn conversation_event_identity_tracks_id_and_sequence() {
+        let mut session = SessionRecord::new(Path::new("."));
+        let first = session.record_turn_started("turn-1", "hello");
+        let second = session.record_checkpoint(
+            Some("turn-1"),
+            None,
+            None,
+            "turn_started",
+            "turn-1/started",
+        );
+        assert_ne!(first.id, second.id);
+        assert!(first.sequence < second.sequence);
+        assert_eq!(session.events()[0].sequence(), first.sequence);
+        assert_eq!(session.events()[1].sequence(), second.sequence);
     }
 
     #[test]

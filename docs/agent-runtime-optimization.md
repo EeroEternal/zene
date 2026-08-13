@@ -1041,7 +1041,8 @@ Wave 12  Execution resume 与 Cloud RuntimeClient
 
 1. **Wave 9：完整 Conversation Event Log（P0，进行中）**
    - 已完成：扩展 `SessionEvent` 覆盖 tool call/result、permission、mode/model change、branch/rewind，并加入 monotonic sequence；
-   - 继续完成：补齐 turn/step/checkpoint marker、所有 fork/rewind 写入路径，并将 conversation/execution IDs 统一到持久化事件；
+   - 已完成第一切片：turn/step/tool/terminal checkpoint 路径写入 `execution_link`，将 execution idempotency key 关联到 Conversation Event 的 `id` / `sequence`，且旧 record JSONL 保持兼容；
+   - 继续完成：补齐所有 fork/rewind 写入路径，并将 conversation/execution IDs 统一到持久化事件；
    - 保持旧 session 可 load，继续双写 messages cache；
    - 增加事件重建与 materialized messages 的金丝雀等价测试。
 

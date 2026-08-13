@@ -60,13 +60,19 @@ impl TurnRuntime for Agent {
                 let step_id = step_id.to_string();
                 self.session
                     .record_step_started(&turn_id, &step_id, turn.step);
-                self.session.record_checkpoint(
+                let idempotency_key = format!("{turn_id}/{step_id}/started");
+                let step_event = self.session.record_checkpoint(
                     Some(&turn_id),
                     Some(&step_id),
                     None,
                     "step_started",
-                    &format!("{turn_id}/{step_id}/started"),
+                    &idempotency_key,
                 );
+                self.record_writer.append_execution_link(
+                    &idempotency_key,
+                    &step_event.id,
+                    step_event.sequence,
+                )?;
             }
         }
         let (message, usage, had_tool_calls) = Agent::run_step(self, options, cancel).await?;

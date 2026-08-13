@@ -89,6 +89,14 @@ pub enum RecordEntry {
         model_request_hash: Option<String>,
         ts: DateTime<Utc>,
     },
+    /// Correlates a durable execution boundary with a conversation fact.
+    #[serde(rename = "execution_link")]
+    ExecutionLink {
+        execution_idempotency_key: String,
+        conversation_event_id: String,
+        conversation_sequence: u64,
+        ts: DateTime<Utc>,
+    },
 }
 
 /// Explicit recovery decision and the reason automatic execution is or is not safe.
@@ -294,6 +302,44 @@ impl AgentRecordWriter {
         }
         self.append(checkpoint)?;
         Ok(true)
+    }
+
+    /// Persist a best-effort correlation between an execution boundary and a
+    /// conversation event. Links are separate from checkpoints so old recovery
+    /// logic and legacy record files remain unchanged.
+    pub fn append_execution_link(
+        &self,
+        execution_idempotency_key: &str,
+        conversation_event_id: &str,
+        conversation_sequence: u64,
+    ) -> Result<bool> {
+        if self.read_all()?.iter().any(|entry| {
+            matches!(
+                entry,
+                RecordEntry::ExecutionLink {
+                    execution_idempotency_key: existing,
+                    ..
+                } if existing == execution_idempotency_key
+            )
+        }) {
+            return Ok(false);
+        }
+        self.append(&RecordEntry::ExecutionLink {
+            execution_idempotency_key: execution_idempotency_key.to_string(),
+            conversation_event_id: conversation_event_id.to_string(),
+            conversation_sequence,
+            ts: Utc::now(),
+        })?;
+        Ok(true)
+    }
+
+    /// Return durable execution-to-conversation correlations in record order.
+    pub fn execution_links(&self) -> Result<Vec<RecordEntry>> {
+        Ok(self
+            .read_all()?
+            .into_iter()
+            .filter(|entry| matches!(entry, RecordEntry::ExecutionLink { .. }))
+            .collect())
     }
 
     /// Atomically claim a safe model-boundary resume candidate.
@@ -627,6 +673,32 @@ mod tests {
             Some(value) => env::set_var("ZENE_HOME", value),
             None => env::remove_var("ZENE_HOME"),
         }
+    }
+
+    #[test]
+    fn execution_link_is_idempotent_and_round_trips() {
+        with_temp_home(|| {
+            let writer = AgentRecordWriter::for_session("link-test").expect("writer");
+            assert!(writer
+                .append_execution_link("turn/started", "event-1", 7)
+                .expect("append link"));
+            assert!(!writer
+                .append_execution_link("turn/started", "event-1", 7)
+                .expect("duplicate link"));
+            let links = writer.execution_links().expect("read links");
+            assert_eq!(links.len(), 1);
+            assert!(matches!(
+                &links[0],
+                RecordEntry::ExecutionLink {
+                    execution_idempotency_key,
+                    conversation_event_id,
+                    conversation_sequence,
+                    ..
+                } if execution_idempotency_key == "turn/started"
+                    && conversation_event_id == "event-1"
+                    && *conversation_sequence == 7
+            ));
+        });
     }
 
     #[test]

@@ -325,7 +325,7 @@ session.messages_for_llm = 从 events 投影出来的视图
 | **Execution record** | step/tool/approval 进度（运行真相，可恢复） |
 | **RuntimeEvent** | 带 sequence 的对外实时流 |
 
-三者 **ID 空间统一**，职责不合并成一个万能日志。控制面（cancel/steer/approval）的单所有者是 **AgentRuntime**，不是 ContextEngine。
+三者 **ID 空间统一**，职责不合并成一个万能日志。当前 execution record 通过 `execution_link` 记录把执行幂等键关联到 Conversation Event 的 `id` 与单调 `sequence`；旧 record 文件没有 link 时仍按原有恢复规则处理。控制面（cancel/steer/approval）的单所有者是 **AgentRuntime**，不是 ContextEngine。
 
 ---
 
