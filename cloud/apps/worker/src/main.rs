@@ -1226,7 +1226,7 @@ fn event_to_req(event: RuntimeNotification) -> WorkerEventRequest {
     WorkerEventRequest {
         source_event_id: event.source_event_id,
         cursor: event.cursor,
-        event_type: event.event_type.as_event_type().to_string(),
+        event_type: event.event_type.into(),
         payload: event.payload,
         fence: None,
     }
@@ -1637,7 +1637,7 @@ mod title_tests {
     use serde_json::json;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use uuid::Uuid;
-    use zene_cloud_domain::{WorkerEventRequest, WorkerFence};
+    use zene_cloud_domain::{RunEventKind, WorkerEventRequest, WorkerFence};
 
     #[test]
     fn completions_url_appends_path() {
@@ -1710,7 +1710,7 @@ mod title_tests {
         WorkerEventRequest {
             source_event_id: source_event_id.into(),
             cursor: Some(7),
-            event_type: "acp".into(),
+            event_type: RunEventKind::Acp,
             payload: json!({"ok": true}),
             fence: None,
         }
@@ -1985,7 +1985,7 @@ mod title_tests {
         let first_event = WorkerEventRequest {
             source_event_id: "real-provider-event-1".into(),
             cursor: Some(21),
-            event_type: "runtime".into(),
+            event_type: RunEventKind::Runtime,
             payload: json!({"marker": "first"}),
             fence: None,
         };
@@ -2029,7 +2029,7 @@ mod title_tests {
         let second_event = WorkerEventRequest {
             source_event_id: "real-provider-event-2".into(),
             cursor: Some(22),
-            event_type: "runtime".into(),
+            event_type: RunEventKind::Runtime,
             payload: json!({"marker": "second"}),
             fence: None,
         };

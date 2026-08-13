@@ -1202,7 +1202,7 @@ async fn worker_event(
                 &fence,
                 Some(&req.source_event_id),
                 req.cursor,
-                &req.event_type,
+                req.event_type,
                 req.payload,
             )
             .await?,
@@ -1441,7 +1441,7 @@ mod reconnect_replay_tests {
     use zene_cloud_db::Db;
     use zene_cloud_domain::{
         AuthResponse, ClaimedRun, CreateRepositoryRequest, CreateRunRequest, RegisterRequest,
-        Repository, Run, RunEvent, RunStatus, UpdateLlmSettingsRequest, WorkerEventRequest,
+        Repository, Run, RunEvent, RunEventKind, RunStatus, UpdateLlmSettingsRequest, WorkerEventRequest,
         WorkerFence, WorkerTitleRequest,
     };
     use zene_cloud_github::{GithubClient, GithubConfig};
@@ -1487,7 +1487,7 @@ mod reconnect_replay_tests {
                 Json(WorkerEventRequest {
                     source_event_id: source_event_id.into(),
                     cursor: Some(cursor),
-                    event_type: "runtime".into(),
+                    event_type: RunEventKind::Runtime,
                     payload: json!({ "marker": marker }),
                     fence: Some(fence),
                 }),

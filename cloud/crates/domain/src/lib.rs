@@ -151,8 +151,9 @@ pub struct UpdateRunRequest {
 }
 
 /// Product `event_type` written by RuntimeClient for classified frames.
-/// Unrecognized ACP frames are `acp`. Platform / legacy `runtime` rows stay
-/// plain strings on `RunEvent`.
+/// Unrecognized ACP frames are `acp`. Platform / legacy `runtime` rows use
+/// [`RunEventKind`]; `RunEvent.event_type` stays a string so unknown historical
+/// values still load.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CloudEventKind {
@@ -207,6 +208,79 @@ impl CloudEventKind {
             "acp" => Self::Acp,
             _ => return None,
         })
+    }
+}
+
+/// Stored `event_type` written by Cloud (runtime client, platform DB rows, and
+/// worker/API). Wire JSON stays snake_case strings. `RunEvent.event_type` remains
+/// a string on read so unknown historical values still load.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RunEventKind {
+    TextDelta,
+    ThoughtDelta,
+    UserMessage,
+    ToolCall,
+    ToolResult,
+    StateChanged,
+    UsageUpdate,
+    ProjectionReady,
+    Plan,
+    AvailableCommands,
+    SessionStarted,
+    ApprovalRequested,
+    Acp,
+    Platform,
+    Runtime,
+}
+
+impl From<CloudEventKind> for RunEventKind {
+    fn from(kind: CloudEventKind) -> Self {
+        match kind {
+            CloudEventKind::TextDelta => Self::TextDelta,
+            CloudEventKind::ThoughtDelta => Self::ThoughtDelta,
+            CloudEventKind::UserMessage => Self::UserMessage,
+            CloudEventKind::ToolCall => Self::ToolCall,
+            CloudEventKind::ToolResult => Self::ToolResult,
+            CloudEventKind::StateChanged => Self::StateChanged,
+            CloudEventKind::UsageUpdate => Self::UsageUpdate,
+            CloudEventKind::ProjectionReady => Self::ProjectionReady,
+            CloudEventKind::Plan => Self::Plan,
+            CloudEventKind::AvailableCommands => Self::AvailableCommands,
+            CloudEventKind::SessionStarted => Self::SessionStarted,
+            CloudEventKind::ApprovalRequested => Self::ApprovalRequested,
+            CloudEventKind::Acp => Self::Acp,
+        }
+    }
+}
+
+impl RunEventKind {
+    pub fn as_event_type(self) -> &'static str {
+        match self {
+            Self::Platform => "platform",
+            Self::Runtime => "runtime",
+            Self::TextDelta => CloudEventKind::TextDelta.as_event_type(),
+            Self::ThoughtDelta => CloudEventKind::ThoughtDelta.as_event_type(),
+            Self::UserMessage => CloudEventKind::UserMessage.as_event_type(),
+            Self::ToolCall => CloudEventKind::ToolCall.as_event_type(),
+            Self::ToolResult => CloudEventKind::ToolResult.as_event_type(),
+            Self::StateChanged => CloudEventKind::StateChanged.as_event_type(),
+            Self::UsageUpdate => CloudEventKind::UsageUpdate.as_event_type(),
+            Self::ProjectionReady => CloudEventKind::ProjectionReady.as_event_type(),
+            Self::Plan => CloudEventKind::Plan.as_event_type(),
+            Self::AvailableCommands => CloudEventKind::AvailableCommands.as_event_type(),
+            Self::SessionStarted => CloudEventKind::SessionStarted.as_event_type(),
+            Self::ApprovalRequested => CloudEventKind::ApprovalRequested.as_event_type(),
+            Self::Acp => CloudEventKind::Acp.as_event_type(),
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "platform" => Some(Self::Platform),
+            "runtime" => Some(Self::Runtime),
+            other => CloudEventKind::parse(other).map(Self::from),
+        }
     }
 }
 
@@ -514,7 +588,7 @@ pub struct WorkerEventRequest {
     pub source_event_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cursor: Option<u64>,
-    pub event_type: String,
+    pub event_type: RunEventKind,
     pub payload: serde_json::Value,
     #[serde(flatten)]
     pub fence: Option<WorkerFence>,
@@ -524,9 +598,9 @@ pub struct WorkerEventRequest {
 mod tests {
     use super::{
         ApprovalDecision, ApprovalEventPayload, ApprovalKind, ApprovalRisk, ApprovalStatus,
-        CloudEventKind, CreateApprovalRequest, PlatformEvent, RunStatus, TextEventPayload,
-        ToolCallPayload, WorkerCommand, WorkerCommandAckRequest, WorkerCommandKind,
-        WorkerEventRequest, WorkerFence,
+        CloudEventKind, CreateApprovalRequest, PlatformEvent, RunEventKind, RunStatus,
+        TextEventPayload, ToolCallPayload, WorkerCommand, WorkerCommandAckRequest,
+        WorkerCommandKind, WorkerEventRequest, WorkerFence,
     };
 
     #[test]
@@ -553,9 +627,21 @@ mod tests {
         }))
         .expect("legacy event request should deserialize");
         assert_eq!(request.cursor, None);
+        assert_eq!(request.event_type, RunEventKind::Acp);
 
         let encoded = serde_json::to_value(request).expect("event request should serialize");
         assert!(encoded.get("cursor").is_none());
+        assert_eq!(encoded["eventType"], "acp");
+    }
+
+    #[test]
+    fn worker_event_request_rejects_unknown_event_type() {
+        let parsed = serde_json::from_value::<WorkerEventRequest>(serde_json::json!({
+            "sourceEventId": "legacy-event",
+            "eventType": "not-a-kind",
+            "payload": { "ok": true }
+        }));
+        assert!(parsed.is_err());
     }
 
     #[test]
@@ -655,6 +741,15 @@ mod tests {
         }
         assert_eq!(CloudEventKind::parse("platform"), None);
         assert_eq!(CloudEventKind::parse("runtime"), None);
+        assert_eq!(RunEventKind::parse("platform"), Some(RunEventKind::Platform));
+        assert_eq!(RunEventKind::parse("runtime"), Some(RunEventKind::Runtime));
+        assert_eq!(RunEventKind::parse("text_delta"), Some(RunEventKind::TextDelta));
+        assert_eq!(
+            RunEventKind::from(CloudEventKind::ToolCall).as_event_type(),
+            "tool_call"
+        );
+        assert_eq!(serde_json::to_value(RunEventKind::Platform).expect("platform"), serde_json::json!("platform"));
+        assert_eq!(RunEventKind::parse("not-a-kind"), None);
     }
 
     #[test]
