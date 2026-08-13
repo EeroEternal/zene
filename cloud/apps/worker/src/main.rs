@@ -18,8 +18,8 @@ use tracing_subscriber::EnvFilter;
 use uuid::Uuid;
 use zene_cloud_acp_bridge::{resolve_zene_bin, MockAgent, MockMsg, PermissionDecision};
 use zene_cloud_runtime_client::{
-    AcpRuntimeClient, ApprovalDecision, RuntimeClient, RuntimeEvent, RuntimeNotification,
-    RuntimeRequest,
+    AcpRuntimeClient, ApprovalDecision, RuntimeClient, RuntimeCommand, RuntimeEvent,
+    RuntimeNotification, RuntimeRequest,
 };
 use zene_cloud_domain::{
     ApprovalRequest, ApprovalStatus, ClaimedRun, CloneAuthResponse, CreateApprovalRequest,
@@ -1020,38 +1020,28 @@ async fn run_with_real_acp(
                         *event_error_pump.lock().await = Some(err.to_string());
                         break;
                     }
-                    match request {
-                        RuntimeRequest::Approval {
-                            id,
-                            request_key,
-                            context,
-                        } => {
-                            let decision = match resolve_permission(
-                                &client_bg,
-                                &cli_api,
-                                &token,
-                                run_id,
-                                &request_key,
-                                Some(&id_to_string(&id)),
-                                "permission",
-                                &context,
-                            )
-                            .await
-                            {
-                                Ok(d) => d,
-                                Err(err) => {
-                                    warn!(error = %err, "permission resolve failed");
-                                    ApprovalDecision::Deny
-                                }
-                            };
-                            let _ = runtime_bg.respond_approval(&id, decision).await;
+                    let RuntimeRequest::Approval { request_id, context } = request;
+                    let decision = match resolve_permission(
+                        &client_bg,
+                        &cli_api,
+                        &token,
+                        run_id,
+                        &request_id,
+                        None,
+                        "permission",
+                        &context,
+                    )
+                    .await
+                    {
+                        Ok(d) => d,
+                        Err(err) => {
+                            warn!(error = %err, "permission resolve failed");
+                            ApprovalDecision::Deny
                         }
-                        RuntimeRequest::Unsupported { id } => {
-                            let _ = runtime_bg
-                                .reject_request(&id, -32601, "unsupported runtime request")
-                                .await;
-                        }
-                    }
+                    };
+                    let _ = runtime_bg
+                        .send(RuntimeCommand::Approval { request_id, decision })
+                        .await;
                 }
                 RuntimeEvent::ChildExited => {
                     info!(run_id = %run_id, "runtime child exited");
@@ -1077,7 +1067,7 @@ async fn run_with_real_acp(
                     for cmd in commands {
                         if cmd.kind == "cancel" {
                             cancel_flag.store(true, std::sync::atomic::Ordering::SeqCst);
-                            let _ = runtime_cancel.cancel().await;
+                            let _ = runtime_cancel.send(RuntimeCommand::Cancel).await;
                             return;
                         }
                         if cmd.kind == "prompt" {
@@ -1095,7 +1085,7 @@ async fn run_with_real_acp(
                                     RunStatus::Running,
                                 )
                                 .await;
-                                match runtime_cancel.prompt(&text).await {
+                                match runtime_cancel.send(RuntimeCommand::Prompt { text }).await {
                                     Ok(()) => {
                                         if let Some(message_id) = cmd.message_id {
                                             if let Err(err) = ack_command(
@@ -1141,7 +1131,12 @@ async fn run_with_real_acp(
         }
     });
 
-    runtime.prompt(&claimed.run.prompt).await.context("session/prompt")?;
+    runtime
+        .send(RuntimeCommand::Prompt {
+            text: claimed.run.prompt.clone(),
+        })
+        .await
+        .context("session/prompt")?;
     {
         let mut ts = last_activity.lock().await;
         *ts = tokio::time::Instant::now();
@@ -1194,7 +1189,7 @@ async fn run_with_real_acp(
     };
 
     cmd_task.abort();
-    let _ = runtime.shutdown().await;
+    let _ = runtime.send(RuntimeCommand::Shutdown).await;
     let _ = pump.await;
 
     if let Some(err) = event_error.lock().await.clone() {
@@ -1346,14 +1341,6 @@ fn event_to_req(event: RuntimeNotification) -> WorkerEventRequest {
         event_type: event.event_type,
         payload: event.payload,
         fence: None,
-    }
-}
-
-fn id_to_string(id: &serde_json::Value) -> String {
-    match id {
-        serde_json::Value::Number(n) => n.to_string(),
-        serde_json::Value::String(s) => s.clone(),
-        other => other.to_string(),
     }
 }
 

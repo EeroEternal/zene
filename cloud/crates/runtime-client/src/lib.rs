@@ -1,7 +1,8 @@
+use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
 
-use anyhow::{Context, Result};
+use anyhow::{anyhow, Context, Result};
 use async_trait::async_trait;
 use serde_json::Value;
 use tokio::sync::{mpsc, Mutex};
@@ -111,12 +112,16 @@ fn map_session_update(update: &str) -> RuntimeEventKind {
     }
 }
 
+/// Transport-neutral command accepted by Cloud's runtime client.
+///
+/// Variant names match `zene_runtime::RuntimeCommand` where Cloud has a
+/// counterpart. ACP JSON-RPC ids stay inside this adapter.
 #[derive(Debug, Clone)]
 pub enum RuntimeCommand {
     Prompt { text: String },
     Cancel,
-    RespondApproval { id: Value, decision: ApprovalDecision },
-    RejectRequest { id: Value, code: i64, message: String },
+    Approval { request_id: String, decision: ApprovalDecision },
+    Shutdown,
 }
 
 /// A runtime notification with the stable fields persisted by the worker.
@@ -148,37 +153,30 @@ pub enum RuntimeEvent {
 }
 
 /// Runtime-level meaning of a request requiring user approval. Protocol method
-/// names and parameter paths stay inside this adapter instead of leaking into
-/// workers. `context` is opaque request context retained for existing approval
+/// names, JSON-RPC ids, and parameter paths stay inside this adapter.
+/// `context` is opaque request context retained for existing approval
 /// resolution and compatibility with stored payloads.
 #[derive(Debug)]
 pub enum RuntimeRequest {
     Approval {
-        id: Value,
-        request_key: String,
+        request_id: String,
         context: Value,
-    },
-    Unsupported {
-        id: Value,
     },
 }
 
 #[async_trait]
 pub trait RuntimeClient: Send + Sync {
     async fn session_id(&self) -> Result<String>;
-    async fn prompt(&self, text: &str) -> Result<()>;
-    async fn cancel(&self) -> Result<()>;
-    async fn respond_approval(&self, id: &Value, decision: ApprovalDecision) -> Result<()>;
-    async fn reject_request(&self, id: &Value, code: i64, message: &str) -> Result<()>;
+    async fn send(&self, command: RuntimeCommand) -> Result<()>;
     async fn next_event(&self) -> Option<RuntimeEvent>;
     async fn is_alive(&self) -> bool;
-    async fn shutdown(&self) -> Result<()>;
 }
 
 pub struct AcpRuntimeClient {
     bridge: Arc<Mutex<Option<AcpBridge>>>,
     session_id: String,
     events: Arc<Mutex<mpsc::UnboundedReceiver<RuntimeEvent>>>,
+    pending_approvals: Arc<Mutex<HashMap<String, Value>>>,
 }
 
 fn runtime_notification(event: AcpEvent) -> RuntimeNotification {
@@ -278,16 +276,14 @@ fn content_array_text(content: &Value) -> String {
         .join("\n")
 }
 
-fn runtime_request(id: &Value, method: &str, params: &Value) -> RuntimeRequest {
+fn runtime_request(method: &str, params: &Value) -> Option<RuntimeRequest> {
     if method == "session/request_permission" {
-        let request_key = permission_request_key(params);
-        RuntimeRequest::Approval {
-            id: id.clone(),
-            request_key,
+        Some(RuntimeRequest::Approval {
+            request_id: permission_request_key(params),
             context: params.clone(),
-        }
+        })
     } else {
-        RuntimeRequest::Unsupported { id: id.clone() }
+        None
     }
 }
 
@@ -347,6 +343,9 @@ impl AcpRuntimeClient {
             let _ = events_tx.send(RuntimeEvent::Initialized { session_id: session_id.clone(), event });
         }
         let event_tx = events_tx.clone();
+        let pending_approvals = Arc::new(Mutex::new(HashMap::new()));
+        let pending = pending_approvals.clone();
+        let pump_bridge = bridge.clone();
         tokio::spawn(async move {
             while let Some(message) = messages.recv().await {
                 let event = match message {
@@ -355,50 +354,85 @@ impl AcpRuntimeClient {
                     }
                     BridgeMsg::ReverseRequest { id, method, params } => {
                         let event = runtime_notification(AcpEvent::from_reverse_request(&id, &method, &params));
-                        let request = runtime_request(&id, &method, &params);
-                        RuntimeEvent::Request { request, event }
+                        match runtime_request(&method, &params) {
+                            Some(request) => {
+                                let RuntimeRequest::Approval { request_id, .. } = &request;
+                                pending.lock().await.insert(request_id.clone(), id);
+                                RuntimeEvent::Request { request, event }
+                            }
+                            None => {
+                                if let Some(bridge) = pump_bridge.lock().await.as_ref() {
+                                    let _ = bridge
+                                        .respond_error(&id, -32601, "unsupported runtime request")
+                                        .await;
+                                }
+                                RuntimeEvent::Notification(event)
+                            }
+                        }
                     }
                 };
                 if event_tx.send(event).is_err() { break; }
             }
             let _ = event_tx.send(RuntimeEvent::ChildExited);
         });
-        Ok(Self { bridge, session_id, events: Arc::new(Mutex::new(events_rx)) })
+        Ok(Self {
+            bridge,
+            session_id,
+            events: Arc::new(Mutex::new(events_rx)),
+            pending_approvals,
+        })
     }
 }
 
 #[async_trait]
 impl RuntimeClient for AcpRuntimeClient {
     async fn session_id(&self) -> Result<String> { Ok(self.session_id.clone()) }
-    async fn prompt(&self, text: &str) -> Result<()> {
-        let guard = self.bridge.lock().await;
-        guard.as_ref().context("runtime bridge missing")?.prompt(&self.session_id, text).await.map(|_| ())
-    }
-    async fn cancel(&self) -> Result<()> {
-        let guard = self.bridge.lock().await;
-        guard.as_ref().context("runtime bridge missing")?.cancel(&self.session_id).await
-    }
-    async fn respond_approval(&self, id: &Value, decision: ApprovalDecision) -> Result<()> {
-        let guard = self.bridge.lock().await;
-        guard
-            .as_ref()
-            .context("runtime bridge missing")?
-            .respond(id, acp_permission_result(decision))
-            .await
-    }
-    async fn reject_request(&self, id: &Value, code: i64, message: &str) -> Result<()> {
-        let guard = self.bridge.lock().await;
-        guard.as_ref().context("runtime bridge missing")?.respond_error(id, code, message).await
+    async fn send(&self, command: RuntimeCommand) -> Result<()> {
+        match command {
+            RuntimeCommand::Prompt { text } => {
+                let guard = self.bridge.lock().await;
+                guard
+                    .as_ref()
+                    .context("runtime bridge missing")?
+                    .prompt(&self.session_id, &text)
+                    .await
+                    .map(|_| ())
+            }
+            RuntimeCommand::Cancel => {
+                let guard = self.bridge.lock().await;
+                guard
+                    .as_ref()
+                    .context("runtime bridge missing")?
+                    .cancel(&self.session_id)
+                    .await
+            }
+            RuntimeCommand::Approval { request_id, decision } => {
+                let id = self
+                    .pending_approvals
+                    .lock()
+                    .await
+                    .remove(&request_id)
+                    .ok_or_else(|| anyhow!("unknown approval request_id {request_id}"))?;
+                let guard = self.bridge.lock().await;
+                guard
+                    .as_ref()
+                    .context("runtime bridge missing")?
+                    .respond(&id, acp_permission_result(decision))
+                    .await
+            }
+            RuntimeCommand::Shutdown => {
+                let mut guard = self.bridge.lock().await;
+                if let Some(bridge) = guard.take() {
+                    bridge.kill().await?;
+                }
+                Ok(())
+            }
+        }
     }
     async fn next_event(&self) -> Option<RuntimeEvent> { self.events.lock().await.recv().await }
     async fn is_alive(&self) -> bool {
         let mut guard = self.bridge.lock().await;
         guard.as_mut().is_some_and(|bridge| !bridge.child_exited())
-    }
-    async fn shutdown(&self) -> Result<()> {
-        let mut guard = self.bridge.lock().await;
-        if let Some(bridge) = guard.take() { bridge.kill().await?; }
-        Ok(())
     }
 }
 
@@ -409,13 +443,12 @@ mod tests {
     #[test]
     fn permission_request_is_normalized_without_exposing_method_paths() {
         let request = runtime_request(
-            &serde_json::json!(42),
             "session/request_permission",
             &serde_json::json!({"toolCall": {"toolCallId": "call-7"}}),
         );
         assert!(matches!(
             request,
-            RuntimeRequest::Approval { request_key, .. } if request_key == "call-7"
+            Some(RuntimeRequest::Approval { request_id, .. }) if request_id == "call-7"
         ));
     }
 
@@ -426,13 +459,13 @@ mod tests {
             "_meta": {"eventId": "permission-event-3", "sequence": 3},
             "reason": "write"
         });
-        let first = runtime_request(&serde_json::json!(42), "session/request_permission", &params);
-        let second = runtime_request(&serde_json::json!(99), "session/request_permission", &params);
+        let first = runtime_request("session/request_permission", &params);
+        let second = runtime_request("session/request_permission", &params);
         assert!(matches!(
             (first, second),
             (
-                RuntimeRequest::Approval { request_key: first, .. },
-                RuntimeRequest::Approval { request_key: second, .. }
+                Some(RuntimeRequest::Approval { request_id: first, .. }),
+                Some(RuntimeRequest::Approval { request_id: second, .. })
             ) if first == second && first.starts_with("permission-")
         ));
     }
@@ -440,32 +473,25 @@ mod tests {
     #[test]
     fn permission_request_metadata_changes_identity() {
         let first = runtime_request(
-            &serde_json::json!(1),
             "session/request_permission",
             &serde_json::json!({"sessionId": "session-1", "_meta": {"sequence": 3}}),
         );
         let second = runtime_request(
-            &serde_json::json!(1),
             "session/request_permission",
             &serde_json::json!({"sessionId": "session-1", "_meta": {"sequence": 4}}),
         );
         assert!(matches!(
             (first, second),
             (
-                RuntimeRequest::Approval { request_key: first, .. },
-                RuntimeRequest::Approval { request_key: second, .. }
+                Some(RuntimeRequest::Approval { request_id: first, .. }),
+                Some(RuntimeRequest::Approval { request_id: second, .. })
             ) if first != second
         ));
     }
 
     #[test]
     fn unsupported_reverse_request_is_classified_at_adapter_boundary() {
-        let request = runtime_request(
-            &serde_json::json!(42),
-            "session/unknown",
-            &serde_json::json!({}),
-        );
-        assert!(matches!(request, RuntimeRequest::Unsupported { id } if id == serde_json::json!(42)));
+        assert!(runtime_request("session/unknown", &serde_json::json!({})).is_none());
     }
 
     #[test]
@@ -616,13 +642,11 @@ mod tests {
             "toolCall": { "toolCallId": "call-7" },
             "reason": "write"
         });
-        let request = runtime_request(&serde_json::json!(42), "session/request_permission", &params);
+        let request = runtime_request("session/request_permission", &params);
         assert!(matches!(
             request,
-            RuntimeRequest::Approval { id, request_key, context }
-                if id == serde_json::json!(42)
-                    && request_key == "call-7"
-                    && context == params
+            Some(RuntimeRequest::Approval { request_id, context })
+                if request_id == "call-7" && context == params
         ));
     }
 
@@ -636,16 +660,16 @@ mod tests {
     fn runtime_commands_are_transport_neutral() {
         let command = RuntimeCommand::Prompt { text: "hello".into() };
         assert!(matches!(command, RuntimeCommand::Prompt { text } if text == "hello"));
-        let command = RuntimeCommand::RespondApproval {
-            id: serde_json::json!(42),
+        let command = RuntimeCommand::Approval {
+            request_id: "call-7".into(),
             decision: ApprovalDecision::AllowOnce,
         };
         assert!(matches!(
             command,
-            RuntimeCommand::RespondApproval {
+            RuntimeCommand::Approval {
+                request_id,
                 decision: ApprovalDecision::AllowOnce,
-                ..
-            }
+            } if request_id == "call-7"
         ));
     }
 
