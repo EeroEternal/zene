@@ -1,0 +1,214 @@
+//! Main-agent context prepare-step extracted from [`crate::Agent`].
+//!
+//! Wave 14: `ContextAssemblerPort` still enters via Agent wiring, but todos
+//! sync → ContextEngine prepare → ProjectionReady / water logging lives here
+//! (parallel to [`crate::model_step`] for the model path).
+
+use std::path::Path;
+use std::sync::Arc;
+
+use anyhow::Result;
+use tokio_util::sync::CancellationToken;
+use tracing::{debug, warn};
+use zene_config::ZeneConfig;
+use zene_context::{
+    ContextEngine, ContextModel, EstimateProvider, PrefireClientFactory, TokenEstimator,
+};
+use zene_llm::{ChatClient, ToolDefinition};
+use zene_session::{AgentRecordWriter, RecordEntry, SessionRecord};
+use zene_tools::{SharedBackgroundTasks, SharedTodoStore, ToolCatalog, ToolRegistry};
+use zene_turn::PreparedContext;
+
+use crate::context_config;
+use crate::context_events::AgentContextHandler;
+use crate::context_hooks::ZeneContextHooks;
+use crate::events::{emit_event, AgentEvent};
+use crate::plan_mode::tool_visible_in_definitions;
+use crate::PromptOptions;
+
+/// Mutable Agent pieces needed to assemble one step's [`PreparedContext`].
+pub(crate) struct PrepareStepDeps<'a> {
+    pub config: &'a ZeneConfig,
+    pub context_model: &'a dyn ContextModel,
+    pub context: &'a mut ContextEngine,
+    pub session: &'a mut SessionRecord,
+    pub system_prompt: &'a str,
+    pub workdir: &'a Path,
+    pub tools: &'a ToolRegistry,
+    pub background: &'a SharedBackgroundTasks,
+    pub todos: &'a SharedTodoStore,
+    pub plan_mode_active: bool,
+    pub record_writer: &'a AgentRecordWriter,
+}
+
+/// Assemble the next model-facing context (catalog defs + ContextEngine prepare).
+pub(crate) async fn prepare_step_context(
+    deps: PrepareStepDeps<'_>,
+    options: &PromptOptions,
+    cancel: Option<&CancellationToken>,
+) -> Result<PreparedContext> {
+    if check_cancelled(cancel)? {
+        return Err(zene_turn::aborted_error());
+    }
+
+    sync_todos_to_session(deps.todos, deps.session);
+    let tools = tool_definitions_for_llm(deps.tools, deps.plan_mode_active);
+    let estimator = token_estimator(deps.config);
+    let background_tasks = deps.background.lock().list();
+    let hooks = ZeneContextHooks::new(deps.session, &background_tasks, deps.plan_mode_active);
+    let compaction_config = context_config::context_compaction_config(&deps.config.compaction);
+    let mut handler =
+        AgentContextHandler::new(deps.context_model, &deps.config.model, deps.workdir);
+    let prefire_factory = prefire_client_factory(deps.config);
+    let mut context_deps = crate::make_context_deps(
+        deps.session,
+        &compaction_config,
+        &deps.config.model,
+        deps.context_model,
+        Some(&hooks),
+        deps.system_prompt,
+        &estimator,
+        &mut handler,
+        prefire_factory,
+    );
+    let prepared = deps.context.prepare_step(&mut context_deps, &tools).await?;
+    if let Some(result) = &prepared.compaction {
+        record_compaction(deps.record_writer, result)?;
+    }
+    emit_event(
+        &options.event_handler,
+        AgentEvent::ProjectionReady {
+            source_message_count: prepared.explain.source_message_count,
+            projected_message_count: prepared.explain.projected_message_count,
+            source_event_count: prepared.explain.source_event_count,
+            active_event_count: prepared.explain.active_event_count,
+            cache_drift_detected: prepared.explain.cache_drift_detected,
+            used_materialized_fallback: prepared.explain.used_materialized_fallback,
+            fallback_reason: prepared.explain.fallback_reason.clone(),
+            active_branch_id: prepared.explain.active_branch_id.clone(),
+            active_path_start_sequence: prepared.explain.active_path_start_sequence,
+            injected: prepared.explain.injected.clone(),
+            retained_message_count: prepared.explain.retained_message_count,
+            retained_turn_count: prepared.explain.retained_turn_count,
+            dropped_event_count: prepared.explain.dropped_event_count,
+            truncated_message_count: prepared.explain.truncated_message_count,
+            compaction_event_ids: prepared.explain.compaction_event_ids.clone(),
+            tool_output_provenance: prepared.explain.tool_output_provenance.clone(),
+            retained_turn_ids: prepared.explain.retained_turn_ids.clone(),
+            injected_sources: prepared.explain.injected_sources.clone(),
+            delivery: prepared.explain.delivery.as_str().to_string(),
+            delivery_tail_start: prepared.explain.delivery_tail_start,
+            estimate_tokens: prepared.explain.estimate_tokens,
+            context_epoch: prepared.explain.context_epoch,
+            prefix_cache: prepared.explain.prefix_cache.clone(),
+        },
+    );
+    let step = prepared.step;
+    debug!(
+        estimated_context_tokens = step.estimate_tokens,
+        effective_tokens = deps.context.water().effective_tokens(),
+        usage_percent = deps.context.water().usage_percent(),
+        message_count = step.messages.len(),
+        tool_count = tools.len(),
+        context_epoch = step.metadata.context_epoch,
+        source_event_count = prepared.explain.source_event_count,
+        projection_fallback = prepared.explain.used_materialized_fallback,
+        "llm request context water level"
+    );
+    warn_if_near_context_limit(deps.config, step.estimate_tokens as usize);
+    Ok(PreparedContext {
+        messages: step.messages,
+        tools,
+        context_epoch: Some(step.metadata.context_epoch),
+        metadata: Some(step.metadata),
+        estimate_tokens: Some(step.estimate_tokens),
+    })
+}
+
+fn tool_definitions_for_llm(tools: &ToolRegistry, plan_mode_active: bool) -> Vec<ToolDefinition> {
+    ToolCatalog::definitions(tools)
+        .into_iter()
+        .filter(|def| tool_visible_in_definitions(&def.name, plan_mode_active))
+        .collect()
+}
+
+fn sync_todos_to_session(todos: &SharedTodoStore, session: &mut SessionRecord) {
+    let store = todos.lock();
+    session.todos = store.to_items();
+}
+
+fn token_estimator(config: &ZeneConfig) -> TokenEstimator {
+    TokenEstimator::for_provider(
+        EstimateProvider::from_name(&config.provider),
+        &config.model,
+        config.chars_per_token_for_model(),
+    )
+}
+
+fn prefire_client_factory(config: &ZeneConfig) -> Option<PrefireClientFactory> {
+    let config = config.clone();
+    Some(Arc::new(move || {
+        let config = config.clone();
+        Box::pin(async move {
+            let client = ChatClient::from_config(&config).await?;
+            Ok(Arc::new(client) as Arc<dyn ContextModel>)
+        })
+    }))
+}
+
+fn record_compaction(
+    record_writer: &AgentRecordWriter,
+    result: &zene_context::CompactionResult,
+) -> Result<()> {
+    record_writer.append(&RecordEntry::Compaction {
+        reason: result.reason.clone(),
+        compacted_count: result.compacted_count,
+        tokens_before: Some(result.stats.tokens_before),
+        tokens_after: Some(result.stats.tokens_after),
+        ts: chrono::Utc::now(),
+    })
+}
+
+fn warn_if_near_context_limit(config: &ZeneConfig, estimated_tokens: usize) {
+    let window = config.compaction.context_window_tokens as f32;
+    if window <= 0.0 {
+        return;
+    }
+    let ratio = estimated_tokens as f32 / window;
+    if ratio >= 0.9 {
+        warn!(
+            estimated_context_tokens = estimated_tokens,
+            context_window_tokens = config.compaction.context_window_tokens,
+            usage_ratio = ratio,
+            "context estimate exceeds 90% of model window"
+        );
+    }
+}
+
+fn check_cancelled(cancel: Option<&CancellationToken>) -> Result<bool> {
+    Ok(zene_turn::is_cancelled(cancel))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use zene_tools::default_builtin_tools;
+
+    #[test]
+    fn plan_mode_hides_write_tools_from_catalog_defs() {
+        let tools = default_builtin_tools();
+        let active = tool_definitions_for_llm(&tools, true);
+        let names: Vec<_> = active.iter().map(|t| t.name.as_str()).collect();
+        assert!(names.contains(&"Read"));
+        assert!(!names.iter().any(|n| *n == "Write" || *n == "Edit" || *n == "Bash"));
+    }
+
+    #[test]
+    fn inactive_plan_mode_keeps_write_tools() {
+        let tools = default_builtin_tools();
+        let defs = tool_definitions_for_llm(&tools, false);
+        let names: Vec<_> = defs.iter().map(|t| t.name.as_str()).collect();
+        assert!(names.contains(&"Write"));
+        assert!(names.contains(&"Bash"));
+    }
+}
