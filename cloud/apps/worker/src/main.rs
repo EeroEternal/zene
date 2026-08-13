@@ -673,13 +673,7 @@ async fn run_with_mock(
                         &cli_api,
                         &token,
                         run_id,
-                        WorkerEventRequest {
-                            source_event_id: event.source_event_id,
-                            cursor: event.cursor,
-                            event_type: event.event_type,
-                            payload: event.payload,
-                            fence: Some(event_fence.clone()),
-                        },
+                        event_to_req(RuntimeNotification::from_acp(event)),
                         &event_fence,
                     )
                     .await

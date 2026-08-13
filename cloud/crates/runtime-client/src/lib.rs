@@ -41,6 +41,76 @@ fn acp_permission_result(decision: ApprovalDecision) -> Value {
     PermissionDecision::from(decision).to_result()
 }
 
+/// Transport-neutral runtime event kind. Names align with
+/// `zene_turn::RuntimeEventKind` where the ACP update has a counterpart.
+/// ACP `sessionUpdate` strings stay inside this adapter.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RuntimeEventKind {
+    TextDelta,
+    ThoughtDelta,
+    UserMessage,
+    ToolCall,
+    ToolResult,
+    StateChanged,
+    UsageUpdate,
+    ProjectionReady,
+    Plan,
+    AvailableCommands,
+    SessionStarted,
+    ApprovalRequested,
+    Unknown,
+}
+
+impl RuntimeEventKind {
+    pub fn as_event_type(self) -> &'static str {
+        match self {
+            Self::TextDelta => "text_delta",
+            Self::ThoughtDelta => "thought_delta",
+            Self::UserMessage => "user_message",
+            Self::ToolCall => "tool_call",
+            Self::ToolResult => "tool_result",
+            Self::StateChanged => "state_changed",
+            Self::UsageUpdate => "usage_update",
+            Self::ProjectionReady => "projection_ready",
+            Self::Plan => "plan",
+            Self::AvailableCommands => "available_commands",
+            Self::SessionStarted => "session_started",
+            Self::ApprovalRequested => "approval_requested",
+            Self::Unknown => "acp",
+        }
+    }
+}
+
+fn classify_payload(payload: &Value) -> RuntimeEventKind {
+    if let Some(update) = payload
+        .pointer("/params/update/sessionUpdate")
+        .and_then(Value::as_str)
+    {
+        return map_session_update(update);
+    }
+    match payload.get("method").and_then(Value::as_str) {
+        Some("session/request_permission") => RuntimeEventKind::ApprovalRequested,
+        Some("session/new") | Some("session/resume") => RuntimeEventKind::SessionStarted,
+        _ => RuntimeEventKind::Unknown,
+    }
+}
+
+fn map_session_update(update: &str) -> RuntimeEventKind {
+    match update {
+        "agent_message_chunk" => RuntimeEventKind::TextDelta,
+        "agent_thought_chunk" => RuntimeEventKind::ThoughtDelta,
+        "user_message_chunk" => RuntimeEventKind::UserMessage,
+        "tool_call" => RuntimeEventKind::ToolCall,
+        "tool_call_update" => RuntimeEventKind::ToolResult,
+        "current_mode_update" => RuntimeEventKind::StateChanged,
+        "usage_update" => RuntimeEventKind::UsageUpdate,
+        "projection_update" => RuntimeEventKind::ProjectionReady,
+        "plan" => RuntimeEventKind::Plan,
+        "available_commands_update" => RuntimeEventKind::AvailableCommands,
+        _ => RuntimeEventKind::Unknown,
+    }
+}
+
 #[derive(Debug, Clone)]
 pub enum RuntimeCommand {
     Prompt { text: String },
@@ -51,14 +121,20 @@ pub enum RuntimeCommand {
 
 /// A runtime notification with the stable fields persisted by the worker.
 ///
-/// The payload intentionally remains the original JSON value so existing event
-/// records can be replayed without a translation or migration.
+/// `event_type` is the product kind. `payload` remains the original ACP JSON so
+/// existing event records and the Console can replay without a migration.
 #[derive(Debug, Clone, PartialEq)]
 pub struct RuntimeNotification {
     pub source_event_id: String,
     pub cursor: Option<u64>,
     pub event_type: String,
     pub payload: Value,
+}
+
+impl RuntimeNotification {
+    pub fn from_acp(event: AcpEvent) -> Self {
+        runtime_notification(event)
+    }
 }
 
 #[derive(Debug)]
@@ -104,10 +180,11 @@ pub struct AcpRuntimeClient {
 }
 
 fn runtime_notification(event: AcpEvent) -> RuntimeNotification {
+    let kind = classify_payload(&event.payload);
     RuntimeNotification {
         source_event_id: event.source_event_id,
         cursor: event.cursor,
-        event_type: event.event_type,
+        event_type: kind.as_event_type().into(),
         payload: event.payload,
     }
 }
@@ -313,10 +390,62 @@ mod tests {
             }
         });
         let event = runtime_notification(AcpEvent::from_notification(&raw));
-        assert_eq!(event.event_type, "acp");
+        assert_eq!(event.event_type, "text_delta");
         assert!(event.source_event_id.starts_with("acp-"));
         assert_eq!(event.cursor, None);
         assert_eq!(event.payload, raw);
+    }
+
+    #[test]
+    fn session_update_kinds_are_classified_without_changing_payload() {
+        let cases = [
+            ("agent_thought_chunk", "thought_delta"),
+            ("tool_call", "tool_call"),
+            ("tool_call_update", "tool_result"),
+            ("current_mode_update", "state_changed"),
+            ("usage_update", "usage_update"),
+            ("projection_update", "projection_ready"),
+            ("unknown_update", "acp"),
+        ];
+        for (session_update, event_type) in cases {
+            let raw = serde_json::json!({
+                "jsonrpc": "2.0",
+                "method": "session/update",
+                "params": {
+                    "sessionId": "session-1",
+                    "update": { "sessionUpdate": session_update }
+                }
+            });
+            let event = runtime_notification(AcpEvent::from_notification(&raw));
+            assert_eq!(event.event_type, event_type, "{session_update}");
+            assert_eq!(event.payload, raw);
+        }
+    }
+
+    #[test]
+    fn session_lifecycle_methods_are_classified() {
+        let event = runtime_notification(AcpEvent {
+            source_event_id: "session-new-1".into(),
+            cursor: None,
+            event_type: "acp".into(),
+            payload: serde_json::json!({
+                "method": "session/new",
+                "result": { "sessionId": "session-1" }
+            }),
+        });
+        assert_eq!(event.event_type, "session_started");
+        assert_eq!(event.payload["method"], "session/new");
+    }
+
+    #[test]
+    fn reverse_permission_request_is_classified_as_approval() {
+        let event = runtime_notification(AcpEvent::from_reverse_request(
+            &serde_json::json!(42),
+            "session/request_permission",
+            &serde_json::json!({"toolCall": {"toolCallId": "call-7"}}),
+        ));
+        assert_eq!(event.event_type, "approval_requested");
+        assert_eq!(event.payload["method"], "session/request_permission");
     }
 
     #[test]
