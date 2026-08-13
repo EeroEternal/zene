@@ -8,38 +8,19 @@ use serde_json::Value;
 use tokio::sync::{mpsc, Mutex};
 use zene_cloud_acp_bridge::{AcpBridge, AcpEvent, BridgeMsg, PermissionDecision};
 
-/// Transport-neutral approval outcome. Variants match
-/// `zene_runtime::ApprovalDecision`; ACP `optionId` strings stay inside this
-/// adapter until Cloud depends on that crate.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ApprovalDecision {
-    AllowOnce,
-    AllowSession,
-    Deny,
-}
+pub use zene_cloud_domain::ApprovalDecision;
 
-impl ApprovalDecision {
-    pub fn from_stored(decision: &str) -> Self {
-        match decision {
-            "allow-always" | "allow" => Self::AllowSession,
-            "allow-once" => Self::AllowOnce,
-            _ => Self::Deny,
-        }
-    }
-}
-
-impl From<ApprovalDecision> for PermissionDecision {
-    fn from(decision: ApprovalDecision) -> Self {
-        match decision {
-            ApprovalDecision::AllowOnce => Self::AllowOnce,
-            ApprovalDecision::AllowSession => Self::AllowSession,
-            ApprovalDecision::Deny => Self::Deny,
-        }
+/// ACP `optionId` mapping stays inside this adapter.
+pub fn to_permission_decision(decision: ApprovalDecision) -> PermissionDecision {
+    match decision {
+        ApprovalDecision::AllowOnce => PermissionDecision::AllowOnce,
+        ApprovalDecision::AllowSession => PermissionDecision::AllowSession,
+        ApprovalDecision::Deny => PermissionDecision::Deny,
     }
 }
 
 fn acp_permission_result(decision: ApprovalDecision) -> Value {
-    PermissionDecision::from(decision).to_result()
+    to_permission_decision(decision).to_result()
 }
 
 /// Transport-neutral runtime event kind. Names align with
@@ -990,20 +971,21 @@ mod tests {
     #[test]
     fn stored_console_decisions_map_to_neutral_approval() {
         assert_eq!(
-            ApprovalDecision::from_stored("allow-once"),
-            ApprovalDecision::AllowOnce
+            ApprovalDecision::parse("allow-once"),
+            Some(ApprovalDecision::AllowOnce)
         );
         assert_eq!(
-            ApprovalDecision::from_stored("allow-always"),
-            ApprovalDecision::AllowSession
+            ApprovalDecision::parse("allow-always"),
+            Some(ApprovalDecision::AllowSession)
         );
         assert_eq!(
-            ApprovalDecision::from_stored("allow"),
-            ApprovalDecision::AllowSession
+            ApprovalDecision::parse("allow"),
+            Some(ApprovalDecision::AllowSession)
         );
         assert_eq!(
-            ApprovalDecision::from_stored("reject-once"),
-            ApprovalDecision::Deny
+            ApprovalDecision::parse("reject-once"),
+            Some(ApprovalDecision::Deny)
         );
+        assert_eq!(ApprovalDecision::parse("unknown"), None);
     }
 }

@@ -315,8 +315,8 @@ pub struct WorkerEventRequest {
 #[cfg(test)]
 mod tests {
     use super::{
-        ApprovalDecision, CreateApprovalRequest, WorkerCommand, WorkerCommandAckRequest,
-        WorkerCommandKind, WorkerEventRequest, WorkerFence,
+        ApprovalDecision, ApprovalKind, ApprovalRisk, CreateApprovalRequest, WorkerCommand,
+        WorkerCommandAckRequest, WorkerCommandKind, WorkerEventRequest, WorkerFence,
     };
 
     #[test]
@@ -406,6 +406,20 @@ mod tests {
         assert!(encoded.get("jsonrpcId").is_none());
         assert_eq!(encoded["requestKey"], "permission-1");
         assert_eq!(encoded["kind"], "permission");
+    }
+
+    #[test]
+    fn approval_kind_and_risk_round_trip_wire_strings() {
+        let encoded = serde_json::to_value(ApprovalKind::Permission).expect("kind");
+        assert_eq!(encoded, serde_json::json!("permission"));
+        let encoded = serde_json::to_value(ApprovalKind::Tool).expect("kind");
+        assert_eq!(encoded, serde_json::json!("tool"));
+        let encoded = serde_json::to_value(ApprovalRisk::Medium).expect("risk");
+        assert_eq!(encoded, serde_json::json!("medium"));
+        assert_eq!(ApprovalKind::parse("tool"), Some(ApprovalKind::Tool));
+        assert_eq!(ApprovalRisk::parse("high"), Some(ApprovalRisk::High));
+        assert_eq!(ApprovalKind::parse("other"), None);
+        assert_eq!(ApprovalDecision::parse("unknown"), None);
     }
 }
 
@@ -551,13 +565,66 @@ impl ApprovalDecision {
     }
 }
 
+/// Product approval kind stored by Cloud. Wire JSON stays `permission` / `tool`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ApprovalKind {
+    Permission,
+    Tool,
+}
+
+impl ApprovalKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Permission => "permission",
+            Self::Tool => "tool",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "permission" => Some(Self::Permission),
+            "tool" => Some(Self::Tool),
+            _ => None,
+        }
+    }
+}
+
+/// Product approval risk stored by Cloud. Wire JSON stays `low` / `medium` / `high`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ApprovalRisk {
+    Low,
+    Medium,
+    High,
+}
+
+impl ApprovalRisk {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Low => "low",
+            Self::Medium => "medium",
+            Self::High => "high",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "low" => Some(Self::Low),
+            "medium" => Some(Self::Medium),
+            "high" => Some(Self::High),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CreateApprovalRequest {
     pub request_key: String,
-    pub kind: String,
+    pub kind: ApprovalKind,
     #[serde(default = "default_risk")]
-    pub risk: String,
+    pub risk: ApprovalRisk,
     pub payload: serde_json::Value,
     #[serde(default = "default_allowed_decisions")]
     pub allowed_decisions: Vec<ApprovalDecision>,
@@ -565,8 +632,8 @@ pub struct CreateApprovalRequest {
     pub expires_at: Option<DateTime<Utc>>,
 }
 
-fn default_risk() -> String {
-    "medium".into()
+fn default_risk() -> ApprovalRisk {
+    ApprovalRisk::Medium
 }
 
 fn default_allowed_decisions() -> Vec<ApprovalDecision> {
@@ -619,8 +686,8 @@ pub struct ApprovalRequest {
     pub id: Id,
     pub run_id: Id,
     pub request_key: String,
-    pub kind: String,
-    pub risk: String,
+    pub kind: ApprovalKind,
+    pub risk: ApprovalRisk,
     pub payload: serde_json::Value,
     pub status: ApprovalStatus,
     pub allowed_decisions: Vec<ApprovalDecision>,

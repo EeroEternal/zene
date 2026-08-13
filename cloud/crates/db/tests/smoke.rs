@@ -2,7 +2,8 @@ use sqlx::sqlite::SqlitePoolOptions;
 use uuid::Uuid;
 use zene_cloud_db::Db;
 use zene_cloud_domain::{
-    ApprovalDecision, ApprovalStatus, CreateApprovalRequest, CreateRepositoryRequest, CreateRunRequest,
+    ApprovalDecision, ApprovalKind, ApprovalRisk, ApprovalStatus, CreateApprovalRequest,
+    CreateRepositoryRequest, CreateRunRequest,
     RegisterRequest, RunStatus, WorkerCommandKind, WorkerFence,
 };
 
@@ -343,8 +344,8 @@ async fn approval_test_run(permission_mode: &str) -> (Db, Uuid) {
 fn approval_request(request_key: &str) -> CreateApprovalRequest {
     CreateApprovalRequest {
         request_key: request_key.into(),
-        kind: "permission".into(),
-        risk: "medium".into(),
+        kind: ApprovalKind::Permission,
+        risk: ApprovalRisk::Medium,
         payload: serde_json::json!({"path": "notes.txt"}),
         allowed_decisions: vec![ApprovalDecision::AllowOnce, ApprovalDecision::Deny],
         expires_at: None,
