@@ -2,9 +2,9 @@
 
 > 状态：持续演进。Wave 0–12 把控制面/数据面的 **接口边界** 建起来了；Wave 13 起让默认执行路径真正走这些边界。
 >
-> **进度快照：2026-08-13，基线 `6ba0347`（PR #94 已合并）。**
+> **进度快照：2026-08-13，基线 `ad7e8e9`（PR #95 已合并）。**
 > 本文同时记录目标架构、已实现能力和剩余工作。
-> Wave 16 的 Steer/SetMode 已对齐；下一步进入 Wave 14（RuntimeScope / ToolCatalog）。
+> Wave 16 的 Steer/SetMode 已对齐；Wave 14 进行中（RuntimeScope / ToolCatalog 第一刀）。
 >
 > 本文基于当前 zene runtime 实现，描述如何将 `Agent`、`Turn`、`Step`、`Session`、Cloud `Run` 和 ACP transport 拉开，并给出渐进式迁移方案。
 >
