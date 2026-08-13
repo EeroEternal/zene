@@ -751,13 +751,28 @@ mod tests {
             "requestKey": "permission-1",
             "jsonrpcId": "rpc-1",
             "kind": "permission",
-            "payload": { "path": "notes.txt" }
+            "payload": {
+                "requestId": "permission-1",
+                "rawInput": { "path": "notes.txt" }
+            }
         }))
         .expect("legacy jsonrpcId should be ignored");
         let encoded = serde_json::to_value(&parsed).expect("serialize");
         assert!(encoded.get("jsonrpcId").is_none());
         assert_eq!(encoded["requestKey"], "permission-1");
         assert_eq!(encoded["kind"], "permission");
+        assert_eq!(encoded["payload"]["requestId"], "permission-1");
+        assert_eq!(encoded["payload"]["rawInput"]["path"], "notes.txt");
+    }
+
+    #[test]
+    fn create_approval_request_rejects_non_product_payload() {
+        let parsed = serde_json::from_value::<CreateApprovalRequest>(serde_json::json!({
+            "requestKey": "permission-1",
+            "kind": "permission",
+            "payload": { "path": "notes.txt" }
+        }));
+        assert!(parsed.is_err());
     }
 
     #[test]
@@ -1089,7 +1104,8 @@ pub struct CreateApprovalRequest {
     pub kind: ApprovalKind,
     #[serde(default = "default_risk")]
     pub risk: ApprovalRisk,
-    pub payload: serde_json::Value,
+    /// Product payload written by the worker. Wire JSON stays camelCase.
+    pub payload: ApprovalEventPayload,
     #[serde(default = "default_allowed_decisions")]
     pub allowed_decisions: Vec<ApprovalDecision>,
     #[serde(default)]
@@ -1148,6 +1164,8 @@ pub struct ApprovalRequest {
     pub request_key: String,
     pub kind: ApprovalKind,
     pub risk: ApprovalRisk,
+    /// Stored JSON. New rows are `ApprovalEventPayload`; historical ACP
+    /// envelopes still load as raw values.
     pub payload: serde_json::Value,
     pub status: ApprovalStatus,
     pub allowed_decisions: Vec<ApprovalDecision>,

@@ -2,9 +2,9 @@ use sqlx::sqlite::SqlitePoolOptions;
 use uuid::Uuid;
 use zene_cloud_db::Db;
 use zene_cloud_domain::{
-    ApprovalDecision, ApprovalKind, ApprovalRisk, ApprovalStatus, CreateApprovalRequest,
-    CreateRepositoryRequest, CreateRunRequest,
-    RegisterRequest, RunEventKind, RunStatus, WorkerCommandKind, WorkerFence,
+    ApprovalDecision, ApprovalEventPayload, ApprovalKind, ApprovalRisk, ApprovalStatus,
+    CreateApprovalRequest, CreateRepositoryRequest, CreateRunRequest, RegisterRequest,
+    RunEventKind, RunStatus, WorkerCommandKind, WorkerFence,
 };
 
 #[tokio::test]
@@ -349,7 +349,15 @@ fn approval_request(request_key: &str) -> CreateApprovalRequest {
         request_key: request_key.into(),
         kind: ApprovalKind::Permission,
         risk: ApprovalRisk::Medium,
-        payload: serde_json::json!({"path": "notes.txt"}),
+        payload: ApprovalEventPayload {
+            request_id: request_key.into(),
+            tool_call_id: None,
+            title: None,
+            tool_name: None,
+            kind: None,
+            status: None,
+            raw_input: Some(serde_json::json!({"path": "notes.txt"})),
+        },
         allowed_decisions: vec![ApprovalDecision::AllowOnce, ApprovalDecision::Deny],
         expires_at: None,
     }
