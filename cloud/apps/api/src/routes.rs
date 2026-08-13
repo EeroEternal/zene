@@ -1238,12 +1238,17 @@ async fn worker_title(
     Path(run_id): Path<Uuid>,
     Json(req): Json<WorkerTitleRequest>,
 ) -> Result<impl IntoResponse, AppError> {
-    Ok(Json(
-        state
+    let updated = match req.fence {
+        Some(fence) => state
             .db
-            .update_run_meta(run_id, Some(req.title.trim()), None)
+            .update_run_title_fenced(run_id, &fence, req.title.trim())
             .await?,
-    ))
+        None => state
+            .db
+            .update_run_title_legacy(run_id, req.title.trim())
+            .await?,
+    };
+    Ok(Json(updated))
 }
 
 async fn clone_auth(
@@ -1437,7 +1442,7 @@ mod reconnect_replay_tests {
     use zene_cloud_domain::{
         AuthResponse, ClaimedRun, CreateRepositoryRequest, CreateRunRequest, RegisterRequest,
         Repository, Run, RunEvent, RunStatus, UpdateLlmSettingsRequest, WorkerEventRequest,
-        WorkerFence,
+        WorkerFence, WorkerTitleRequest,
     };
     use zene_cloud_github::{GithubClient, GithubConfig};
 

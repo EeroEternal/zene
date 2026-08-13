@@ -376,6 +376,11 @@ pub struct WorkerAcpSessionRequest {
 #[serde(rename_all = "camelCase")]
 pub struct WorkerTitleRequest {
     pub title: String,
+    /// Optional for compatibility with legacy callers. Active worker attempts
+    /// must provide the fence; the API only permits an unfenced title update
+    /// when no attempt is active.
+    #[serde(flatten)]
+    pub fence: Option<WorkerFence>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

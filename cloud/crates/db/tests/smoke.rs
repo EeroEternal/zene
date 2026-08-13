@@ -496,6 +496,105 @@ async fn stale_waiting_for_user_attempt_is_requeued_but_approval_holds_are_not()
 }
 
 #[tokio::test]
+async fn worker_title_is_fenced_and_retry_idempotent() {
+    let db = Db::connect("sqlite::memory:").await.unwrap();
+    db.migrate().await.unwrap();
+    let auth = db
+        .register(RegisterRequest {
+            email: format!("title-{}@example.com", Uuid::new_v4()),
+            password: "password123".into(),
+            display_name: "Title test".into(),
+        })
+        .await
+        .unwrap();
+    let repo = db
+        .create_repository(
+            auth.organization.id,
+            CreateRepositoryRequest {
+                owner: "title".into(),
+                name: "fence".into(),
+                default_branch: "main".into(),
+                clone_url: None,
+            },
+        )
+        .await
+        .unwrap();
+    let run = db
+        .create_run(
+            auth.organization.id,
+            auth.user.id,
+            CreateRunRequest {
+                repository_id: repo.id,
+                prompt: "title fencing".into(),
+                base_ref: None,
+                model: "default".into(),
+                permission_mode: "default".into(),
+                max_turns: 10,
+            },
+        )
+        .await
+        .unwrap();
+    let claimed = db
+        .claim_next_run("title-worker-1", std::path::Path::new("/tmp/zc-workspaces"))
+        .await
+        .unwrap()
+        .unwrap();
+    let first_fence = WorkerFence {
+        attempt_id: claimed.1,
+        generation: claimed.2,
+        worker_id: "title-worker-1".into(),
+    };
+
+    db.update_run_title_fenced(run.id, &first_fence, "First title")
+        .await
+        .unwrap();
+    db.update_run_title_fenced(run.id, &first_fence, "First title")
+        .await
+        .unwrap();
+    let title_events = db
+        .events_after(run.id, 0)
+        .await
+        .unwrap()
+        .into_iter()
+        .filter(|event| event.payload["event"] == "run.title")
+        .collect::<Vec<_>>();
+    assert_eq!(title_events.len(), 1);
+
+    db.update_run_status_fenced(
+        run.id,
+        &first_fence,
+        RunStatus::Failed,
+        None,
+        Some("retry".into()),
+    )
+    .await
+    .unwrap();
+    db.update_run_status(run.id, RunStatus::Queued, None, None)
+        .await
+        .unwrap();
+    let replacement = db
+        .claim_next_run("title-worker-2", std::path::Path::new("/tmp/zc-workspaces"))
+        .await
+        .unwrap()
+        .unwrap();
+    let second_fence = WorkerFence {
+        attempt_id: replacement.1,
+        generation: replacement.2,
+        worker_id: "title-worker-2".into(),
+    };
+
+    let stale = db
+        .update_run_title_fenced(run.id, &first_fence, "Stale title")
+        .await
+        .unwrap_err();
+    assert!(stale.to_string().contains("stale_attempt"));
+    db.update_run_title_fenced(run.id, &second_fence, "Replacement title")
+        .await
+        .unwrap();
+    assert_eq!(db.get_run(run.id).await.unwrap().unwrap().title, "Replacement title");
+}
+
+#[tokio::test]
 async fn event_cursor_migration_retries_after_partial_ddl() {
     let url = format!(
         "sqlite:file:event-cursor-retry-{}?mode=memory&cache=shared",

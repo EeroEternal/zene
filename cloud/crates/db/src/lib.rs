@@ -515,7 +515,53 @@ impl Db {
         title: Option<&str>,
         archived: Option<bool>,
     ) -> Result<Run> {
+        self.update_run_meta_inner(run_id, title, archived, None, false)
+            .await
+    }
+
+    /// Update worker-owned metadata only when the supplied attempt is still
+    /// active. The transaction validates the fence before changing the title,
+    /// so a reclaimed worker cannot overwrite a replacement worker's title.
+    pub async fn update_run_title_fenced(
+        &self,
+        run_id: Uuid,
+        fence: &WorkerFence,
+        title: &str,
+    ) -> Result<Run> {
+        self.update_run_meta_inner(run_id, Some(title), None, Some(fence), false)
+            .await
+    }
+
+    /// Compatibility path for old workers that do not send a fence. It is
+    /// accepted only while no attempt is active, preventing a stale worker
+    /// from mutating a run after it has been reclaimed.
+    pub async fn update_run_title_legacy(&self, run_id: Uuid, title: &str) -> Result<Run> {
+        self.update_run_meta_inner(run_id, Some(title), None, None, true)
+            .await
+    }
+
+    async fn update_run_meta_inner(
+        &self,
+        run_id: Uuid,
+        title: Option<&str>,
+        archived: Option<bool>,
+        fence: Option<&WorkerFence>,
+        legacy_worker: bool,
+    ) -> Result<Run> {
         let mut tx = self.pool.begin().await?;
+        if let Some(fence) = fence {
+            self.validate_worker_fence(&mut tx, run_id, fence).await?;
+        } else if legacy_worker {
+            let active: Option<(String,)> = sqlx::query_as(
+                "SELECT id FROM run_attempts WHERE run_id = ? AND finished_at IS NULL LIMIT 1",
+            )
+            .bind(run_id.to_string())
+            .fetch_optional(&mut *tx)
+            .await?;
+            if active.is_some() {
+                bail!("stale_attempt: worker fence required for active run");
+            }
+        }
         let sql = format!("SELECT {RUN_COLUMNS} FROM runs WHERE id = ?");
         sqlx::query_as::<_, RunRow>(&sql)
             .bind(run_id.to_string())
@@ -555,11 +601,13 @@ impl Db {
             .await?
             .into_run();
         if title.is_some() {
+            let title_event_id = fence
+                .map(|fence| format!("platform.run.title.worker.{}", fence.generation));
             self.append_event_tx(
                 &mut tx,
                 run_id,
-                0,
-                Some("platform.run.title"),
+                fence.map_or(0, |fence| fence.generation),
+                title_event_id.as_deref().or(Some("platform.run.title")), 
                 None,
                 "platform",
                 serde_json::json!({

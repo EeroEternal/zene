@@ -1157,7 +1157,15 @@ async fn run_with_real_acp(
     if !cancelled.load(std::sync::atomic::Ordering::SeqCst) {
         set_status(client, cli, run_id, &fence, RunStatus::WaitingForUser, None, None).await?;
         if let Err(err) =
-            maybe_refresh_run_title(client, cli, run_id, &claimed.run.prompt, &llm_env).await
+            maybe_refresh_run_title(
+                client,
+                cli,
+                run_id,
+                &fence,
+                &claimed.run.prompt,
+                &llm_env,
+            )
+            .await
         {
             warn!(run_id = %run_id, error = %err, "run title refresh failed");
         }
@@ -1468,6 +1476,7 @@ async fn maybe_refresh_run_title(
     client: &reqwest::Client,
     cli: &Cli,
     run_id: Uuid,
+    fence: &WorkerFence,
     prompt: &str,
     llm_env: &HashMap<String, String>,
 ) -> Result<()> {
@@ -1560,7 +1569,10 @@ async fn maybe_refresh_run_title(
         warn!(run_id = %run_id, "title llm returned empty content");
         return Ok(());
     }
-    let req = WorkerTitleRequest { title: title.clone() };
+    let req = WorkerTitleRequest {
+        title: title.clone(),
+        fence: Some(fence.clone()),
+    };
     client
         .post(format!("{}/internal/v1/runs/{run_id}/title", cli.api_url))
         .bearer_auth(&cli.worker_token)
@@ -1640,7 +1652,11 @@ async fn post_push(client: &reqwest::Client, cli: &Cli, run_id: Uuid) -> Result<
             cli.api_url
         ))
         .bearer_auth(&cli.worker_token)
-        .json(&serde_json::json!({ "force": false }))
+        .json(&serde_json::json!({
+            "force": false,
+            // Stable across retries of this run; the broker persists the key.
+            "idempotencyKey": format!("worker-push-{run_id}"),
+        }))
         .send()
         .await?
         .error_for_status()?;
