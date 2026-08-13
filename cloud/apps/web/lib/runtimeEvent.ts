@@ -1,4 +1,4 @@
-import type { AcpSessionUpdate, CloudEventKind, RunEvent } from "@/lib/types";
+import type { AcpSessionUpdate, CloudEventKind, RunEvent, RunEventType } from "@/lib/types";
 
 /** Classified product kinds that already have a Console timeline surface. */
 export const TIMELINE_EVENT_KINDS = [
@@ -24,8 +24,27 @@ export interface TimelineProduct {
   isError?: boolean;
 }
 
-export function eventKind(event: Pick<RunEvent, "eventType" | "event_type">): string {
-  return (event.eventType || event.event_type || "acp").toLowerCase();
+const RUN_EVENT_TYPES: readonly RunEventType[] = [
+  "text_delta",
+  "thought_delta",
+  "user_message",
+  "tool_call",
+  "tool_result",
+  "state_changed",
+  "usage_update",
+  "projection_ready",
+  "plan",
+  "available_commands",
+  "session_started",
+  "approval_requested",
+  "acp",
+  "platform",
+  "runtime",
+];
+
+export function eventKind(event: Pick<RunEvent, "eventType" | "event_type">): RunEventType {
+  const raw = (event.eventType || event.event_type || "acp").toLowerCase();
+  return (RUN_EVENT_TYPES as readonly string[]).includes(raw) ? (raw as RunEventType) : "acp";
 }
 
 function isTimelineKind(kind: string): kind is TimelineEventKind {
