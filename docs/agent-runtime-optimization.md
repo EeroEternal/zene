@@ -1025,35 +1025,70 @@ Wave 12  Execution resume 与 Cloud RuntimeClient
 | --- | --- | --- |
 | Wave 0 | 已完成 | 术语、ID、Turn/Step/Session/RuntimeEvent 契约已对齐 |
 | Wave 1 | 已完成 | 统一 ID、RuntimeEvent envelope、兼容适配 |
-| Wave 2 | 基础完成 | SessionEvent 双写已存在；完整 Conversation SoT 未完成 |
-| Wave 3 | 基础完成 | observe/commit/project 已存在；仍从 messages 投影 |
+| Wave 2 | 已完成（兼容过渡态） | SessionEvent 双写、事件优先 projection、cache drift 诊断和 legacy fallback 已落地 |
+| Wave 3 | 已完成（兼容过渡态） | observe/commit/project 已拆分，Context 模型路径使用 strict event-backed projection |
 | Wave 4 | 已完成 | DefaultToolExecutor、scheduler、terminate 语义已抽取 |
-| Wave 5 | 已完成 | TurnEngine ports 已抽取，Legacy adapter 保留兼容 |
-| Wave 6 | 已完成 | RuntimeHandle actor 和 ACP control plane 已落地 |
-| Wave 7 | 基础完成 | checkpoint、幂等和恢复 disposition 已落地；安全 model-boundary 自动 resume 已在 Wave 12 收口 |
+| Wave 5 | 基础完成 | TurnEngine ports 已抽取，默认 Agent 路径仍保留 Legacy adapter |
+| Wave 6 | 已完成（Agent actor 仍在 core） | RuntimeHandle、RuntimeCommandRouter 和 ACP control plane 已落地 |
+| Wave 7 | 已完成（保守恢复策略） | checkpoint、幂等 fence、fsync append、resume-claim recovery visibility 和安全 model-boundary resume 已落地 |
 | Wave 8 | 已完成 | Subagent 复用 TurnEngine，SessionStore 可注入 |
-| Wave 9 | 进行中（事件 SoT 新路径已完成） | 已加入 schema version、显式 legacy migration、cache-free event projection、fork/rewind lineage、recovery candidate 与严格 fallback 边界；仅保留无法从旧数据无损推导的兼容格式 |
-| Wave 10 | 进行中（projection explain 当前设计范围已完成） | 已暴露 active path、fallback、retained/dropped/truncated/compaction、tool handle、injected source 与 delivery provenance，并通过 RuntimeEvent/ACP 传递；旧历史数据继续使用显式兼容 fallback |
+| Wave 9 | 已完成（legacy fallback 保留） | Conversation facts、tool/permission/model/branch/rewind 事件、execution links、active-path projection 和等价测试已落地 |
+| Wave 10 | 已完成（当前设计范围） | strict projection、compaction event-backed planning、ProjectionExplain、cache drift/fallback provenance 已落地 |
+| Wave 11 | 已完成第一阶段 | ModelExecutor、ContextModel、usage boundary、runtime protocol 和 lifecycle publisher 已落地；Agent-specific actor 尚在 core |
+| Wave 12 | 已完成第一阶段 | safe resume、Cloud RuntimeClient、neutral runtime notifications、fenced command lease/ack、atomic state/event writes、outbox replay 和真实 replacement 测试已落地 |
 
-### 接下来要完成的内容
+### 当前收口状态与剩余边界
 
-建议按以下顺序推进，避免同时重写控制面和数据面：
+本轮已完成仓库内可以安全验证的主要优化，并保持旧协议兼容。当前剩余项分为两类：
 
-1. **Wave 9：完整 Conversation Event Log（P0，进行中）**
+- **可继续做但属于大规模架构迁移**：把 Runtime-owned approval waiter、prompt queue 和默认 Agent/Subagent 执行路径完全迁移到真实 ports；这些改动需要新的跨 transport 协议和更大范围的行为对照测试，不应通过局部兼容代码伪装完成。
+- **需要部署基础设施决策**：本地 EventOutbox 不能单独提供跨 VM durability。跨 VM replacement 必须使用共享 POSIX 持久卷，或实现 DB/object-backed spool；代码已提供明确部署约束和同一 durable filesystem 的 crash/replay 保证。
+
+本轮已落地的 durability 收口包括：
+
+1. **Conversation / Context SoT**
+   - compaction planning、system-prefix memory injection 和 context report 使用 event-backed projection；materialized `messages` 继续作为兼容 cache。
+   - legacy compaction/rewind/incomplete event log 保留显式 fallback reason，strict model-facing paths 拒绝不完整 fallback。
+   - fork、rewind、compaction、reload、cache drift 和 system-prefix 更新均有回归测试。
+
+2. **Execution recovery / tool safety**
+   - execution record append 使用 per-path serialization 和 `sync_all`；重复 checkpoint/link append 幂等。
+   - safe-resume claim 在没有后续 terminal checkpoint 时保持 recovery-visible，并分类为 manual intervention，而不是静默 Clean。
+   - `ToolStarted` 必须在工具执行前成功持久化，`ToolCompleted` 在执行后持久化失败会使 turn 失败；UI event sink 仍保持 best effort。
+   - worker shutdown、cancellation、runtime interruption 不再被当作 Cloud run Completed。
+
+3. **Cloud control / replay durability**
+   - approval create/decide 使用数据库并发权威，避免重复 approval/event；无 toolCallId 的 approval identity 使用确定性 key。
+   - follow-up command 使用 attempt-fenced lease/ack，只有 runtime prompt 成功后才 ACK；过期 `waiting_for_user` attempt 可重新排队，approval hold 保持人工处理边界。
+   - run state mutation 与对应 run event 在同一 DB transaction；event cursor migration 可从部分 DDL 状态安全重试。
+   - RuntimeClient 对 worker 暴露 neutral notification/approval 类型，ACP method/path 只留在 adapter 内部。
+   - Runtime lifecycle 统一更新 state 和 ordered terminal event；Cloud outbox/API/SSE/Last-Event-ID/replacement 测试全部通过。
+   - worker title mutation 已接入 attempt fence 和确定性 event key；stale worker 不能覆盖 replacement worker 的 title。push/PR 的完整 provider-side fencing 仍需 Git provider 幂等协议。
+
+4. **仍明确未自动完成的项目**
+   - pending tool / approval 的任意副作用自动 replay：继续采用 inspection/manual intervention，避免重复写操作。
+   - 默认 Agent/Subagent 从 `LegacyTurnPorts` 完全迁移到 direct ports。
+   - Agent-specific actor 从 `zene-core` 移入独立 runtime implementation crate。
+   - 跨 VM outbox 的共享持久化实现；当前部署文档要求共享 POSIX volume 或后续 DB/object spool。
+
+以上未完成项不是本轮测试覆盖的小修复；在没有明确协议、存储和迁移策略前，不应声称已经完成。
+
+### 已完成的 Wave 9–12 细节
+
+1. **Wave 9：完整 Conversation Event Log（兼容过渡态，已完成当前切片）**
    - 已完成：扩展 `SessionEvent` 覆盖 tool call/result、permission、mode/model change、branch/rewind，并加入 monotonic sequence；
-   - 已完成第一切片：turn/step/tool/terminal checkpoint 路径写入 `execution_link`，将 execution idempotency key 关联到 Conversation Event 的 `id` / `sequence`，且旧 record JSONL 保持兼容；
-   - 继续完成：补齐所有 fork/rewind 写入路径，并将 conversation/execution IDs 统一到持久化事件；
-   - 保持旧 session 可 load，继续双写 messages cache；
-   - 增加事件重建与 materialized messages 的金丝雀等价测试。
+   - 已完成：turn/step/tool/terminal checkpoint 路径写入 `execution_link`，将 execution idempotency key 关联到 Conversation Event 的 `id` / `sequence`，且旧 record JSONL 保持兼容；
+   - 已完成：fork/rewind lineage、active-path projection、cache-free projection 和事件重建等价测试；
+   - 继续保留旧 session load、messages materialized cache 和无法无损迁移数据的显式 fallback。
 
-2. **Wave 10：Event-backed Context Projection（P0，进行中）**
+2. **Wave 10：Event-backed Context Projection（当前设计范围已完成）**
    - 已完成：`ContextSession::view` / `SessionView::from_events`，新 compaction/rewind 事件携带 projection snapshot；
    - 已完成：Context 的 observe/project 默认基于 event-backed view，`ProjectionExplain` 暴露 source event count、cache fallback 和 fallback reason；rewind target boundary 已用于 active path 过滤；
    - 已完成：fallback reason、active branch ID、active path start sequence、active event count 和结构化 tool/injected/retained-turn provenance 通过 RuntimeEvent 和 ACP `projection_update` 暴露；
    - 已完成：fork parent lineage metadata，以及 nested/sibling fork projection regression tests；
    - 已完成：compaction 后 SessionRecord 序列化 reload 与 event-backed projection 等价测试；
    - 已完成：完整事件日志优先于 materialized cache；cache drift 通过 `cacheDriftDetected` 诊断，不再覆盖 event-backed projection；空的新 session 不再误报 fallback；
-   - 已完成：严格 event-backed `try_view` 入口、legacy fallback reason 测试，以及 tool/injected/retained-turn explain；继续按数据可恢复性清理旧格式兼容代码。
+   - 已完成：严格 event-backed `try_view` 入口、legacy fallback reason 测试，以及 tool/injected/retained-turn explain；后续仅在迁移数据可证明无损时继续收缩兼容代码。
 
 3. **Wave 11：ModelExecutor 与 runtime crate（P1）**
    - 已完成第一切片：core 内部 `model_executor` seam 负责 stream tool-call delta 累积、ID 规范化和消息组装；
@@ -1069,7 +1104,7 @@ Wave 12  Execution resume 与 Cloud RuntimeClient
    - 已完成 Context water/usage 写回由 ContextEngine 统一计算，并对 event-backed projection 执行 strict 校验；
    - 已完成公共 runtime command/state/response、`RuntimeControl` 和 recovery info 迁移到独立 `zene-runtime` crate；`zene-runtime::RuntimeCommandRouter` 统一拥有 command channel、reply、event broadcast 与 state watch；`zene-core::RuntimeHandle` 继续保留 Agent-specific actor、recovery 和兼容 facade；
    - 已完成独立 `zene-model-executor` 的唯一实现收口，删除 core 内未使用的历史重复实现；
-   - 已完成 runtime protocol、公共 control contract 与 Agent actor wiring 的依赖隔离；后续可将 Agent-specific actor/event sink 迁入独立 runtime crate，保留 `zene-core::Agent` 作为默认 wiring 和兼容 facade。
+   - 已完成 runtime protocol、公共 control contract、Runtime lifecycle publisher 与 Agent actor wiring 的依赖隔离；Agent-specific actor 仍保留在 core，待 generic driver contract 稳定后再迁移。
 
 4. **Wave 12：Execution resume 与 Cloud transport（P1）**
    - 已完成安全门控第一切片：`RecoveryPlan`、rewind execution boundary 和 ACP recovery metadata；
@@ -1079,7 +1114,7 @@ Wave 12  Execution resume 与 Cloud RuntimeClient
    - 已增加 provider cursor 之后混合 platform/runtime event 的 canonical seq replay 测试，覆盖 cursor 重连后继续接收无 cursor platform event；EventOutbox 已迁移到独立 worker 模块。
    - 已增加 worker restart/ACK 集成切片：第一 worker 持久化未发送事件后退出，replacement worker 重开同一 outbox，通过 HTTP 重放事件并在成功 ACK 后确认 outbox 清空；DB smoke 同时覆盖跨 attempt 的 run-level source-event 去重。
    - 已覆盖 outbox retryable HTTP failure（503 → retry → 200）和 non-retryable HTTP failure（400 保留事件）路径，并在 Cloud deploy 文档中明确本地 outbox 的跨 VM 限制、共享持久卷要求和清理策略。
-   - 继续增加真实跨 worker reconnect/replay、crash recovery 集成测试，并评估多 worker 共享持久化 outbox 的部署策略。
+   - 同一 durable filesystem 的真实跨 worker reconnect/replay、crash recovery 和 DB/API/SSE 集成测试已完成；跨 VM outbox 仍需共享 POSIX volume 或 DB/object-backed spool 的部署决策。
 
 5. **持续质量门槛**
    - 每个 wave 保持 `cargo test --workspace --locked`；
