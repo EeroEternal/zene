@@ -13,6 +13,7 @@ mod plan_mode;
 mod read;
 mod registry;
 mod repomap;
+mod scope;
 mod skill;
 mod subagent;
 mod task;
@@ -29,6 +30,7 @@ pub use background::{
 };
 pub use builtin::{agent_tools, builtin_tools, default_builtin_tools, tools_for_profile};
 pub use todo_store::{shared_todo_store, shared_todo_store_from, SharedTodoStore, TodoItem, TodoStatus, TodoStore};
+pub use scope::RuntimeScope;
 pub use subagent::{
     SubagentEnv, SubagentProfile, SubagentRunner, DEFAULT_SUBAGENT_MAX_DEPTH,
 };
@@ -38,7 +40,7 @@ pub use line_endings::{
 };
 pub use permission::{SharedToolPermission, ToolPermission};
 pub use plan_mode::{shared_plan_mode, PlanModeState, SharedPlanMode};
-pub use registry::{Tool, ToolContext, ToolRegistry, ToolResult};
+pub use registry::{Tool, ToolCatalog, ToolContext, ToolRegistry, ToolResult};
 pub use zene_sandbox::Sandbox;
 pub use fetch_url::FetchUrlTool;
 pub use web_search::WebSearchTool;

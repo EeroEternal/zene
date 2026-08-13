@@ -2,9 +2,9 @@
 
 > 状态：持续演进。Wave 0–12 把控制面/数据面的 **接口边界** 建起来了；Wave 13 起让默认执行路径真正走这些边界。
 >
-> **进度快照：2026-08-13，基线 `6ba0347`（PR #94 已合并）。**
+> **进度快照：2026-08-13，基线 `ad7e8e9`（PR #95 已合并）。**
 > 本文同时记录目标架构、已实现能力和剩余工作。
-> Wave 16 的 Steer/SetMode 已对齐；下一步进入 Wave 14（RuntimeScope / ToolCatalog）。
+> Wave 16 的 Steer/SetMode 已对齐；Wave 14 进行中（RuntimeScope / ToolCatalog 第一刀）。
 >
 > 本文基于当前 zene runtime 实现，描述如何将 `Agent`、`Turn`、`Step`、`Session`、Cloud `Run` 和 ACP transport 拉开，并给出渐进式迁移方案。
 >
@@ -1097,7 +1097,7 @@ Wave 16  统一 transport command/event  ← 已完成（含 Steer/SetMode）
 | Wave 11 | 已完成第一阶段 | ModelExecutor、ContextModel、usage boundary、runtime protocol 和 lifecycle publisher 已落地；Agent-specific actor 尚在 core |
 | Wave 12 | 已完成第一阶段 | safe resume、Cloud RuntimeClient、neutral runtime notifications、fenced command lease/ack、atomic state/event writes、outbox replay 和真实 replacement 测试已落地 |
 | Wave 13 | 已完成 | 默认 Agent/Subagent 路径消费 `PreparedContext`；PR #60 |
-| Wave 14 | 未开始 | RuntimeScope、ToolCatalog 拆分、Agent 退回 wiring |
+| Wave 14 | 进行中 | RuntimeScope + ToolCatalog 第一刀已接到 Subagent；Agent 退回 wiring 仍待做 |
 | Wave 15 | 已完成 | `evaluate` + `ApprovalBroker` + runtime-owned waiter；PR #61 / #62 |
 | Wave 16 | 已完成 command 对齐 | Cloud RuntimeCommand 含 Prompt/Steer/Cancel/Approval/SetMode/Shutdown；仍不依赖 `zene-runtime` |
 
@@ -1450,3 +1450,8 @@ Wave 16  统一 transport command/event  ← 已完成（含 Steer/SetMode）
 - JobRunner：turn 进行中 follow-up 发 `Steer`，空闲发 `Prompt`。`pending_mode_id` + `POST /api/v1/runs/{id}/mode`（及 worker take/requeue）在空闲时发 `SetMode`。
 - `WorkerCommandKind` 仍只有 Prompt/Cancel。不把 `zene-runtime` 引入 Cloud。不改 Console 布局。
 
+### 2026-08-13 — Wave 14 RuntimeScope / ToolCatalog
+
+- 新增 `zene_tools::RuntimeScope`：Subagent 经 scope 注入 profile / depth / max_depth / tool catalog。
+- 新增 `ToolCatalog` trait；`ToolRegistry` 实现该 trait。Subagent `PreparedContext.tools` 经 catalog 取定义。
+- 保留 `SubagentRunner` facade。不搬 Agent actor。不做 Cloud 改动。
