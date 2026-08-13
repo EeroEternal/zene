@@ -142,6 +142,13 @@ export interface PlanPayload {
   entries?: unknown;
 }
 
+export interface ProjectionPayload {
+  sourceMessageCount?: unknown;
+  projectedMessageCount?: unknown;
+  delivery?: string;
+  contextEpoch?: unknown;
+}
+
 export interface AvailableCommandsPayload {
   availableCommands?: unknown;
 }

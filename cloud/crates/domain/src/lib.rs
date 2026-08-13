@@ -380,6 +380,23 @@ pub struct AvailableCommandsPayload {
     pub available_commands: Option<serde_json::Value>,
 }
 
+/// Product payload stored on `projection_ready` rows.
+/// Extra `_meta` keys are preserved so the write path does not drop fields.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectionPayload {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_message_count: Option<serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub projected_message_count: Option<serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub delivery: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_epoch: Option<serde_json::Value>,
+    #[serde(default, flatten)]
+    pub extra: serde_json::Map<String, serde_json::Value>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct ApprovalEventPayload {
@@ -605,8 +622,8 @@ pub struct WorkerEventRequest {
 mod tests {
     use super::{
         ApprovalDecision, ApprovalEventPayload, ApprovalKind, ApprovalRisk, ApprovalStatus,
-        CloudEventKind, CreateApprovalRequest, PlatformEvent, RunEventKind, RunStatus,
-        TextEventPayload, ToolCallPayload, WorkerCommand, WorkerCommandAckRequest,
+        CloudEventKind, CreateApprovalRequest, PlatformEvent, ProjectionPayload, RunEventKind,
+        RunStatus, TextEventPayload, ToolCallPayload, WorkerCommand, WorkerCommandAckRequest,
         WorkerCommandKind, WorkerEventRequest, WorkerFence, WorkerClaimRequest,
         WorkerPushRequest, WorkerSessionRequest,
     };
@@ -830,6 +847,27 @@ mod tests {
         })
         .expect("text");
         assert_eq!(encoded, serde_json::json!({ "text": "hello" }));
+        let encoded = serde_json::to_value(ProjectionPayload {
+            source_message_count: Some(serde_json::json!(4)),
+            projected_message_count: Some(serde_json::json!(3)),
+            delivery: Some("strict".into()),
+            context_epoch: Some(serde_json::json!(2)),
+            extra: serde_json::Map::from_iter([(
+                "cacheDriftDetected".into(),
+                serde_json::json!(false),
+            )]),
+        })
+        .expect("projection");
+        assert_eq!(
+            encoded,
+            serde_json::json!({
+                "sourceMessageCount": 4,
+                "projectedMessageCount": 3,
+                "delivery": "strict",
+                "contextEpoch": 2,
+                "cacheDriftDetected": false
+            })
+        );
         let encoded = serde_json::to_value(ToolCallPayload {
             tool_call_id: Some("call-7".into()),
             title: Some("Write".into()),

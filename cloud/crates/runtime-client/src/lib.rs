@@ -14,8 +14,8 @@ use zene_cloud_acp_bridge::{
 
 pub use zene_cloud_domain::{
     ApprovalDecision, ApprovalEventPayload, ApprovalKind, AvailableCommandsPayload,
-    CloudEventKind, PlanPayload, SessionStartedPayload, StateChangedPayload, TextEventPayload,
-    ToolCallPayload, ToolResultPayload, UsagePayload,
+    CloudEventKind, PlanPayload, ProjectionPayload, SessionStartedPayload, StateChangedPayload,
+    TextEventPayload, ToolCallPayload, ToolResultPayload, UsagePayload,
 };
 
 /// ACP `optionId` mapping stays inside this adapter.
@@ -91,6 +91,7 @@ pub enum RuntimePayload {
     Commands(AvailableCommandsPayload),
     SessionStarted(SessionStartedPayload),
     ApprovalRequested(ApprovalEventPayload),
+    Projection(ProjectionPayload),
     Json(Value),
 }
 
@@ -106,6 +107,7 @@ impl RuntimePayload {
             Self::Commands(payload) => to_json(payload),
             Self::SessionStarted(payload) => to_json(payload),
             Self::ApprovalRequested(payload) => to_json(payload),
+            Self::Projection(payload) => to_json(payload),
             Self::Json(value) => value.clone(),
         }
     }
@@ -347,10 +349,14 @@ fn projection_product(raw: &Value) -> RuntimePayload {
     let Some(update) = raw.pointer("/params/update") else {
         return RuntimePayload::Json(raw.clone());
     };
-    RuntimePayload::Json(match update.get("_meta") {
+    let meta = match update.get("_meta") {
         Some(meta) if meta.is_object() => meta.clone(),
         _ => serde_json::json!({}),
-    })
+    };
+    match serde_json::from_value::<ProjectionPayload>(meta.clone()) {
+        Ok(payload) => RuntimePayload::Projection(payload),
+        Err(_) => RuntimePayload::Json(meta),
+    }
 }
 
 fn plan_product(raw: &Value) -> RuntimePayload {
