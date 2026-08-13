@@ -31,7 +31,16 @@ import {
   saveSelectedModel,
 } from "@/lib/models";
 import { allowsDeny, allowsOnce, approvalCardBody, extraDecisions } from "@/lib/approval";
-import type { Approval, ApprovalDecision, LlmSettingsView, Repo, Run, RunEvent, RunMessage } from "@/lib/types";
+import type {
+  Approval,
+  ApprovalDecision,
+  LlmSettingsView,
+  Repo,
+  Run,
+  RunEvent,
+  RunMessage,
+  RunStatus,
+} from "@/lib/types";
 import { platformEventFromPayload } from "@/lib/platformEvent";
 import { timelineProductFromEvent, timelineToolOutput, type TimelineProduct } from "@/lib/runtimeEvent";
 import { CodePanel, useCodePanelWidth } from "./CodePanel";
@@ -41,7 +50,7 @@ import { StatusDot } from "./StatusPill";
 import { useToast } from "./Toast";
 
 /** Show Stop — agent/session is in progress (includes setup). */
-const BUSY_STATUSES = new Set([
+const BUSY_STATUSES: ReadonlySet<string> = new Set<RunStatus>([
   "running",
   "starting",
   "cloning",
@@ -52,11 +61,20 @@ const BUSY_STATUSES = new Set([
 ]);
 
 /** Block Send only while a turn is actively executing (follow-ups still OK when queued/ready). */
-const SEND_BLOCKED_STATUSES = new Set(["running", "waiting_for_approval", "stopping"]);
+const SEND_BLOCKED_STATUSES: ReadonlySet<string> = new Set<RunStatus>([
+  "running",
+  "waiting_for_approval",
+  "stopping",
+]);
 
-const SETUP_STATUSES = new Set(["queued", "provisioning", "starting", "cloning"]);
+const SETUP_STATUSES: ReadonlySet<string> = new Set<RunStatus>([
+  "queued",
+  "provisioning",
+  "starting",
+  "cloning",
+]);
 
-function setupStatusCopy(status: string, repo?: string): { title: string; detail: string } {
+function setupStatusCopy(status: RunStatus | string, repo?: string): { title: string; detail: string } {
   const repoLabel = repo && repo !== "—" ? repo : "repository";
   switch (status) {
     case "cloning":

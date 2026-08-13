@@ -40,10 +40,26 @@ export interface Branch {
   default?: boolean;
 }
 
+/** Stored run lifecycle. Matches domain `RunStatus`. */
+export type RunStatus =
+  | "created"
+  | "queued"
+  | "provisioning"
+  | "cloning"
+  | "starting"
+  | "running"
+  | "waiting_for_approval"
+  | "waiting_for_user"
+  | "stopping"
+  | "completed"
+  | "failed"
+  | "timed_out"
+  | "cancelled";
+
 export interface Run {
   id: string;
   title: string;
-  status: string;
+  status: RunStatus;
   repositoryId: string;
   headBranch?: string;
   baseRef?: string;
@@ -197,16 +213,16 @@ export type PlatformEvent =
   | { event: "run.created"; title?: string; prompt?: string }
   | { event: "run.title"; title?: string }
   | { event: "run.archived" }
-  | { event: "run.status"; status?: string; headSha?: string }
+  | { event: "run.status"; status?: RunStatus; headSha?: string }
   | { event: "message.created"; role?: string; text?: string }
   | {
       event: "approval.created";
       approvalId?: string;
-      status?: string;
-      decision?: string;
-      kind?: string;
+      status?: ApprovalStatus;
+      decision?: ApprovalDecision | null;
+      kind?: ApprovalKind;
     }
-  | { event: "approval.decided"; approvalId?: string; decision?: string };
+  | { event: "approval.decided"; approvalId?: string; decision?: ApprovalDecision };
 
 export type ApprovalDecision =
   | "allow-once"

@@ -1,3 +1,5 @@
+import type { RunStatus } from "@/lib/types";
+
 let authToken = "";
 
 export function setToken(token: string) {
@@ -38,28 +40,36 @@ export async function api<T = unknown>(path: string, options: RequestInit = {}):
   return data as T;
 }
 
-export function statusClass(status?: string): string {
+export function statusClass(status?: RunStatus | string): string {
   return String(status || "")
     .toLowerCase()
     .replace(/\s+/g, "_");
 }
 
-const OK_STATUSES = ["running", "starting", "cloning", "provisioning", "queued", "completed"];
-const DANGER_STATUSES = ["failed", "timed_out", "cancelled"];
-const WARN_STATUSES = ["waiting_for_approval"];
-const IDLE_STATUSES = ["waiting_for_user", "ready"];
+const OK_STATUSES = [
+  "running",
+  "starting",
+  "cloning",
+  "provisioning",
+  "queued",
+  "completed",
+] as const satisfies readonly RunStatus[];
+const DANGER_STATUSES = ["failed", "timed_out", "cancelled"] as const satisfies readonly RunStatus[];
+const WARN_STATUSES = ["waiting_for_approval"] as const satisfies readonly RunStatus[];
+/** `ready` is the display alias for `waiting_for_user`, not a stored RunStatus. */
+const IDLE_STATUSES = ["waiting_for_user", "ready"] as const;
 
-export function statusTone(status?: string): "ok" | "warn" | "danger" | "idle" {
+export function statusTone(status?: RunStatus | string): "ok" | "warn" | "danger" | "idle" {
   const s = statusClass(status);
-  if (OK_STATUSES.includes(s)) return "ok";
-  if (DANGER_STATUSES.includes(s)) return "danger";
-  if (WARN_STATUSES.includes(s)) return "warn";
-  if (IDLE_STATUSES.includes(s)) return "idle";
+  if ((OK_STATUSES as readonly string[]).includes(s)) return "ok";
+  if ((DANGER_STATUSES as readonly string[]).includes(s)) return "danger";
+  if ((WARN_STATUSES as readonly string[]).includes(s)) return "warn";
+  if ((IDLE_STATUSES as readonly string[]).includes(s)) return "idle";
   return "idle";
 }
 
 /** Human-readable run status for pills / lists. */
-export function statusLabel(status?: string): string {
+export function statusLabel(status?: RunStatus | string): string {
   const s = statusClass(status);
   if (s === "waiting_for_user") return "ready";
   if (s === "waiting_for_approval") return "waiting";
