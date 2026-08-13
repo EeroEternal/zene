@@ -86,6 +86,80 @@ pub trait RuntimeControl: Send + Sync {
     fn recovery_info(&self) -> Result<RuntimeRecoveryInfo>;
 }
 
+/// A command waiting for a runtime actor to acknowledge it.
+pub struct RuntimeCommandMessage {
+    pub command: RuntimeCommand,
+    pub reply: oneshot::Sender<Result<RuntimeResponse, String>>,
+}
+
+/// Receiver owned by the runtime actor implementation.
+pub struct RuntimeCommandReceiver {
+    receiver: mpsc::Receiver<RuntimeCommandMessage>,
+}
+
+impl RuntimeCommandReceiver {
+    pub async fn recv(&mut self) -> Option<RuntimeCommandMessage> {
+        self.receiver.recv().await
+    }
+}
+
+/// Cloneable transport-neutral command/event/state endpoint for one runtime.
+#[derive(Clone)]
+pub struct RuntimeCommandRouter {
+    commands: mpsc::Sender<RuntimeCommandMessage>,
+    events: broadcast::Sender<RuntimeEvent>,
+    state: watch::Receiver<ExecutionState>,
+}
+
+impl RuntimeCommandRouter {
+    /// Create the actor-facing command receiver and public control endpoint.
+    pub fn channel(
+        capacity: usize,
+    ) -> (
+        Self,
+        RuntimeCommandReceiver,
+        broadcast::Sender<RuntimeEvent>,
+        watch::Sender<ExecutionState>,
+    ) {
+        let (commands, receiver) = mpsc::channel(capacity);
+        let (events, _) = broadcast::channel(256);
+        let (state_tx, state) = watch::channel(ExecutionState::Idle);
+        (
+            Self {
+                commands,
+                events: events.clone(),
+                state,
+            },
+            RuntimeCommandReceiver { receiver },
+            events,
+            state_tx,
+        )
+    }
+
+    pub async fn command(&self, command: RuntimeCommand) -> Result<RuntimeResponse> {
+        let (reply, response) = oneshot::channel();
+        self.commands
+            .send(RuntimeCommandMessage { command, reply })
+            .await
+            .map_err(|_| anyhow!("runtime actor is unavailable"))?;
+        match response
+            .await
+            .map_err(|_| anyhow!("runtime actor dropped command reply"))?
+        {
+            Ok(response) => Ok(response),
+            Err(message) => Err(anyhow!(message)),
+        }
+    }
+
+    pub fn subscribe(&self) -> broadcast::Receiver<RuntimeEvent> {
+        self.events.subscribe()
+    }
+
+    pub fn state(&self) -> watch::Receiver<ExecutionState> {
+        self.state.clone()
+    }
+}
+
 /// Publishes ordered, session-scoped runtime events and mirrors execution
 /// progress into the transport-neutral runtime state channel.
 #[derive(Clone)]
@@ -297,6 +371,28 @@ mod tests {
         };
         assert!(info.automatic_resume);
         assert_eq!(info.active_turn_count, 1);
+    }
+
+    #[tokio::test]
+    async fn command_router_round_trips_commands_and_exposes_state() {
+        let (router, mut receiver, _events, state_tx) = RuntimeCommandRouter::channel(4);
+        let mut state = router.state();
+        state_tx.send(ExecutionState::Starting).unwrap();
+        assert_eq!(*state.borrow_and_update(), ExecutionState::Starting);
+
+        let task = tokio::spawn(async move {
+            let message = receiver.recv().await.expect("command");
+            assert!(matches!(message.command, RuntimeCommand::GetMode));
+            message
+                .reply
+                .send(Ok(RuntimeResponse::Mode {
+                    mode_id: "default".into(),
+                }))
+                .unwrap();
+        });
+        let response = router.command(RuntimeCommand::GetMode).await.unwrap();
+        assert_eq!(response, RuntimeResponse::Mode { mode_id: "default".into() });
+        task.await.unwrap();
     }
 
     #[tokio::test]

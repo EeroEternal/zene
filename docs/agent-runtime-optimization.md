@@ -1067,7 +1067,7 @@ Wave 12  Execution resume 与 Cloud RuntimeClient
    - 已完成 Context 模型边界切片：`zene-context::ContextModel` 只暴露 `complete(ChatRequest)`，compaction、memory flush、prefire factory 和 `ContextDeps` 不再要求具体 `ChatClient`；
    - 已完成 Agent client 持有关系切片：Agent 仅保存 `Arc<dyn ContextModel>` 与 `Arc<dyn ModelExecutor>`，具体 `ChatClient` 只在 builder / model adapter 内部持有；
    - 已完成 Context water/usage 写回由 ContextEngine 统一计算，并对 event-backed projection 执行 strict 校验；
-   - 已完成公共 runtime command/state/response、`RuntimeControl` 和 recovery info 迁移到独立 `zene-runtime` crate；`zene-core::RuntimeHandle` 继续保留 Agent-specific actor、event broadcast、recovery 和兼容 facade；
+   - 已完成公共 runtime command/state/response、`RuntimeControl` 和 recovery info 迁移到独立 `zene-runtime` crate；`zene-runtime::RuntimeCommandRouter` 统一拥有 command channel、reply、event broadcast 与 state watch；`zene-core::RuntimeHandle` 继续保留 Agent-specific actor、recovery 和兼容 facade；
    - 已完成独立 `zene-model-executor` 的唯一实现收口，删除 core 内未使用的历史重复实现；
    - 已完成 runtime protocol、公共 control contract 与 Agent actor wiring 的依赖隔离；后续可将 Agent-specific actor/event sink 迁入独立 runtime crate，保留 `zene-core::Agent` 作为默认 wiring 和兼容 facade。
 

@@ -9,8 +9,8 @@ use std::sync::Arc;
 #[cfg(test)]
 use zene_turn::TurnId;
 
-use anyhow::{anyhow, Context, Result};
-use tokio::sync::{broadcast, mpsc, oneshot, watch};
+use anyhow::{anyhow, Result};
+use tokio::sync::{broadcast, oneshot, watch};
 use tokio::task::{JoinError, JoinHandle};
 use tokio_util::sync::CancellationToken;
 
@@ -20,7 +20,8 @@ use zene_permission::PromptChoice;
 #[cfg(test)]
 use zene_runtime::ApprovalDecision;
 use zene_runtime::{
-    ExecutionState, RuntimeCommand, RuntimeControl, RuntimeEventPublisher, RuntimeRecoveryInfo,
+    ExecutionState, RuntimeCommand, RuntimeCommandMessage, RuntimeCommandReceiver,
+    RuntimeCommandRouter, RuntimeControl, RuntimeEventPublisher, RuntimeRecoveryInfo,
     RuntimeResponse,
 };
 use zene_session::{AgentRecordWriter, ExecutionCheckpointState, RecoveryPlan};
@@ -37,17 +38,12 @@ fn prompt_choice(decision: ApprovalDecision) -> PromptChoice {
     }
 }
 
-struct RuntimeMessage {
-    command: RuntimeCommand,
-    reply: oneshot::Sender<std::result::Result<RuntimeResponse, String>>,
-}
+type RuntimeMessage = RuntimeCommandMessage;
 
 /// Cloneable command/event/state handle for one long-lived runtime actor.
 #[derive(Clone)]
 pub struct RuntimeHandle {
-    commands: mpsc::Sender<RuntimeMessage>,
-    events: broadcast::Sender<RuntimeEvent>,
-    state: watch::Receiver<ExecutionState>,
+    router: RuntimeCommandRouter,
     record_writer: AgentRecordWriter,
 }
 
@@ -84,13 +80,9 @@ impl RuntimeHandle {
             agent.resume_existing_turn = true;
         }
         let record_writer = agent.execution_record_writer();
-        let (commands, command_rx) = mpsc::channel(32);
-        let (events, _) = broadcast::channel(256);
-        let (state_tx, state) = watch::channel(ExecutionState::Idle);
+        let (router, command_rx, events, state_tx) = RuntimeCommandRouter::channel(32);
         let handle = Self {
-            commands,
-            events: events.clone(),
-            state,
+            router: router.clone(),
             record_writer: record_writer.clone(),
         };
         let task = tokio::spawn(run_actor(
@@ -106,21 +98,7 @@ impl RuntimeHandle {
 
     /// Send a transport-neutral command and await its acknowledgement/result.
     pub async fn command(&self, command: RuntimeCommand) -> Result<RuntimeResponse> {
-        let (reply_tx, reply_rx) = oneshot::channel();
-        self.commands
-            .send(RuntimeMessage {
-                command,
-                reply: reply_tx,
-            })
-            .await
-            .map_err(|_| anyhow!("runtime actor is unavailable"))?;
-        match reply_rx
-            .await
-            .context("runtime actor dropped command reply")?
-        {
-            Ok(response) => Ok(response),
-            Err(message) => Err(anyhow!(message)),
-        }
+        self.router.command(command).await
     }
 
     pub async fn prompt(&self, text: impl Into<String>) -> Result<String> {
@@ -175,12 +153,12 @@ impl RuntimeHandle {
 
     /// Subscribe to the ordered runtime event stream.
     pub fn subscribe(&self) -> broadcast::Receiver<RuntimeEvent> {
-        self.events.subscribe()
+        self.router.subscribe()
     }
 
     /// Subscribe to the latest execution state.
     pub fn state(&self) -> watch::Receiver<ExecutionState> {
-        self.state.clone()
+        self.router.state()
     }
 
     /// Read the durable recovery view without starting or replaying execution.
@@ -279,7 +257,7 @@ enum ActivePoll {
 async fn run_actor(
     agent: Agent,
     record_writer: AgentRecordWriter,
-    mut commands: mpsc::Receiver<RuntimeMessage>,
+    mut commands: RuntimeCommandReceiver,
     events: broadcast::Sender<RuntimeEvent>,
     state: watch::Sender<ExecutionState>,
     initial_resume: Option<zene_session::ResumeCandidate>,
