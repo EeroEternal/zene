@@ -176,41 +176,35 @@ Zene 不必采用 JSONL 或 `parentId` 树，但应保留这层语义：
 
 ## 5. 对照 Zene 现状
 
-Zene 今天大致是：
+Zene 当前已经落地了这条边界的主要实现路径：
 
 ```rust
 SessionRecord {
-  messages: Vec<Message>,      // 很像「当前上下文」
-  compactions: Vec<...>,       // 压缩记录
+  messages: Vec<Message>,      // materialized compatibility cache
+  events: Vec<SessionEvent>,   // conversation facts / Source of Truth
+  compactions: Vec<...>,       // index and compatibility data
   todos: ...,
   ...
 }
 ```
 
-外加：
+事件日志现在覆盖 message、system prefix、compaction、tool call/result、permission、mode/model change、branch/fork/rewind 等事实；`SessionView` 从 active event path 投影，`messages` cache 的 drift 只作为诊断，不覆盖 event-backed projection。`observe / commit / project` 也已拆分，projection explain 已通过 RuntimeEvent / ACP 暴露。
 
-- checkpoint 文件
-- compaction segment
-- record writer（部分运行事件）
-- ACP replay
-- Cloud event stream
+外部运行记录仍与 Conversation SoT 分开：
 
-也就是说：Zene **已经有多个投影 / 旁路记录**，但还没有把「完整事件历史」明确提升为单一事实源。
+- checkpoint / compaction segment
+- execution record 与 `execution_link`
+- ACP / Cloud RuntimeEvent sink
 
-目前比较容易滑向的状态是：
+因此当前模型已经是：
 
 ```text
-session.messages ≈ 当前给模型看的上下文
+session.events = 全部可重建的会话事实
+session.messages = 可重建的兼容缓存
+session.messages_for_llm = 从 active event path 投影出的视图
 ```
 
-而不是：
-
-```text
-session.events = 全部发生过的事
-session.messages_for_llm = 从 events 投影出来的视图
-```
-
-因此下一阶段最有价值的，往往不是再加一个 compaction 算法，而是把「会话真相」从「可变 messages 数组」升级成「稳定事件日志 + 多层投影」。
+剩余工作不是重新定义 SoT，而是清理无法从旧数据无损推导的 legacy fallback、继续拆出 Agent-specific driver wiring，并完成 Cloud Run、ACP session 与 runtime 的跨进程生命周期边界。
 
 ---
 
@@ -356,18 +350,18 @@ session.messages_for_llm = 从 events 投影出来的视图
 
 ## 10. 落地顺序（与 Runtime 合并）
 
-数据面不要单独空转；与控制面合并 Wave 见
+数据面与控制面已按合并 Wave 推进，详见
 [agent-runtime-optimization.md §16](./agent-runtime-optimization.md#16-merged-implementation-waves)：
 
 ```text
-Wave 1  统一 ID + RuntimeEvent 信封
-Wave 2  Conversation SoT 双写（本文主场）
-Wave 3  Context observe/commit/project
-…
+Wave 1–8   ID、RuntimeEvent、TurnEngine、RuntimeHandle、checkpoint 基础
+Wave 9     Conversation facts 完整化                         已完成关键切片
+Wave 10    Event-backed Context projection                    已完成当前设计范围
+Wave 11    ModelExecutor 与 zene-runtime 边界                 已完成协议/契约切片
+Wave 12    Safe resume 与 Cloud RuntimeClient                 已完成 reconnect 基础切片
 ```
 
-第一期：双写、兼容旧 load、**不**切换默认读路径。
-控制类事实（steer/cancel/approval）预留事件或 execution record 挂钩，避免日后 Runtime actor 无法对齐。
+当前默认的新路径优先使用事件事实与 active-path projection；旧 session 仍可通过显式 migration 或 materialized compatibility fallback 加载。剩余边界是：无法从旧 compaction/rewind 数据恢复时继续保留可解释 fallback、将 Agent-specific actor wiring 进一步抽离，以及完成 Cloud/ACP/runtime 的外部生命周期与部署级恢复策略。控制类事实（steer/cancel/approval）由 AgentRuntime 控制面拥有，ContextEngine 不承担控制状态。
 
 ---
 

@@ -10,6 +10,8 @@
 
 ## 1. 现状判断
 
+> **实现状态（2026-08-13）**：Wave 9–10 的事件事实与 event-backed projection 已完成当前设计范围；Wave 11–12 的 ModelExecutor、runtime contract、safe resume 与 Cloud RuntimeClient 关键边界也已落地。本文以下的“今天 / 目标”对照保留为迁移背景；新的默认路径已是事件优先，剩余内容集中在 legacy fallback、Agent-specific wiring 和外部生命周期边界。
+
 Zene Context Engine **算法已经很强**：
 
 - truncate → slice-keep → LLM summarize
@@ -18,10 +20,10 @@ Zene Context Engine **算法已经很强**：
 - tool output spill / handles
 - full | delta assemble、`context_epoch`、gateway publish
 
-短板不在压缩策略本身，而在 **职责边界**：
+历史短板曾经在 **职责边界**：
 
 ```text
-今天（简化）
+历史基线
 
 SessionRecord.messages  ←──  既是历史，又像「当前上下文」
         │
@@ -33,7 +35,7 @@ ContextEngine.prepare_step
 StepContext.messages  →  LLM
 ```
 
-`prepare_step` 把 **只读观测、写事实、投影出站** 缠在同一次调用里；compact 容易变成对唯一 `messages` 数组的原地变异，而不是「追加压缩事件 + 重新投影」。
+当前实现已将事件事实与投影分开：`SessionView` 选择 active event path，Context 默认使用 event-backed view；`prepare_step` 内部按 `observe → commit → project` 组织，`messages` 仅作为兼容缓存。仅旧 compaction/rewind 缺少 snapshot 或事件日志不完整时，才使用带原因的 materialized fallback。
 
 ---
 
@@ -57,16 +59,15 @@ Session Event Log          ← 事实：只追加，可回放（zene-session）
 | L2 | **Agent Context Plan** | 如何投影（cut point、summary、注入项） | `zene-context` |
 | L3 | **Provider Request** | 最终 `messages[]` + metadata | `ContextEngine` → `zene-llm` |
 
-今天 L0/L1 弱、L2/L3 强，且 L3 经常回写 L0。  
-优化顺序：**先稳 L0 → 再让 L2 只读 L0 → 最后 L3 纯函数化**。
+历史上 L0/L1 弱、L2/L3 强，且 L3 容易回写 L0；当前新路径已完成 L0/L1 事件事实与 active-path projection，L2/L3 通过 `observe → commit → project` 分工。后续优化集中在 legacy fallback、可组合 runtime wiring 与外部生命周期边界。
 
 ---
 
 ## 3. 分阶段路线
 
-### Phase A — Session 事实模型（Context 的前置依赖）
+### Phase A — Session 事实模型（已完成当前切片）
 
-没有稳的事实源，Context Engine 只能继续改 `Vec<Message>`。
+Conversation SoT 已由 `SessionEvent` 与 `SessionView` 承担。新路径以事件日志为事实源；旧 cache-only session 可显式、幂等迁移，无法无损恢复的 legacy compaction/rewind 继续保留带原因的兼容 fallback。
 
 **逻辑事件类型（一次可不全上）：**
 
@@ -85,20 +86,20 @@ SystemPrefixChanged
 **接口含义：**
 
 ```rust
-// 今天
-session.messages() -> &[Message]   // 已经是「半投影」
+// 兼容 API
+session.messages() -> &[Message]   // materialized cache
 
-// 目标
+// 当前事实 / 投影入口
 session.events() -> &[SessionEvent]
-session.active_path() -> &[SessionEvent]   // leaf → root
-// materialize 可由 session helper 或 context 提供
+session.view() -> SessionView         // active event path → messages
+session.try_view() -> Result<SessionView, ProjectionFallbackReason>
 ```
 
 **原则：**
 
 - compact **追加** `CompactionApplied { summary, replaces_range | first_kept, segment_ref, tokens_before, … }`
 - **不要**把旧 message 从事实日志物理删掉（可进 cold segment，但事件里保留指针）
-- `SessionRecord.messages` 过渡期可保留为 **active projection 缓存**，代码与文档须标明：它不是 Source of Truth
+- `SessionRecord.messages` 继续作为兼容缓存保留；它不是 Source of Truth，cache drift 不覆盖 event-backed projection
 
 **验收：**
 
@@ -109,9 +110,9 @@ session.active_path() -> &[SessionEvent]   // leaf → root
 
 ---
 
-### Phase B — 拆分 `prepare_step`：observe / commit / project
+### Phase B — `prepare_step` 的 observe / commit / project（已完成）
 
-今天近似流水线：
+历史近似流水线：
 
 ```text
 assemble → estimate → prefire → steps-first → memory flush → compact → epoch++ → StepContext
@@ -213,13 +214,13 @@ on_context_overflow
 
 ---
 
-### Phase C — Compaction = 投影规则，不是改写唯一历史
+### Phase C — Compaction = 投影规则，不是改写唯一历史（已完成当前切片）
 
-| 现行为（简化） | 目标行为 |
+| 历史兼容形态 | 当前行为 |
 |----------------|----------|
-| 改 `session.messages`：删前缀、插 summary | 追加 `CompactionApplied`；投影时用 summary 折叠 range |
+| 旧记录只改 `session.messages`：删前缀、插 summary | 新记录追加 `CompactionApplied`；投影使用 snapshot / summary 折叠 range |
 | checkpoint / segment 旁路保存 | segment 作为 cold storage，事件带 `segment_ref` |
-| `CompactionEntry` 与 messages 双轨 | 事件为主键；`compactions[]` 可作索引 / 兼容 |
+| `CompactionEntry` 与 messages 双轨 | 事件为主键；`compactions[]` 作为索引 / 兼容 |
 
 **投影规则（伪代码）：**
 
@@ -286,9 +287,9 @@ function project_llm(path, policy):
 
 ---
 
-### Phase E — 可解释与可观测
+### Phase E — 可解释与可观测（已完成当前设计范围）
 
-引擎已能压 token；下一步是 **让人与系统看懂投影**。
+引擎已能压 token，且 projection explain 已通过 RuntimeEvent / ACP 让人与系统看懂投影；后续仅按 Console 产品需求扩展 provenance 类型。
 
 **`StepContext` 扩展（或并行返回）：**
 
@@ -327,35 +328,26 @@ struct StepContext {
 | tool output handles / spill | spill = artifact 事实；handle = project |
 | `ContextEventHandler` | commit 的 IO 出口（保持） |
 | `ContextHooks`（todo/bg） | **project 注入源**，避免写进 SoT messages |
-| `ContextSession` | 从「messages 读写」扩到「events + 可选 cache」 |
+| `ContextSession` | 已支持 `events`、active-path `view`、严格 `try_view` 与兼容 cache |
 
-**`ContextSession` 演进示意：**
+**当前 `ContextSession` 形态：**
 
 ```rust
 trait ContextSession {
     fn session_id(&self) -> &str;
+    fn messages(&self) -> &[Message];             // compatibility cache
+    fn messages_mut(&mut self) -> &mut Vec<Message>; // compatibility boundary
+    fn events(&self) -> &[SessionEvent];
+    fn view(&self) -> SessionView;               // event-backed projection
+    fn try_view(&self) -> Result<SessionView, ProjectionFallbackReason>;
 
-    // 过渡期保留
-    fn messages(&self) -> &[Message];
-    fn messages_mut(&mut self) -> &mut Vec<Message>; // 逐步收敛
-
-    // 目标
-    fn append_event(&mut self, ev: SessionEvent);
-    fn active_events(&self) -> &[SessionEvent];
-
-    fn record_compaction_event(
-        &mut self,
-        reason: &str,
-        compacted_count: usize,
-        summary: Option<String>,
-        tokens_before: Option<u32>,
-        tokens_after: Option<u32>,
-    );
+    fn commit_compaction_snapshot(/* … */);
+    fn record_compaction_event(/* … */);
     fn persist_checkpoint(&mut self, reason: &str) -> anyhow::Result<()>;
 }
 ```
 
-具体字段以 `crates/context` / `crates/session` 实现为准，本文约束 **语义** 而非一次 API 冻结。
+`messages_mut` 仍为兼容边界，但 Context 代码不直接修改它；compaction 通过 session commit 方法追加事实并刷新 cache。具体字段以 `crates/context` / `crates/session` 实现为准，本文约束 **语义** 而非一次 API 冻结。
 
 ---
 
@@ -391,54 +383,55 @@ engine.record_step_usage(usage, /* … */)?;
 
 | 优先级 | 项 | 原因 |
 |--------|----|------|
-| **P0** | Session 事件化 + compact 追加而非物理删 | 否则 fork/rewind/可解释全部不稳 |
-| **P0** | `observe` / `commit` / `project` 拆分 | 可测、可缓存、可对 UI 暴露 |
-| **P1** | `ProjectionExplain` + `/context` 可视化 | 产品与调试立刻受益 |
-| **P1** | 注入物分类 + epoch 规则 | 稳住 delta / prompt cache |
-| **P2** | branch summary、file-ops 累积进 summary details | 长会话增强，不阻塞主线 |
-| **P2** | `messages` 降级为 materialized cache | 兼容旧 API，内部切 SoT |
-| **P3** | UI / replay 与 LLM 共享同一 active path 查询 | 统一 ACP / Cloud / CLI |
+| **已完成** | Session 事件化 + compact 追加而非物理删 | 新路径以事件为事实，旧格式保留显式 fallback |
+| **已完成** | `observe` / `commit` / `project` 拆分 | Context projection 默认消费 event-backed view |
+| **已完成** | `ProjectionExplain` + RuntimeEvent / ACP 明细 | 已覆盖 path、fallback、injected、tool、retained-turn、delivery provenance |
+| **已完成** | 注入物分类 + epoch / delta 规则 | 与 gateway publish / `tail_start` 对齐 |
+| **剩余** | legacy fallback 与历史格式清理 | 仅清理可无损迁移的兼容代码 |
+| **剩余** | UI / replay 与 LLM 共享 active path 查询 | 按 Console 产品需求继续扩展 |
 
 ### 6.1 与 AgentRuntime 合并后的 Wave 映射
 
 全文落地顺序以
 [agent-runtime-optimization.md §16](./agent-runtime-optimization.md#16-merged-implementation-waves)
-为准。本文 Phase 嵌入位置：
+为准。本文 Phase 的当前状态：
 
-| 本文 | Merged Wave | 说明 |
-|------|-------------|------|
-| Phase A Session 事实 | **Wave 2** | 前依赖 Wave 1（统一 ID / RuntimeEvent） |
-| Phase B observe/commit/project | **Wave 3** | 对外 port 名对齐 `ContextAssembler` |
-| Phase C compact 事件化 | Wave 2–3 内完成 4a→4c | flag 切换读路径 |
-| Phase D 注入 / epoch | Wave 3–5 | 与 Turn 消费 `PreparedContext` 一起收 |
-| Phase E explain | 可与 Wave 3 并行 | 最终经 RuntimeEvent / debug sink |
+| 本文 | Merged Wave | 当前状态 |
+|------|-------------|----------|
+| Phase A Session 事实 | **Wave 9–10** | 已完成事件事实、active path、显式 migration / fallback |
+| Phase B observe/commit/project | **Wave 10** | 已完成；Context 默认使用 event-backed view |
+| Phase C compact 事件化 | **Wave 9–10** | 已完成当前切片；旧 snapshot 缺失时保留 fallback |
+| Phase D 注入 / epoch | **Wave 10–11** | 已完成当前规则与 RuntimeEvent / ACP 暴露 |
+| Phase E explain | **Wave 10** | 已完成当前设计范围；后续按 Console 需求扩展 provenance |
 
 **API 造型：** TurnEngine 只依赖 `ContextAssembler::prepare` /
 `handle_overflow`；三段式是 `ContextEngine` **内部** 实现，
 不是再暴露第三套全局回调。
 
-**暂不必优先：**
+**当前不属于剩余主线：**
 
 - 再引入全新 compress phase
 - 为像 Pi 而改存储格式
 - 把 permission / MCP 逻辑迁入 `zene-context`
-- 先于 Wave 1–2 上 Runtime actor 全量重写
+- 为已完成的 Runtime protocol / actor contract 再做一次全量重写
+
+剩余主线是 Agent-specific driver wiring 的进一步 crate 化、可无损迁移的 legacy cleanup，以及 Cloud/ACP/runtime 的部署级生命周期与共享 outbox 边界。
 
 ---
 
 ## 7. 迁移与风险控制
 
-1. **双写期**  
-   compact 仍更新 `SessionRecord.messages`（兼容），同时 append 事件 / 完善 `segment_ref`。
+1. **兼容期**  
+   新路径优先使用事件事实与 active-path projection；`SessionRecord.messages` 继续保留为兼容 cache。
 
-2. **project 金丝雀**  
-   用事件投影出的 messages 与现网 materialized `messages` 做 diff 测试（维护等价规则表）。
+2. **投影等价性**  
+   用事件投影出的 messages 与 materialized `messages` 做 diff 测试；cache drift 只诊断，不覆盖事件投影。
 
 3. **`prepare_step` 保持门面**  
-   外部调用点先不动，内部改为 observe → commit → project。
+   外部调用点不变，内部使用 observe → commit → project。
 
-4. **先解释、后切换 SoT**  
-   先上 `ProjectionExplain`，再切「以事件回放为准」。
+4. **显式 fallback**  
+   旧 compaction/rewind 缺 snapshot 或事件日志不完整时保留 fallback reason，并由 `try_view` 严格拒绝隐式 fallback。
 
 5. **fork / rewind 作为主验收场景**  
    两类测试通过，才说明投影模型立住。
@@ -460,15 +453,15 @@ engine.record_step_usage(usage, /* … */)?;
 | [agent-runtime-optimization.md](./agent-runtime-optimization.md) | Runtime / Turn / ports；Merged Wave |
 | [pi-agent-harness-lessons.md](./pi-agent-harness-lessons.md) | Pi Harness 对照与启发总览 |
 
-本文 **不替代** `context-engine.md` 的实现说明，只定义 **下一阶段语义优化方向**。
+本文 **不替代** `context-engine.md` 的实现说明；它记录已完成的事件投影边界、兼容策略，以及下一阶段的语义与组合优化方向。
 
 ---
 
 ## 9. 一句话
 
-> **Context Engine 的优化方向：从「会改历史的压缩器」，变成「只读 Session 事实、可提交压缩事件、可纯函数投影、可解释每一步模型看见了什么」的投影引擎。**
+> **Context Engine 当前已是以 Session 事件事实为输入、以 active-path projection 为默认路径、以 `ProjectionExplain` 解释每一步模型视图的投影引擎；剩余优化在兼容清理、组合边界与外部生命周期。**
 
-算法层已具备优势；下一杠杆在 **事实模型 + 读写分离 + 可解释投影**，而不是继续堆 compression phase。
+算法层已具备优势；下一杠杆不是继续堆 compression phase，而是收口 legacy fallback、Agent-specific runtime wiring 与部署级恢复边界。
 
 ---
 
