@@ -54,6 +54,17 @@ pub(crate) async fn run_tool_batch(
     options: &PromptOptions,
     cancel: Option<&CancellationToken>,
 ) -> Result<ToolBatchOutcome> {
+    debug_assert_eq!(
+        deps.runtime_scope.session_policy.persistence,
+        zene_tools::SessionPersistence::Durable,
+        "main-agent tool batch expects durable SessionPolicy"
+    );
+    debug_assert!(
+        deps.runtime_scope.tool_policy.plan_mode
+            && deps.runtime_scope.tool_policy.ask_user
+            && deps.runtime_scope.tool_policy.hooks,
+        "main-agent tool batch expects ToolPolicy::agent()"
+    );
     let turn_id = deps.turn_id.as_deref();
     let step_id = deps.step_id.as_deref();
 

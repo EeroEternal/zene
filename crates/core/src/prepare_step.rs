@@ -16,7 +16,9 @@ use zene_context::{
 };
 use zene_llm::{ChatClient, ToolDefinition};
 use zene_session::{AgentRecordWriter, RecordEntry, SessionRecord};
-use zene_tools::{SharedBackgroundTasks, SharedTodoStore, ToolCatalog, ToolRegistry};
+use zene_tools::{
+    SharedBackgroundTasks, SharedTodoStore, ToolCatalog, ToolPolicy, ToolRegistry,
+};
 use zene_turn::PreparedContext;
 
 use crate::context_config;
@@ -37,6 +39,7 @@ pub(crate) struct PrepareStepDeps<'a> {
     pub tools: &'a ToolRegistry,
     pub background: &'a SharedBackgroundTasks,
     pub todos: &'a SharedTodoStore,
+    pub tool_policy: ToolPolicy,
     pub plan_mode_active: bool,
     pub record_writer: &'a AgentRecordWriter,
 }
@@ -52,10 +55,11 @@ pub(crate) async fn prepare_step_context(
     }
 
     sync_todos_to_session(deps.todos, deps.session);
-    let tools = tool_definitions_for_llm(deps.tools, deps.plan_mode_active);
+    let plan_filter = deps.tool_policy.plan_mode && deps.plan_mode_active;
+    let tools = tool_definitions_for_llm(deps.tools, plan_filter);
     let estimator = token_estimator(deps.config);
     let background_tasks = deps.background.lock().list();
-    let hooks = ZeneContextHooks::new(deps.session, &background_tasks, deps.plan_mode_active);
+    let hooks = ZeneContextHooks::new(deps.session, &background_tasks, plan_filter);
     let compaction_config = context_config::context_compaction_config(&deps.config.compaction);
     let mut handler =
         AgentContextHandler::new(deps.context_model, &deps.config.model, deps.workdir);
@@ -210,5 +214,15 @@ mod tests {
         let names: Vec<_> = defs.iter().map(|t| t.name.as_str()).collect();
         assert!(names.contains(&"Write"));
         assert!(names.contains(&"Bash"));
+    }
+
+    #[test]
+    fn tool_policy_without_plan_mode_skips_filter_even_when_active_flag_set() {
+        // Mirrors prepare_step: plan_filter = tool_policy.plan_mode && plan_mode_active
+        let tools = default_builtin_tools();
+        let policy = ToolPolicy::subagent();
+        let plan_filter = policy.plan_mode && true;
+        let defs = tool_definitions_for_llm(&tools, plan_filter);
+        assert!(defs.iter().any(|t| t.name == "Write"));
     }
 }

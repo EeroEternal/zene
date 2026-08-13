@@ -30,7 +30,7 @@ pub use background::{
 };
 pub use builtin::{agent_tools, builtin_tools, default_builtin_tools, tools_for_profile};
 pub use todo_store::{shared_todo_store, shared_todo_store_from, SharedTodoStore, TodoItem, TodoStatus, TodoStore};
-pub use scope::RuntimeScope;
+pub use scope::{RuntimeScope, SessionPersistence, SessionPolicy, ToolPolicy};
 pub use subagent::{
     SubagentEnv, SubagentProfile, SubagentRunner, DEFAULT_SUBAGENT_MAX_DEPTH,
 };

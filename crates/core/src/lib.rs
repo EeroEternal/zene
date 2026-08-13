@@ -5,7 +5,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::info;
 use zene_config::ZeneConfig;
 use zene_context::{ContextDeps, ContextEngine, PrefireClientFactory};
-use zene_llm::{ChatClient, Message, TokenUsage, ToolCall};
+use zene_llm::{ChatClient, TokenUsage, ToolCall};
 
 use zene_mcp::McpManager;
 use zene_model_executor::ModelExecutor;
@@ -39,6 +39,7 @@ mod tool_batch;
 mod tool_dedup;
 mod tool_executor;
 pub mod tool_scheduler;
+mod turn_session;
 mod usage;
 mod worktree;
 
@@ -769,46 +770,20 @@ impl Agent {
     }
 
     fn inject_pending_steer(&mut self, options: &PromptOptions) -> Result<bool> {
-        let messages = self.steer_buffer.lock().take_all();
-        if messages.is_empty() {
-            return Ok(false);
-        }
-        for text in messages {
-            info!(steer_chars = text.len(), "steer_injected");
-            emit_event(
-                &options.event_handler,
-                AgentEvent::SteerInput { text: text.clone() },
-            );
-            self.session.push_message(Message::user(text));
-        }
-        Ok(true)
+        Ok(turn_session::inject_pending_steer(
+            self.runtime_scope.session_policy.steer,
+            &self.steer_buffer,
+            &mut self.session,
+            options,
+        ))
     }
 
     pub(crate) fn record_step_started(&mut self) -> Result<()> {
-        let Some(turn) = self.active_turn.as_ref() else {
-            return Ok(());
-        };
-        let Some(step_id) = turn.step_id else {
-            return Ok(());
-        };
-        let turn_id = turn.turn_id.to_string();
-        let step_id = step_id.to_string();
-        self.session
-            .record_step_started(&turn_id, &step_id, turn.step);
-        let idempotency_key = format!("{turn_id}/{step_id}/started");
-        let step_event = self.session.record_checkpoint(
-            Some(&turn_id),
-            Some(&step_id),
-            None,
-            "step_started",
-            &idempotency_key,
-        );
-        self.record_writer.append_execution_link(
-            &idempotency_key,
-            &step_event.id,
-            step_event.sequence,
-        )?;
-        Ok(())
+        turn_session::record_step_started(
+            &mut self.session,
+            &self.record_writer,
+            self.active_turn.as_ref(),
+        )
     }
 
     pub(crate) async fn prepare_step_context(
@@ -828,6 +803,7 @@ impl Agent {
                 tools: self.tools.as_ref(),
                 background: &self.background,
                 todos: &self.todos,
+                tool_policy: self.runtime_scope.tool_policy,
                 plan_mode_active,
                 record_writer: &self.record_writer,
             },
