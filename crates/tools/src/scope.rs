@@ -1,24 +1,50 @@
 use std::sync::Arc;
 
 use anyhow::{bail, Result};
+use zene_config::{AgentProfile, WebSearchConfig};
 
-use crate::builtin::tools_for_profile;
+use crate::builtin::{agent_tools, tools_for_profile};
 use crate::registry::ToolRegistry;
 use crate::subagent::{SubagentEnv, SubagentProfile, SubagentRunner, DEFAULT_SUBAGENT_MAX_DEPTH};
 
-/// Capability boundary for a child/runtime turn.
+/// Capability boundary for a main-agent or child runtime turn.
 ///
-/// Wave 14 first slice: Subagent construction goes through a scope so profile,
-/// nesting depth, and tool catalog stay one injection point. Full-agent scopes
-/// and ToolPolicy/SessionPolicy land in later slices.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Wave 14: construction goes through a scope so profile, nesting depth, and
+/// tool catalog stay one injection point. ToolPolicy/SessionPolicy land later.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RuntimeScope {
-    pub profile: SubagentProfile,
+    kind: RuntimeKind,
     pub depth: u32,
     pub max_depth: u32,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum RuntimeKind {
+    Agent {
+        profile: AgentProfile,
+        web_search: WebSearchConfig,
+    },
+    Subagent {
+        profile: SubagentProfile,
+    },
+}
+
 impl RuntimeScope {
+    /// Root scope for the main Agent (depth `0`).
+    ///
+    /// Uses [`agent_tools`] — Explore/Coder agent boxes differ from Subagent
+    /// profile boxes (collaboration / plan / Task).
+    pub fn agent(profile: AgentProfile, web_search: WebSearchConfig) -> Self {
+        Self {
+            kind: RuntimeKind::Agent {
+                profile,
+                web_search,
+            },
+            depth: 0,
+            max_depth: DEFAULT_SUBAGENT_MAX_DEPTH,
+        }
+    }
+
     /// Build a child scope under `parent_depth`. Depth `0` is the main agent.
     pub fn subagent(profile: SubagentProfile, parent_depth: u32) -> Result<Self> {
         let depth = parent_depth.saturating_add(1);
@@ -26,14 +52,28 @@ impl RuntimeScope {
             bail!("Subagent nesting limit reached (max depth {DEFAULT_SUBAGENT_MAX_DEPTH})");
         }
         Ok(Self {
-            profile,
+            kind: RuntimeKind::Subagent { profile },
             depth,
             max_depth: DEFAULT_SUBAGENT_MAX_DEPTH,
         })
     }
 
+    /// Subagent profile when this scope was built via [`Self::subagent`].
+    pub fn subagent_profile(&self) -> Option<SubagentProfile> {
+        match self.kind {
+            RuntimeKind::Subagent { profile } => Some(profile),
+            RuntimeKind::Agent { .. } => None,
+        }
+    }
+
     pub fn tools(&self) -> ToolRegistry {
-        tools_for_profile(self.profile)
+        match &self.kind {
+            RuntimeKind::Agent {
+                profile,
+                web_search,
+            } => agent_tools(*profile, web_search.clone()),
+            RuntimeKind::Subagent { profile } => tools_for_profile(*profile),
+        }
     }
 
     pub fn catalog(&self) -> ToolRegistry {
@@ -88,5 +128,34 @@ mod tests {
         let err = RuntimeScope::subagent(SubagentProfile::Explore, DEFAULT_SUBAGENT_MAX_DEPTH)
             .expect_err("over max");
         assert!(err.to_string().contains("nesting limit"));
+    }
+
+    #[test]
+    fn agent_scope_is_root_depth_and_uses_agent_tool_boxes() {
+        let scope = RuntimeScope::agent(AgentProfile::Explore, WebSearchConfig::default());
+        assert_eq!(scope.depth, 0);
+        assert!(scope.subagent_profile().is_none());
+        let names: Vec<_> = scope
+            .definitions()
+            .into_iter()
+            .map(|tool| tool.name)
+            .collect();
+        assert!(names.contains(&"Read".into()));
+        assert!(names.contains(&"AskUserQuestion".into()));
+        assert!(!names.iter().any(|name| name == "Write" || name == "Edit" || name == "Bash"));
+        // Agent Explore includes plan/collaboration; Subagent Explore does not include Task.
+        assert!(!names.iter().any(|name| name == "Task"));
+    }
+
+    #[test]
+    fn agent_coder_scope_includes_task() {
+        let scope = RuntimeScope::agent(AgentProfile::Coder, WebSearchConfig::default());
+        let names: Vec<_> = scope
+            .definitions()
+            .into_iter()
+            .map(|tool| tool.name)
+            .collect();
+        assert!(names.contains(&"Write".into()));
+        assert!(names.contains(&"Task".into()));
     }
 }

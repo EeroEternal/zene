@@ -175,7 +175,10 @@ impl<'a> SubagentTurnRuntime<'a> {
         permission: Option<SharedToolPermission>,
         broker: Option<zene_permission::SharedApprovalBroker>,
     ) -> Self {
-        let system_prompt = subagent_system_prompt(scope.profile, sandbox.workdir());
+        let profile = scope
+            .subagent_profile()
+            .expect("SubagentTurnRuntime requires a subagent RuntimeScope");
+        let system_prompt = subagent_system_prompt(profile, sandbox.workdir());
         let tools = Arc::new(scope.tools());
         Self {
             sandbox,
