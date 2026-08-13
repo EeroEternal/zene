@@ -6,7 +6,7 @@ Zene 的语义上下文引擎（`crates/context`）。它从 Session 事实算�
 
 **不在本文范围**：新的 compress 算法、改成 Pi JSONL、把 permission / MCP / Turn 塞进 ContextEngine、为 agent 循环建设全仓 embedding。
 
-**进度（2026-08-13）**：crate 边界、`observe → commit → project`、event-backed projection、前缀三区、Plan/overflow 去改写、prefix-adjacent 注入拖尾已在实现里。代码索引（Select）的职责与最小闭环已写入本文，实现未开始。剩余是 legacy fallback 清理，以及 Console 对 `prefixCache` 的展示。
+**进度（2026-08-13）**：crate 边界、`observe → commit → project`、event-backed projection、前缀三区、Plan/overflow 去改写、prefix-adjacent 注入拖尾已在实现里。代码索引（Select）最小闭环已落地：`zene-index` sidecar + 按需 `RepoMap` 工具。剩余是 legacy fallback 清理，以及 Console 对 `prefixCache` 的展示。
 
 ---
 
@@ -22,7 +22,7 @@ ContextEngine       estimate → compact → memory → assemble → epoch → �
 ```
 zene-session     持久化：events、兼容 messages cache、checkpoints、todos
 zene-context     语义上下文：estimate、compact、memory、prefire、epoch、assemble、layout
-zene-tools       Grep/Read/Glob；未来符号查询 / RepoMap（Select，不进 context）
+zene-tools       Grep/Read/Glob/RepoMap；符号查询走 `zene-index`
 zene-llm         ChatRequest + ContextMetadata、TokenUsage.cached_tokens
 zene-core        composition root
 ```
@@ -198,12 +198,12 @@ Repo Map 是给模型看的 **仓库结构地图**，不是源码全文，也不
 
 现状：JIT 工具已经够用——`Read` / `Grep` / `Glob`（见 [ENGINE.md](./ENGINE.md) 的 agent profile）。缺的是结构化导航，不是第二套上下文引擎。
 
-**下一步（agent 工作区，尚未实现）**
+**下一步（agent 工作区，已落地）**
 
 1. tree-sitter 按语法边界抽符号（函数、类、方法、模块），不要按固定行数切块。
-2. 符号图 sidecar：路径、符号、签名、一行定义；文件 content hash 变了才重解析。
-3. `RepoMap` 工具：按 token 预算返回结构地图，输出当工具结果。
-4. Grep 可先打符号表再落文件；Read 仍是唯一把实现拉进窗口的入口。
+2. 符号图 sidecar：`{workdir}/.zene/index/v1.json`；路径、符号、签名、一行定义；文件 content hash 变了才重解析。
+3. `RepoMap` 工具：按 token 预算返回结构地图，输出当工具结果（对话 Body），不写进冻结 Prefix。
+4. Grep / Read 仍负责真正打开实现；Explore / Plan mode / 子 agent 均可调用 `RepoMap`。
 
 **明确不做的下一跳**
 
@@ -265,7 +265,7 @@ TurnEngine 只依赖 `ContextAssembler::prepare` / `handle_overflow`；三段式
 - 仅清理可无损迁移的 legacy session fallback
 - Console 按产品需求展示 `prefixCache`（非第一版必做彩图）
 - Agent-specific runtime wiring 的进一步 crate 化（控制面，见 runtime 文档）
-- §5 最小闭环尚未实现：tree-sitter 符号图（hash 增量）、按需 `RepoMap` 工具；不要为此改 ContextEngine 布局
+- §5 最小闭环已落地：`zene-index`（tree-sitter 符号图 + hash 增量）与 `RepoMap` 工具；不要为此改 ContextEngine 布局
 - 向量检索 / 跨仓 embedding 属于 Console Code Intelligence，不在本文实现范围
 
 ---
@@ -292,6 +292,7 @@ TurnEngine 只依赖 `ContextAssembler::prepare` / `handle_overflow`；三段式
 - 最小闭环：tree-sitter 符号索引 + 按需 Repo Map + 现有 Grep/Read；符号图按文件 hash 增量更新。
 - 向量检索归 Console / 跨仓搜索，不是把 agent 做强的下一跳。
 - Repo Map 按需当工具结果进 Body；个性化地图不得写入冻结 Prefix。
+- 已落地：`zene-index` sidecar（`.zene/index/v1.json`）+ `RepoMap` 工具；不做向量检索。
 
 ### 2026-08-13 — 前缀稳定 + 文档合并
 

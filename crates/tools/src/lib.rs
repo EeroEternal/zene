@@ -12,6 +12,7 @@ mod plan;
 mod plan_mode;
 mod read;
 mod registry;
+mod repomap;
 mod skill;
 mod subagent;
 mod task;

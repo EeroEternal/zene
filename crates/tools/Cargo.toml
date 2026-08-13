@@ -19,6 +19,7 @@ thiserror.workspace = true
 tokio.workspace = true
 tokio-util.workspace = true
 zene-config = { workspace = true }
+zene-index = { workspace = true }
 zene-llm = { workspace = true }
 zene-permission = { workspace = true }
 zene-sandbox = { workspace = true }

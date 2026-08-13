@@ -6,7 +6,7 @@ use zene_llm::{Message, Role};
 /// Map a built-in / MCP tool name to an ACP tool kind.
 pub fn tool_kind(name: &str) -> &'static str {
     match name {
-        "Read" | "Grep" | "Glob" => "read",
+        "Read" | "Grep" | "Glob" | "RepoMap" => "read",
         "Write" | "Edit" => "edit",
         "Bash" | "Task" | "TaskOutput" => "execute",
         "FetchUrl" | "WebSearch" => "fetch",
@@ -44,6 +44,10 @@ pub fn tool_title(name: &str, arguments: &str) -> String {
                 40
             )
         ),
+        "RepoMap" => match field("query").filter(|q| !q.is_empty()) {
+            Some(query) => format!("Mapped repo for {}", truncate(query, 40)),
+            None => "Mapped repository structure".to_string(),
+        },
         "WebSearch" => format!(
             "Searched the web for \"{}\"",
             truncate(field("query").unwrap_or("…"), 40)
@@ -545,6 +549,7 @@ mod tests {
     #[test]
     fn maps_tool_kinds() {
         assert_eq!(tool_kind("Read"), "read");
+        assert_eq!(tool_kind("RepoMap"), "read");
         assert_eq!(tool_kind("Edit"), "edit");
         assert_eq!(tool_kind("Bash"), "execute");
         assert_eq!(tool_kind("TodoWrite"), "think");
@@ -580,10 +585,12 @@ mod tests {
             tool_title("Bash", r#"{"command":"ls -la && find . -name '*.rs'"}"#),
             "Listed files"
         );
+        assert_eq!(tool_title("Grep", r#"{"pattern":"tool_title"}"#), "Searched code for tool_title");
         assert_eq!(
-            tool_title("Grep", r#"{"pattern":"tool_title"}"#),
-            "Searched code for tool_title"
+            tool_title("RepoMap", r#"{"query":"ContextEngine"}"#),
+            "Mapped repo for ContextEngine"
         );
+        assert_eq!(tool_title("RepoMap", "{}"), "Mapped repository structure");
         assert_eq!(tool_title("TodoWrite", r#"{"todos":[]}"#), "Updated todos");
         assert!(!tool_title("Bash", r#"{"command":"ls -la /tmp/foo"}"#).contains('/'));
     }

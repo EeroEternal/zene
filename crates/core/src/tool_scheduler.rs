@@ -55,6 +55,14 @@ pub fn classify_tool_accesses(name: &str, arguments: &str) -> ToolAccesses {
             path: None,
             recursive: true,
         }],
+        "RepoMap" => {
+            let path = args.and_then(|v| str_field(&v, "path"));
+            vec![ToolResourceAccess::File {
+                operation: FileOperation::Search,
+                path,
+                recursive: true,
+            }]
+        }
         "Skill" => vec![ToolResourceAccess::File {
             operation: FileOperation::Read,
             path: None,

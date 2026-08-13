@@ -591,7 +591,7 @@ pub struct RuntimeScope {
 | Scope | 工具 | 持久化 | AskUser | Plan mode |
 | --- | --- | --- | --- | --- |
 | Full Agent | 全部配置工具 | durable | enabled | enabled |
-| Explore | Read/Grep/Glob | ephemeral | disabled | disabled |
+| Explore | Read/Grep/Glob/RepoMap | ephemeral | disabled | disabled |
 | Coder | Read/Edit/Write/Bash | ephemeral 或 child session | inherited | disabled |
 
 现有 `SubagentRunner` 可以保留为兼容 API，但内部改为：

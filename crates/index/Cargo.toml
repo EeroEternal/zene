@@ -1,0 +1,23 @@
+[package]
+name = "zene-index"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Workspace symbol index and on-demand repo map for Zene agents"
+publish = false
+
+[dependencies]
+anyhow.workspace = true
+ignore = "0.4"
+serde.workspace = true
+serde_json.workspace = true
+tree-sitter = "0.24"
+tree-sitter-go = "0.23"
+tree-sitter-javascript = "0.23"
+tree-sitter-python = "0.23"
+tree-sitter-rust = "0.23"
+tree-sitter-typescript = "0.23"
+streaming-iterator = "0.1"
+
+[dev-dependencies]
+tempfile = "3"
