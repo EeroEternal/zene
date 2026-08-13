@@ -694,7 +694,6 @@ async fn run_with_mock(
                         &token,
                         run_id,
                         &request_key,
-                        None,
                         "tool",
                         &approval_payload(&params),
                     )
@@ -1027,7 +1026,6 @@ async fn run_with_real_acp(
                         &token,
                         run_id,
                         &request_id,
-                        None,
                         "permission",
                         &context,
                     )
@@ -1219,13 +1217,11 @@ async fn resolve_permission(
     token: &str,
     run_id: Uuid,
     request_key: &str,
-    jsonrpc_id: Option<&str>,
     kind: &str,
     payload: &serde_json::Value,
 ) -> Result<ApprovalDecision> {
     let body = CreateApprovalRequest {
         request_key: request_key.to_string(),
-        jsonrpc_id: jsonrpc_id.map(|s| s.to_string()),
         kind: kind.to_string(),
         risk: "medium".into(),
         payload: payload.clone(),

@@ -315,8 +315,8 @@ pub struct WorkerEventRequest {
 #[cfg(test)]
 mod tests {
     use super::{
-        ApprovalDecision, WorkerCommand, WorkerCommandAckRequest, WorkerCommandKind,
-        WorkerEventRequest, WorkerFence,
+        ApprovalDecision, CreateApprovalRequest, WorkerCommand, WorkerCommandAckRequest,
+        WorkerCommandKind, WorkerEventRequest, WorkerFence,
     };
 
     #[test]
@@ -391,6 +391,21 @@ mod tests {
         let parsed: ApprovalDecision =
             serde_json::from_value(serde_json::json!("reject-once")).expect("reject-once");
         assert_eq!(parsed, ApprovalDecision::Deny);
+    }
+
+    #[test]
+    fn create_approval_request_drops_legacy_jsonrpc_id() {
+        let parsed: CreateApprovalRequest = serde_json::from_value(serde_json::json!({
+            "requestKey": "permission-1",
+            "jsonrpcId": "rpc-1",
+            "kind": "permission",
+            "payload": { "path": "notes.txt" }
+        }))
+        .expect("legacy jsonrpcId should be ignored");
+        let encoded = serde_json::to_value(&parsed).expect("serialize");
+        assert!(encoded.get("jsonrpcId").is_none());
+        assert_eq!(encoded["requestKey"], "permission-1");
+        assert_eq!(encoded["kind"], "permission");
     }
 }
 
@@ -540,7 +555,6 @@ impl ApprovalDecision {
 #[serde(rename_all = "camelCase")]
 pub struct CreateApprovalRequest {
     pub request_key: String,
-    pub jsonrpc_id: Option<String>,
     pub kind: String,
     #[serde(default = "default_risk")]
     pub risk: String,
@@ -605,7 +619,6 @@ pub struct ApprovalRequest {
     pub id: Id,
     pub run_id: Id,
     pub request_key: String,
-    pub jsonrpc_id: Option<String>,
     pub kind: String,
     pub risk: String,
     pub payload: serde_json::Value,
