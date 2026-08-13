@@ -16,11 +16,9 @@ use tokio::sync::mpsc;
 use tracing::{error, info, warn};
 use tracing_subscriber::EnvFilter;
 use uuid::Uuid;
-use zene_cloud_acp_bridge::{
-    resolve_zene_bin, AcpEvent, MockAgent, MockMsg, PermissionDecision,
-};
+use zene_cloud_acp_bridge::{resolve_zene_bin, MockAgent, MockMsg, PermissionDecision};
 use zene_cloud_runtime_client::{
-    AcpRuntimeClient, RuntimeClient, RuntimeEvent, RuntimeRequest,
+    AcpRuntimeClient, RuntimeClient, RuntimeEvent, RuntimeNotification, RuntimeRequest,
 };
 use zene_cloud_domain::{
     ApprovalRequest, ApprovalStatus, ClaimedRun, CloneAuthResponse, CreateApprovalRequest,
@@ -1004,10 +1002,10 @@ async fn run_with_real_acp(
                         break;
                     }
                     match request {
-                        RuntimeRequest::Permission {
+                        RuntimeRequest::Approval {
                             id,
                             request_key,
-                            params,
+                            context,
                         } => {
                             let decision = match resolve_permission(
                                 &client_bg,
@@ -1017,7 +1015,7 @@ async fn run_with_real_acp(
                                 &request_key,
                                 Some(&id_to_string(&id)),
                                 "permission",
-                                &params,
+                                &context,
                             )
                             .await
                             {
@@ -1029,9 +1027,9 @@ async fn run_with_real_acp(
                             };
                             let _ = runtime_bg.respond_approval(&id, decision.to_result()).await;
                         }
-                        RuntimeRequest::Unsupported { id, method } => {
+                        RuntimeRequest::Unsupported { id } => {
                             let _ = runtime_bg
-                                .reject_request(&id, -32601, &format!("unsupported: {method}"))
+                                .reject_request(&id, -32601, "unsupported runtime request")
                                 .await;
                         }
                     }
@@ -1277,7 +1275,7 @@ async fn fetch_commands(
     Ok(response.commands)
 }
 
-fn event_to_req(event: AcpEvent) -> WorkerEventRequest {
+fn event_to_req(event: RuntimeNotification) -> WorkerEventRequest {
     WorkerEventRequest {
         source_event_id: event.source_event_id,
         cursor: event.cursor,

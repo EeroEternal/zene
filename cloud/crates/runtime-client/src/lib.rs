@@ -15,26 +15,39 @@ pub enum RuntimeCommand {
     RejectRequest { id: Value, code: i64, message: String },
 }
 
+/// A runtime notification with the stable fields persisted by the worker.
+///
+/// The payload intentionally remains the original JSON value so existing event
+/// records can be replayed without a translation or migration.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RuntimeNotification {
+    pub source_event_id: String,
+    pub cursor: Option<u64>,
+    pub event_type: String,
+    pub payload: Value,
+}
+
 #[derive(Debug)]
 pub enum RuntimeEvent {
-    Initialized { session_id: String, event: AcpEvent },
-    Notification(AcpEvent),
-    Request { request: RuntimeRequest, event: AcpEvent },
+    Initialized { session_id: String, event: RuntimeNotification },
+    Notification(RuntimeNotification),
+    Request { request: RuntimeRequest, event: RuntimeNotification },
     ChildExited,
 }
 
-/// Runtime-level meaning of an ACP reverse request. ACP method names and
-/// parameter paths stay inside this adapter instead of leaking into workers.
+/// Runtime-level meaning of a request requiring user approval. Protocol method
+/// names and parameter paths stay inside this adapter instead of leaking into
+/// workers. `context` is opaque request context retained for existing approval
+/// resolution and compatibility with stored payloads.
 #[derive(Debug)]
 pub enum RuntimeRequest {
-    Permission {
+    Approval {
         id: Value,
         request_key: String,
-        params: Value,
+        context: Value,
     },
     Unsupported {
         id: Value,
-        method: String,
     },
 }
 
@@ -56,19 +69,25 @@ pub struct AcpRuntimeClient {
     events: Arc<Mutex<mpsc::UnboundedReceiver<RuntimeEvent>>>,
 }
 
+fn runtime_notification(event: AcpEvent) -> RuntimeNotification {
+    RuntimeNotification {
+        source_event_id: event.source_event_id,
+        cursor: event.cursor,
+        event_type: event.event_type,
+        payload: event.payload,
+    }
+}
+
 fn runtime_request(id: &Value, method: &str, params: &Value) -> RuntimeRequest {
     if method == "session/request_permission" {
         let request_key = permission_request_key(params);
-        RuntimeRequest::Permission {
+        RuntimeRequest::Approval {
             id: id.clone(),
             request_key,
-            params: params.clone(),
+            context: params.clone(),
         }
     } else {
-        RuntimeRequest::Unsupported {
-            id: id.clone(),
-            method: method.to_string(),
-        }
+        RuntimeRequest::Unsupported { id: id.clone() }
     }
 }
 
@@ -124,15 +143,18 @@ impl AcpRuntimeClient {
             init_events = events;
         }
         for event in init_events {
+            let event = runtime_notification(event);
             let _ = events_tx.send(RuntimeEvent::Initialized { session_id: session_id.clone(), event });
         }
         let event_tx = events_tx.clone();
         tokio::spawn(async move {
             while let Some(message) = messages.recv().await {
                 let event = match message {
-                    BridgeMsg::Notification { raw, .. } => RuntimeEvent::Notification(AcpEvent::from_notification(&raw)),
+                    BridgeMsg::Notification { raw, .. } => {
+                        RuntimeEvent::Notification(runtime_notification(AcpEvent::from_notification(&raw)))
+                    }
                     BridgeMsg::ReverseRequest { id, method, params } => {
-                        let event = AcpEvent::from_reverse_request(&id, &method, &params);
+                        let event = runtime_notification(AcpEvent::from_reverse_request(&id, &method, &params));
                         let request = runtime_request(&id, &method, &params);
                         RuntimeEvent::Request { request, event }
                     }
@@ -189,7 +211,7 @@ mod tests {
         );
         assert!(matches!(
             request,
-            RuntimeRequest::Permission { request_key, .. } if request_key == "call-7"
+            RuntimeRequest::Approval { request_key, .. } if request_key == "call-7"
         ));
     }
 
@@ -205,8 +227,8 @@ mod tests {
         assert!(matches!(
             (first, second),
             (
-                RuntimeRequest::Permission { request_key: first, .. },
-                RuntimeRequest::Permission { request_key: second, .. }
+                RuntimeRequest::Approval { request_key: first, .. },
+                RuntimeRequest::Approval { request_key: second, .. }
             ) if first == second && first.starts_with("permission-")
         ));
     }
@@ -226,8 +248,8 @@ mod tests {
         assert!(matches!(
             (first, second),
             (
-                RuntimeRequest::Permission { request_key: first, .. },
-                RuntimeRequest::Permission { request_key: second, .. }
+                RuntimeRequest::Approval { request_key: first, .. },
+                RuntimeRequest::Approval { request_key: second, .. }
             ) if first != second
         ));
     }
@@ -239,9 +261,39 @@ mod tests {
             "session/unknown",
             &serde_json::json!({}),
         );
+        assert!(matches!(request, RuntimeRequest::Unsupported { id } if id == serde_json::json!(42)));
+    }
+
+    #[test]
+    fn notification_contract_preserves_stored_event_shape() {
+        let raw = serde_json::json!({
+            "jsonrpc": "2.0",
+            "method": "session/update",
+            "params": {
+                "sessionId": "session-1",
+                "update": { "sessionUpdate": "agent_message_chunk", "text": "hello" }
+            }
+        });
+        let event = runtime_notification(AcpEvent::from_notification(&raw));
+        assert_eq!(event.event_type, "acp");
+        assert!(event.source_event_id.starts_with("acp-"));
+        assert_eq!(event.cursor, None);
+        assert_eq!(event.payload, raw);
+    }
+
+    #[test]
+    fn approval_contract_exposes_neutral_context_and_identity() {
+        let params = serde_json::json!({
+            "toolCall": { "toolCallId": "call-7" },
+            "reason": "write"
+        });
+        let request = runtime_request(&serde_json::json!(42), "session/request_permission", &params);
         assert!(matches!(
             request,
-            RuntimeRequest::Unsupported { method, .. } if method == "session/unknown"
+            RuntimeRequest::Approval { id, request_key, context }
+                if id == serde_json::json!(42)
+                    && request_key == "call-7"
+                    && context == params
         ));
     }
 
