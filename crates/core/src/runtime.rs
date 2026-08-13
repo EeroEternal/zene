@@ -1,6 +1,7 @@
-//! Compatibility facade for the Agent-specific runtime actor.
+//! Private compatibility module for the Agent-specific runtime actor.
 //!
-//! The implementation lives in the private `agent_runtime` module. This
-//! module remains the stable internal path used by `zene_core::RuntimeHandle`.
+//! The actor implementation lives in `agent_runtime`. This module preserves
+//! the existing `zene_core::RuntimeHandle` re-export while the generic
+//! command/event contract lives in `zene-runtime`.
 
 pub use crate::agent_runtime::RuntimeHandle;
