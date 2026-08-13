@@ -18,11 +18,11 @@ use tracing_subscriber::EnvFilter;
 use uuid::Uuid;
 use zene_cloud_acp_bridge::{resolve_zene_bin, MockAgent, MockMsg, PermissionDecision};
 use zene_cloud_runtime_client::{
-    approval_payload, AcpRuntimeClient, ApprovalDecision, RuntimeClient, RuntimeCommand,
+    approval_payload, to_permission_decision, AcpRuntimeClient, RuntimeClient, RuntimeCommand,
     RuntimeEvent, RuntimeNotification, RuntimeRequest,
 };
 use zene_cloud_domain::{
-    ApprovalDecision as StoredApprovalDecision, ApprovalRequest, ApprovalStatus, ClaimedRun,
+    ApprovalDecision, ApprovalKind, ApprovalRequest, ApprovalRisk, ApprovalStatus, ClaimedRun,
     CloneAuthResponse, CreateApprovalRequest, LlmAuthResponse, RunStatus, WorkerCommand,
     WorkerCommandAckRequest, WorkerCommandKind, WorkerCommandsResponse, WorkerEventRequest,
     WorkerFence, WorkerStatusRequest, WorkerTitleRequest, WorkerAcpSessionRequest,
@@ -694,13 +694,13 @@ async fn run_with_mock(
                         &token,
                         run_id,
                         &request_key,
-                        "tool",
+                        ApprovalKind::Tool,
                         &approval_payload(&params),
                     )
                     .await
                     {
                         Ok(decision) => {
-                            let _ = respond.send(decision.into());
+                            let _ = respond.send(to_permission_decision(decision));
                         }
                         Err(err) => {
                             warn!(error = %err, "permission resolve failed");
@@ -1026,7 +1026,7 @@ async fn run_with_real_acp(
                         &token,
                         run_id,
                         &request_id,
-                        "permission",
+                        ApprovalKind::Permission,
                         &context,
                     )
                     .await
@@ -1203,32 +1203,24 @@ async fn run_with_real_acp(
     Ok(outcome_for_hold(true, hold_exit))
 }
 
-fn runtime_approval_decision(decision: StoredApprovalDecision) -> ApprovalDecision {
-    match decision {
-        StoredApprovalDecision::AllowOnce => ApprovalDecision::AllowOnce,
-        StoredApprovalDecision::AllowSession => ApprovalDecision::AllowSession,
-        StoredApprovalDecision::Deny => ApprovalDecision::Deny,
-    }
-}
-
 async fn resolve_permission(
     client: &reqwest::Client,
     api_url: &str,
     token: &str,
     run_id: Uuid,
     request_key: &str,
-    kind: &str,
+    kind: ApprovalKind,
     payload: &serde_json::Value,
 ) -> Result<ApprovalDecision> {
     let body = CreateApprovalRequest {
         request_key: request_key.to_string(),
-        kind: kind.to_string(),
-        risk: "medium".into(),
+        kind,
+        risk: ApprovalRisk::Medium,
         payload: payload.clone(),
         allowed_decisions: vec![
-            StoredApprovalDecision::AllowOnce,
-            StoredApprovalDecision::AllowSession,
-            StoredApprovalDecision::Deny,
+            ApprovalDecision::AllowOnce,
+            ApprovalDecision::AllowSession,
+            ApprovalDecision::Deny,
         ],
         expires_at: None,
     };
@@ -1245,9 +1237,7 @@ async fn resolve_permission(
 
     let approval_id = created.id;
     if created.status != ApprovalStatus::Pending {
-        return Ok(runtime_approval_decision(
-            created.decision.unwrap_or(StoredApprovalDecision::AllowOnce),
-        ));
+        return Ok(created.decision.unwrap_or(ApprovalDecision::AllowOnce));
     }
 
     // Poll until resolved.
@@ -1264,9 +1254,7 @@ async fn resolve_permission(
             .json()
             .await?;
         if approval.status != ApprovalStatus::Pending {
-            return Ok(runtime_approval_decision(
-                approval.decision.unwrap_or(StoredApprovalDecision::AllowOnce),
-            ));
+            return Ok(approval.decision.unwrap_or(ApprovalDecision::AllowOnce));
         }
     }
     bail!("approval {approval_id} timed out")

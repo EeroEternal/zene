@@ -103,13 +103,29 @@ export interface RunEvent {
   };
 }
 
+export type ApprovalDecision =
+  | "allow-once"
+  | "allow-always"
+  | "reject-once"
+  | "allow"
+  | "deny";
+export type ApprovalKind = "permission" | "tool";
+export type ApprovalRisk = "low" | "medium" | "high";
+export type ApprovalStatus =
+  | "pending"
+  | "approved"
+  | "denied"
+  | "resolved"
+  | "expired"
+  | "cancelled";
+
 export interface Approval {
   id: string;
-  kind?: string;
-  risk?: string;
-  status?: string;
+  kind?: ApprovalKind;
+  risk?: ApprovalRisk;
+  status?: ApprovalStatus;
   payload?: unknown;
-  allowedDecisions?: string[];
+  allowedDecisions?: ApprovalDecision[];
 }
 
 export interface WorkspaceFile {

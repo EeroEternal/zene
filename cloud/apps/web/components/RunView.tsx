@@ -30,7 +30,8 @@ import {
   modelsForPicker,
   saveSelectedModel,
 } from "@/lib/models";
-import type { AcpSessionUpdate, Approval, LlmSettingsView, Repo, Run, RunEvent, RunMessage } from "@/lib/types";
+import { allowsDeny, allowsOnce, extraDecisions } from "@/lib/approval";
+import type { AcpSessionUpdate, Approval, ApprovalDecision, LlmSettingsView, Repo, Run, RunEvent, RunMessage } from "@/lib/types";
 import { timelineUpdateFromEvent } from "@/lib/runtimeEvent";
 import { CodePanel, useCodePanelWidth } from "./CodePanel";
 import { Markdown } from "./Markdown";
@@ -104,7 +105,7 @@ type TimelineItem =
       output?: string;
       expanded: boolean;
     }
-  | { kind: "approval"; id: number; approval: Approval; decision?: string };
+  | { kind: "approval"; id: number; approval: Approval; decision?: ApprovalDecision };
 
 function bubbleRole(role?: string): "user" | "assistant" {
   return (role || "").toLowerCase() === "user" ? "user" : "assistant";
@@ -1251,7 +1252,7 @@ export function RunView({
     try {
       const list = (await api<Approval[]>(`/api/v1/runs/${runId}/approvals`)) || [];
       for (const ap of list) {
-        if ((ap.status || "").toLowerCase() === "pending" && !seenApprovals.current.has(ap.id)) {
+        if (ap.status === "pending" && !seenApprovals.current.has(ap.id)) {
           seenApprovals.current.add(ap.id);
           setItems((prev) => [...prev, { kind: "approval", id: nextId.current++, approval: ap }]);
           scrollMessages();
@@ -1538,7 +1539,7 @@ export function RunView({
   }, [runId, onRunsChanged, toast]);
 
   const decideApproval = useCallback(
-    async (itemId: number, approvalId: string, decision: string) => {
+    async (itemId: number, approvalId: string, decision: ApprovalDecision) => {
       try {
         await api(`/api/v1/runs/${runId}/approvals/${approvalId}/decide`, {
           method: "POST",
@@ -1918,9 +1919,7 @@ export function RunView({
                       ? JSON.stringify(ap.payload, null, 2)
                       : String(ap.payload || "");
                   const allowed = ap.allowedDecisions || ["allow-once", "reject-once"];
-                  const extra = allowed.filter(
-                    (d) => !["allow-once", "reject-once", "allow", "deny"].includes(d),
-                  );
+                  const extra = extraDecisions(allowed);
                   const decided = Boolean(item.decision);
                   return (
                     <div
@@ -1935,7 +1934,7 @@ export function RunView({
                         {summary}
                       </div>
                       <div className="flex flex-wrap gap-2">
-                        {(allowed.includes("allow-once") || allowed.includes("allow")) && (
+                        {allowsOnce(allowed) && (
                           <button
                             type="button"
                             className="btn btn-primary btn-sm"
@@ -1945,7 +1944,7 @@ export function RunView({
                             Allow once
                           </button>
                         )}
-                        {(allowed.includes("reject-once") || allowed.includes("deny")) && (
+                        {allowsDeny(allowed) && (
                           <button
                             type="button"
                             className="btn btn-danger btn-sm"

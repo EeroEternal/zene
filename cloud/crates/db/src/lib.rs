@@ -14,8 +14,8 @@ use sqlx::SqlitePool;
 use std::str::FromStr;
 use uuid::Uuid;
 use zene_cloud_domain::{
-    ApprovalDecision, ApprovalRequest, ApprovalStatus, AuthResponse, CloneAuthResponse,
-    CreateApprovalRequest, CreateRepositoryRequest, CreateRunRequest, LoginRequest, Organization,
+    ApprovalDecision, ApprovalKind, ApprovalRequest, ApprovalRisk, ApprovalStatus, AuthResponse,
+    CloneAuthResponse, CreateApprovalRequest, CreateRepositoryRequest, CreateRunRequest, LoginRequest, Organization,
     QueueActive, QueueHold, QueueStats, RegisterRequest, Repository, Run, RunEvent, RunMessage,
     RunStatus, User, WorkerCommand, WorkerFence,
 };
@@ -1592,8 +1592,8 @@ impl Db {
         .bind(id.to_string())
         .bind(run_id.to_string())
         .bind(&req.request_key)
-        .bind(&req.kind)
-        .bind(&req.risk)
+        .bind(req.kind.as_str())
+        .bind(req.risk.as_str())
         .bind(&payload)
         .bind(status.as_str())
         .bind(&allowed)
@@ -1629,7 +1629,7 @@ impl Db {
                 "approvalId": id,
                 "status": status.as_str(),
                 "decision": decision.map(|d| d.as_str()),
-                "kind": req.kind,
+                "kind": req.kind.as_str(),
             }),
         )
         .await?;
@@ -2033,8 +2033,8 @@ pub(crate) fn map_approval_full_row(
         id: Uuid::parse_str(&row.0).unwrap(),
         run_id: Uuid::parse_str(&row.1).unwrap(),
         request_key: row.2,
-        kind: row.3,
-        risk: row.4,
+        kind: ApprovalKind::parse(&row.3).unwrap_or(ApprovalKind::Permission),
+        risk: ApprovalRisk::parse(&row.4).unwrap_or(ApprovalRisk::Medium),
         payload: serde_json::from_str(&row.5).unwrap_or(serde_json::json!({})),
         status: ApprovalStatus::parse(&row.6).unwrap_or(ApprovalStatus::Pending),
         allowed_decisions: allowed,

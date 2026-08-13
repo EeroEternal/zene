@@ -3035,6 +3035,7 @@ dependencies = [
  "tokio",
  "uuid",
  "zene-cloud-acp-bridge",
+ "zene-cloud-domain",
 ]
 
 [[package]]
