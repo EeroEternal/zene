@@ -3,7 +3,8 @@
 //! Wave 14: the default turn path still enters via Agent wiring, but the
 //! overflow-retry / stream assembly loop lives here (parallel to
 //! [`crate::tool_executor::DefaultToolExecutor`] for tools). Request type
-//! remains [`zene_llm::ChatRequest`] — no neutral `ModelRequest` yet.
+//! remains [`zene_model_executor::ModelRequest`]; providers still see `ChatRequest`
+//! inside [`zene_model_executor::ChatClientExecutor`].
 
 use std::io::{self, Write};
 use std::path::Path;
@@ -17,8 +18,8 @@ use zene_config::ZeneConfig;
 use zene_context::{
     ContextEngine, ContextModel, EstimateProvider, PrefireClientFactory, StepContext, TokenEstimator,
 };
-use zene_llm::{ChatClient, ChatRequest, Message, StreamEvent, TokenUsage, ToolDefinition};
-use zene_model_executor::ModelExecutor;
+use zene_llm::{ChatClient, Message, StreamEvent, TokenUsage, ToolDefinition};
+use zene_model_executor::{ModelExecutor, ModelRequest};
 use zene_session::{AgentRecordWriter, RecordEntry, SessionRecord};
 use zene_tools::{SharedBackgroundTasks, SharedTodoStore};
 use zene_turn::PreparedContext;
@@ -178,7 +179,7 @@ async fn recover_overflow(
 
 pub(crate) async fn run_streaming_step(
     executor: &dyn ModelExecutor,
-    request: ChatRequest,
+    request: ModelRequest,
     options: &PromptOptions,
     cancel: Option<&CancellationToken>,
 ) -> Result<(Message, Option<TokenUsage>)> {
@@ -281,11 +282,11 @@ mod tests {
 
     #[async_trait]
     impl ModelExecutor for TextThenDone {
-        async fn complete(&self, _request: ChatRequest) -> Result<zene_llm::ChatResponse> {
+        async fn complete(&self, _request: ModelRequest) -> Result<zene_model_executor::ModelResponse> {
             unreachable!("complete not used")
         }
 
-        async fn stream(&self, _request: ChatRequest) -> Result<ModelStream> {
+        async fn stream(&self, _request: ModelRequest) -> Result<ModelStream> {
             Ok(Box::pin(futures::stream::iter(vec![
                 Ok(StreamEvent::TextDelta("hi".into())),
                 Ok(StreamEvent::Done { usage: None }),
@@ -300,7 +301,7 @@ mod tests {
             quiet: true,
             ..PromptOptions::default()
         };
-        let request = ChatRequest {
+        let request = ModelRequest {
             model: "test".into(),
             messages: vec![],
             tools: vec![],
