@@ -343,7 +343,6 @@ async fn approval_test_run(permission_mode: &str) -> (Db, Uuid) {
 fn approval_request(request_key: &str) -> CreateApprovalRequest {
     CreateApprovalRequest {
         request_key: request_key.into(),
-        jsonrpc_id: Some("rpc-1".into()),
         kind: "permission".into(),
         risk: "medium".into(),
         payload: serde_json::json!({"path": "notes.txt"}),

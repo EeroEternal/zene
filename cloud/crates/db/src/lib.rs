@@ -1584,15 +1584,14 @@ impl Db {
 
         let inserted = sqlx::query(
             "INSERT INTO approval_requests
-             (id, run_id, request_key, jsonrpc_id, kind, risk, payload_json, status,
+             (id, run_id, request_key, kind, risk, payload_json, status,
               allowed_decisions, created_at, expires_at, resolved_by, resolved_at, decision)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
              ON CONFLICT(run_id, request_key) DO NOTHING",
         )
         .bind(id.to_string())
         .bind(run_id.to_string())
         .bind(&req.request_key)
-        .bind(&req.jsonrpc_id)
         .bind(&req.kind)
         .bind(&req.risk)
         .bind(&payload)
@@ -1645,7 +1644,6 @@ impl Db {
             String,
             String,
             String,
-            Option<String>,
             String,
             String,
             String,
@@ -1657,7 +1655,7 @@ impl Db {
             Option<String>,
             Option<String>,
         )> = sqlx::query_as(
-            "SELECT id, run_id, request_key, jsonrpc_id, kind, risk, payload_json, status,
+            "SELECT id, run_id, request_key, kind, risk, payload_json, status,
                     allowed_decisions, decision, created_at, expires_at, resolved_by, resolved_at
              FROM approval_requests WHERE id = ?",
         )
@@ -1676,7 +1674,6 @@ impl Db {
             String,
             String,
             String,
-            Option<String>,
             String,
             String,
             String,
@@ -1688,7 +1685,7 @@ impl Db {
             Option<String>,
             Option<String>,
         )> = sqlx::query_as(
-            "SELECT id, run_id, request_key, jsonrpc_id, kind, risk, payload_json, status,
+            "SELECT id, run_id, request_key, kind, risk, payload_json, status,
                     allowed_decisions, decision, created_at, expires_at, resolved_by, resolved_at
              FROM approval_requests WHERE run_id = ? AND request_key = ?",
         )
@@ -2015,7 +2012,6 @@ pub(crate) fn map_approval_full_row(
         String,
         String,
         String,
-        Option<String>,
         String,
         String,
         String,
@@ -2028,7 +2024,7 @@ pub(crate) fn map_approval_full_row(
         Option<String>,
     ),
 ) -> ApprovalRequest {
-    let allowed: Vec<ApprovalDecision> = serde_json::from_str::<Vec<String>>(&row.8)
+    let allowed: Vec<ApprovalDecision> = serde_json::from_str::<Vec<String>>(&row.7)
         .unwrap_or_default()
         .into_iter()
         .filter_map(|value| ApprovalDecision::parse(&value))
@@ -2037,17 +2033,16 @@ pub(crate) fn map_approval_full_row(
         id: Uuid::parse_str(&row.0).unwrap(),
         run_id: Uuid::parse_str(&row.1).unwrap(),
         request_key: row.2,
-        jsonrpc_id: row.3,
-        kind: row.4,
-        risk: row.5,
-        payload: serde_json::from_str(&row.6).unwrap_or(serde_json::json!({})),
-        status: ApprovalStatus::parse(&row.7).unwrap_or(ApprovalStatus::Pending),
+        kind: row.3,
+        risk: row.4,
+        payload: serde_json::from_str(&row.5).unwrap_or(serde_json::json!({})),
+        status: ApprovalStatus::parse(&row.6).unwrap_or(ApprovalStatus::Pending),
         allowed_decisions: allowed,
-        decision: row.9.as_deref().and_then(ApprovalDecision::parse),
-        created_at: parse_time(&row.10),
-        expires_at: row.11.as_deref().map(parse_time),
-        resolved_by: row.12,
-        resolved_at: row.13.as_deref().map(parse_time),
+        decision: row.8.as_deref().and_then(ApprovalDecision::parse),
+        created_at: parse_time(&row.9),
+        expires_at: row.10.as_deref().map(parse_time),
+        resolved_by: row.11,
+        resolved_at: row.12.as_deref().map(parse_time),
     }
 }
 

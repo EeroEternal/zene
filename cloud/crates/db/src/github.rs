@@ -403,7 +403,6 @@ impl Db {
             String,
             String,
             String,
-            Option<String>,
             String,
             String,
             String,
@@ -415,7 +414,7 @@ impl Db {
             Option<String>,
             Option<String>,
         )> = sqlx::query_as(
-            "SELECT id, run_id, request_key, jsonrpc_id, kind, risk, payload_json, status,
+            "SELECT id, run_id, request_key, kind, risk, payload_json, status,
                     allowed_decisions, decision, created_at, expires_at, resolved_by, resolved_at
              FROM approval_requests
              WHERE run_id = ? AND status = 'pending'
