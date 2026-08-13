@@ -555,12 +555,17 @@ pub fn apply_slice_keep(messages: &mut Vec<Message>, tail_start: usize) -> usize
     removed
 }
 
+fn projected_messages<S: ContextSession + ?Sized>(session: &S) -> Vec<Message> {
+    session.view().messages
+}
+
 fn estimate_session_tokens<S: ContextSession + ?Sized>(
     session: &S,
     tools: &[ToolDefinition],
     estimator: &TokenEstimator,
 ) -> u32 {
-    tokens::estimate_context(session.messages(), tools, estimator) as u32
+    let messages = projected_messages(session);
+    tokens::estimate_context(&messages, tools, estimator) as u32
 }
 
 fn record_compaction_result<S: ContextSession + ?Sized>(
@@ -586,9 +591,10 @@ fn try_truncate_only_compaction<S: ContextSession + ?Sized>(
     estimator: &TokenEstimator,
 ) -> Option<CompactionResult> {
     let tokens_before = estimate_session_tokens(session, tools, estimator);
-    let plan = plan_compaction(session.messages(), config, estimator)?;
-    let prefix_start = system_prefix_start(session.messages());
-    let mut projected = session.messages().to_vec();
+    let messages = projected_messages(session);
+    let plan = plan_compaction(&messages, config, estimator)?;
+    let prefix_start = system_prefix_start(&messages);
+    let mut projected = messages;
     let truncated = truncate_old_message_bodies(
         &mut projected,
         prefix_start,
@@ -633,15 +639,16 @@ fn try_slice_keep_compaction<S: ContextSession + ?Sized>(
     estimator: &TokenEstimator,
 ) -> Option<CompactionResult> {
     let tokens_before = estimate_session_tokens(session, tools, estimator);
-    let plan = plan_compaction(session.messages(), config, estimator)?;
+    let messages = projected_messages(session);
+    let plan = plan_compaction(&messages, config, estimator)?;
 
-    let sliced = build_sliced_messages(session.messages(), plan.tail_start);
+    let sliced = build_sliced_messages(&messages, plan.tail_start);
     let tokens_after = tokens::estimate_context(&sliced, tools, estimator) as u32;
     if should_compact(tokens_after, config) {
         return None;
     }
 
-    let mut projected = session.messages().to_vec();
+    let mut projected = messages;
     let removed = apply_slice_keep(&mut projected, plan.tail_start);
     if removed == 0 {
         return None;
@@ -676,11 +683,12 @@ pub fn apply_overflow_truncate_pass<S: ContextSession + ?Sized>(
     estimator: &TokenEstimator,
 ) -> bool {
     let tokens_before = estimate_session_tokens(session, tools, estimator);
-    let Some(plan) = plan_compaction(session.messages(), config, estimator) else {
+    let messages = projected_messages(session);
+    let Some(plan) = plan_compaction(&messages, config, estimator) else {
         return false;
     };
-    let prefix_start = system_prefix_start(session.messages());
-    let mut projected = session.messages().to_vec();
+    let prefix_start = system_prefix_start(&messages);
+    let mut projected = messages;
     let truncated = truncate_old_message_bodies(
         &mut projected,
         prefix_start,
@@ -726,10 +734,11 @@ pub fn apply_steps_truncate_pass<S: ContextSession + ?Sized>(
     if !config.intra_steps_first {
         return false;
     }
-    let Some(user_idx) = last_user_query_index(session.messages()) else {
+    let messages = projected_messages(session);
+    let Some(user_idx) = last_user_query_index(&messages) else {
         return false;
     };
-    let mut projected = session.messages().to_vec();
+    let mut projected = messages;
     let mut changed = 0usize;
     for message in projected.iter_mut().skip(user_idx + 1) {
         if message.role != Role::Tool {
@@ -988,13 +997,14 @@ pub async fn compact_session<S: ContextSession + ?Sized>(
     }
 
     let tokens_before = estimate_session_tokens(session, tools, estimator);
-    let plan = match plan_compaction(session.messages(), config, estimator) {
+    let messages = projected_messages(session);
+    let plan = match plan_compaction(&messages, config, estimator) {
         Some(plan) => plan,
         None => return Ok(None),
     };
 
-    let prefix_start = system_prefix_start(session.messages());
-    let prefix = session.messages()[prefix_start..plan.tail_start].to_vec();
+    let prefix_start = system_prefix_start(&messages);
+    let prefix = messages[prefix_start..plan.tail_start].to_vec();
     let summary = summarize_prefix(
         client,
         model,
@@ -1015,7 +1025,7 @@ pub async fn compact_session<S: ContextSession + ?Sized>(
     info!(
         reason = reason,
         compacted_messages = plan.compacted_count,
-        tail_messages = session.messages().len() - plan.tail_start,
+        tail_messages = messages.len() - plan.tail_start,
         summary_chars = summary.len(),
         tokens_before,
         "context compaction applying LLM summarize (full-replace)"
@@ -1079,18 +1089,18 @@ pub async fn compact_session_forced<S: ContextSession + ?Sized>(
     }
 
     let tokens_before = estimate_session_tokens(session, tools, estimator);
-    let plan = match plan_compaction(session.messages(), config, estimator) {
+    let messages = projected_messages(session);
+    let plan = match plan_compaction(&messages, config, estimator) {
         Some(plan) => plan,
         None => {
-            let prefix_start = system_prefix_start(session.messages());
+            let prefix_start = system_prefix_start(&messages);
             let min_keep = config.min_keep_messages.min(4).max(1);
-            if session.messages().len().saturating_sub(prefix_start) <= min_keep {
+            if messages.len().saturating_sub(prefix_start) <= min_keep {
                 return Ok(None);
             }
             CompactionPlan {
-                tail_start: session.messages().len().saturating_sub(min_keep),
-                compacted_count: session
-                    .messages()
+                tail_start: messages.len().saturating_sub(min_keep),
+                compacted_count: messages
                     .len()
                     .saturating_sub(prefix_start)
                     .saturating_sub(min_keep),
@@ -1098,8 +1108,8 @@ pub async fn compact_session_forced<S: ContextSession + ?Sized>(
         }
     };
 
-    let prefix_start = system_prefix_start(session.messages());
-    let prefix = session.messages()[prefix_start..plan.tail_start].to_vec();
+    let prefix_start = system_prefix_start(&messages);
+    let prefix = messages[prefix_start..plan.tail_start].to_vec();
     let summary = summarize_prefix(
         client,
         model,
@@ -1152,23 +1162,20 @@ fn apply_full_replace_to_session<S: ContextSession + ?Sized>(
     hooks: Option<&dyn ContextHooks>,
     memory_block: Option<&str>,
 ) {
-    let system = session
-        .messages()
-        .first()
-        .filter(|m| m.role == Role::System)
-        .cloned();
-    let (last_user, recent) = match last_user_query_index(session.messages()) {
+    let messages = projected_messages(session);
+    let system = messages.first().filter(|m| m.role == Role::System).cloned();
+    let (last_user, recent) = match last_user_query_index(&messages) {
         Some(idx) if idx >= tail_start => {
-            let query = session.messages()[idx].clone();
-            let recent = session.messages()[idx + 1..].to_vec();
+            let query = messages[idx].clone();
+            let recent = messages[idx + 1..].to_vec();
             (Some(query), recent)
         }
         Some(idx) => {
-            let query = session.messages()[idx].clone();
-            let recent = session.messages()[tail_start..].to_vec();
+            let query = messages[idx].clone();
+            let recent = messages[tail_start..].to_vec();
             (Some(query), recent)
         }
-        None => (None, session.messages()[tail_start..].to_vec()),
+        None => (None, messages[tail_start..].to_vec()),
     };
     let extra = hooks
         .map(|h| h.compaction_reminder_sections())
@@ -1371,12 +1378,12 @@ mod tests {
     #[test]
     fn steps_truncate_only_touches_post_user_tools() {
         let mut session = SessionRecord::new(std::path::Path::new("/tmp"));
-        session.messages = vec![
-            Message::system("sys"),
-            Message::tool_result("0", "Read", "x".repeat(1000)),
-            Message::user("do it"),
-            Message::tool_result("1", "Bash", "y".repeat(1000)),
-        ];
+        session.push_message(Message::system("sys"));
+        session.push_message(Message::tool_result("0", "Read", "x".repeat(1000)));
+        session.push_message(Message::user("do it"));
+        session.push_message(Message::tool_result("1", "Bash", "y".repeat(1000)));
+        // The event projection must win over a stale materialized cache.
+        session.messages[3].content = Some("stale cache".into());
         let cfg = CompactionConfig::default();
         assert!(apply_steps_truncate_pass(&mut session, &cfg));
         assert!(!session.messages[1]
