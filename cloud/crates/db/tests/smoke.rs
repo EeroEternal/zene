@@ -3,8 +3,8 @@ use uuid::Uuid;
 use zene_cloud_db::Db;
 use zene_cloud_domain::{
     ApprovalDecision, ApprovalEventPayload, ApprovalKind, ApprovalRisk, ApprovalStatus,
-    CreateApprovalRequest, CreateRepositoryRequest, CreateRunRequest, RegisterRequest,
-    RunEventKind, RunStatus, WorkerCommandKind, WorkerFence,
+    CreateApprovalRequest, CreateRepositoryRequest, CreateRunRequest, PermissionMode,
+    RegisterRequest, RunEventKind, RunStatus, WorkerCommandKind, WorkerFence,
 };
 
 #[tokio::test]
@@ -44,7 +44,7 @@ async fn register_create_run_and_claim() {
                 prompt: "hello cloud".into(),
                 base_ref: Some("main".into()),
                 model: "default".into(),
-                permission_mode: "default".into(),
+                permission_mode: PermissionMode::Default,
                 max_turns: 50,
             },
         )
@@ -249,7 +249,7 @@ async fn run_state_mutations_have_matching_events() {
                 prompt: "initial prompt".into(),
                 base_ref: None,
                 model: "default".into(),
-                permission_mode: "default".into(),
+                permission_mode: PermissionMode::Default,
                 max_turns: 10,
             },
         )
@@ -303,7 +303,7 @@ async fn run_state_mutations_have_matching_events() {
     assert_eq!(message.content, "follow-up");
 }
 
-async fn approval_test_run(permission_mode: &str) -> (Db, Uuid) {
+async fn approval_test_run(permission_mode: PermissionMode) -> (Db, Uuid) {
     let db = Db::connect("sqlite::memory:").await.unwrap();
     db.migrate().await.unwrap();
     let auth = db
@@ -335,7 +335,7 @@ async fn approval_test_run(permission_mode: &str) -> (Db, Uuid) {
                 prompt: "approval race".into(),
                 base_ref: Some("main".into()),
                 model: "default".into(),
-                permission_mode: permission_mode.into(),
+                permission_mode,
                 max_turns: 10,
             },
         )
@@ -365,7 +365,7 @@ fn approval_request(request_key: &str) -> CreateApprovalRequest {
 
 #[tokio::test]
 async fn concurrent_approval_creation_has_one_row_and_event() {
-    let (db, run_id) = approval_test_run("manual").await;
+    let (db, run_id) = approval_test_run(PermissionMode::AcceptEdits).await;
     let first = approval_request("permission-stable");
     let second = approval_request("permission-stable");
 
@@ -392,7 +392,7 @@ async fn concurrent_approval_creation_has_one_row_and_event() {
 
 #[tokio::test]
 async fn concurrent_approval_decisions_have_one_winner_event() {
-    let (db, run_id) = approval_test_run("manual").await;
+    let (db, run_id) = approval_test_run(PermissionMode::AcceptEdits).await;
     let approval = db
         .create_approval(run_id, approval_request("decision-stable"))
         .await
@@ -440,7 +440,7 @@ async fn worker_command_is_retried_until_fenced_ack() {
         .unwrap();
     let run = db.create_run(auth.organization.id, auth.user.id, CreateRunRequest {
         repository_id: repo.id, prompt: "initial".into(), base_ref: None, model: "default".into(),
-        permission_mode: "default".into(), max_turns: 10,
+        permission_mode: PermissionMode::Default, max_turns: 10,
     }).await.unwrap();
     let claimed = db.claim_next_run("worker-delivery", std::path::Path::new("/tmp/zc-workspaces"))
         .await.unwrap().unwrap();
@@ -479,7 +479,7 @@ async fn stale_waiting_for_user_attempt_is_requeued_but_approval_holds_are_not()
         }).await.unwrap();
         let run = db.create_run(auth.organization.id, auth.user.id, CreateRunRequest {
             repository_id: repo.id, prompt: suffix.into(), base_ref: None, model: "default".into(),
-            permission_mode: "default".into(), max_turns: 10,
+            permission_mode: PermissionMode::Default, max_turns: 10,
         }).await.unwrap();
         let claimed = db.claim_next_run("stale-policy-worker", std::path::Path::new("/tmp/zc-workspaces"))
             .await.unwrap().unwrap();
@@ -540,7 +540,7 @@ async fn worker_title_is_fenced_and_retry_idempotent() {
                 prompt: "title fencing".into(),
                 base_ref: None,
                 model: "default".into(),
-                permission_mode: "default".into(),
+                permission_mode: PermissionMode::Default,
                 max_turns: 10,
             },
         )

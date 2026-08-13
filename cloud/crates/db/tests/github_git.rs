@@ -1,7 +1,7 @@
 use zene_cloud_db::Db;
 use zene_cloud_domain::{
     CreateRepositoryRequest, CreateRunRequest, GitOperationKind, GitOperationStatus,
-    GithubRepoSummary, RegisterRequest,
+    GithubRepoSummary, PermissionMode, RegisterRequest,
 };
 
 #[tokio::test]
@@ -75,7 +75,7 @@ async fn github_crud_and_migrations() {
                 prompt: "ship it".into(),
                 base_ref: Some("main".into()),
                 model: "default".into(),
-                permission_mode: "default".into(),
+                permission_mode: PermissionMode::Default,
                 max_turns: 50,
             },
         )

@@ -116,6 +116,44 @@ impl RunStatus {
     }
 }
 
+/// Stored run permission mode. Matches Console `PermissionMode`.
+/// `auto` is a historical alias; it still auto-resolves approvals.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum PermissionMode {
+    #[default]
+    Default,
+    AcceptEdits,
+    Yolo,
+    Auto,
+}
+
+impl PermissionMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Default => "default",
+            Self::AcceptEdits => "accept_edits",
+            Self::Yolo => "yolo",
+            Self::Auto => "auto",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        Some(match value {
+            "default" => Self::Default,
+            "accept_edits" => Self::AcceptEdits,
+            "yolo" => Self::Yolo,
+            "auto" => Self::Auto,
+            _ => return None,
+        })
+    }
+
+    /// `default` / `yolo` / `auto` auto-resolve approval rows on create.
+    pub fn auto_resolves_approvals(self) -> bool {
+        matches!(self, Self::Default | Self::Yolo | Self::Auto)
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Run {
@@ -132,7 +170,7 @@ pub struct Run {
     pub head_branch: String,
     pub head_sha: Option<String>,
     pub model: String,
-    pub permission_mode: String,
+    pub permission_mode: PermissionMode,
     /// Agent step budget for this run; `0` means unlimited.
     #[serde(default = "default_max_turns")]
     pub max_turns: u32,
@@ -481,8 +519,8 @@ pub struct CreateRunRequest {
     pub base_ref: Option<String>,
     #[serde(default = "default_model")]
     pub model: String,
-    #[serde(default = "default_permission_mode")]
-    pub permission_mode: String,
+    #[serde(default)]
+    pub permission_mode: PermissionMode,
     /// Agent step budget; `0` = unlimited. Defaults to 50.
     #[serde(default = "default_max_turns")]
     pub max_turns: u32,
@@ -493,10 +531,6 @@ fn default_branch_name() -> String {
 }
 
 fn default_model() -> String {
-    "default".into()
-}
-
-fn default_permission_mode() -> String {
     "default".into()
 }
 
@@ -622,10 +656,10 @@ pub struct WorkerEventRequest {
 mod tests {
     use super::{
         ApprovalDecision, ApprovalEventPayload, ApprovalKind, ApprovalRisk, ApprovalStatus,
-        CloudEventKind, CreateApprovalRequest, PlatformEvent, ProjectionPayload, RunEventKind,
-        RunStatus, TextEventPayload, ToolCallPayload, WorkerCommand, WorkerCommandAckRequest,
-        WorkerCommandKind, WorkerEventRequest, WorkerFence, WorkerClaimRequest,
-        WorkerPushRequest, WorkerSessionRequest,
+        CloudEventKind, CreateApprovalRequest, PlatformEvent, PermissionMode, ProjectionPayload,
+        RunEventKind, RunStatus, TextEventPayload, ToolCallPayload, WorkerCommand,
+        WorkerCommandAckRequest, WorkerCommandKind, WorkerEventRequest, WorkerFence,
+        WorkerClaimRequest, WorkerPushRequest, WorkerSessionRequest,
     };
 
     #[test]
@@ -780,6 +814,25 @@ mod tests {
         assert_eq!(encoded["kind"], "permission");
         assert_eq!(encoded["payload"]["requestId"], "permission-1");
         assert_eq!(encoded["payload"]["rawInput"]["path"], "notes.txt");
+    }
+
+    #[test]
+    fn permission_mode_round_trips_snake_case() {
+        for mode in [
+            PermissionMode::Default,
+            PermissionMode::AcceptEdits,
+            PermissionMode::Yolo,
+            PermissionMode::Auto,
+        ] {
+            let encoded = serde_json::to_value(mode).expect("serialize");
+            assert_eq!(encoded, serde_json::json!(mode.as_str()));
+            assert_eq!(PermissionMode::parse(mode.as_str()), Some(mode));
+        }
+        assert!(PermissionMode::Default.auto_resolves_approvals());
+        assert!(PermissionMode::Yolo.auto_resolves_approvals());
+        assert!(PermissionMode::Auto.auto_resolves_approvals());
+        assert!(!PermissionMode::AcceptEdits.auto_resolves_approvals());
+        assert_eq!(PermissionMode::parse("manual"), None);
     }
 
     #[test]
