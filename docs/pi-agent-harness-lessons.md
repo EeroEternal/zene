@@ -6,7 +6,7 @@
 相关 Zene 文档：
 
 - [session-as-source-of-truth.md](./session-as-source-of-truth.md) — Session 事实 vs Context 投影
-- [context-engine.md](./context-engine.md) — ContextEngine
+- [context-engine.md](./context-engine.md) — ContextEngine（含索引 Select 契约）
 - [agent-components.md](./agent-components.md) — 可组装组件栈
 - [ENGINE.md](./ENGINE.md) — turn / compaction / ACP 行为
 

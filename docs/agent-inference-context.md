@@ -223,7 +223,7 @@
 
 1. 厂商 prefix cache 只认字节前缀；`epoch` / `session_id` 不能替代布局约束。
 2. 一次 DeepSeek 诊断：msg[1] 注入块 resize 导致约 52k 未变更 token 重算。
-3. Zene 优先兑现本文 **A 档**（full messages + 稳定前缀）；布局契约见 [context-engine.md](./context-engine.md)。
+3. Zene 优先兑现本文 **A 档**（full messages + 稳定前缀）；布局契约见 [context-engine.md](./context-engine.md)。索引命中走工具结果（§5），不要做成变长 documents 块。
 4. Compact 仍是合法的一次 miss；要消灭的是 system / 注入块 / 旧 tool 的反复 resize。
 
 ### （在此追加下一次讨论）

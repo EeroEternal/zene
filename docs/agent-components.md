@@ -2,7 +2,7 @@
 
 目标：把 Zene 拆成**可独立发布、按需组合**的 crate，第三方 runtime 不必 fork `zene-core` 也能复用 compaction、tools、sandbox 等能力。
 
-相关文档：[context-engine.md](./context-engine.md)、[agent-inference-context.md](./agent-inference-context.md)、[session-as-source-of-truth.md](./session-as-source-of-truth.md)（Session 事实 vs Context 投影）、[agent-runtime-optimization.md](./agent-runtime-optimization.md)（Runtime / Turn / ports）、[pi-agent-harness-lessons.md](./pi-agent-harness-lessons.md)（Pi Harness 启发）。
+相关文档：[context-engine.md](./context-engine.md)、[agent-inference-context.md](./agent-inference-context.md)、[session-as-source-of-truth.md](./session-as-source-of-truth.md)（Session 事实 vs Context 投影）、[agent-runtime-optimization.md](./agent-runtime-optimization.md)（Runtime / Turn / ports）、[pi-agent-harness-lessons.md](./pi-agent-harness-lessons.md)（Pi Harness 启发）。索引 / Repo Map 走工具侧，契约见 [context-engine.md §5](./context-engine.md#5-代码索引与-select)，不进 `zene-context`。
 
 ---
 
@@ -22,6 +22,8 @@
 zene-context          zene-tools + mcp       zene-session
 estimate/compact      Tool trait/registry    持久化 transcript
 assemble/epoch        内置 + MCP 工具         checkpoint/fork
+                      Select：Grep/Read；
+                      未来符号图 / RepoMap
      │                      │
      └──────────┬───────────┘
                 ▼

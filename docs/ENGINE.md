@@ -1,6 +1,6 @@
 # Zene Engine Notes
 
-Core agent loop lives in `crates/core`. This document tracks engine-level behaviors (turn flow, context, permissions) beyond the milestone checklist in [ROADMAP.md](./ROADMAP.md). For the Session-vs-Context architecture model, see [session-as-source-of-truth.md](./session-as-source-of-truth.md). For Context Engine (projection, prefix cache, epoch/delta), see [context-engine.md](./context-engine.md). For AgentRuntime / Turn / ports and merged implementation waves, see [agent-runtime-optimization.md](./agent-runtime-optimization.md). For Pi agent-harness comparisons, see [pi-agent-harness-lessons.md](./pi-agent-harness-lessons.md).
+Core agent loop lives in `crates/core`. This document tracks engine-level behaviors (turn flow, context, permissions) beyond the milestone checklist in [ROADMAP.md](./ROADMAP.md). For the Session-vs-Context architecture model, see [session-as-source-of-truth.md](./session-as-source-of-truth.md). For Context Engine (projection, prefix cache, epoch/delta, **index vs Select**), see [context-engine.md](./context-engine.md). For AgentRuntime / Turn / ports and merged implementation waves, see [agent-runtime-optimization.md](./agent-runtime-optimization.md). For Pi agent-harness comparisons, see [pi-agent-harness-lessons.md](./pi-agent-harness-lessons.md).
 
 ## Turn flow & steer
 
@@ -196,3 +196,5 @@ Configure main-agent tool subsets via `agent_profile` in `~/.zene/config.toml` o
 | `coder` | Read/Write/Edit/Bash/Grep/Glob + Skill + Task + collaboration + plan mode |
 
 MCP tools are always merged regardless of profile.
+
+Code index / Repo Map is **Select**, not ContextEngine: hits must land as tool results in the Body (or a session-frozen prefix). Do not inject a resizing documents block. See [context-engine.md](./context-engine.md) §5.

@@ -728,12 +728,16 @@ empty volume
 - tree-sitter 符号提取
 - LSP 按 workspace 按需启动
 
+Agent 工作区里的索引是 **Select**（符号图 + 按需 Repo Map + Grep/Read），不是 ContextEngine 的一部分；命中默认当工具结果，禁止变长 documents 块改写 prompt 前缀。契约见 [`docs/context-engine.md`](../../docs/context-engine.md) §5。
+
 第二阶段：
 
 - 默认分支增量索引。
 - symbol/definition/reference graph。
 - embedding 语义搜索，按组织和 commit 隔离。
 - PR 变更影响分析。
+
+embedding 属于 Console / 跨仓搜索，不是把 agent 做强的下一跳。
 
 Code API 必须绑定：
 

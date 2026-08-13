@@ -4,9 +4,9 @@ Zene 的语义上下文引擎（`crates/context`）。它从 Session 事实算�
 
 相关实现：`zene-context`、`zene-llm` 协议字段、`zene-core` 组装。心智模型见 [session-as-source-of-truth.md](./session-as-source-of-truth.md)；推理协议见 [agent-inference-context.md](./agent-inference-context.md)；compaction 算法细节见 [ENGINE.md](./ENGINE.md)；控制面见 [agent-runtime-optimization.md](./agent-runtime-optimization.md)。
 
-**不在本文范围**：新的 compress 算法、改成 Pi JSONL、把 permission / MCP / Turn 塞进 ContextEngine。
+**不在本文范围**：新的 compress 算法、改成 Pi JSONL、把 permission / MCP / Turn 塞进 ContextEngine、为 agent 循环建设全仓 embedding。
 
-**进度（2026-08-13）**：crate 边界、`observe → commit → project`、event-backed projection、前缀三区、Plan/overflow 去改写、prefix-adjacent 注入拖尾已在实现里。剩余是 legacy fallback 清理，以及 Console 对 `prefixCache` 的展示。
+**进度（2026-08-13）**：crate 边界、`observe → commit → project`、event-backed projection、前缀三区、Plan/overflow 去改写、prefix-adjacent 注入拖尾已在实现里。代码索引（Select）的职责与最小闭环已写入本文，实现未开始。剩余是 legacy fallback 清理，以及 Console 对 `prefixCache` 的展示。
 
 ---
 
@@ -14,6 +14,7 @@ Zene 的语义上下文引擎（`crates/context`）。它从 Session 事实算�
 
 ```
 Agent / runtime     turn、tools、permission、steer、审批
+Select / 索引       符号图、Repo Map、Grep/Read（工具侧，不进 ContextEngine）
 ContextEngine       estimate → compact → memory → assemble → epoch → 前缀布局
 推理层              会话亲和、KV / prompt cache、cached_tokens 回传
 ```
@@ -21,6 +22,7 @@ ContextEngine       estimate → compact → memory → assemble → epoch → �
 ```
 zene-session     持久化：events、兼容 messages cache、checkpoints、todos
 zene-context     语义上下文：estimate、compact、memory、prefire、epoch、assemble、layout
+zene-tools       Grep/Read/Glob；未来符号查询 / RepoMap（Select，不进 context）
 zene-llm         ChatRequest + ContextMetadata、TokenUsage.cached_tokens
 zene-core        composition root
 ```
@@ -122,7 +124,7 @@ epoch 正确 ≠ 前缀字节稳定
 
 实现：`crates/context/src/layout.rs`。`project()` 先把紧贴 pinned 前缀的 reminder 拖到尾巴，再按 hooks 换成当前装饰。历史中间残留的旧 reminder 保持不动（字节冻结）。
 
-索引 / RAG 只允许：开工写入冻结 system（定长或不再改），或当本步 tail。禁止做成 msg[1] 那种变长块（`InjectionZone::BodyInsert`）。
+索引 / RAG 只允许：开工写入冻结 system（定长或本 session 不再改），或当本步 tail / 工具结果。禁止做成 msg[1] 那种变长块（`InjectionZone::BodyInsert`）。契约见 [§5](#5-代码索引与-select)。
 
 Compact 是 **允许的一次打断**（`epoch++`）。要消灭的是同一会话里 system / 注入块 / 旧 tool 被反复 resize。
 
@@ -149,7 +151,79 @@ Water / auto-compact 仍看窗口占用 `max(usage, estimate)`，不因 cache �
 
 ---
 
-## 5. 出站：epoch、delta、gateway
+## 5. 代码索引与 Select
+
+模型的窗口装不下真实仓库，代码也不是自然语言。好的做法不是把更多文件预塞进 prompt，而是 **用结构选对、用引擎压缩和排位置**。
+
+这两件事不要合成一个会改写前缀的 documents 块。DeepSeek 诊断里的 `<agent_documents_index>` 就是反例：索引本身只有几百 token，三次 resize 却让约 52k 未变更 token 重算。
+
+| | 回答什么 | 谁做 | 结果放哪 |
+|---|---|---|---|
+| **Select / 索引** | 该看哪份代码 | 符号图、Repo Map、现有 Grep/Read | 默认当 **工具结果**，长在 Body |
+| **ContextEngine** | 怎么塞进窗口、位置别抖 | compact、三区布局、epoch | Prefix / Body / Tail |
+| **向量检索** | 用自然语言在多仓里找「像什么的代码」 | Console / 跨仓搜索 | **不进入** agent 主循环 |
+
+索引不进 `zene-context`。ContextEngine 继续只做投影；检索是工具 / workspace sidecar。
+
+```text
+Select 选出的东西 ──工具结果──▶ Body（只追加）
+ContextEngine ──布局──▶ [冻结 Prefix][Body][本步 Tail]
+向量检索 ──▶ Console，不是 agent 的下一跳
+```
+
+### 5.1 注入契约
+
+发给模型的视图仍是 §4 的三区。索引命中必须遵守同一条位置规则：
+
+| 位置 | 可以放什么索引 | 条件 |
+|---|---|---|
+| **冻结 Prefix** | 全库静态地图（极少用） | 开工写入，**本 session 内字节不再变** |
+| **Body** | Repo Map、符号命中、Grep/Read | **默认路径**：和普通工具输出一样只追加 |
+| **Tail** | 本步工作集提示 | 只活在这一步，不是仓库目录 |
+| **禁止** | 变长 `<documents_index>` / msg[1] | `InjectionZone::BodyInsert` 已删除 |
+
+个性化 Repo Map（按当前对话重排）一定走工具结果，不能写进 Prefix：它每步都可能变。
+
+### 5.2 Repo Map 是什么
+
+Repo Map 是给模型看的 **仓库结构地图**，不是源码全文，也不是向量命中列表。思路来自 Aider：
+
+1. tree-sitter 抽出 definition 与 reference（这个文件有哪些函数/类，谁在引用谁）
+2. 做成文件/符号图，按当前对话相关文件做个性化 PageRank
+3. 在 token 预算内二分，只塞最重要的 **签名和关键定义行**
+
+模型因此知道项目有什么、在哪、怎么互相调用，但看不到完整实现。真正改代码仍靠 Grep/Read 打开文件。Zene 里它应是 **按需工具**，结果进 Body；不要编成每步重写的 system 段。
+
+### 5.3 最小闭环（实现顺序）
+
+现状：JIT 工具已经够用——`Read` / `Grep` / `Glob`（见 [ENGINE.md](./ENGINE.md) 的 agent profile）。缺的是结构化导航，不是第二套上下文引擎。
+
+**下一步（agent 工作区，尚未实现）**
+
+1. tree-sitter 按语法边界抽符号（函数、类、方法、模块），不要按固定行数切块。
+2. 符号图 sidecar：路径、符号、签名、一行定义；文件 content hash 变了才重解析。
+3. `RepoMap` 工具：按 token 预算返回结构地图，输出当工具结果。
+4. Grep 可先打符号表再落文件；Read 仍是唯一把实现拉进窗口的入口。
+
+**明确不做的下一跳**
+
+- 不要在 `project()` 里插入变长仓库目录。
+- 不要为每次 Cloud run 建工作区向量库。embedding 要按组织 / commit / ACL 隔离，过期比 Grep 更错，还会诱惑人把命中列表塞回前缀。
+- 不要再写一份和 Session 抢真相的 `STATE.md`；决策、compact、todo、plan 已在 event log。
+- `AGENTS.md` 已经进冻结前缀：短约定留 system，变长细则走 Skill 按需读。
+
+### 5.4 和 Cloud Code Intelligence 的关系
+
+[产品设计 7.10](../zene-cloud-platform/docs/PRODUCT_AND_SYSTEM_DESIGN.md) 的分期仍然成立：
+
+- **Run 工作区（本文）**：tree-sitter 符号 + 按需 Repo Map + Grep/Read。绑定 workspace version / canonical path。
+- **Console 第二阶段**：默认分支增量索引、embedding 跨仓搜索、PR 影响分析。那是产品搜索，不是把 ContextEngine 做强。
+
+Explore 子 agent 继续用 Read/Grep/Glob（加上来的 Repo Map）做调研；主 context 只收摘要。这是 Isolate，不改变三区布局。
+
+---
+
+## 6. 出站：epoch、delta、gateway
 
 已实现行为（原 Phase 0–5）：
 
@@ -164,7 +238,7 @@ Water / auto-compact 仍看窗口占用 `max(usage, estimate)`，不因 cache �
 
 ---
 
-## 6. 数据流
+## 7. 数据流
 
 ```mermaid
 sequenceDiagram
@@ -186,11 +260,13 @@ TurnEngine 只依赖 `ContextAssembler::prepare` / `handle_overflow`；三段式
 
 ---
 
-## 7. 剩余工作
+## 8. 剩余工作
 
 - 仅清理可无损迁移的 legacy session fallback
 - Console 按产品需求展示 `prefixCache`（非第一版必做彩图）
 - Agent-specific runtime wiring 的进一步 crate 化（控制面，见 runtime 文档）
+- §5 最小闭环尚未实现：tree-sitter 符号图（hash 增量）、按需 `RepoMap` 工具；不要为此改 ContextEngine 布局
+- 向量检索 / 跨仓 embedding 属于 Console Code Intelligence，不在本文实现范围
 
 ---
 
@@ -198,16 +274,24 @@ TurnEngine 只依赖 `ContextAssembler::prepare` / `handle_overflow`；三段式
 
 - [session-as-source-of-truth.md](./session-as-source-of-truth.md) — Session 事实 vs Context 投影
 - [agent-inference-context.md](./agent-inference-context.md) — 与推理层的 session / cache / 续算
-- [ENGINE.md](./ENGINE.md) — turn、compaction 算法、memory、sandbox
-- [agent-components.md](./agent-components.md) — 可组装组件栈
+- [ENGINE.md](./ENGINE.md) — turn、compaction 算法、memory、sandbox、Grep/Read
+- [agent-components.md](./agent-components.md) — 可组装组件栈；索引不进 `zene-context`
 - [agent-runtime-optimization.md](./agent-runtime-optimization.md) — 控制面；本文不替代
 - [pi-agent-harness-lessons.md](./pi-agent-harness-lessons.md) — Pi 对照
+- [PRODUCT_AND_SYSTEM_DESIGN.md](../zene-cloud-platform/docs/PRODUCT_AND_SYSTEM_DESIGN.md) §7.10 — Cloud Code Intelligence 分期
 
 曾拆成 `context-engine-projection.md` 与 `context-engine-prefix-cache.md`，已并入本文。
 
 ---
 
 ## 讨论记录
+
+### 2026-08-13 — 索引 Select 与 ContextEngine 分家
+
+- 索引服务 Select，ContextEngine 服务 Compress / 布局；禁止变长 documents 块改写前缀。
+- 最小闭环：tree-sitter 符号索引 + 按需 Repo Map + 现有 Grep/Read；符号图按文件 hash 增量更新。
+- 向量检索归 Console / 跨仓搜索，不是把 agent 做强的下一跳。
+- Repo Map 按需当工具结果进 Body；个性化地图不得写入冻结 Prefix。
 
 ### 2026-08-13 — 前缀稳定 + 文档合并
 

@@ -1236,7 +1236,7 @@ Wave 16  统一 transport command/event  ← 当前工作
 ## 相关文档
 
 - [session-as-source-of-truth.md](./session-as-source-of-truth.md) — Session 事实 vs Context 投影
-- [context-engine.md](./context-engine.md) — ContextEngine（投影、prefix cache、epoch/delta）
+- [context-engine.md](./context-engine.md) — ContextEngine（投影、prefix cache、epoch/delta、索引 Select）
 - [pi-agent-harness-lessons.md](./pi-agent-harness-lessons.md) — Pi Harness 对照
 - [agent-components.md](./agent-components.md) — 可组装组件栈
 - [ENGINE.md](./ENGINE.md) — turn / compaction 行为
