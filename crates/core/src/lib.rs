@@ -61,9 +61,6 @@ pub use zene_permission::{
     PolicyDecision, PromptChoice, RuleAction, SharedApprovalBroker, SharedToolPermission,
     TerminalApprovalBroker, ToolPermission,
 };
-pub use zene_runtime::{
-    ApprovalDecision, ExecutionState, RuntimeCommand, RuntimeLifecycle, RuntimeResponse,
-};
 pub use zene_turn::{
     aborted_error, begin_turn, end_turn, max_turns_notice, steer_requires_active_turn,
     EventSequence, RuntimeEvent, RuntimeEventHandler, RuntimeEventKind, SessionId, SteerBuffer,
@@ -624,8 +621,8 @@ impl Agent {
 
     /// Ask the runtime actor to own approval waiters for this session.
     ///
-    /// Transports then send [`zene_runtime::RuntimeCommand::Approval`] instead
-    /// of injecting an ACP/Cloud-specific broker.
+    /// Transports then send `RuntimeCommand::Approval` (via `zene-runtime` /
+    /// `zene-agent-runtime`) instead of injecting an ACP/Cloud-specific broker.
     pub fn enable_runtime_approval_waiters(&mut self) {
         self.runtime_approval_waiters = true;
     }

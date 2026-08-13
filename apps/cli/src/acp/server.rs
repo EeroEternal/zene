@@ -7,11 +7,11 @@ use anyhow::{anyhow, bail, Context, Result};
 use serde_json::{json, Value};
 use tokio::sync::{mpsc, oneshot};
 use tracing::{debug, warn};
-use zene_agent_runtime::RuntimeHandle;
+use zene_agent_runtime::{ApprovalDecision, RuntimeHandle};
 use zene_config::ZeneConfig;
 use zene_core::{
-    Agent, ApprovalDecision, ApprovalRequest, AskUserOption, PermissionGate, PermissionMode,
-    PromptChoice, RuntimeEvent, RuntimeEventKind,
+    Agent, ApprovalRequest, AskUserOption, PermissionGate, PermissionMode, PromptChoice,
+    RuntimeEvent, RuntimeEventKind,
 };
 use zene_runtime::{RuntimeControl, RuntimeRecoveryInfo};
 use zene_sandbox::LocalSandbox;

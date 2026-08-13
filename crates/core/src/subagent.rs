@@ -6,7 +6,9 @@ use async_trait::async_trait;
 use tokio_util::sync::CancellationToken;
 use zene_config::ZeneConfig;
 use zene_llm::{ChatClient, Message, TokenUsage, ToolCall};
-use zene_model_executor::{ChatClientExecutor, ModelExecutor, ModelRequest, ModelResponse, ModelStream};
+use zene_model_executor::{ChatClientExecutor, ModelExecutor, ModelRequest};
+#[cfg(test)]
+use zene_model_executor::{ModelResponse, ModelStream};
 use zene_sandbox::Sandbox;
 use zene_tools::{
     RuntimeScope, SubagentEnv, SubagentProfile, SubagentRunner, ToolCatalog, ToolContext,
