@@ -113,6 +113,10 @@ export type CloudEventKind =
   | "approval_requested"
   | "initialized"
   | "unsupported_request"
+  | "turn_started"
+  | "step_started"
+  | "turn_ended"
+  | "error"
   | "acp";
 
 /** Stored `event_type` written by Cloud. Matches domain `RunEventKind`. */
@@ -176,6 +180,24 @@ export interface AcpResidualPayload {
   method?: string;
   sessionUpdate?: string;
   update?: unknown;
+}
+
+export interface TurnStartedPayload {
+  turnId?: string;
+}
+
+export interface StepStartedPayload {
+  step?: number;
+  turnId?: string;
+}
+
+export interface TurnEndedPayload {
+  steps?: number;
+  turnId?: string;
+}
+
+export interface ErrorPayload {
+  message: string;
 }
 
 export interface StateChangedPayload {

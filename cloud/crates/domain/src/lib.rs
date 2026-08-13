@@ -237,6 +237,10 @@ pub enum CloudEventKind {
     Initialized,
     /// Reverse request that Cloud auto-rejects (no permission mapping).
     UnsupportedRequest,
+    TurnStarted,
+    StepStarted,
+    TurnEnded,
+    Error,
     Acp,
 }
 
@@ -257,6 +261,10 @@ impl CloudEventKind {
             Self::ApprovalRequested => "approval_requested",
             Self::Initialized => "initialized",
             Self::UnsupportedRequest => "unsupported_request",
+            Self::TurnStarted => "turn_started",
+            Self::StepStarted => "step_started",
+            Self::TurnEnded => "turn_ended",
+            Self::Error => "error",
             Self::Acp => "acp",
         }
     }
@@ -277,6 +285,10 @@ impl CloudEventKind {
             "approval_requested" => Self::ApprovalRequested,
             "initialized" => Self::Initialized,
             "unsupported_request" => Self::UnsupportedRequest,
+            "turn_started" => Self::TurnStarted,
+            "step_started" => Self::StepStarted,
+            "turn_ended" => Self::TurnEnded,
+            "error" => Self::Error,
             "acp" => Self::Acp,
             _ => return None,
         })
@@ -303,6 +315,10 @@ pub enum RunEventKind {
     ApprovalRequested,
     Initialized,
     UnsupportedRequest,
+    TurnStarted,
+    StepStarted,
+    TurnEnded,
+    Error,
     Acp,
     Platform,
     Runtime,
@@ -325,6 +341,10 @@ impl From<CloudEventKind> for RunEventKind {
             CloudEventKind::ApprovalRequested => Self::ApprovalRequested,
             CloudEventKind::Initialized => Self::Initialized,
             CloudEventKind::UnsupportedRequest => Self::UnsupportedRequest,
+            CloudEventKind::TurnStarted => Self::TurnStarted,
+            CloudEventKind::StepStarted => Self::StepStarted,
+            CloudEventKind::TurnEnded => Self::TurnEnded,
+            CloudEventKind::Error => Self::Error,
             CloudEventKind::Acp => Self::Acp,
         }
     }
@@ -349,6 +369,10 @@ impl RunEventKind {
             Self::ApprovalRequested => CloudEventKind::ApprovalRequested.as_event_type(),
             Self::Initialized => CloudEventKind::Initialized.as_event_type(),
             Self::UnsupportedRequest => CloudEventKind::UnsupportedRequest.as_event_type(),
+            Self::TurnStarted => CloudEventKind::TurnStarted.as_event_type(),
+            Self::StepStarted => CloudEventKind::StepStarted.as_event_type(),
+            Self::TurnEnded => CloudEventKind::TurnEnded.as_event_type(),
+            Self::Error => CloudEventKind::Error.as_event_type(),
             Self::Acp => CloudEventKind::Acp.as_event_type(),
         }
     }
@@ -456,6 +480,38 @@ pub struct AcpResidualPayload {
     pub session_update: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub update: Option<serde_json::Value>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct TurnStartedPayload {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub turn_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct StepStartedPayload {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub step: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub turn_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct TurnEndedPayload {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub steps: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub turn_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct ErrorPayload {
+    #[serde(default)]
+    pub message: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
@@ -1029,6 +1085,10 @@ mod tests {
             CloudEventKind::ApprovalRequested,
             CloudEventKind::Initialized,
             CloudEventKind::UnsupportedRequest,
+            CloudEventKind::TurnStarted,
+            CloudEventKind::StepStarted,
+            CloudEventKind::TurnEnded,
+            CloudEventKind::Error,
             CloudEventKind::Acp,
         ] {
             let encoded = serde_json::to_value(kind).expect("serialize");

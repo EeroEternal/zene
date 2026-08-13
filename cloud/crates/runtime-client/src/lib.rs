@@ -14,9 +14,10 @@ use zene_cloud_acp_bridge::{
 
 pub use zene_cloud_domain::{
     AcpResidualPayload, ApprovalDecision, ApprovalEventPayload, ApprovalKind,
-    AvailableCommandsPayload, CloudEventKind, InitializedPayload, PlanPayload, ProjectionPayload,
-    SessionStartedPayload, StateChangedPayload, TextEventPayload, ToolCallPayload,
-    ToolResultPayload, UnsupportedRequestPayload, UsagePayload,
+    AvailableCommandsPayload, CloudEventKind, ErrorPayload, InitializedPayload, PlanPayload,
+    ProjectionPayload, SessionStartedPayload, StateChangedPayload, StepStartedPayload,
+    TextEventPayload, ToolCallPayload, ToolResultPayload, TurnEndedPayload, TurnStartedPayload,
+    UnsupportedRequestPayload, UsagePayload,
 };
 
 /// ACP `optionId` mapping stays inside this adapter.
@@ -67,6 +68,10 @@ fn map_session_update(update: &str) -> CloudEventKind {
         "projection_update" => CloudEventKind::ProjectionReady,
         "plan" => CloudEventKind::Plan,
         "available_commands_update" => CloudEventKind::AvailableCommands,
+        "turn_started" => CloudEventKind::TurnStarted,
+        "step_started" => CloudEventKind::StepStarted,
+        "turn_ended" => CloudEventKind::TurnEnded,
+        "error" => CloudEventKind::Error,
         _ => CloudEventKind::Acp,
     }
 }
@@ -106,6 +111,10 @@ pub enum RuntimePayload {
     Projection(ProjectionPayload),
     Initialized(InitializedPayload),
     UnsupportedRequest(UnsupportedRequestPayload),
+    TurnStarted(TurnStartedPayload),
+    StepStarted(StepStartedPayload),
+    TurnEnded(TurnEndedPayload),
+    Error(ErrorPayload),
     AcpResidual(AcpResidualPayload),
     Json(Value),
 }
@@ -125,6 +134,10 @@ impl RuntimePayload {
             Self::Projection(payload) => to_json(payload),
             Self::Initialized(payload) => to_json(payload),
             Self::UnsupportedRequest(payload) => to_json(payload),
+            Self::TurnStarted(payload) => to_json(payload),
+            Self::StepStarted(payload) => to_json(payload),
+            Self::TurnEnded(payload) => to_json(payload),
+            Self::Error(payload) => to_json(payload),
             Self::AcpResidual(payload) => to_json(payload),
             Self::Json(value) => value.clone(),
         }
@@ -274,6 +287,10 @@ fn product_payload(kind: CloudEventKind, raw: &Value) -> RuntimePayload {
         CloudEventKind::AvailableCommands => commands_product(raw),
         CloudEventKind::Initialized => initialized_product(raw),
         CloudEventKind::UnsupportedRequest => unsupported_request_product(raw),
+        CloudEventKind::TurnStarted => turn_started_product(raw),
+        CloudEventKind::StepStarted => step_started_product(raw),
+        CloudEventKind::TurnEnded => turn_ended_product(raw),
+        CloudEventKind::Error => error_product(raw),
         CloudEventKind::Acp => acp_residual_product(raw),
     }
 }
@@ -390,6 +407,49 @@ fn acp_residual_product(raw: &Value) -> RuntimePayload {
             .map(str::to_string),
         update: Some(update.clone()),
     })
+}
+
+fn turn_started_product(raw: &Value) -> RuntimePayload {
+    let Some(update) = raw.pointer("/params/update") else {
+        return RuntimePayload::Json(raw.clone());
+    };
+    RuntimePayload::TurnStarted(TurnStartedPayload {
+        turn_id: json_str(update, "turnId"),
+    })
+}
+
+fn step_started_product(raw: &Value) -> RuntimePayload {
+    let Some(update) = raw.pointer("/params/update") else {
+        return RuntimePayload::Json(raw.clone());
+    };
+    RuntimePayload::StepStarted(StepStartedPayload {
+        step: update.get("step").and_then(Value::as_u64).map(|v| v as u32),
+        turn_id: json_str(update, "turnId"),
+    })
+}
+
+fn turn_ended_product(raw: &Value) -> RuntimePayload {
+    let Some(update) = raw.pointer("/params/update") else {
+        return RuntimePayload::Json(raw.clone());
+    };
+    RuntimePayload::TurnEnded(TurnEndedPayload {
+        steps: update
+            .get("steps")
+            .and_then(Value::as_u64)
+            .map(|v| v as u32),
+        turn_id: json_str(update, "turnId"),
+    })
+}
+
+fn error_product(raw: &Value) -> RuntimePayload {
+    let Some(update) = raw.pointer("/params/update") else {
+        return RuntimePayload::Json(raw.clone());
+    };
+    let message = json_str(update, "message").unwrap_or_default();
+    if message.is_empty() {
+        return RuntimePayload::Json(raw.clone());
+    }
+    RuntimePayload::Error(ErrorPayload { message })
 }
 
 fn state_product(raw: &Value) -> RuntimePayload {
@@ -1201,6 +1261,51 @@ mod tests {
         let value = event.payload.to_value();
         assert!(value.get("id").is_none());
         assert!(value.get("jsonrpc").is_none());
+    }
+
+    #[test]
+    fn turn_step_and_error_store_product_fields() {
+        let turn = runtime_notification(AcpEvent::from_notification(&serde_json::json!({
+            "method": "session/update",
+            "params": {
+                "update": { "sessionUpdate": "turn_started", "turnId": "turn-1" }
+            }
+        })));
+        assert_eq!(turn.event_type.as_event_type(), "turn_started");
+        assert_eq!(turn.payload, serde_json::json!({ "turnId": "turn-1" }));
+
+        let step = runtime_notification(AcpEvent::from_notification(&serde_json::json!({
+            "method": "session/update",
+            "params": {
+                "update": { "sessionUpdate": "step_started", "step": 2, "turnId": "turn-1" }
+            }
+        })));
+        assert_eq!(step.event_type.as_event_type(), "step_started");
+        assert_eq!(
+            step.payload,
+            serde_json::json!({ "step": 2, "turnId": "turn-1" })
+        );
+
+        let ended = runtime_notification(AcpEvent::from_notification(&serde_json::json!({
+            "method": "session/update",
+            "params": {
+                "update": { "sessionUpdate": "turn_ended", "steps": 3, "turnId": "turn-1" }
+            }
+        })));
+        assert_eq!(ended.event_type.as_event_type(), "turn_ended");
+        assert_eq!(
+            ended.payload,
+            serde_json::json!({ "steps": 3, "turnId": "turn-1" })
+        );
+
+        let error = runtime_notification(AcpEvent::from_notification(&serde_json::json!({
+            "method": "session/update",
+            "params": {
+                "update": { "sessionUpdate": "error", "message": "boom" }
+            }
+        })));
+        assert_eq!(error.event_type.as_event_type(), "error");
+        assert_eq!(error.payload, serde_json::json!({ "message": "boom" }));
     }
 
     #[test]

@@ -26,9 +26,9 @@ use super::terminal_bridge::AcpRemoteTerminal;
 use super::transport::{AcpWriter, SharedState};
 use super::updates::{
     agent_message_chunk, agent_thought_chunk, available_commands_update, current_mode_update,
-    modes_state, plan_from_todo_arguments, projection_ready_update_with_provenance,
-    replay_updates_from_messages, tool_call_result_update, tool_call_update, tool_kind, tool_title,
-    usage_update,
+    error_update, modes_state, plan_from_todo_arguments, projection_ready_update_with_provenance,
+    replay_updates_from_messages, step_started, tool_call_result_update, tool_call_update,
+    tool_kind, tool_title, turn_ended, turn_started, usage_update,
 };
 
 /// Tracks the tool call currently awaiting permission so ACP can reuse its id.
@@ -863,9 +863,7 @@ fn project_runtime_event(
             usage.cached_tokens,
             *context_epoch,
         )),
-        RuntimeEventKind::Error { message } => {
-            Some(agent_message_chunk(&format!("\n[error] {message}\n")))
-        }
+        RuntimeEventKind::Error { message } => Some(error_update(message)),
         RuntimeEventKind::ProjectionReady {
             source_message_count,
             projected_message_count,
@@ -943,10 +941,19 @@ fn project_runtime_event(
                 "unchangedReprocessedEst": prefix_cache.unchanged_reprocessed_est,
             }),
         )),
-        RuntimeEventKind::TurnStarted
-        | RuntimeEventKind::StepStarted { .. }
-        | RuntimeEventKind::TurnEnded { .. }
-        | RuntimeEventKind::SteerInput { .. }
+        RuntimeEventKind::TurnStarted => {
+            let turn_id = event.turn_id.as_ref().map(|id| id.to_string());
+            Some(turn_started(turn_id.as_deref()))
+        }
+        RuntimeEventKind::StepStarted { step } => {
+            let turn_id = event.turn_id.as_ref().map(|id| id.to_string());
+            Some(step_started(*step, turn_id.as_deref()))
+        }
+        RuntimeEventKind::TurnEnded { steps } => {
+            let turn_id = event.turn_id.as_ref().map(|id| id.to_string());
+            Some(turn_ended(*steps, turn_id.as_deref()))
+        }
+        RuntimeEventKind::SteerInput { .. }
         | RuntimeEventKind::ApprovalRequested { .. }
         | RuntimeEventKind::ApprovalResolved { .. } => None,
     };
