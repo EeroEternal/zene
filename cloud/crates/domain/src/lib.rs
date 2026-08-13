@@ -214,7 +214,8 @@ pub struct UpdateRunRequest {
 }
 
 /// Product `event_type` written by RuntimeClient for classified frames.
-/// Unrecognized ACP frames are `acp`. Platform / legacy `runtime` rows use
+/// Unrecognized ACP frames are `acp` (with a residual product payload when the
+/// frame is a `session/update`). Platform / legacy `runtime` rows use
 /// [`RunEventKind`]; `RunEvent.event_type` stays a string so unknown historical
 /// values still load.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -232,6 +233,10 @@ pub enum CloudEventKind {
     AvailableCommands,
     SessionStarted,
     ApprovalRequested,
+    /// ACP `initialize` handshake result (not a session).
+    Initialized,
+    /// Reverse request that Cloud auto-rejects (no permission mapping).
+    UnsupportedRequest,
     Acp,
 }
 
@@ -250,6 +255,8 @@ impl CloudEventKind {
             Self::AvailableCommands => "available_commands",
             Self::SessionStarted => "session_started",
             Self::ApprovalRequested => "approval_requested",
+            Self::Initialized => "initialized",
+            Self::UnsupportedRequest => "unsupported_request",
             Self::Acp => "acp",
         }
     }
@@ -268,6 +275,8 @@ impl CloudEventKind {
             "available_commands" => Self::AvailableCommands,
             "session_started" => Self::SessionStarted,
             "approval_requested" => Self::ApprovalRequested,
+            "initialized" => Self::Initialized,
+            "unsupported_request" => Self::UnsupportedRequest,
             "acp" => Self::Acp,
             _ => return None,
         })
@@ -292,6 +301,8 @@ pub enum RunEventKind {
     AvailableCommands,
     SessionStarted,
     ApprovalRequested,
+    Initialized,
+    UnsupportedRequest,
     Acp,
     Platform,
     Runtime,
@@ -312,6 +323,8 @@ impl From<CloudEventKind> for RunEventKind {
             CloudEventKind::AvailableCommands => Self::AvailableCommands,
             CloudEventKind::SessionStarted => Self::SessionStarted,
             CloudEventKind::ApprovalRequested => Self::ApprovalRequested,
+            CloudEventKind::Initialized => Self::Initialized,
+            CloudEventKind::UnsupportedRequest => Self::UnsupportedRequest,
             CloudEventKind::Acp => Self::Acp,
         }
     }
@@ -334,6 +347,8 @@ impl RunEventKind {
             Self::AvailableCommands => CloudEventKind::AvailableCommands.as_event_type(),
             Self::SessionStarted => CloudEventKind::SessionStarted.as_event_type(),
             Self::ApprovalRequested => CloudEventKind::ApprovalRequested.as_event_type(),
+            Self::Initialized => CloudEventKind::Initialized.as_event_type(),
+            Self::UnsupportedRequest => CloudEventKind::UnsupportedRequest.as_event_type(),
             Self::Acp => CloudEventKind::Acp.as_event_type(),
         }
     }
@@ -401,6 +416,46 @@ pub struct SessionStartedPayload {
     pub session_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub resumed: Option<bool>,
+}
+
+/// Product payload for ACP `initialize` results.
+/// Extra result keys are preserved so the write path does not drop fields.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct InitializedPayload {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub protocol_version: Option<serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_capabilities: Option<serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_info: Option<serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auth_methods: Option<serde_json::Value>,
+    #[serde(default, flatten)]
+    pub extra: serde_json::Map<String, serde_json::Value>,
+}
+
+/// Product payload for reverse requests Cloud auto-rejects.
+/// JSON-RPC `id` stays inside the adapter and is never persisted here.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct UnsupportedRequestPayload {
+    pub method: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub params: Option<serde_json::Value>,
+}
+
+/// Residual product payload for unknown `session/update` frames.
+/// Keeps method / sessionUpdate / update body without the JSON-RPC envelope.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct AcpResidualPayload {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub method: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_update: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub update: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
@@ -972,6 +1027,8 @@ mod tests {
             CloudEventKind::AvailableCommands,
             CloudEventKind::SessionStarted,
             CloudEventKind::ApprovalRequested,
+            CloudEventKind::Initialized,
+            CloudEventKind::UnsupportedRequest,
             CloudEventKind::Acp,
         ] {
             let encoded = serde_json::to_value(kind).expect("serialize");
