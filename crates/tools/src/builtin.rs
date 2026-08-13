@@ -7,6 +7,7 @@ use crate::grep::GrepTool;
 use crate::plan::{EnterPlanModeTool, ExitPlanModeTool};
 use crate::read::ReadTool;
 use crate::registry::ToolRegistry;
+use crate::repomap::RepoMapTool;
 use crate::skill::SkillTool;
 use crate::subagent::SubagentProfile;
 use crate::task::TaskTool;
@@ -38,6 +39,7 @@ pub fn tools_for_profile(profile: SubagentProfile) -> ToolRegistry {
             Box::new(ReadTool),
             Box::new(GrepTool),
             Box::new(GlobTool),
+            Box::new(RepoMapTool),
         ]),
         SubagentProfile::Coder => ToolRegistry::new(vec![
             Box::new(ReadTool),
@@ -46,6 +48,7 @@ pub fn tools_for_profile(profile: SubagentProfile) -> ToolRegistry {
             Box::new(BashTool),
             Box::new(GrepTool),
             Box::new(GlobTool),
+            Box::new(RepoMapTool),
         ]),
     }
 }
@@ -58,6 +61,7 @@ fn all_builtin_tool_boxes(web_search: WebSearchConfig) -> Vec<Box<dyn crate::reg
         Box::new(BashTool),
         Box::new(GrepTool),
         Box::new(GlobTool),
+        Box::new(RepoMapTool),
         Box::new(SkillTool),
         Box::new(TaskTool),
         Box::new(TaskOutputTool),
@@ -76,6 +80,7 @@ fn explore_agent_tool_boxes(web_search: WebSearchConfig) -> Vec<Box<dyn crate::r
         Box::new(ReadTool),
         Box::new(GrepTool),
         Box::new(GlobTool),
+        Box::new(RepoMapTool),
         Box::new(SkillTool),
         Box::new(AskUserQuestionTool),
         Box::new(TodoWriteTool),
@@ -95,6 +100,7 @@ fn coder_agent_tool_boxes(web_search: WebSearchConfig) -> Vec<Box<dyn crate::reg
         Box::new(BashTool),
         Box::new(GrepTool),
         Box::new(GlobTool),
+        Box::new(RepoMapTool),
         Box::new(SkillTool),
         Box::new(TaskTool),
         Box::new(TaskOutputTool),
@@ -118,6 +124,7 @@ mod tests {
         let tools = agent_tools(AgentProfile::Explore, WebSearchConfig::default());
         let names: Vec<String> = tools.definitions().into_iter().map(|d| d.name).collect();
         assert!(names.iter().any(|n| n == "Read"));
+        assert!(names.iter().any(|n| n == "RepoMap"));
         assert!(!names.iter().any(|n| n == "Write"));
         assert!(!names.iter().any(|n| n == "Edit"));
         assert!(!names.iter().any(|n| n == "Bash"));
@@ -128,6 +135,7 @@ mod tests {
     fn coder_profile_includes_write_and_task() {
         let tools = agent_tools(AgentProfile::Coder, WebSearchConfig::default());
         let names: Vec<String> = tools.definitions().into_iter().map(|d| d.name).collect();
+        assert!(names.iter().any(|n| n == "RepoMap"));
         assert!(names.iter().any(|n| n == "Write"));
         assert!(names.iter().any(|n| n == "Edit"));
         assert!(names.iter().any(|n| n == "Task"));

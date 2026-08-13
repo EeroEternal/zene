@@ -8,10 +8,10 @@ use serde::Deserialize;
 use zene_config::sessions_dir;
 use zene_tools::{PlanModeState, ToolResult};
 
-pub const PLAN_MODE_REMINDER_BODY: &str = "You are in Plan mode. Only read-only tools (Read, Grep, Glob, Skill, WebSearch, FetchUrl) and ExitPlanMode are available. Do not use Write, Edit, Bash, or Task until you call ExitPlanMode with your plan and the user approves it.";
+pub const PLAN_MODE_REMINDER_BODY: &str = "You are in Plan mode. Only read-only tools (Read, Grep, Glob, RepoMap, Skill, WebSearch, FetchUrl) and ExitPlanMode are available. Do not use Write, Edit, Bash, or Task until you call ExitPlanMode with your plan and the user approves it.";
 
 #[allow(dead_code)] // tagged form kept for tests; projection uses PLAN_MODE_REMINDER_BODY
-pub const PLAN_MODE_REMINDER: &str = "<system_reminder>\nYou are in Plan mode. Only read-only tools (Read, Grep, Glob, Skill, WebSearch, FetchUrl) and ExitPlanMode are available. Do not use Write, Edit, Bash, or Task until you call ExitPlanMode with your plan and the user approves it.\n</system_reminder>";
+pub const PLAN_MODE_REMINDER: &str = "<system_reminder>\nYou are in Plan mode. Only read-only tools (Read, Grep, Glob, RepoMap, Skill, WebSearch, FetchUrl) and ExitPlanMode are available. Do not use Write, Edit, Bash, or Task until you call ExitPlanMode with your plan and the user approves it.\n</system_reminder>";
 
 pub type PlanApprovalPrompter =
     Arc<dyn Fn(&Path, &str) -> io::Result<bool> + Send + Sync>;
@@ -96,7 +96,7 @@ pub fn handle_enter_plan_mode(
         }
     };
     state.enter();
-    let mut msg = "Entered plan mode. Use Read/Grep/Glob/Skill/WebSearch to explore, then ExitPlanMode with your plan.".to_string();
+    let mut msg = "Entered plan mode. Use Read/Grep/Glob/RepoMap/Skill/WebSearch to explore, then ExitPlanMode with your plan.".to_string();
     if let Some(reason) = args.reason.filter(|r| !r.trim().is_empty()) {
         msg.push_str(&format!("\nReason: {reason}"));
     }
@@ -177,6 +177,7 @@ pub fn tool_visible_in_definitions(name: &str, plan_active: bool) -> bool {
             "Read"
                 | "Grep"
                 | "Glob"
+                | "RepoMap"
                 | "Skill"
                 | "AskUserQuestion"
                 | "TodoWrite"
@@ -265,6 +266,7 @@ mod tests {
         assert!(tool_visible_in_definitions("WebSearch", true));
         assert!(!tool_visible_in_definitions("Write", true));
         assert!(tool_visible_in_definitions("Read", true));
+        assert!(tool_visible_in_definitions("RepoMap", true));
         assert!(!tool_visible_in_definitions("ExitPlanMode", false));
         assert!(tool_visible_in_definitions("ExitPlanMode", true));
     }

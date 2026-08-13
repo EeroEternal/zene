@@ -192,9 +192,9 @@ Configure main-agent tool subsets via `agent_profile` in `~/.zene/config.toml` o
 | Profile | Built-in tools |
 |---------|----------------|
 | `full` (default) | All built-in tools |
-| `explore` | Read/Grep/Glob + Skill + AskUser/Todo/FetchUrl/WebSearch + plan mode |
-| `coder` | Read/Write/Edit/Bash/Grep/Glob + Skill + Task + collaboration + plan mode |
+| `explore` | Read/Grep/Glob/RepoMap + Skill + AskUser/Todo/FetchUrl/WebSearch + plan mode |
+| `coder` | Read/Write/Edit/Bash/Grep/Glob/RepoMap + Skill + Task + collaboration + plan mode |
 
 MCP tools are always merged regardless of profile.
 
-Code index / Repo Map is **Select**, not ContextEngine: hits must land as tool results in the Body (or a session-frozen prefix). Do not inject a resizing documents block. See [context-engine.md](./context-engine.md) §5.
+Code index / Repo Map is **Select**, not ContextEngine: hits must land as tool results in the Body (or a session-frozen prefix). Do not inject a resizing documents block. See [context-engine.md](./context-engine.md) §5. Implemented as `zene-index` (`{workdir}/.zene/index/v1.json`) plus the `RepoMap` tool.

@@ -22,8 +22,8 @@
 zene-context          zene-tools + mcp       zene-session
 estimate/compact      Tool trait/registry    持久化 transcript
 assemble/epoch        内置 + MCP 工具         checkpoint/fork
-                      Select：Grep/Read；
-                      未来符号图 / RepoMap
+                      Select：Grep/Read/RepoMap；
+                      符号图在 zene-index
      │                      │
      └──────────┬───────────┘
                 ▼
@@ -41,8 +41,9 @@ assemble/epoch        内置 + MCP 工具         checkpoint/fork
 | `zene-llm` | 协议与 Provider | config（后续可删） |
 | `zene-sandbox` | 执行隔离 | 无 Zene crate |
 | `zene-context` | 语义上下文引擎 | llm |
+| `zene-index` | 工作区符号图 / Repo Map（Select） | 无 Zene crate |
 | `zene-session` | 会话持久化 | llm |
-| `zene-tools` | 工具插件 | llm, sandbox, session |
+| `zene-tools` | 工具插件 | llm, sandbox, session, index |
 | `zene-mcp` | MCP 适配 | tools |
 | `zene-core` | Zene 产品 runtime | 以上全部 |
 

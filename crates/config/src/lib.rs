@@ -58,7 +58,7 @@ pub enum AgentProfile {
     /// All built-in tools (default).
     #[default]
     Full,
-    /// Read-only exploration: Read/Grep/Glob + collaboration + plan tools.
+    /// Read-only exploration: Read/Grep/Glob/RepoMap + collaboration + plan tools.
     Explore,
     /// Read/write coding: Write/Edit/Bash + collaboration + Task subagent + plan tools.
     Coder,

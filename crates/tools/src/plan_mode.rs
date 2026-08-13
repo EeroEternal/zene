@@ -31,6 +31,7 @@ impl PlanModeState {
             "Read"
                 | "Grep"
                 | "Glob"
+                | "RepoMap"
                 | "Skill"
                 | "AskUserQuestion"
                 | "TodoWrite"
@@ -43,7 +44,7 @@ impl PlanModeState {
 
     pub fn blocked_message(tool_name: &str) -> String {
         format!(
-            "Tool `{tool_name}` is blocked in plan mode. Only Read, Grep, Glob, and Skill are allowed until you call ExitPlanMode and the user approves your plan."
+            "Tool `{tool_name}` is blocked in plan mode. Only Read, Grep, Glob, RepoMap, and Skill are allowed until you call ExitPlanMode and the user approves your plan."
         )
     }
 }

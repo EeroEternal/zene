@@ -17,7 +17,7 @@ impl Tool for EnterPlanModeTool {
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
             name: "EnterPlanMode".to_string(),
-            description: "Enter plan mode: only read-only tools (Read, Grep, Glob, Skill) are available until the user approves your plan via ExitPlanMode.".to_string(),
+            description: "Enter plan mode: only read-only tools (Read, Grep, Glob, RepoMap, Skill) are available until the user approves your plan via ExitPlanMode.".to_string(),
             parameters: json!({
                 "type": "object",
                 "properties": {

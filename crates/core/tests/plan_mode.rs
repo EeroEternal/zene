@@ -9,6 +9,7 @@ fn plan_mode_blocks_write() {
     assert!(!state.is_tool_allowed("Bash"));
     assert!(!state.is_tool_allowed("Task"));
     assert!(state.is_tool_allowed("Read"));
+    assert!(state.is_tool_allowed("RepoMap"));
 }
 
 #[test]
