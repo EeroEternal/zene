@@ -35,6 +35,7 @@ mod plan_mode;
 mod prepare_step;
 mod runtime;
 mod subagent;
+mod tool_batch;
 mod tool_dedup;
 mod tool_executor;
 pub mod tool_scheduler;
@@ -48,7 +49,6 @@ pub use zene_context::{
 };
 
 use crate::agent_turn::AgentTurnPorts;
-use crate::tool_executor::{DefaultToolExecutor, ToolExecutorDeps};
 pub use agent_builder::AgentBuilder;
 pub use events::{emit_event, runtime_event_handler, AgentEvent, EventHandler};
 pub use plan_mode::PlanApprovalPrompter;
@@ -871,44 +871,19 @@ impl Agent {
         options: &PromptOptions,
         cancel: Option<&CancellationToken>,
     ) -> Result<zene_turn::ToolBatchOutcome> {
-        let scope = self.active_turn.as_ref().map(|turn| {
-            (
-                turn.turn_id.to_string(),
-                turn.step_id.map(|step_id| step_id.to_string()),
-            )
-        });
-        for call in tool_calls {
-            let turn_id = scope.as_ref().map(|(turn_id, _)| turn_id.as_str());
-            let step_id = scope.as_ref().and_then(|(_, step_id)| step_id.as_deref());
-            let idempotency_key = append_tool_execution_checkpoint(
-                &self.record_writer,
-                turn_id,
-                step_id,
-                &call.id,
-                ExecutionCheckpointState::ToolStarted,
-            )?;
-            let tool_event = self
-                .session
-                .record_tool_call(turn_id, step_id, &call.id, &call.name, &call.arguments);
-            self.session.record_checkpoint(
-                turn_id,
-                step_id,
-                Some(&call.id),
-                "tool_started",
-                &idempotency_key,
-            );
-            self.record_writer.append_execution_link(
-                &idempotency_key,
-                &tool_event.id,
-                tool_event.sequence,
-            )?;
-        }
-
-        let subagent_runner = Arc::new(
-            CoreSubagentRunner::new(self.config.clone()).with_broker(self.approval_broker.clone()),
-        );
-        let result = {
-            let executor = DefaultToolExecutor::new(ToolExecutorDeps {
+        let (turn_id, step_id) = self
+            .active_turn
+            .as_ref()
+            .map(|turn| {
+                (
+                    Some(turn.turn_id.to_string()),
+                    turn.step_id.map(|step_id| step_id.to_string()),
+                )
+            })
+            .unwrap_or((None, None));
+        tool_batch::run_tool_batch(
+            tool_batch::ToolBatchDeps {
+                config: &self.config,
                 tools: Arc::clone(&self.tools),
                 sandbox: Arc::clone(&self.sandbox),
                 permission: Arc::clone(&self.permission),
@@ -918,75 +893,19 @@ impl Agent {
                 todos: Arc::clone(&self.todos),
                 ask_user: Arc::clone(&self.ask_user),
                 background: Arc::clone(&self.background),
-                subagent: Some(self.runtime_scope.env(subagent_runner)),
+                runtime_scope: &self.runtime_scope,
                 hooks: &self.hooks,
-            });
-            executor
-                .execute(
-                    tool_calls,
-                    options,
-                    cancel,
-                    &self.session.meta.id,
-                    self.sandbox.workdir(),
-                    &mut self.tool_dedup,
-                )
-                .await?
-        };
-
-        if !result.mode_changes.is_empty() {
-            for mode_id in &result.mode_changes {
-                self.session.record_mode_changed(mode_id);
-            }
-        }
-        for decision in &result.permission_decisions {
-            self.session.record_permission_decision(
-                scope.as_ref().map(|(turn_id, _)| turn_id.as_str()),
-                scope.as_ref().and_then(|(_, step_id)| step_id.as_deref()),
-                &decision.tool_call_id,
-                &decision.tool_name,
-                decision.allowed,
-            );
-        }
-        for message in result.messages {
-            let content = message.content;
-            let turn_id = scope.as_ref().map(|(turn_id, _)| turn_id.as_str());
-            let step_id = scope.as_ref().and_then(|(_, step_id)| step_id.as_deref());
-            let idempotency_key = append_tool_execution_checkpoint(
-                &self.record_writer,
+                session: &mut self.session,
+                record_writer: &self.record_writer,
+                tool_dedup: &mut self.tool_dedup,
                 turn_id,
                 step_id,
-                &message.call.id,
-                ExecutionCheckpointState::ToolCompleted,
-            )?;
-            let result_event = self.session.record_tool_result(
-                turn_id,
-                step_id,
-                &message.call.id,
-                &message.call.name,
-                &content,
-                message.is_error,
-                message.duration_ms,
-            );
-            self.session.record_checkpoint(
-                turn_id,
-                step_id,
-                Some(&message.call.id),
-                "tool_completed",
-                &idempotency_key,
-            );
-            self.record_writer.append_execution_link(
-                &idempotency_key,
-                &result_event.id,
-                result_event.sequence,
-            )?;
-            self.session.push_message(Message::tool_result_with_error(
-                &message.call.id,
-                &message.call.name,
-                content,
-                message.is_error,
-            ));
-        }
-        Ok(result.outcome)
+            },
+            tool_calls,
+            options,
+            cancel,
+        )
+        .await
     }
 
     fn record_compaction(&self, result: &CompactionResult) -> Result<()> {
@@ -998,36 +917,6 @@ impl Agent {
             ts: chrono::Utc::now(),
         })
     }
-}
-
-fn append_tool_execution_checkpoint(
-    record_writer: &AgentRecordWriter,
-    turn_id: Option<&str>,
-    step_id: Option<&str>,
-    tool_call_id: &str,
-    state: ExecutionCheckpointState,
-) -> Result<String> {
-    let state_name = match &state {
-        ExecutionCheckpointState::ToolStarted => "started",
-        ExecutionCheckpointState::ToolCompleted => "completed",
-        _ => bail!("invalid tool execution checkpoint state"),
-    };
-    let idempotency_key = format!(
-        "tool/{}/{}/{tool_call_id}/{state_name}",
-        turn_id.unwrap_or("unknown"),
-        step_id.unwrap_or("unknown"),
-    );
-    record_writer.append_execution_checkpoint(&RecordEntry::ExecutionCheckpoint {
-        turn_id: turn_id.unwrap_or("unknown").to_string(),
-        step_id: step_id.map(str::to_string),
-        tool_call_id: Some(tool_call_id.to_string()),
-        state,
-        idempotency_key: idempotency_key.clone(),
-        context_epoch: None,
-        model_request_hash: None,
-        ts: chrono::Utc::now(),
-    })?;
-    Ok(idempotency_key)
 }
 
 fn merge_event_handler(
@@ -1310,7 +1199,7 @@ mod execution_checkpoint_tests {
         // mandatory append fails before the side-effect closure is reached.
         let writer = AgentRecordWriter::from_path(record_dir.path()).expect("writer");
         let mut executed = false;
-        let execution = append_tool_execution_checkpoint(
+        let execution = tool_batch::append_tool_execution_checkpoint(
             &writer,
             Some("turn-1"),
             Some("step-1"),
