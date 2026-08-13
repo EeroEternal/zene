@@ -12,14 +12,13 @@ use anyhow::{bail, Context, Result};
 use clap::Parser;
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command;
-use tokio::sync::mpsc;
 use tracing::{error, info, warn};
 use tracing_subscriber::EnvFilter;
 use uuid::Uuid;
-use zene_cloud_acp_bridge::{resolve_zene_bin, MockAgent, MockMsg, PermissionDecision};
+use zene_cloud_acp_bridge::resolve_zene_bin;
 use zene_cloud_runtime_client::{
-    approval_payload, to_permission_decision, AcpRuntimeClient, RuntimeClient, RuntimeCommand,
-    RuntimeEvent, RuntimeNotification, RuntimeRequest,
+    AcpRuntimeClient, MockRuntimeClient, RuntimeClient, RuntimeCommand, RuntimeEvent,
+    RuntimeNotification, RuntimeRequest,
 };
 use zene_cloud_domain::{
     ApprovalDecision, ApprovalKind, ApprovalRequest, ApprovalRisk, ApprovalStatus, ClaimedRun,
@@ -638,6 +637,93 @@ async fn prepare_workspace(
     Ok(())
 }
 
+fn spawn_event_pump<R: RuntimeClient + 'static>(
+    runtime: Arc<R>,
+    client: reqwest::Client,
+    api_url: String,
+    token: String,
+    run_id: Uuid,
+    fence: WorkerFence,
+    outbox: EventOutbox,
+) -> (
+    tokio::task::JoinHandle<()>,
+    Arc<tokio::sync::Mutex<Option<String>>>,
+) {
+    let event_error = Arc::new(tokio::sync::Mutex::new(None::<String>));
+    let event_error_task = event_error.clone();
+    let runtime_bg = runtime.clone();
+    let pump = tokio::spawn(async move {
+        while let Some(event) = runtime_bg.next_event().await {
+            match event {
+                RuntimeEvent::Initialized { event, .. } | RuntimeEvent::Notification(event) => {
+                    if let Err(err) = deliver_event(
+                        &outbox,
+                        &client,
+                        &api_url,
+                        &token,
+                        run_id,
+                        event_to_req(event),
+                        &fence,
+                    )
+                    .await
+                    {
+                        warn!(run_id = %run_id, error = %err, "event delivery failed");
+                        *event_error_task.lock().await = Some(err.to_string());
+                        break;
+                    }
+                }
+                RuntimeEvent::Request { request, event } => {
+                    if let Err(err) = deliver_event(
+                        &outbox,
+                        &client,
+                        &api_url,
+                        &token,
+                        run_id,
+                        event_to_req(event),
+                        &fence,
+                    )
+                    .await
+                    {
+                        warn!(run_id = %run_id, error = %err, "event delivery failed");
+                        *event_error_task.lock().await = Some(err.to_string());
+                        break;
+                    }
+                    let RuntimeRequest::Approval {
+                        request_id,
+                        kind,
+                        context,
+                    } = request;
+                    let decision = match resolve_permission(
+                        &client,
+                        &api_url,
+                        &token,
+                        run_id,
+                        &request_id,
+                        kind,
+                        &context,
+                    )
+                    .await
+                    {
+                        Ok(d) => d,
+                        Err(err) => {
+                            warn!(error = %err, "permission resolve failed");
+                            ApprovalDecision::Deny
+                        }
+                    };
+                    let _ = runtime_bg
+                        .send(RuntimeCommand::Approval { request_id, decision })
+                        .await;
+                }
+                RuntimeEvent::ChildExited => {
+                    info!(run_id = %run_id, "runtime child exited");
+                    break;
+                }
+            }
+        }
+    });
+    (pump, event_error)
+}
+
 async fn run_with_mock(
     client: &reqwest::Client,
     cli: &Cli,
@@ -653,84 +739,36 @@ async fn run_with_mock(
         .flush(client, &cli.api_url, &cli.worker_token, run_id, fence)
         .await
         .context("flush recovered event outbox")?;
-    let agent = MockAgent::new(workspace.to_path_buf());
-    let (msg_tx, mut msg_rx) = mpsc::unbounded_channel::<MockMsg>();
-
-    let client_bg = client.clone();
-    let cli_api = cli.api_url.clone();
-    let token = cli.worker_token.clone();
-    let event_fence = (*fence).clone();
-    let event_outbox = outbox.clone();
-    let event_error = Arc::new(tokio::sync::Mutex::new(None::<String>));
-    let event_error_task = event_error.clone();
-    let event_task = tokio::spawn(async move {
-        while let Some(msg) = msg_rx.recv().await {
-            match msg {
-                MockMsg::Event(event) => {
-                    if let Err(err) = deliver_event(
-                        &event_outbox,
-                        &client_bg,
-                        &cli_api,
-                        &token,
-                        run_id,
-                        event_to_req(RuntimeNotification::from_acp(event)),
-                        &event_fence,
-                    )
-                    .await
-                    {
-                        warn!(run_id = %run_id, error = %err, "event delivery failed");
-                        *event_error_task.lock().await = Some(err.to_string());
-                        break;
-                    }
-                }
-                MockMsg::Permission {
-                    request_key,
-                    params,
-                    respond,
-                } => {
-                    match resolve_permission(
-                        &client_bg,
-                        &cli_api,
-                        &token,
-                        run_id,
-                        &request_key,
-                        ApprovalKind::Tool,
-                        &approval_payload(&params),
-                    )
-                    .await
-                    {
-                        Ok(decision) => {
-                            let _ = respond.send(to_permission_decision(decision));
-                        }
-                        Err(err) => {
-                            warn!(error = %err, "permission resolve failed");
-                            let _ = respond.send(PermissionDecision::Deny);
-                        }
-                    }
-                }
-            }
-        }
-    });
+    let runtime = Arc::new(MockRuntimeClient::connect(workspace));
+    let (event_task, event_error) = spawn_event_pump(
+        runtime.clone(),
+        client.clone(),
+        cli.api_url.clone(),
+        cli.worker_token.clone(),
+        run_id,
+        (*fence).clone(),
+        outbox,
+    );
 
     let cancelled = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     let cancel_flag = cancelled.clone();
+    let runtime_cancel = runtime.clone();
     let client_cmd = client.clone();
     let cli_cmd = cli.api_url.clone();
     let token_cmd = cli.worker_token.clone();
     let command_fence = (*fence).clone();
-    let command_agent = agent.clone();
-    let command_tx = msg_tx.clone();
     let cmd_task = tokio::spawn(async move {
         loop {
             if let Ok(commands) = fetch_commands(&client_cmd, &cli_cmd, &token_cmd, run_id, &command_fence).await {
                 for cmd in commands {
                     if cmd.kind == WorkerCommandKind::Cancel {
                         cancel_flag.store(true, std::sync::atomic::Ordering::SeqCst);
+                        let _ = runtime_cancel.send(RuntimeCommand::Cancel).await;
                         return;
                     }
                     if cmd.kind == WorkerCommandKind::Prompt {
                         if let (Some(text), Some(message_id)) = (cmd.text, cmd.message_id) {
-                            match command_agent.run_prompt(&text, command_tx.clone()).await {
+                            match runtime_cancel.send(RuntimeCommand::Prompt { text }).await {
                                 Ok(()) => {
                                     if let Err(err) = ack_command(
                                         &client_cmd, &cli_cmd, &token_cmd, run_id,
@@ -749,46 +787,13 @@ async fn run_with_mock(
         }
     });
 
-    let mut prompts: Vec<(String, Option<Uuid>)> = vec![(claimed.run.prompt.clone(), None)];
-    // Drain any follow-ups already waiting.
-    if let Ok(commands) = fetch_commands(client, &cli.api_url, &cli.worker_token, run_id, &fence).await {
-        for cmd in commands {
-            if cmd.kind == WorkerCommandKind::Cancel {
-                cmd_task.abort();
-                drop(msg_tx);
-                event_task.await.context("event pump")?;
-                if let Some(err) = event_error.lock().await.clone() {
-                    bail!("event delivery failed: {err}");
-                }
-                set_status(client, cli, run_id, &fence, RunStatus::Cancelled, None, None).await?;
-                return Ok(RunOutcome::Cancelled);
-            }
-            if cmd.kind == WorkerCommandKind::Prompt {
-                if let Some(text) = cmd.text {
-                    prompts.push((text, cmd.message_id));
-                }
-            }
-        }
-    }
+    runtime
+        .send(RuntimeCommand::Prompt {
+            text: claimed.run.prompt.clone(),
+        })
+        .await
+        .context("mock prompt")?;
 
-    for (prompt, message_id) in prompts {
-        if cancelled.load(std::sync::atomic::Ordering::SeqCst) {
-            break;
-        }
-        if shutdown.load(Ordering::SeqCst) {
-            drop(msg_tx);
-            cmd_task.abort();
-            event_task.await.context("event pump")?;
-            return Ok(RunOutcome::Shutdown);
-        }
-        agent.run_prompt(&prompt, msg_tx.clone()).await?;
-        if let Some(message_id) = message_id {
-            ack_command(client, &cli.api_url, &cli.worker_token, run_id, &fence, message_id)
-                .await?;
-        }
-    }
-
-    // Keep listening briefly for follow-up prompts.
     let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
     while tokio::time::Instant::now() < deadline {
         if cancelled.load(std::sync::atomic::Ordering::SeqCst)
@@ -796,30 +801,12 @@ async fn run_with_mock(
         {
             break;
         }
-        if let Ok(commands) = fetch_commands(client, &cli.api_url, &cli.worker_token, run_id, &fence).await {
-            for cmd in commands {
-                if cmd.kind == WorkerCommandKind::Cancel {
-                    cancelled.store(true, std::sync::atomic::Ordering::SeqCst);
-                    break;
-                }
-                if let Some(text) = cmd.text {
-                    if cmd.kind == WorkerCommandKind::Prompt {
-                        agent.run_prompt(&text, msg_tx.clone()).await?;
-                        if let Some(message_id) = cmd.message_id {
-                            ack_command(client, &cli.api_url, &cli.worker_token, run_id, &fence, message_id)
-                                .await?;
-                        }
-                        // extend wait window a bit after each follow-up
-                    }
-                }
-            }
-        }
         tokio::time::sleep(Duration::from_millis(500)).await;
     }
 
-    drop(msg_tx);
-    event_task.await.context("event pump")?;
+    let _ = runtime.send(RuntimeCommand::Shutdown).await;
     cmd_task.abort();
+    let _ = event_task.await;
 
     if let Some(err) = event_error.lock().await.clone() {
         bail!("event delivery failed: {err}");
@@ -974,80 +961,15 @@ async fn run_with_real_acp(
     );
     let session_id = runtime.session_id().await?;
     persist_acp_session(client, cli, run_id, fence, &session_id).await?;
-    let client_bg = client.clone();
-    let cli_api = cli.api_url.clone();
-    let token = cli.worker_token.clone();
-    let pump_fence = (*fence).clone();
-    let pump_outbox = outbox.clone();
-    let event_error = Arc::new(tokio::sync::Mutex::new(None::<String>));
-    let event_error_pump = event_error.clone();
-    let runtime_bg = runtime.clone();
-    let pump = tokio::spawn(async move {
-        while let Some(event) = runtime_bg.next_event().await {
-            match event {
-                RuntimeEvent::Initialized { event, .. }
-                | RuntimeEvent::Notification(event) => {
-                    if let Err(err) = deliver_event(
-                        &pump_outbox,
-                        &client_bg,
-                        &cli_api,
-                        &token,
-                        run_id,
-                        event_to_req(event),
-                        &pump_fence,
-                    )
-                    .await
-                    {
-                        warn!(run_id = %run_id, error = %err, "event delivery failed");
-                        *event_error_pump.lock().await = Some(err.to_string());
-                        break;
-                    }
-                }
-                RuntimeEvent::Request { request, event } => {
-                    if let Err(err) = deliver_event(
-                        &pump_outbox,
-                        &client_bg,
-                        &cli_api,
-                        &token,
-                        run_id,
-                        event_to_req(event),
-                        &pump_fence,
-                    )
-                    .await
-                    {
-                        warn!(run_id = %run_id, error = %err, "event delivery failed");
-                        *event_error_pump.lock().await = Some(err.to_string());
-                        break;
-                    }
-                    let RuntimeRequest::Approval { request_id, context } = request;
-                    let decision = match resolve_permission(
-                        &client_bg,
-                        &cli_api,
-                        &token,
-                        run_id,
-                        &request_id,
-                        ApprovalKind::Permission,
-                        &context,
-                    )
-                    .await
-                    {
-                        Ok(d) => d,
-                        Err(err) => {
-                            warn!(error = %err, "permission resolve failed");
-                            ApprovalDecision::Deny
-                        }
-                    };
-                    let _ = runtime_bg
-                        .send(RuntimeCommand::Approval { request_id, decision })
-                        .await;
-                }
-                RuntimeEvent::ChildExited => {
-                    info!(run_id = %run_id, "runtime child exited");
-                    break;
-                }
-            }
-        }
-    });
+    let (pump, event_error) = spawn_event_pump(
+        runtime.clone(),
+        client.clone(),
+        cli.api_url.clone(),
+        cli.worker_token.clone(),
+        run_id,
+        (*fence).clone(),
+        outbox,
+    );
 
     let cancelled = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     let last_activity = std::sync::Arc::new(tokio::sync::Mutex::new(tokio::time::Instant::now()));
@@ -1330,7 +1252,7 @@ fn event_to_req(event: RuntimeNotification) -> WorkerEventRequest {
     WorkerEventRequest {
         source_event_id: event.source_event_id,
         cursor: event.cursor,
-        event_type: event.event_type,
+        event_type: event.event_type.as_event_type().to_string(),
         payload: event.payload,
         fence: None,
     }

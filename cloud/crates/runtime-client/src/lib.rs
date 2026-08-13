@@ -1,14 +1,17 @@
 use std::collections::HashMap;
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use anyhow::{anyhow, Context, Result};
 use async_trait::async_trait;
 use serde_json::Value;
-use tokio::sync::{mpsc, Mutex};
-use zene_cloud_acp_bridge::{AcpBridge, AcpEvent, BridgeMsg, PermissionDecision};
+use tokio::sync::{mpsc, oneshot, Mutex};
+use zene_cloud_acp_bridge::{
+    AcpBridge, AcpEvent, BridgeMsg, MockAgent, MockMsg, PermissionDecision,
+};
 
-pub use zene_cloud_domain::{ApprovalDecision, CloudEventKind};
+pub use zene_cloud_domain::{ApprovalDecision, ApprovalKind, CloudEventKind};
 
 /// ACP `optionId` mapping stays inside this adapter.
 pub fn to_permission_decision(decision: ApprovalDecision) -> PermissionDecision {
@@ -77,7 +80,7 @@ pub enum RuntimeCommand {
 pub struct RuntimeNotification {
     pub source_event_id: String,
     pub cursor: Option<u64>,
-    pub event_type: String,
+    pub event_type: CloudEventKind,
     pub payload: Value,
 }
 
@@ -102,13 +105,14 @@ pub enum RuntimeEvent {
 pub enum RuntimeRequest {
     Approval {
         request_id: String,
+        kind: ApprovalKind,
         context: Value,
     },
 }
 
 /// Product payload stored on Cloud approval rows. ACP option lists and
 /// session metadata stay inside the adapter.
-pub fn approval_payload(params: &Value) -> Value {
+fn approval_payload(params: &Value) -> Value {
     let mut map = serde_json::Map::new();
     map.insert(
         "requestId".into(),
@@ -143,7 +147,7 @@ fn runtime_notification(event: AcpEvent) -> RuntimeNotification {
     RuntimeNotification {
         source_event_id: event.source_event_id,
         cursor: event.cursor,
-        event_type: kind.as_event_type().into(),
+        event_type: kind,
         payload: product_payload(kind, &event.payload),
     }
 }
@@ -330,6 +334,7 @@ fn runtime_request(method: &str, params: &Value) -> Option<RuntimeRequest> {
     if method == "session/request_permission" {
         Some(RuntimeRequest::Approval {
             request_id: permission_request_key(params),
+            kind: ApprovalKind::Permission,
             context: approval_payload(params),
         })
     } else {
@@ -486,6 +491,130 @@ impl RuntimeClient for AcpRuntimeClient {
     }
 }
 
+/// In-process runtime used when no `zene` binary is available.
+///
+/// MockAgent still speaks ACP internally; this adapter exposes the same
+/// `RuntimeClient` product types as [`AcpRuntimeClient`].
+pub struct MockRuntimeClient {
+    agent: MockAgent,
+    msg_tx: Mutex<Option<mpsc::UnboundedSender<MockMsg>>>,
+    events: Arc<Mutex<mpsc::UnboundedReceiver<RuntimeEvent>>>,
+    pending_approvals: Arc<Mutex<HashMap<String, oneshot::Sender<PermissionDecision>>>>,
+    prompt_lock: Mutex<()>,
+    alive: AtomicBool,
+}
+
+impl MockRuntimeClient {
+    pub fn connect(workdir: &Path) -> Self {
+        let agent = MockAgent::new(workdir.to_path_buf());
+        let session_id = agent.session_id().to_string();
+        let (msg_tx, mut msg_rx) = mpsc::unbounded_channel();
+        let (events_tx, events_rx) = mpsc::unbounded_channel();
+        let pending_approvals = Arc::new(Mutex::new(HashMap::new()));
+        let pending = pending_approvals.clone();
+        let _ = events_tx.send(RuntimeEvent::Initialized {
+            session_id: session_id.clone(),
+            event: RuntimeNotification {
+                source_event_id: format!("mock-session-{session_id}"),
+                cursor: None,
+                event_type: CloudEventKind::SessionStarted,
+                payload: serde_json::json!({ "sessionId": session_id }),
+            },
+        });
+        tokio::spawn(async move {
+            while let Some(message) = msg_rx.recv().await {
+                let event = match message {
+                    MockMsg::Event(event) => {
+                        RuntimeEvent::Notification(RuntimeNotification::from_acp(event))
+                    }
+                    MockMsg::Permission {
+                        request_key,
+                        params,
+                        respond,
+                    } => {
+                        pending.lock().await.insert(request_key.clone(), respond);
+                        let event = RuntimeNotification::from_acp(AcpEvent::from_reverse_request(
+                            &Value::String(request_key.clone()),
+                            "session/request_permission",
+                            &params,
+                        ));
+                        let mut context = approval_payload(&params);
+                        if let Some(map) = context.as_object_mut() {
+                            map.insert("requestId".into(), Value::String(request_key.clone()));
+                        }
+                        RuntimeEvent::Request {
+                            request: RuntimeRequest::Approval {
+                                request_id: request_key,
+                                kind: ApprovalKind::Tool,
+                                context,
+                            },
+                            event,
+                        }
+                    }
+                };
+                if events_tx.send(event).is_err() {
+                    break;
+                }
+            }
+            let _ = events_tx.send(RuntimeEvent::ChildExited);
+        });
+        Self {
+            agent,
+            msg_tx: Mutex::new(Some(msg_tx)),
+            events: Arc::new(Mutex::new(events_rx)),
+            pending_approvals,
+            prompt_lock: Mutex::new(()),
+            alive: AtomicBool::new(true),
+        }
+    }
+}
+
+#[async_trait]
+impl RuntimeClient for MockRuntimeClient {
+    async fn session_id(&self) -> Result<String> {
+        Ok(self.agent.session_id().to_string())
+    }
+
+    async fn send(&self, command: RuntimeCommand) -> Result<()> {
+        match command {
+            RuntimeCommand::Prompt { text } => {
+                let _guard = self.prompt_lock.lock().await;
+                let msg_tx = self
+                    .msg_tx
+                    .lock()
+                    .await
+                    .clone()
+                    .ok_or_else(|| anyhow!("mock runtime shut down"))?;
+                self.agent.run_prompt(&text, msg_tx).await
+            }
+            RuntimeCommand::Cancel => Ok(()),
+            RuntimeCommand::Approval { request_id, decision } => {
+                let respond = self
+                    .pending_approvals
+                    .lock()
+                    .await
+                    .remove(&request_id)
+                    .ok_or_else(|| anyhow!("unknown approval request_id {request_id}"))?;
+                let _ = respond.send(to_permission_decision(decision));
+                Ok(())
+            }
+            RuntimeCommand::Shutdown => {
+                self.alive.store(false, Ordering::SeqCst);
+                self.msg_tx.lock().await.take();
+                Ok(())
+            }
+        }
+    }
+
+    async fn next_event(&self) -> Option<RuntimeEvent> {
+        self.events.lock().await.recv().await
+    }
+
+    async fn is_alive(&self) -> bool {
+        self.alive.load(Ordering::SeqCst)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -498,7 +627,11 @@ mod tests {
         );
         assert!(matches!(
             request,
-            Some(RuntimeRequest::Approval { request_id, .. }) if request_id == "call-7"
+            Some(RuntimeRequest::Approval {
+                request_id,
+                kind: ApprovalKind::Permission,
+                ..
+            }) if request_id == "call-7"
         ));
     }
 
@@ -558,7 +691,7 @@ mod tests {
             }
         });
         let event = runtime_notification(AcpEvent::from_notification(&raw));
-        assert_eq!(event.event_type, "text_delta");
+        assert_eq!(event.event_type.as_event_type(), "text_delta");
         assert!(event.source_event_id.starts_with("acp-"));
         assert_eq!(event.cursor, None);
         assert_eq!(event.payload, serde_json::json!({ "text": "hello" }));
@@ -576,7 +709,7 @@ mod tests {
             }
         });
         let event = runtime_notification(AcpEvent::from_notification(&raw));
-        assert_eq!(event.event_type, "thought_delta");
+        assert_eq!(event.event_type.as_event_type(), "thought_delta");
         assert_eq!(event.payload, serde_json::json!({ "text": "hmm" }));
     }
 
@@ -596,7 +729,7 @@ mod tests {
             }
         });
         let event = runtime_notification(AcpEvent::from_notification(&raw));
-        assert_eq!(event.event_type, "tool_call");
+        assert_eq!(event.event_type.as_event_type(), "tool_call");
         assert_eq!(
             event.payload,
             serde_json::json!({
@@ -627,7 +760,7 @@ mod tests {
             }
         });
         let event = runtime_notification(AcpEvent::from_notification(&raw));
-        assert_eq!(event.event_type, "tool_result");
+        assert_eq!(event.event_type.as_event_type(), "tool_result");
         assert_eq!(event.payload["toolCallId"], "call-1");
         assert_eq!(event.payload["status"], "completed");
         assert_eq!(event.payload["text"], "ok");
@@ -649,7 +782,7 @@ mod tests {
             }
         });
         let event = runtime_notification(AcpEvent::from_notification(&raw));
-        assert_eq!(event.event_type, "user_message");
+        assert_eq!(event.event_type.as_event_type(), "user_message");
         assert_eq!(event.payload, serde_json::json!({ "text": "hi" }));
     }
 
@@ -665,7 +798,7 @@ mod tests {
             }
         });
         let event = runtime_notification(AcpEvent::from_notification(&raw));
-        assert_eq!(event.event_type, "state_changed");
+        assert_eq!(event.event_type.as_event_type(), "state_changed");
         assert_eq!(event.payload, serde_json::json!({ "state": "plan" }));
         assert!(event.payload.get("modeId").is_none());
         assert!(event.payload.get("sessionUpdate").is_none());
@@ -693,7 +826,7 @@ mod tests {
             }
         });
         let event = runtime_notification(AcpEvent::from_notification(&raw));
-        assert_eq!(event.event_type, "usage_update");
+        assert_eq!(event.event_type.as_event_type(), "usage_update");
         assert_eq!(
             event.payload,
             serde_json::json!({
@@ -729,7 +862,7 @@ mod tests {
             }
         });
         let event = runtime_notification(AcpEvent::from_notification(&raw));
-        assert_eq!(event.event_type, "projection_ready");
+        assert_eq!(event.event_type.as_event_type(), "projection_ready");
         assert_eq!(
             event.payload,
             serde_json::json!({
@@ -755,7 +888,7 @@ mod tests {
             }
         });
         let event = runtime_notification(AcpEvent::from_notification(&raw));
-        assert_eq!(event.event_type, "plan");
+        assert_eq!(event.event_type.as_event_type(), "plan");
         assert_eq!(
             event.payload,
             serde_json::json!({
@@ -776,7 +909,7 @@ mod tests {
             }
         });
         let event = runtime_notification(AcpEvent::from_notification(&raw));
-        assert_eq!(event.event_type, "available_commands");
+        assert_eq!(event.event_type.as_event_type(), "available_commands");
         assert_eq!(
             event.payload,
             serde_json::json!({
@@ -796,7 +929,7 @@ mod tests {
             }
         });
         let event = runtime_notification(AcpEvent::from_notification(&raw));
-        assert_eq!(event.event_type, "acp");
+        assert_eq!(event.event_type.as_event_type(), "acp");
         assert_eq!(event.payload, raw);
     }
 
@@ -811,7 +944,7 @@ mod tests {
                 "result": { "sessionId": "session-1" }
             }),
         });
-        assert_eq!(event.event_type, "session_started");
+        assert_eq!(event.event_type.as_event_type(), "session_started");
         assert_eq!(event.payload, serde_json::json!({ "sessionId": "session-1" }));
     }
 
@@ -827,7 +960,7 @@ mod tests {
                 "result": { "sessionId": "session-1" }
             }),
         });
-        assert_eq!(event.event_type, "session_started");
+        assert_eq!(event.event_type.as_event_type(), "session_started");
         assert_eq!(
             event.payload,
             serde_json::json!({ "sessionId": "session-1", "resumed": true })
@@ -849,7 +982,7 @@ mod tests {
                 }
             }),
         ));
-        assert_eq!(event.event_type, "approval_requested");
+        assert_eq!(event.event_type.as_event_type(), "approval_requested");
         assert_eq!(
             event.payload,
             serde_json::json!({
@@ -880,7 +1013,11 @@ mod tests {
         let request = runtime_request("session/request_permission", &params);
         assert!(matches!(
             request,
-            Some(RuntimeRequest::Approval { request_id, context })
+            Some(RuntimeRequest::Approval {
+                request_id,
+                kind: ApprovalKind::Permission,
+                context
+            })
                 if request_id == "call-7"
                     && context == serde_json::json!({
                         "requestId": "call-7",
@@ -949,5 +1086,61 @@ mod tests {
             Some(ApprovalDecision::Deny)
         );
         assert_eq!(ApprovalDecision::parse("unknown"), None);
+    }
+
+    #[tokio::test]
+    async fn mock_runtime_client_emits_product_events_and_tool_approval() {
+        let dir = std::env::temp_dir().join(format!("zene-mock-runtime-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let client = Arc::new(MockRuntimeClient::connect(&dir));
+        let pump = client.clone();
+        let pump_task = tokio::spawn(async move {
+            let mut saw_text = false;
+            let mut saw_tool_approval = false;
+            while let Some(event) = pump.next_event().await {
+                match event {
+                    RuntimeEvent::Initialized { event, .. } => {
+                        assert_eq!(event.event_type, CloudEventKind::SessionStarted);
+                    }
+                    RuntimeEvent::Notification(event) => {
+                        if event.event_type == CloudEventKind::TextDelta {
+                            saw_text = true;
+                        }
+                    }
+                    RuntimeEvent::Request { request, event } => {
+                        assert_eq!(event.event_type, CloudEventKind::ApprovalRequested);
+                        let RuntimeRequest::Approval {
+                            request_id,
+                            kind,
+                            context,
+                        } = request;
+                        assert_eq!(kind, ApprovalKind::Tool);
+                        assert_eq!(context["toolCallId"], "tool_write_notes");
+                        pump.send(RuntimeCommand::Approval {
+                            request_id,
+                            decision: ApprovalDecision::AllowOnce,
+                        })
+                        .await
+                        .expect("resolve mock approval");
+                        saw_tool_approval = true;
+                    }
+                    RuntimeEvent::ChildExited => break,
+                }
+                if saw_text && saw_tool_approval {
+                    break;
+                }
+            }
+            (saw_text, saw_tool_approval)
+        });
+        client
+            .send(RuntimeCommand::Prompt {
+                text: "write notes".into(),
+            })
+            .await
+            .expect("mock prompt");
+        let (saw_text, saw_tool_approval) = pump_task.await.expect("pump");
+        assert!(saw_text, "expected classified text_delta");
+        assert!(saw_tool_approval, "expected tool approval request");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
