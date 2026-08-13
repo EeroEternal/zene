@@ -64,6 +64,24 @@ export interface RunMessage {
   createdAt: string;
 }
 
+/** Classified product kinds written by RuntimeClient. `platform` / legacy `runtime` stay outside this union. */
+export type CloudEventKind =
+  | "text_delta"
+  | "thought_delta"
+  | "user_message"
+  | "tool_call"
+  | "tool_result"
+  | "state_changed"
+  | "usage_update"
+  | "projection_ready"
+  | "plan"
+  | "available_commands"
+  | "session_started"
+  | "approval_requested"
+  | "acp";
+
+export type RunEventType = CloudEventKind | "platform" | "runtime";
+
 export interface AcpSessionUpdate {
   sessionUpdate?: string;
   content?: { text?: string } | Array<{ type?: string; content?: { text?: string }; text?: string }>;
@@ -81,8 +99,8 @@ export interface RunEvent {
   /** Optional provider/runtime cursor; `seq` remains the server ordering. */
   cursor?: number;
   createdAt: string;
-  eventType?: string;
-  event_type?: string;
+  eventType?: RunEventType;
+  event_type?: RunEventType;
   payload?: {
     event?: string;
     status?: string;

@@ -8,7 +8,7 @@ use serde_json::Value;
 use tokio::sync::{mpsc, Mutex};
 use zene_cloud_acp_bridge::{AcpBridge, AcpEvent, BridgeMsg, PermissionDecision};
 
-pub use zene_cloud_domain::ApprovalDecision;
+pub use zene_cloud_domain::{ApprovalDecision, CloudEventKind};
 
 /// ACP `optionId` mapping stays inside this adapter.
 pub fn to_permission_decision(decision: ApprovalDecision) -> PermissionDecision {
@@ -23,47 +23,9 @@ fn acp_permission_result(decision: ApprovalDecision) -> Value {
     to_permission_decision(decision).to_result()
 }
 
-/// Transport-neutral runtime event kind. Names align with
-/// `zene_turn::RuntimeEventKind` where the ACP update has a counterpart.
-/// ACP `sessionUpdate` strings stay inside this adapter.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum RuntimeEventKind {
-    TextDelta,
-    ThoughtDelta,
-    UserMessage,
-    ToolCall,
-    ToolResult,
-    StateChanged,
-    UsageUpdate,
-    ProjectionReady,
-    Plan,
-    AvailableCommands,
-    SessionStarted,
-    ApprovalRequested,
-    Unknown,
-}
-
-impl RuntimeEventKind {
-    pub fn as_event_type(self) -> &'static str {
-        match self {
-            Self::TextDelta => "text_delta",
-            Self::ThoughtDelta => "thought_delta",
-            Self::UserMessage => "user_message",
-            Self::ToolCall => "tool_call",
-            Self::ToolResult => "tool_result",
-            Self::StateChanged => "state_changed",
-            Self::UsageUpdate => "usage_update",
-            Self::ProjectionReady => "projection_ready",
-            Self::Plan => "plan",
-            Self::AvailableCommands => "available_commands",
-            Self::SessionStarted => "session_started",
-            Self::ApprovalRequested => "approval_requested",
-            Self::Unknown => "acp",
-        }
-    }
-}
-
-fn classify_payload(payload: &Value) -> RuntimeEventKind {
+/// ACP `sessionUpdate` strings stay inside this adapter; product kinds live on
+/// `CloudEventKind`.
+fn classify_payload(payload: &Value) -> CloudEventKind {
     if let Some(update) = payload
         .pointer("/params/update/sessionUpdate")
         .and_then(Value::as_str)
@@ -71,25 +33,25 @@ fn classify_payload(payload: &Value) -> RuntimeEventKind {
         return map_session_update(update);
     }
     match payload.get("method").and_then(Value::as_str) {
-        Some("session/request_permission") => RuntimeEventKind::ApprovalRequested,
-        Some("session/new") | Some("session/resume") => RuntimeEventKind::SessionStarted,
-        _ => RuntimeEventKind::Unknown,
+        Some("session/request_permission") => CloudEventKind::ApprovalRequested,
+        Some("session/new") | Some("session/resume") => CloudEventKind::SessionStarted,
+        _ => CloudEventKind::Acp,
     }
 }
 
-fn map_session_update(update: &str) -> RuntimeEventKind {
+fn map_session_update(update: &str) -> CloudEventKind {
     match update {
-        "agent_message_chunk" => RuntimeEventKind::TextDelta,
-        "agent_thought_chunk" => RuntimeEventKind::ThoughtDelta,
-        "user_message_chunk" => RuntimeEventKind::UserMessage,
-        "tool_call" => RuntimeEventKind::ToolCall,
-        "tool_call_update" => RuntimeEventKind::ToolResult,
-        "current_mode_update" => RuntimeEventKind::StateChanged,
-        "usage_update" => RuntimeEventKind::UsageUpdate,
-        "projection_update" => RuntimeEventKind::ProjectionReady,
-        "plan" => RuntimeEventKind::Plan,
-        "available_commands_update" => RuntimeEventKind::AvailableCommands,
-        _ => RuntimeEventKind::Unknown,
+        "agent_message_chunk" => CloudEventKind::TextDelta,
+        "agent_thought_chunk" => CloudEventKind::ThoughtDelta,
+        "user_message_chunk" => CloudEventKind::UserMessage,
+        "tool_call" => CloudEventKind::ToolCall,
+        "tool_call_update" => CloudEventKind::ToolResult,
+        "current_mode_update" => CloudEventKind::StateChanged,
+        "usage_update" => CloudEventKind::UsageUpdate,
+        "projection_update" => CloudEventKind::ProjectionReady,
+        "plan" => CloudEventKind::Plan,
+        "available_commands_update" => CloudEventKind::AvailableCommands,
+        _ => CloudEventKind::Acp,
     }
 }
 
@@ -186,17 +148,17 @@ fn runtime_notification(event: AcpEvent) -> RuntimeNotification {
     }
 }
 
-fn product_payload(kind: RuntimeEventKind, raw: &Value) -> Value {
+fn product_payload(kind: CloudEventKind, raw: &Value) -> Value {
     match kind {
-        RuntimeEventKind::TextDelta
-        | RuntimeEventKind::ThoughtDelta
-        | RuntimeEventKind::UserMessage => {
+        CloudEventKind::TextDelta
+        | CloudEventKind::ThoughtDelta
+        | CloudEventKind::UserMessage => {
             let Some(update) = raw.pointer("/params/update") else {
                 return raw.clone();
             };
             serde_json::json!({ "text": text_from_update(update) })
         }
-        RuntimeEventKind::ToolCall => {
+        CloudEventKind::ToolCall => {
             let Some(update) = raw.pointer("/params/update") else {
                 return raw.clone();
             };
@@ -205,7 +167,7 @@ fn product_payload(kind: RuntimeEventKind, raw: &Value) -> Value {
                 &["toolCallId", "title", "toolName", "kind", "status", "rawInput"],
             ))
         }
-        RuntimeEventKind::ToolResult => {
+        CloudEventKind::ToolResult => {
             let Some(update) = raw.pointer("/params/update") else {
                 return raw.clone();
             };
@@ -229,13 +191,13 @@ fn product_payload(kind: RuntimeEventKind, raw: &Value) -> Value {
             }
             Value::Object(map)
         }
-        RuntimeEventKind::ApprovalRequested => approval_product(raw),
-        RuntimeEventKind::SessionStarted => session_started_product(raw),
-        RuntimeEventKind::StateChanged => state_product(raw),
-        RuntimeEventKind::UsageUpdate => usage_product(raw),
-        RuntimeEventKind::ProjectionReady => projection_product(raw),
-        RuntimeEventKind::Plan => plan_product(raw),
-        RuntimeEventKind::AvailableCommands => commands_product(raw),
+        CloudEventKind::ApprovalRequested => approval_product(raw),
+        CloudEventKind::SessionStarted => session_started_product(raw),
+        CloudEventKind::StateChanged => state_product(raw),
+        CloudEventKind::UsageUpdate => usage_product(raw),
+        CloudEventKind::ProjectionReady => projection_product(raw),
+        CloudEventKind::Plan => plan_product(raw),
+        CloudEventKind::AvailableCommands => commands_product(raw),
         _ => raw.clone(),
     }
 }

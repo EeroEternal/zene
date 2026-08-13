@@ -1,60 +1,127 @@
-import type { AcpSessionUpdate, RunEvent } from "@/lib/types";
+import type { AcpSessionUpdate, CloudEventKind, RunEvent } from "@/lib/types";
 
-/** Product event kinds from Cloud RuntimeClient. Unknown/legacy frames stay `acp`. */
-export const TIMELINE_KIND_TO_SESSION_UPDATE = {
-  text_delta: "agent_message_chunk",
-  thought_delta: "agent_thought_chunk",
-  tool_call: "tool_call",
-  tool_result: "tool_call_update",
-} as const;
+/** Classified product kinds that already have a Console timeline surface. */
+export const TIMELINE_EVENT_KINDS = [
+  "text_delta",
+  "thought_delta",
+  "user_message",
+  "tool_call",
+  "tool_result",
+] as const satisfies readonly CloudEventKind[];
 
-export type TimelineEventKind = keyof typeof TIMELINE_KIND_TO_SESSION_UPDATE;
+export type TimelineEventKind = (typeof TIMELINE_EVENT_KINDS)[number];
+
+export interface TimelineProduct {
+  kind: TimelineEventKind;
+  text?: string;
+  toolCallId?: string;
+  title?: string;
+  toolName?: string;
+  toolKind?: string;
+  status?: string;
+  rawInput?: unknown;
+  rawOutput?: { text?: string; isError?: boolean };
+  isError?: boolean;
+}
 
 export function eventKind(event: Pick<RunEvent, "eventType" | "event_type">): string {
   return (event.eventType || event.event_type || "acp").toLowerCase();
 }
 
-/**
- * Resolve the ACP-shaped update used to render a timeline item.
- *
- * New timeline kinds store a denormalized product payload (`text`,
- * `toolCallId`, …). Records that still have `params.update` (legacy `acp` /
- * `runtime`, and classified events from before payload denormalization) keep
- * that path. Classified kinds overwrite `sessionUpdate`.
- */
-export function timelineUpdateFromEvent(event: RunEvent): AcpSessionUpdate | undefined {
-  const kind = eventKind(event);
-  const mapped = TIMELINE_KIND_TO_SESSION_UPDATE[kind as TimelineEventKind];
-  const legacy = event.payload?.params?.update;
-  if (legacy) {
-    if (!mapped) return legacy;
-    return { ...legacy, sessionUpdate: mapped };
-  }
-  if (!mapped || !event.payload) return undefined;
-  return productToSessionUpdate(mapped, event.payload);
+function isTimelineKind(kind: string): kind is TimelineEventKind {
+  return (TIMELINE_EVENT_KINDS as readonly string[]).includes(kind);
 }
 
-function productToSessionUpdate(
-  sessionUpdate: (typeof TIMELINE_KIND_TO_SESSION_UPDATE)[TimelineEventKind],
-  payload: NonNullable<RunEvent["payload"]>,
-): AcpSessionUpdate {
-  const text = typeof payload.text === "string" ? payload.text : undefined;
-  const update: AcpSessionUpdate = {
-    sessionUpdate,
+function contentText(update: AcpSessionUpdate): string {
+  const content = update.content;
+  if (Array.isArray(content)) {
+    return content
+      .map((item) => item.content?.text || item.text || "")
+      .filter(Boolean)
+      .join("\n");
+  }
+  if (content && typeof content === "object" && "text" in content) {
+    return content.text || "";
+  }
+  return "";
+}
+
+function toolOutputText(product: TimelineProduct): string {
+  if (product.rawOutput?.text) return product.rawOutput.text;
+  if (product.text) return product.text;
+  return "";
+}
+
+function productFromPayload(kind: TimelineEventKind, payload: NonNullable<RunEvent["payload"]>): TimelineProduct {
+  return {
+    kind,
+    text: typeof payload.text === "string" ? payload.text : undefined,
     toolCallId: payload.toolCallId,
     title: payload.title,
     toolName: payload.toolName,
-    kind: payload.kind,
+    toolKind: payload.kind,
     status: payload.status,
     rawInput: payload.rawInput,
     rawOutput: payload.rawOutput,
+    isError: payload.isError,
   };
-  if (payload.rawOutput == null && (text != null || payload.isError != null)) {
-    update.rawOutput = { text, isError: payload.isError };
+}
+
+function productFromLegacy(update: AcpSessionUpdate): TimelineProduct | undefined {
+  switch (update.sessionUpdate) {
+    case "agent_message_chunk":
+      return { kind: "text_delta", text: contentText(update) };
+    case "agent_thought_chunk":
+      return { kind: "thought_delta", text: contentText(update) };
+    case "user_message_chunk":
+      return { kind: "user_message", text: contentText(update) };
+    case "tool_call":
+      return {
+        kind: "tool_call",
+        toolCallId: update.toolCallId,
+        title: update.title,
+        toolName: update.toolName,
+        toolKind: update.kind,
+        status: update.status,
+        rawInput: update.rawInput,
+      };
+    case "tool_call_update":
+      return {
+        kind: "tool_result",
+        text: contentText(update),
+        toolCallId: update.toolCallId,
+        title: update.title,
+        toolName: update.toolName,
+        toolKind: update.kind,
+        status: update.status,
+        rawOutput: update.rawOutput,
+      };
+    default:
+      return undefined;
   }
-  if (text != null) {
-    update.content =
-      sessionUpdate === "tool_call_update" ? [{ content: { text }, text }] : { text };
+}
+
+/**
+ * Resolve the product fields used to render a timeline item.
+ *
+ * Classified kinds store denormalized product fields (`text`, `toolCallId`, …).
+ * Records that still have `params.update` keep that ACP path. `user_message`
+ * uses the existing user bubble; other classified kinds stay off the timeline.
+ */
+export function timelineProductFromEvent(event: RunEvent): TimelineProduct | undefined {
+  const kind = eventKind(event);
+  const legacy = event.payload?.params?.update;
+  if (legacy) {
+    const fromLegacy = productFromLegacy(legacy);
+    if (fromLegacy && isTimelineKind(kind)) {
+      return { ...fromLegacy, kind };
+    }
+    return fromLegacy;
   }
-  return update;
+  if (!isTimelineKind(kind) || !event.payload) return undefined;
+  return productFromPayload(kind, event.payload);
+}
+
+export function timelineToolOutput(product: TimelineProduct): string {
+  return toolOutputText(product);
 }
