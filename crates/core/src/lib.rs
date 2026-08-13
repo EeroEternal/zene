@@ -761,11 +761,38 @@ impl Agent {
         Ok(true)
     }
 
-    async fn run_step(
+    pub(crate) fn record_step_started(&mut self) -> Result<()> {
+        let Some(turn) = self.active_turn.as_ref() else {
+            return Ok(());
+        };
+        let Some(step_id) = turn.step_id else {
+            return Ok(());
+        };
+        let turn_id = turn.turn_id.to_string();
+        let step_id = step_id.to_string();
+        self.session
+            .record_step_started(&turn_id, &step_id, turn.step);
+        let idempotency_key = format!("{turn_id}/{step_id}/started");
+        let step_event = self.session.record_checkpoint(
+            Some(&turn_id),
+            Some(&step_id),
+            None,
+            "step_started",
+            &idempotency_key,
+        );
+        self.record_writer.append_execution_link(
+            &idempotency_key,
+            &step_event.id,
+            step_event.sequence,
+        )?;
+        Ok(())
+    }
+
+    pub(crate) async fn prepare_step_context(
         &mut self,
         options: &PromptOptions,
         cancel: Option<&CancellationToken>,
-    ) -> Result<(Message, Option<TokenUsage>, bool)> {
+    ) -> Result<zene_turn::PreparedContext> {
         if Self::check_cancelled(cancel)? {
             return Err(zene_turn::aborted_error());
         }
@@ -837,18 +864,40 @@ impl Agent {
             "llm request context water level"
         );
         self.warn_if_near_context_limit(step.estimate_tokens as usize);
+        Ok(zene_turn::PreparedContext {
+            messages: step.messages,
+            tools,
+            context_epoch: Some(step.metadata.context_epoch),
+            metadata: Some(step.metadata),
+            estimate_tokens: Some(step.estimate_tokens),
+        })
+    }
 
+    pub(crate) async fn invoke_model(
+        &mut self,
+        context: zene_turn::PreparedContext,
+        options: &PromptOptions,
+        cancel: Option<&CancellationToken>,
+    ) -> Result<zene_turn::StepResult> {
+        let tools = context.tools.clone();
+        let step = StepContext {
+            estimate_tokens: context.estimate_tokens.unwrap_or(0),
+            metadata: context.metadata.unwrap_or_default(),
+            messages: context.messages,
+        };
         let (assistant_message, usage) = self
             .run_llm_step(&step, &tools, options, cancel)
             .await
             .context("llm step")?;
-
         let had_tool_calls = assistant_message
             .tool_calls
             .as_ref()
             .is_some_and(|calls| !calls.is_empty());
-
-        Ok((assistant_message, usage, had_tool_calls))
+        Ok(zene_turn::StepResult {
+            message: assistant_message,
+            usage,
+            had_tool_calls,
+        })
     }
 
     async fn run_llm_step(

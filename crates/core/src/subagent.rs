@@ -19,8 +19,9 @@ use zene_context::{
 use crate::context_config;
 use zene_permission::{PermissionGate, SharedToolPermission};
 use zene_turn::{
-    aborted_error, max_turns_notice, run_turn_loop, StepResult, ToolBatchOutcome, TurnRuntime,
-    TurnState,
+    aborted_error, max_turns_notice, ContextAssemblerPort, EventSinkPort, ModelExecutorPort,
+    PreparedContext, StepResult, ToolBatchOutcome, ToolExecutorPort, TurnEngine, TurnEnginePorts,
+    TurnRequest, TurnRuntime, TurnSessionPort, TurnState,
 };
 
 #[async_trait]
@@ -133,14 +134,16 @@ pub(crate) async fn run_subagent_with_runner(
         permission,
     );
 
-    run_turn_loop(&mut runtime, prompt, &(), cancel).await
+    TurnEngine::new(&mut runtime)
+        .run(TurnRequest::new(prompt, &(), cancel))
+        .await
+        .map(|outcome| outcome.final_text)
 }
 
-/// TurnRuntime adapter for subagents.
+/// Direct TurnEngine ports for ephemeral subagents.
 ///
-/// Subagents intentionally remain ephemeral: they share the generic turn
-/// state machine, but keep their conversation in memory and do not publish
-/// the parent runtime's events or checkpoints.
+/// Subagents share the generic turn state machine. Conversation stays in
+/// memory; they do not publish the parent runtime's events or checkpoints.
 struct SubagentTurnRuntime<'a> {
     sandbox: Arc<dyn Sandbox>,
     config: &'a ZeneConfig,
@@ -177,6 +180,174 @@ impl<'a> SubagentTurnRuntime<'a> {
             active_turn: None,
         }
     }
+
+    async fn assemble_context(
+        &mut self,
+        cancel: Option<&CancellationToken>,
+    ) -> Result<PreparedContext> {
+        if check_cancelled(cancel)? {
+            return Err(aborted_error());
+        }
+        maybe_compact_subagent_messages(
+            &mut self.messages,
+            &self.tools,
+            &self.compaction_config,
+            &self.config.model,
+            self.backend,
+        )
+        .await?;
+        Ok(PreparedContext {
+            messages: self.messages.clone(),
+            tools: self.tools.definitions(),
+            context_epoch: None,
+            metadata: None,
+            estimate_tokens: None,
+        })
+    }
+
+    async fn invoke_model(
+        &mut self,
+        context: PreparedContext,
+        cancel: Option<&CancellationToken>,
+    ) -> Result<StepResult> {
+        if check_cancelled(cancel)? {
+            return Err(aborted_error());
+        }
+        let response = self
+            .backend
+            .chat(ChatRequest {
+                model: self.config.model.clone(),
+                messages: context.messages,
+                tools: context.tools,
+                stream: false,
+                context: None,
+            })
+            .await
+            .context("subagent llm step")?;
+        let had_tool_calls = response
+            .message
+            .tool_calls
+            .as_ref()
+            .is_some_and(|calls| !calls.is_empty());
+        Ok(StepResult {
+            message: response.message,
+            usage: response.usage,
+            had_tool_calls,
+        })
+    }
+}
+
+impl TurnEnginePorts for SubagentTurnRuntime<'_> {
+    type Options = ();
+}
+
+#[async_trait]
+impl TurnSessionPort<()> for SubagentTurnRuntime<'_> {
+    fn max_steps(&self) -> u32 {
+        self.config.max_turns
+    }
+
+    fn active_turn(&mut self) -> Option<&mut TurnState> {
+        self.active_turn.as_mut()
+    }
+
+    async fn prepare_turn(&mut self, user_input: &str) -> Result<()> {
+        self.active_turn = Some(TurnState::begin());
+        self.messages.push(Message::user(user_input));
+        Ok(())
+    }
+
+    fn inject_steer(&mut self, _options: &()) -> Result<bool> {
+        Ok(false)
+    }
+
+    fn push_assistant(&mut self, message: Message) {
+        self.messages.push(message);
+    }
+
+    fn on_incomplete_turn(
+        &mut self,
+        max_steps: u32,
+        final_text: &mut String,
+        _options: &(),
+    ) -> Result<()> {
+        let notice = max_turns_notice(max_steps);
+        *final_text = if final_text.trim().is_empty() {
+            notice
+        } else {
+            format!("{final_text}\n\n{notice}")
+        };
+        self.messages.push(Message::assistant(final_text.clone()));
+        Ok(())
+    }
+
+    async fn finish_turn(&mut self) -> Result<()> {
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl ContextAssemblerPort<()> for SubagentTurnRuntime<'_> {
+    async fn prepare_context(
+        &mut self,
+        _options: &(),
+        cancel: Option<&CancellationToken>,
+    ) -> Result<PreparedContext> {
+        self.assemble_context(cancel).await
+    }
+}
+
+#[async_trait]
+impl ModelExecutorPort<()> for SubagentTurnRuntime<'_> {
+    async fn run_model(
+        &mut self,
+        context: PreparedContext,
+        _options: &(),
+        cancel: Option<&CancellationToken>,
+    ) -> Result<StepResult> {
+        self.invoke_model(context, cancel).await
+    }
+
+    async fn on_step_usage(
+        &mut self,
+        _usage: &TokenUsage,
+        _options: &(),
+    ) -> Result<()> {
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl ToolExecutorPort<()> for SubagentTurnRuntime<'_> {
+    async fn run_tools(
+        &mut self,
+        tool_calls: &[ToolCall],
+        _options: &(),
+        cancel: Option<&CancellationToken>,
+    ) -> Result<ToolBatchOutcome> {
+        run_subagent_tools(
+            &self.tools,
+            tool_calls,
+            &self.sandbox,
+            cancel,
+            &self.subagent_env,
+            self.permission.clone(),
+            &mut self.messages,
+        )
+        .await?;
+        Ok(ToolBatchOutcome::Continue)
+    }
+}
+
+impl EventSinkPort<()> for SubagentTurnRuntime<'_> {
+    fn on_step_begin(
+        &self,
+        _turn_id: zene_turn::TurnId,
+        _step_id: zene_turn::StepId,
+        _step: u32,
+        _options: &(),
+    ) {
+    }
 }
 
 #[async_trait]
@@ -211,38 +382,8 @@ impl TurnRuntime for SubagentTurnRuntime<'_> {
         _options: &Self::Options,
         cancel: Option<&CancellationToken>,
     ) -> Result<StepResult> {
-        if check_cancelled(cancel)? {
-            return Err(aborted_error());
-        }
-        maybe_compact_subagent_messages(
-            &mut self.messages,
-            &self.tools,
-            &self.compaction_config,
-            &self.config.model,
-            self.backend,
-        )
-        .await?;
-        let response = self
-            .backend
-            .chat(ChatRequest {
-                model: self.config.model.clone(),
-                messages: self.messages.clone(),
-                tools: self.tools.definitions(),
-                stream: false,
-                context: None,
-            })
-            .await
-            .context("subagent llm step")?;
-        let had_tool_calls = response
-            .message
-            .tool_calls
-            .as_ref()
-            .is_some_and(|calls| !calls.is_empty());
-        Ok(StepResult {
-            message: response.message,
-            usage: response.usage,
-            had_tool_calls,
-        })
+        let context = self.assemble_context(cancel).await?;
+        self.invoke_model(context, cancel).await
     }
 
     async fn on_step_usage(
@@ -597,6 +738,13 @@ mod tests {
                 assert!(tool_names.contains(&"Glob"));
                 assert!(!tool_names.contains(&"Write"));
                 assert!(!tool_names.contains(&"Task"));
+                assert!(
+                    request.messages.iter().any(|message| {
+                        message.content.as_deref()
+                            == Some("List all .txt files in the workspace")
+                    }),
+                    "subagent model must consume PreparedContext messages"
+                );
             },
         );
 
