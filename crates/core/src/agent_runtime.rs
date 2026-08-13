@@ -738,6 +738,62 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn runtime_handle_reports_unfinished_resume_claim_for_recovery() {
+        use chrono::Utc;
+        use tempfile::tempdir;
+        use zene_config::ZeneConfig;
+        use zene_sandbox::LocalSandbox;
+        use zene_session::{AgentRecordWriter, ExecutionCheckpointState, RecordEntry, SessionRecord};
+
+        let workdir = tempdir().expect("workdir");
+        let record_dir = tempdir().expect("record dir");
+        let session = SessionRecord::new(workdir.path());
+        let writer = AgentRecordWriter::from_path(record_dir.path().join("record.jsonl"))
+            .expect("record writer");
+        writer
+            .append(&RecordEntry::ExecutionCheckpoint {
+                turn_id: "turn-claimed".into(),
+                step_id: None,
+                tool_call_id: None,
+                state: ExecutionCheckpointState::TurnResumed,
+                idempotency_key: "resume/turn-claimed".into(),
+                context_epoch: None,
+                model_request_hash: None,
+                ts: Utc::now(),
+            })
+            .expect("resume claim");
+
+        let mut config = ZeneConfig::default();
+        config.provider = "anthropic".into();
+        config.anthropic_api_key = Some("test-key".into());
+        let agent = crate::AgentBuilder::new(
+            config,
+            LocalSandbox::new(workdir.path()),
+            session,
+            zene_permission::PermissionMode::BypassPermissions,
+        )
+        .without_mcp()
+        .record_writer(writer)
+        .build()
+        .await
+        .expect("build agent without network calls");
+        let (runtime, task) = RuntimeHandle::spawn(agent);
+
+        assert_eq!(
+            runtime
+                .recovery_disposition()
+                .expect("recovery disposition"),
+            RecoveryDisposition::RequiresManualIntervention
+        );
+        assert!(runtime
+            .recovery_snapshot()
+            .expect("recovery snapshot")
+            .has_incomplete_execution());
+        runtime.shutdown().await.expect("shutdown");
+        task.await.expect("actor join").expect("actor result");
+    }
+
+    #[tokio::test]
     async fn active_cancel_acknowledges_and_cancels_prompt_token() {
         let (reply, response) = oneshot::channel();
         let cancel = CancellationToken::new();

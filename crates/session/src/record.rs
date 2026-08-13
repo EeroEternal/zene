@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::fs::{self, OpenOptions};
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use crate::paths::sessions_dir;
 use anyhow::{Context, Result};
@@ -116,18 +117,25 @@ pub struct RecoveryPlan {
 impl RecoverySnapshot {
     pub fn plan(&self) -> RecoveryPlan {
         let disposition = self.disposition();
-        let (safe_resume_allowed, reason) = match disposition {
-            RecoveryDisposition::Clean => (false, "no incomplete execution"),
-            RecoveryDisposition::AlreadyCompleted => (false, "latest execution is terminal"),
-            RecoveryDisposition::SafeToResume => (true, "only a model-boundary turn is open"),
-            RecoveryDisposition::RequiresToolInspection => (
+        let (safe_resume_allowed, reason) = if self.has_unresolved_resume_claim() {
+            (
                 false,
-                "a tool side effect has no durable completion boundary",
-            ),
-            RecoveryDisposition::RequiresManualIntervention => (
-                false,
-                "runtime or execution failure requires operator review",
-            ),
+                "a safe resume claim has no later terminal completion",
+            )
+        } else {
+            match disposition {
+                RecoveryDisposition::Clean => (false, "no incomplete execution"),
+                RecoveryDisposition::AlreadyCompleted => (false, "latest execution is terminal"),
+                RecoveryDisposition::SafeToResume => (true, "only a model-boundary turn is open"),
+                RecoveryDisposition::RequiresToolInspection => (
+                    false,
+                    "a tool side effect has no durable completion boundary",
+                ),
+                RecoveryDisposition::RequiresManualIntervention => (
+                    false,
+                    "runtime or execution failure requires operator review",
+                ),
+            }
         };
         let automatic_resume_implemented = safe_resume_allowed
             && self.active_turns.len() == 1
@@ -192,6 +200,10 @@ pub struct RecoverySnapshot {
     pub latest_runtime_state: Option<ExecutionCheckpointState>,
     /// Original prompts for open turns, recovered from durable TurnPrompt entries.
     pub resume_candidates: Vec<ResumeCandidate>,
+    /// A safe-resume claim whose resumed execution has not reached a later
+    /// terminal checkpoint. It is not safe to automatically replay this turn.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unresolved_resume_claim: Option<RecoveryExecution>,
 }
 
 impl RecoverySnapshot {
@@ -216,6 +228,9 @@ impl RecoverySnapshot {
         if !self.active_tools.is_empty() {
             return RecoveryDisposition::RequiresToolInspection;
         }
+        if self.has_unresolved_resume_claim() {
+            return RecoveryDisposition::RequiresManualIntervention;
+        }
         if !self.active_turns.is_empty() {
             return RecoveryDisposition::SafeToResume;
         }
@@ -224,6 +239,9 @@ impl RecoverySnapshot {
             Some(RecordEntry::ExecutionCheckpoint { state, .. }) => match state {
                 ExecutionCheckpointState::TurnCompleted
                 | ExecutionCheckpointState::TurnCancelled => RecoveryDisposition::AlreadyCompleted,
+                ExecutionCheckpointState::TurnResumed => {
+                    RecoveryDisposition::RequiresManualIntervention
+                }
                 ExecutionCheckpointState::RuntimeShutdown => RecoveryDisposition::Clean,
                 ExecutionCheckpointState::Failed | ExecutionCheckpointState::RuntimeFailed => {
                     RecoveryDisposition::RequiresManualIntervention
@@ -234,8 +252,24 @@ impl RecoverySnapshot {
         }
     }
 
+    /// Whether a claimed resume or execution boundary still needs recovery handling.
     pub fn has_incomplete_execution(&self) -> bool {
-        !self.active_turns.is_empty() || !self.active_tools.is_empty()
+        !self.active_turns.is_empty()
+            || !self.active_tools.is_empty()
+            || self.has_unresolved_resume_claim()
+    }
+
+    pub fn has_unresolved_resume_claim(&self) -> bool {
+        self.unresolved_resume_claim.is_some()
+            || self.latest_checkpoint.as_ref().is_some_and(|entry| {
+                matches!(
+                    entry,
+                    RecordEntry::ExecutionCheckpoint {
+                        state: ExecutionCheckpointState::TurnResumed,
+                        ..
+                    }
+                )
+            })
     }
 
     pub fn requires_inspection(&self) -> bool {
@@ -246,9 +280,12 @@ impl RecoverySnapshot {
     }
 }
 
+static RECORD_APPEND_LOCKS: OnceLock<Mutex<HashMap<PathBuf, Arc<Mutex<()>>>>> = OnceLock::new();
+
 #[derive(Debug, Clone)]
 pub struct AgentRecordWriter {
     path: PathBuf,
+    append_lock: Arc<Mutex<()>>,
 }
 
 impl AgentRecordWriter {
@@ -263,7 +300,13 @@ impl AgentRecordWriter {
             fs::create_dir_all(dir)
                 .with_context(|| format!("create session record dir: {}", dir.display()))?;
         }
-        Ok(Self { path })
+        let locks = RECORD_APPEND_LOCKS.get_or_init(|| Mutex::new(HashMap::new()));
+        let mut locks = locks.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let append_lock = locks
+            .entry(path.clone())
+            .or_insert_with(|| Arc::new(Mutex::new(())))
+            .clone();
+        Ok(Self { path, append_lock })
     }
 
     pub fn path(&self) -> &Path {
@@ -271,6 +314,14 @@ impl AgentRecordWriter {
     }
 
     pub fn append(&self, entry: &RecordEntry) -> Result<()> {
+        let _lock = self
+            .append_lock
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        self.append_unlocked(entry)
+    }
+
+    fn append_unlocked(&self, entry: &RecordEntry) -> Result<()> {
         let line = serde_json::to_string(entry).context("serialize record entry")?;
         let mut file = OpenOptions::new()
             .create(true)
@@ -278,6 +329,7 @@ impl AgentRecordWriter {
             .open(&self.path)
             .with_context(|| format!("open record file: {}", self.path.display()))?;
         writeln!(file, "{line}").context("append record entry")?;
+        file.sync_all().context("persist record entry")?;
         Ok(())
     }
 
@@ -293,14 +345,18 @@ impl AgentRecordWriter {
         else {
             anyhow::bail!("expected execution checkpoint record");
         };
+        let _lock = self
+            .append_lock
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         if self
-            .read_all()?
+            .read_all_unlocked()?
             .iter()
             .any(|entry| matches!(entry, RecordEntry::ExecutionCheckpoint { idempotency_key: existing, .. } if existing == idempotency_key))
         {
             return Ok(false);
         }
-        self.append(checkpoint)?;
+        self.append_unlocked(checkpoint)?;
         Ok(true)
     }
 
@@ -313,7 +369,11 @@ impl AgentRecordWriter {
         conversation_event_id: &str,
         conversation_sequence: u64,
     ) -> Result<bool> {
-        if self.read_all()?.iter().any(|entry| {
+        let _lock = self
+            .append_lock
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if self.read_all_unlocked()?.iter().any(|entry| {
             matches!(
                 entry,
                 RecordEntry::ExecutionLink {
@@ -324,7 +384,7 @@ impl AgentRecordWriter {
         }) {
             return Ok(false);
         }
-        self.append(&RecordEntry::ExecutionLink {
+        self.append_unlocked(&RecordEntry::ExecutionLink {
             execution_idempotency_key: execution_idempotency_key.to_string(),
             conversation_event_id: conversation_event_id.to_string(),
             conversation_sequence,
@@ -424,6 +484,7 @@ impl AgentRecordWriter {
         let mut active_turns: HashMap<String, RecoveryExecution> = HashMap::new();
         let mut active_tools: HashMap<String, RecoveryExecution> = HashMap::new();
         let mut prompts: HashMap<String, String> = HashMap::new();
+        let mut unresolved_resume_claim: Option<RecoveryExecution> = None;
 
         for (index, entry) in self.read_all()?.into_iter().enumerate() {
             if matches!(entry, RecordEntry::Rewound { .. }) {
@@ -431,6 +492,7 @@ impl AgentRecordWriter {
                 // abandoned path. Later checkpoints, if any, rebuild state.
                 active_turns.clear();
                 active_tools.clear();
+                unresolved_resume_claim = None;
                 snapshot.latest_checkpoint = None;
                 snapshot.latest_runtime_checkpoint = None;
                 snapshot.latest_runtime_state = None;
@@ -475,6 +537,19 @@ impl AgentRecordWriter {
                 model_request_hash: model_request_hash.clone(),
                 ts: *ts,
             };
+            if matches!(state, ExecutionCheckpointState::TurnResumed) {
+                unresolved_resume_claim = Some(execution.clone());
+            } else if matches!(
+                state,
+                ExecutionCheckpointState::TurnCompleted
+                    | ExecutionCheckpointState::TurnCancelled
+                    | ExecutionCheckpointState::Failed
+            ) {
+                // A resumed prompt starts a fresh in-memory turn and therefore
+                // has a new turn ID. Record order is the durable correlation:
+                // the first later terminal checkpoint closes the claim.
+                unresolved_resume_claim = None;
+            }
             match state {
                 ExecutionCheckpointState::TurnStarted => {
                     active_turns.insert(turn_id.clone(), execution);
@@ -509,6 +584,7 @@ impl AgentRecordWriter {
 
         snapshot.active_turns = active_turns.into_values().collect();
         snapshot.active_tools = active_tools.into_values().collect();
+        snapshot.unresolved_resume_claim = unresolved_resume_claim;
         snapshot
             .active_turns
             .sort_by_key(|item| item.checkpoint_index);
@@ -566,11 +642,30 @@ impl AgentRecordWriter {
                 )
             })
             .collect::<Vec<_>>();
+        if let Some(execution) = snapshot.unresolved_resume_claim {
+            pending.push((
+                execution.checkpoint_index,
+                RecordEntry::ExecutionCheckpoint {
+                    turn_id: execution.turn_id,
+                    step_id: execution.step_id,
+                    tool_call_id: execution.tool_call_id,
+                    state: execution.state,
+                    idempotency_key: execution.idempotency_key,
+                    context_epoch: execution.context_epoch,
+                    model_request_hash: execution.model_request_hash,
+                    ts: execution.ts,
+                },
+            ));
+        }
         pending.sort_by_key(|(index, _)| *index);
         Ok(pending.into_iter().map(|(_, entry)| entry).collect())
     }
 
     pub fn read_all(&self) -> Result<Vec<RecordEntry>> {
+        self.read_all_unlocked()
+    }
+
+    fn read_all_unlocked(&self) -> Result<Vec<RecordEntry>> {
         if !self.path.exists() {
             return Ok(Vec::new());
         }
@@ -996,6 +1091,39 @@ mod tests {
     }
 
     #[test]
+    fn concurrent_checkpoint_appends_are_duplicate_safe_across_writers() {
+        with_temp_home(|| {
+            let temp = tempfile::tempdir().expect("record dir");
+            let path = temp.path().join("record.jsonl");
+            let writers = (0..8)
+                .map(|_| AgentRecordWriter::from_path(&path).expect("writer"))
+                .collect::<Vec<_>>();
+            let checkpoint = RecordEntry::ExecutionCheckpoint {
+                turn_id: "turn-1".into(),
+                step_id: None,
+                tool_call_id: Some("call-1".into()),
+                state: ExecutionCheckpointState::ToolCompleted,
+                idempotency_key: "turn-1/call-1/completed".into(),
+                context_epoch: None,
+                model_request_hash: None,
+                ts: Utc::now(),
+            };
+            std::thread::scope(|scope| {
+                for writer in writers {
+                    let checkpoint = checkpoint.clone();
+                    scope.spawn(move || {
+                        writer
+                            .append_execution_checkpoint(&checkpoint)
+                            .expect("append checkpoint");
+                    });
+                }
+            });
+            let writer = AgentRecordWriter::from_path(&path).expect("reader");
+            assert_eq!(writer.execution_checkpoints().expect("checkpoints").len(), 1);
+        });
+    }
+
+    #[test]
     fn safe_resume_claim_accepts_once_and_rejects_duplicate_or_stale_claims() {
         with_temp_home(|| {
             let writer = AgentRecordWriter::for_session("resume-fence-test").expect("writer");
@@ -1024,6 +1152,36 @@ mod tests {
             assert!(writer.claim_safe_resume(&candidate).expect("first claim"));
             assert!(!writer.claim_safe_resume(&candidate).expect("duplicate claim"));
             assert!(writer.resume_candidate().expect("recovery read").is_none());
+            let snapshot = writer.recovery_snapshot().expect("claimed recovery");
+            assert!(snapshot.has_incomplete_execution());
+            assert!(snapshot.has_unresolved_resume_claim());
+            assert_eq!(
+                snapshot.disposition(),
+                RecoveryDisposition::RequiresManualIntervention
+            );
+            assert_eq!(
+                snapshot.plan().reason,
+                "a safe resume claim has no later terminal completion"
+            );
+
+            writer
+                .append(&RecordEntry::ExecutionCheckpoint {
+                    turn_id: "turn-1".into(),
+                    step_id: None,
+                    tool_call_id: None,
+                    state: ExecutionCheckpointState::TurnCompleted,
+                    idempotency_key: "turn-1/completed-after-resume".into(),
+                    context_epoch: None,
+                    model_request_hash: None,
+                    ts,
+                })
+                .expect("terminal checkpoint");
+            let completed = writer.recovery_snapshot().expect("completed recovery");
+            assert!(!completed.has_unresolved_resume_claim());
+            assert_eq!(
+                completed.disposition(),
+                RecoveryDisposition::AlreadyCompleted
+            );
 
             let stale = ResumeCandidate {
                 model_request_hash: Some("different-request".into()),
