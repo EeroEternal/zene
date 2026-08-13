@@ -5,13 +5,18 @@ use std::sync::Arc;
 
 use anyhow::{anyhow, Context, Result};
 use async_trait::async_trait;
+use serde::Serialize;
 use serde_json::Value;
 use tokio::sync::{mpsc, oneshot, Mutex};
 use zene_cloud_acp_bridge::{
     AcpBridge, AcpEvent, BridgeMsg, MockAgent, MockMsg, PermissionDecision,
 };
 
-pub use zene_cloud_domain::{ApprovalDecision, ApprovalKind, CloudEventKind};
+pub use zene_cloud_domain::{
+    ApprovalDecision, ApprovalEventPayload, ApprovalKind, AvailableCommandsPayload,
+    CloudEventKind, PlanPayload, SessionStartedPayload, StateChangedPayload, TextEventPayload,
+    ToolCallPayload, ToolResultPayload, UsagePayload,
+};
 
 /// ACP `optionId` mapping stays inside this adapter.
 pub fn to_permission_decision(decision: ApprovalDecision) -> PermissionDecision {
@@ -100,12 +105,14 @@ pub enum RuntimeEvent {
 
 /// Runtime-level meaning of a request requiring user approval. Protocol method
 /// names, JSON-RPC ids, and parameter paths stay inside this adapter.
+/// `allowed_decisions` is the product list mapped from ACP `optionId`s.
 /// `context` is the product payload stored on the approval row.
 #[derive(Debug)]
 pub enum RuntimeRequest {
     Approval {
         request_id: String,
         kind: ApprovalKind,
+        allowed_decisions: Vec<ApprovalDecision>,
         context: Value,
     },
 }
@@ -113,18 +120,38 @@ pub enum RuntimeRequest {
 /// Product payload stored on Cloud approval rows. ACP option lists and
 /// session metadata stay inside the adapter.
 fn approval_payload(params: &Value) -> Value {
-    let mut map = serde_json::Map::new();
-    map.insert(
-        "requestId".into(),
-        Value::String(permission_request_key(params)),
-    );
-    if let Some(tool) = params.get("toolCall") {
-        map.extend(take_fields(
-            tool,
-            &["toolCallId", "title", "toolName", "kind", "status", "rawInput"],
-        ));
+    let tool = params.get("toolCall").unwrap_or(&Value::Null);
+    to_json(ApprovalEventPayload {
+        request_id: permission_request_key(params),
+        tool_call_id: json_str(tool, "toolCallId"),
+        title: json_str(tool, "title"),
+        tool_name: json_str(tool, "toolName"),
+        kind: json_str(tool, "kind"),
+        status: json_str(tool, "status"),
+        raw_input: json_opt(tool, "rawInput"),
+    })
+}
+
+fn allowed_decisions_from_params(params: &Value) -> Vec<ApprovalDecision> {
+    let mut decisions = Vec::new();
+    if let Some(options) = params.get("options").and_then(Value::as_array) {
+        for option in options {
+            let Some(id) = option.get("optionId").and_then(Value::as_str) else {
+                continue;
+            };
+            let Some(decision) = ApprovalDecision::parse(id) else {
+                continue;
+            };
+            if !decisions.contains(&decision) {
+                decisions.push(decision);
+            }
+        }
     }
-    Value::Object(map)
+    if decisions.is_empty() {
+        ApprovalDecision::default_allowed()
+    } else {
+        decisions
+    }
 }
 
 #[async_trait]
@@ -160,40 +187,21 @@ fn product_payload(kind: CloudEventKind, raw: &Value) -> Value {
             let Some(update) = raw.pointer("/params/update") else {
                 return raw.clone();
             };
-            serde_json::json!({ "text": text_from_update(update) })
+            to_json(TextEventPayload {
+                text: text_from_update(update),
+            })
         }
         CloudEventKind::ToolCall => {
             let Some(update) = raw.pointer("/params/update") else {
                 return raw.clone();
             };
-            Value::Object(take_fields(
-                update,
-                &["toolCallId", "title", "toolName", "kind", "status", "rawInput"],
-            ))
+            to_json(tool_call_payload(update))
         }
         CloudEventKind::ToolResult => {
             let Some(update) = raw.pointer("/params/update") else {
                 return raw.clone();
             };
-            let mut map = take_fields(
-                update,
-                &[
-                    "toolCallId",
-                    "title",
-                    "toolName",
-                    "kind",
-                    "status",
-                    "rawOutput",
-                ],
-            );
-            let text = tool_result_text(update);
-            if !text.is_empty() {
-                map.insert("text".into(), Value::String(text));
-            }
-            if let Some(is_error) = update.pointer("/rawOutput/isError") {
-                map.insert("isError".into(), is_error.clone());
-            }
-            Value::Object(map)
+            to_json(tool_result_payload(update))
         }
         CloudEventKind::ApprovalRequested => approval_product(raw),
         CloudEventKind::SessionStarted => session_started_product(raw),
@@ -206,6 +214,43 @@ fn product_payload(kind: CloudEventKind, raw: &Value) -> Value {
     }
 }
 
+fn to_json<T: Serialize>(value: T) -> Value {
+    serde_json::to_value(value).unwrap_or(Value::Object(Default::default()))
+}
+
+fn json_str(update: &Value, key: &str) -> Option<String> {
+    update.get(key).and_then(Value::as_str).map(str::to_string)
+}
+
+fn json_opt(update: &Value, key: &str) -> Option<Value> {
+    update.get(key).filter(|value| !value.is_null()).cloned()
+}
+
+fn tool_call_payload(update: &Value) -> ToolCallPayload {
+    ToolCallPayload {
+        tool_call_id: json_str(update, "toolCallId"),
+        title: json_str(update, "title"),
+        tool_name: json_str(update, "toolName"),
+        kind: json_str(update, "kind"),
+        status: json_str(update, "status"),
+        raw_input: json_opt(update, "rawInput"),
+    }
+}
+
+fn tool_result_payload(update: &Value) -> ToolResultPayload {
+    let text = tool_result_text(update);
+    ToolResultPayload {
+        tool_call_id: json_str(update, "toolCallId"),
+        title: json_str(update, "title"),
+        tool_name: json_str(update, "toolName"),
+        kind: json_str(update, "kind"),
+        status: json_str(update, "status"),
+        raw_output: json_opt(update, "rawOutput"),
+        text: if text.is_empty() { None } else { Some(text) },
+        is_error: update.pointer("/rawOutput/isError").and_then(Value::as_bool),
+    }
+}
+
 fn approval_product(raw: &Value) -> Value {
     approval_payload(raw.get("params").unwrap_or(raw))
 }
@@ -214,48 +259,46 @@ fn session_started_product(raw: &Value) -> Value {
     let session_id = raw
         .pointer("/result/sessionId")
         .or_else(|| raw.pointer("/params/sessionId"))
-        .cloned();
-    let mut map = serde_json::Map::new();
-    if let Some(session_id) = session_id {
-        map.insert("sessionId".into(), session_id);
-    }
-    if raw.get("method").and_then(Value::as_str) == Some("session/resume") {
-        map.insert("resumed".into(), Value::Bool(true));
-    }
-    if map.is_empty() {
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    let resumed = (raw.get("method").and_then(Value::as_str) == Some("session/resume"))
+        .then_some(true);
+    let payload = SessionStartedPayload {
+        session_id,
+        resumed,
+    };
+    if payload.session_id.is_none() && payload.resumed.is_none() {
         return raw.clone();
     }
-    Value::Object(map)
+    to_json(payload)
 }
 
 fn state_product(raw: &Value) -> Value {
     let Some(update) = raw.pointer("/params/update") else {
         return raw.clone();
     };
-    match update.get("modeId") {
-        Some(state) if !state.is_null() => serde_json::json!({ "state": state }),
-        _ => serde_json::json!({}),
-    }
+    to_json(StateChangedPayload {
+        state: json_opt(update, "modeId"),
+    })
 }
 
 fn usage_product(raw: &Value) -> Value {
     let Some(update) = raw.pointer("/params/update") else {
         return raw.clone();
     };
-    let mut map = take_fields(update, &["used", "size"]);
+    let mut payload = UsagePayload {
+        used: json_opt(update, "used"),
+        size: json_opt(update, "size"),
+        ..UsagePayload::default()
+    };
     if let Some(meta) = update.get("_meta") {
-        map.extend(take_fields(
-            meta,
-            &[
-                "promptTokens",
-                "completionTokens",
-                "contextPercent",
-                "contextEpoch",
-                "cachedTokens",
-            ],
-        ));
+        payload.prompt_tokens = json_opt(meta, "promptTokens");
+        payload.completion_tokens = json_opt(meta, "completionTokens");
+        payload.context_percent = json_opt(meta, "contextPercent");
+        payload.context_epoch = json_opt(meta, "contextEpoch");
+        payload.cached_tokens = json_opt(meta, "cachedTokens");
     }
-    Value::Object(map)
+    to_json(payload)
 }
 
 fn projection_product(raw: &Value) -> Value {
@@ -272,26 +315,18 @@ fn plan_product(raw: &Value) -> Value {
     let Some(update) = raw.pointer("/params/update") else {
         return raw.clone();
     };
-    Value::Object(take_fields(update, &["entries"]))
+    to_json(PlanPayload {
+        entries: json_opt(update, "entries"),
+    })
 }
 
 fn commands_product(raw: &Value) -> Value {
     let Some(update) = raw.pointer("/params/update") else {
         return raw.clone();
     };
-    Value::Object(take_fields(update, &["availableCommands"]))
-}
-
-fn take_fields(update: &Value, keys: &[&str]) -> serde_json::Map<String, Value> {
-    let mut map = serde_json::Map::new();
-    for key in keys {
-        if let Some(value) = update.get(*key) {
-            if !value.is_null() {
-                map.insert((*key).to_string(), value.clone());
-            }
-        }
-    }
-    map
+    to_json(AvailableCommandsPayload {
+        available_commands: json_opt(update, "availableCommands"),
+    })
 }
 
 fn text_from_update(update: &Value) -> String {
@@ -335,6 +370,7 @@ fn runtime_request(method: &str, params: &Value) -> Option<RuntimeRequest> {
         Some(RuntimeRequest::Approval {
             request_id: permission_request_key(params),
             kind: ApprovalKind::Permission,
+            allowed_decisions: allowed_decisions_from_params(params),
             context: approval_payload(params),
         })
     } else {
@@ -546,6 +582,7 @@ impl MockRuntimeClient {
                             request: RuntimeRequest::Approval {
                                 request_id: request_key,
                                 kind: ApprovalKind::Tool,
+                                allowed_decisions: allowed_decisions_from_params(&params),
                                 context,
                             },
                             event,
@@ -1016,15 +1053,30 @@ mod tests {
             Some(RuntimeRequest::Approval {
                 request_id,
                 kind: ApprovalKind::Permission,
+                allowed_decisions,
                 context
             })
                 if request_id == "call-7"
+                    && allowed_decisions == vec![ApprovalDecision::AllowOnce]
                     && context == serde_json::json!({
                         "requestId": "call-7",
                         "toolCallId": "call-7",
                         "title": "Write notes",
                         "kind": "edit"
                     })
+        ));
+    }
+
+    #[test]
+    fn missing_permission_options_use_default_allowed_decisions() {
+        let request = runtime_request(
+            "session/request_permission",
+            &serde_json::json!({ "toolCall": { "toolCallId": "call-7" } }),
+        );
+        assert!(matches!(
+            request,
+            Some(RuntimeRequest::Approval { allowed_decisions, .. })
+                if allowed_decisions == ApprovalDecision::default_allowed()
         ));
     }
 
@@ -1112,9 +1164,14 @@ mod tests {
                         let RuntimeRequest::Approval {
                             request_id,
                             kind,
+                            allowed_decisions,
                             context,
                         } = request;
                         assert_eq!(kind, ApprovalKind::Tool);
+                        assert_eq!(
+                            allowed_decisions,
+                            vec![ApprovalDecision::AllowOnce, ApprovalDecision::Deny]
+                        );
                         assert_eq!(context["toolCallId"], "tool_write_notes");
                         pump.send(RuntimeCommand::Approval {
                             request_id,

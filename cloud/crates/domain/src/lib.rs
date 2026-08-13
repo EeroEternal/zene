@@ -210,6 +210,120 @@ impl CloudEventKind {
     }
 }
 
+/// Classified product payloads persisted on `RunEvent.payload`.
+/// Wire JSON stays camelCase; ACP envelopes stay inside the adapter.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct TextEventPayload {
+    #[serde(default)]
+    pub text: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct ToolCallPayload {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_call_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kind: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub status: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub raw_input: Option<serde_json::Value>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct ToolResultPayload {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_call_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kind: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub status: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub raw_output: Option<serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub text: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub is_error: Option<bool>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionStartedPayload {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resumed: Option<bool>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct StateChangedPayload {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub state: Option<serde_json::Value>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct UsagePayload {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub used: Option<serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub size: Option<serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt_tokens: Option<serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub completion_tokens: Option<serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_percent: Option<serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_epoch: Option<serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cached_tokens: Option<serde_json::Value>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct PlanPayload {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub entries: Option<serde_json::Value>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct AvailableCommandsPayload {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub available_commands: Option<serde_json::Value>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct ApprovalEventPayload {
+    pub request_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_call_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kind: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub status: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub raw_input: Option<serde_json::Value>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RunEvent {
@@ -375,8 +489,9 @@ pub struct WorkerEventRequest {
 #[cfg(test)]
 mod tests {
     use super::{
-        ApprovalDecision, ApprovalKind, ApprovalRisk, CloudEventKind, CreateApprovalRequest,
-        WorkerCommand, WorkerCommandAckRequest, WorkerCommandKind, WorkerEventRequest, WorkerFence,
+        ApprovalDecision, ApprovalEventPayload, ApprovalKind, ApprovalRisk, CloudEventKind,
+        CreateApprovalRequest, TextEventPayload, ToolCallPayload, WorkerCommand,
+        WorkerCommandAckRequest, WorkerCommandKind, WorkerEventRequest, WorkerFence,
     };
 
     #[test]
@@ -505,6 +620,57 @@ mod tests {
         }
         assert_eq!(CloudEventKind::parse("platform"), None);
         assert_eq!(CloudEventKind::parse("runtime"), None);
+    }
+
+    #[test]
+    fn classified_event_payloads_round_trip_camel_case() {
+        let encoded = serde_json::to_value(TextEventPayload {
+            text: "hello".into(),
+        })
+        .expect("text");
+        assert_eq!(encoded, serde_json::json!({ "text": "hello" }));
+        let encoded = serde_json::to_value(ToolCallPayload {
+            tool_call_id: Some("call-7".into()),
+            title: Some("Write".into()),
+            raw_input: Some(serde_json::json!({ "path": "notes.md" })),
+            ..ToolCallPayload::default()
+        })
+        .expect("tool");
+        assert_eq!(
+            encoded,
+            serde_json::json!({
+                "toolCallId": "call-7",
+                "title": "Write",
+                "rawInput": { "path": "notes.md" }
+            })
+        );
+        assert_eq!(
+            ApprovalDecision::default_allowed(),
+            vec![
+                ApprovalDecision::AllowOnce,
+                ApprovalDecision::AllowSession,
+                ApprovalDecision::Deny
+            ]
+        );
+        let encoded = serde_json::to_value(ApprovalEventPayload {
+            request_id: "call-7".into(),
+            tool_call_id: Some("call-7".into()),
+            title: Some("Write".into()),
+            kind: Some("edit".into()),
+            raw_input: Some(serde_json::json!({ "path": "notes.md" })),
+            ..ApprovalEventPayload::default()
+        })
+        .expect("approval");
+        assert_eq!(
+            encoded,
+            serde_json::json!({
+                "requestId": "call-7",
+                "toolCallId": "call-7",
+                "title": "Write",
+                "kind": "edit",
+                "rawInput": { "path": "notes.md" }
+            })
+        );
     }
 }
 
@@ -642,6 +808,10 @@ impl ApprovalDecision {
         })
     }
 
+    pub fn default_allowed() -> Vec<Self> {
+        vec![Self::AllowOnce, Self::AllowSession, Self::Deny]
+    }
+
     pub fn status(self) -> ApprovalStatus {
         match self {
             Self::Deny => ApprovalStatus::Denied,
@@ -722,11 +892,7 @@ fn default_risk() -> ApprovalRisk {
 }
 
 fn default_allowed_decisions() -> Vec<ApprovalDecision> {
-    vec![
-        ApprovalDecision::AllowOnce,
-        ApprovalDecision::AllowSession,
-        ApprovalDecision::Deny,
-    ]
+    ApprovalDecision::default_allowed()
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
