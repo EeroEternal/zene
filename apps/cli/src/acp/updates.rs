@@ -234,6 +234,43 @@ pub fn agent_message_chunk(text: &str) -> Value {
     })
 }
 
+pub fn turn_started(turn_id: Option<&str>) -> Value {
+    let mut update = json!({ "sessionUpdate": "turn_started" });
+    if let Some(turn_id) = turn_id {
+        update["turnId"] = json!(turn_id);
+    }
+    update
+}
+
+pub fn step_started(step: u32, turn_id: Option<&str>) -> Value {
+    let mut update = json!({
+        "sessionUpdate": "step_started",
+        "step": step,
+    });
+    if let Some(turn_id) = turn_id {
+        update["turnId"] = json!(turn_id);
+    }
+    update
+}
+
+pub fn turn_ended(steps: u32, turn_id: Option<&str>) -> Value {
+    let mut update = json!({
+        "sessionUpdate": "turn_ended",
+        "steps": steps,
+    });
+    if let Some(turn_id) = turn_id {
+        update["turnId"] = json!(turn_id);
+    }
+    update
+}
+
+pub fn error_update(message: &str) -> Value {
+    json!({
+        "sessionUpdate": "error",
+        "message": message,
+    })
+}
+
 pub fn agent_thought_chunk(text: &str) -> Value {
     json!({
         "sessionUpdate": "agent_thought_chunk",
@@ -609,6 +646,11 @@ mod tests {
             agent_thought_chunk("hmm")["sessionUpdate"],
             "agent_thought_chunk"
         );
+        assert_eq!(turn_started(Some("t1"))["sessionUpdate"], "turn_started");
+        assert_eq!(turn_started(Some("t1"))["turnId"], "t1");
+        assert_eq!(step_started(2, None)["step"], 2);
+        assert_eq!(turn_ended(3, Some("t1"))["steps"], 3);
+        assert_eq!(error_update("boom")["message"], "boom");
     }
 
     #[test]

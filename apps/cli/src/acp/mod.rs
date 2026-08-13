@@ -6,7 +6,7 @@
 //! plus outbound `session/update` notifications
 //! (`agent_message_chunk`, `agent_thought_chunk`, `user_message_chunk`, `tool_call`,
 //! `tool_call_update`, `plan`, `current_mode_update`, `available_commands_update`,
-//! `usage_update`) and client requests `session/request_permission`,
+//! `usage_update`, `turn_started`, `step_started`, `turn_ended`, `error`) and client requests `session/request_permission`,
 //! `fs/read_text_file`, `fs/write_text_file`, `terminal/*` (when advertised).
 
 mod fs_bridge;
