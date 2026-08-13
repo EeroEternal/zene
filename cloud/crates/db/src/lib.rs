@@ -45,8 +45,8 @@ impl Db {
     }
 
     /// Apply SQL migrations in filename order, tracking applied versions in
-    /// `schema_migrations`. For migration `002`/`003`, `ALTER TABLE ... ADD COLUMN`
-    /// failures (column already exists) are ignored so re-runs stay idempotent.
+    /// `schema_migrations`. For migrations that add columns, an already-present
+    /// column is tolerated so a process interrupted after DDL can safely retry.
     pub async fn migrate(&self) -> Result<()> {
         sqlx::query(
             "CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -109,7 +109,8 @@ impl Db {
 
             let ignore_alter_dupes = version.starts_with("002")
                 || version.starts_with("003")
-                || version.starts_with("007");
+                || version.starts_with("007")
+                || version.starts_with("010");
             for statement in split_sql_statements(sql) {
                 match sqlx::query(&statement).execute(&self.pool).await {
                     Ok(_) => {}
@@ -1345,14 +1346,6 @@ impl Db {
             .await?
             .context("run not found")?;
 
-        // Idempotent by (run_id, request_key).
-        if let Some(existing) = self
-            .get_approval_by_key(run_id, &req.request_key)
-            .await?
-        {
-            return Ok(existing);
-        }
-
         let id = Uuid::new_v4();
         let now = Utc::now();
         let auto = matches!(
@@ -1377,11 +1370,12 @@ impl Db {
         let allowed = serde_json::to_string(&req.allowed_decisions)?;
         let payload = req.payload.to_string();
 
-        sqlx::query(
+        let inserted = sqlx::query(
             "INSERT INTO approval_requests
              (id, run_id, request_key, jsonrpc_id, kind, risk, payload_json, status,
               allowed_decisions, created_at, expires_at, resolved_by, resolved_at, decision)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             ON CONFLICT(run_id, request_key) DO NOTHING",
         )
         .bind(id.to_string())
         .bind(run_id.to_string())
@@ -1399,6 +1393,15 @@ impl Db {
         .bind(&decision)
         .execute(&self.pool)
         .await?;
+
+        // The unique constraint is the authority under concurrent creates. Only
+        // the caller that inserted the row may emit status/event side effects.
+        if inserted.rows_affected() == 0 {
+            return self
+                .get_approval_by_key(run_id, &req.request_key)
+                .await?
+                .context("approval missing after conflicting create");
+        }
 
         if !auto {
             self.update_run_status(run_id, RunStatus::WaitingForApproval, None, None)
@@ -1505,7 +1508,7 @@ impl Db {
         } else {
             ApprovalStatus::Resolved
         };
-        sqlx::query(
+        let updated = sqlx::query(
             "UPDATE approval_requests
              SET status = ?, decision = ?, resolved_by = ?, resolved_at = ?
              WHERE id = ? AND status = 'pending'",
@@ -1517,6 +1520,16 @@ impl Db {
         .bind(approval_id.to_string())
         .execute(&self.pool)
         .await?;
+
+        // A concurrent decision may have won between the read and UPDATE. The
+        // affected row count, not the earlier snapshot, decides who owns the
+        // transition and its side effects.
+        if updated.rows_affected() == 0 {
+            return self
+                .get_approval(approval_id)
+                .await?
+                .context("approval missing after conflicting decision");
+        }
 
         let run = self
             .get_run(existing.run_id)

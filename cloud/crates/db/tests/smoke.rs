@@ -1,5 +1,10 @@
+use sqlx::sqlite::SqlitePoolOptions;
+use uuid::Uuid;
 use zene_cloud_db::Db;
-use zene_cloud_domain::{CreateRepositoryRequest, CreateRunRequest, RegisterRequest, WorkerFence};
+use zene_cloud_domain::{
+    ApprovalStatus, CreateApprovalRequest, CreateRepositoryRequest, CreateRunRequest,
+    RegisterRequest, WorkerFence,
+};
 
 #[tokio::test]
 async fn register_create_run_and_claim() {
@@ -208,4 +213,141 @@ async fn register_create_run_and_claim() {
             && item.cursor.is_none()
     }));
     assert!(resumed.iter().all(|item| item.seq > event.seq));
+}
+
+async fn approval_test_run(permission_mode: &str) -> (Db, Uuid) {
+    let db = Db::connect("sqlite::memory:").await.unwrap();
+    db.migrate().await.unwrap();
+    let auth = db
+        .register(RegisterRequest {
+            email: format!("{}@example.com", Uuid::new_v4()),
+            password: "password123".into(),
+            display_name: "Approval test".into(),
+        })
+        .await
+        .unwrap();
+    let repo = db
+        .create_repository(
+            auth.organization.id,
+            CreateRepositoryRequest {
+                owner: "test".into(),
+                name: "approval".into(),
+                default_branch: "main".into(),
+                clone_url: None,
+            },
+        )
+        .await
+        .unwrap();
+    let run = db
+        .create_run(
+            auth.organization.id,
+            auth.user.id,
+            CreateRunRequest {
+                repository_id: repo.id,
+                prompt: "approval race".into(),
+                base_ref: Some("main".into()),
+                model: "default".into(),
+                permission_mode: permission_mode.into(),
+                max_turns: 10,
+            },
+        )
+        .await
+        .unwrap();
+    (db, run.id)
+}
+
+fn approval_request(request_key: &str) -> CreateApprovalRequest {
+    CreateApprovalRequest {
+        request_key: request_key.into(),
+        jsonrpc_id: Some("rpc-1".into()),
+        kind: "permission".into(),
+        risk: "medium".into(),
+        payload: serde_json::json!({"path": "notes.txt"}),
+        allowed_decisions: vec!["allow-once".into(), "reject-once".into()],
+        expires_at: None,
+    }
+}
+
+#[tokio::test]
+async fn concurrent_approval_creation_has_one_row_and_event() {
+    let (db, run_id) = approval_test_run("manual").await;
+    let first = approval_request("permission-stable");
+    let second = approval_request("permission-stable");
+
+    let (left, right) = tokio::join!(
+        db.clone().create_approval(run_id, first),
+        db.clone().create_approval(run_id, second),
+    );
+    let left = left.unwrap();
+    let right = right.unwrap();
+
+    assert_eq!(left.id, right.id);
+    assert_eq!(left.status, ApprovalStatus::Pending);
+    let events = db.events_after(run_id, 0).await.unwrap();
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| event.payload["event"] == "approval.created")
+            .count(),
+        1
+    );
+}
+
+#[tokio::test]
+async fn concurrent_approval_decisions_have_one_winner_event() {
+    let (db, run_id) = approval_test_run("manual").await;
+    let approval = db
+        .create_approval(run_id, approval_request("decision-stable"))
+        .await
+        .unwrap();
+
+    let (left, right) = tokio::join!(
+        db.clone()
+            .decide_approval(approval.id, "allow-once", Some("user-a")),
+        db.clone()
+            .decide_approval(approval.id, "reject-once", Some("user-b")),
+    );
+    let left = left.unwrap();
+    let right = right.unwrap();
+
+    assert_eq!(left.status, right.status);
+    assert_eq!(left.decision, right.decision);
+    assert!(matches!(left.status, ApprovalStatus::Approved | ApprovalStatus::Denied));
+    let events = db.events_after(run_id, 0).await.unwrap();
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| event.payload["event"] == "approval.decided")
+            .count(),
+        1
+    );
+}
+
+#[tokio::test]
+async fn event_cursor_migration_retries_after_partial_ddl() {
+    let url = format!(
+        "sqlite:file:event-cursor-retry-{}?mode=memory&cache=shared",
+        Uuid::new_v4()
+    );
+    let db = Db::connect(&url).await.unwrap();
+    db.migrate().await.unwrap();
+
+    // Simulate a process that committed ALTER TABLE but stopped before the
+    // migration marker and index were written.
+    let pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect(&url)
+        .await
+        .unwrap();
+    sqlx::query("DELETE FROM schema_migrations WHERE version = '010_event_cursor'")
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("DROP INDEX IF EXISTS idx_run_events_source")
+        .execute(&pool)
+        .await
+        .unwrap();
+    drop(pool);
+
+    db.migrate().await.unwrap();
 }

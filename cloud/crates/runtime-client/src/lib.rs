@@ -5,7 +5,6 @@ use anyhow::{Context, Result};
 use async_trait::async_trait;
 use serde_json::Value;
 use tokio::sync::{mpsc, Mutex};
-use uuid::Uuid;
 use zene_cloud_acp_bridge::{AcpBridge, AcpEvent, BridgeMsg};
 
 #[derive(Debug, Clone)]
@@ -59,11 +58,7 @@ pub struct AcpRuntimeClient {
 
 fn runtime_request(id: &Value, method: &str, params: &Value) -> RuntimeRequest {
     if method == "session/request_permission" {
-        let request_key = params
-            .pointer("/toolCall/toolCallId")
-            .and_then(Value::as_str)
-            .map(str::to_string)
-            .unwrap_or_else(|| format!("permission-{}", Uuid::new_v4()));
+        let request_key = permission_request_key(params);
         RuntimeRequest::Permission {
             id: id.clone(),
             request_key,
@@ -75,6 +70,23 @@ fn runtime_request(id: &Value, method: &str, params: &Value) -> RuntimeRequest {
             method: method.to_string(),
         }
     }
+}
+
+/// Build an idempotency key from the request itself. ACP implementations may
+/// omit `toolCallId` on reconnect, so a random fallback would turn one logical
+/// request into multiple approvals. The full params include session metadata
+/// and are serialized deterministically by serde_json's default map ordering.
+fn permission_request_key(params: &Value) -> String {
+    if let Some(tool_call_id) = params.pointer("/toolCall/toolCallId").and_then(Value::as_str) {
+        return tool_call_id.to_string();
+    }
+
+    let mut hash: u64 = 0xcbf29ce484222325;
+    for byte in params.to_string().bytes() {
+        hash ^= u64::from(byte);
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    format!("permission-{hash:016x}")
 }
 
 impl AcpRuntimeClient {
@@ -178,6 +190,45 @@ mod tests {
         assert!(matches!(
             request,
             RuntimeRequest::Permission { request_key, .. } if request_key == "call-7"
+        ));
+    }
+
+    #[test]
+    fn permission_request_without_tool_call_id_has_stable_metadata_identity() {
+        let params = serde_json::json!({
+            "sessionId": "session-1",
+            "_meta": {"eventId": "permission-event-3", "sequence": 3},
+            "reason": "write"
+        });
+        let first = runtime_request(&serde_json::json!(42), "session/request_permission", &params);
+        let second = runtime_request(&serde_json::json!(99), "session/request_permission", &params);
+        assert!(matches!(
+            (first, second),
+            (
+                RuntimeRequest::Permission { request_key: first, .. },
+                RuntimeRequest::Permission { request_key: second, .. }
+            ) if first == second && first.starts_with("permission-")
+        ));
+    }
+
+    #[test]
+    fn permission_request_metadata_changes_identity() {
+        let first = runtime_request(
+            &serde_json::json!(1),
+            "session/request_permission",
+            &serde_json::json!({"sessionId": "session-1", "_meta": {"sequence": 3}}),
+        );
+        let second = runtime_request(
+            &serde_json::json!(1),
+            "session/request_permission",
+            &serde_json::json!({"sessionId": "session-1", "_meta": {"sequence": 4}}),
+        );
+        assert!(matches!(
+            (first, second),
+            (
+                RuntimeRequest::Permission { request_key: first, .. },
+                RuntimeRequest::Permission { request_key: second, .. }
+            ) if first != second
         ));
     }
 
