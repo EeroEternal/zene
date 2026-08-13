@@ -315,7 +315,8 @@ pub struct WorkerEventRequest {
 #[cfg(test)]
 mod tests {
     use super::{
-        WorkerCommand, WorkerCommandAckRequest, WorkerCommandKind, WorkerEventRequest, WorkerFence,
+        ApprovalDecision, WorkerCommand, WorkerCommandAckRequest, WorkerCommandKind,
+        WorkerEventRequest, WorkerFence,
     };
 
     #[test]
@@ -367,6 +368,29 @@ mod tests {
 
         let parsed: WorkerCommand = serde_json::from_value(encoded).expect("cancel should deserialize");
         assert_eq!(parsed.kind, WorkerCommandKind::Cancel);
+    }
+
+    #[test]
+    fn approval_decision_round_trips_console_strings() {
+        let encoded = serde_json::to_value(ApprovalDecision::AllowOnce).expect("serialize");
+        assert_eq!(encoded, serde_json::json!("allow-once"));
+        let encoded = serde_json::to_value(ApprovalDecision::AllowSession).expect("serialize");
+        assert_eq!(encoded, serde_json::json!("allow-always"));
+        let encoded = serde_json::to_value(ApprovalDecision::Deny).expect("serialize");
+        assert_eq!(encoded, serde_json::json!("reject-once"));
+
+        let parsed: ApprovalDecision =
+            serde_json::from_value(serde_json::json!("allow-once")).expect("allow-once");
+        assert_eq!(parsed, ApprovalDecision::AllowOnce);
+        let parsed: ApprovalDecision =
+            serde_json::from_value(serde_json::json!("allow")).expect("allow alias");
+        assert_eq!(parsed, ApprovalDecision::AllowSession);
+        let parsed: ApprovalDecision =
+            serde_json::from_value(serde_json::json!("deny")).expect("deny alias");
+        assert_eq!(parsed, ApprovalDecision::Deny);
+        let parsed: ApprovalDecision =
+            serde_json::from_value(serde_json::json!("reject-once")).expect("reject-once");
+        assert_eq!(parsed, ApprovalDecision::Deny);
     }
 }
 
@@ -473,6 +497,45 @@ pub struct WorkerCommandAckRequest {
     pub fence: WorkerFence,
 }
 
+/// Product approval outcome stored by Cloud and sent by Console.
+/// Wire JSON stays `allow-once` / `allow-always` / `reject-once`.
+/// ACP `optionId` mapping stays in the runtime-client adapter.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ApprovalDecision {
+    #[serde(rename = "allow-once")]
+    AllowOnce,
+    #[serde(rename = "allow-always", alias = "allow")]
+    AllowSession,
+    #[serde(rename = "reject-once", alias = "deny")]
+    Deny,
+}
+
+impl ApprovalDecision {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::AllowOnce => "allow-once",
+            Self::AllowSession => "allow-always",
+            Self::Deny => "reject-once",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        Some(match value {
+            "allow-once" => Self::AllowOnce,
+            "allow-always" | "allow" => Self::AllowSession,
+            "reject-once" | "deny" => Self::Deny,
+            _ => return None,
+        })
+    }
+
+    pub fn status(self) -> ApprovalStatus {
+        match self {
+            Self::Deny => ApprovalStatus::Denied,
+            Self::AllowOnce | Self::AllowSession => ApprovalStatus::Approved,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CreateApprovalRequest {
@@ -483,7 +546,7 @@ pub struct CreateApprovalRequest {
     pub risk: String,
     pub payload: serde_json::Value,
     #[serde(default = "default_allowed_decisions")]
-    pub allowed_decisions: Vec<String>,
+    pub allowed_decisions: Vec<ApprovalDecision>,
     #[serde(default)]
     pub expires_at: Option<DateTime<Utc>>,
 }
@@ -492,13 +555,11 @@ fn default_risk() -> String {
     "medium".into()
 }
 
-fn default_allowed_decisions() -> Vec<String> {
+fn default_allowed_decisions() -> Vec<ApprovalDecision> {
     vec![
-        "allow-once".into(),
-        "allow-always".into(),
-        "reject-once".into(),
-        "allow".into(),
-        "deny".into(),
+        ApprovalDecision::AllowOnce,
+        ApprovalDecision::AllowSession,
+        ApprovalDecision::Deny,
     ]
 }
 
@@ -549,24 +610,24 @@ pub struct ApprovalRequest {
     pub risk: String,
     pub payload: serde_json::Value,
     pub status: ApprovalStatus,
-    pub allowed_decisions: Vec<String>,
+    pub allowed_decisions: Vec<ApprovalDecision>,
     pub created_at: DateTime<Utc>,
     pub expires_at: Option<DateTime<Utc>>,
     pub resolved_by: Option<String>,
     pub resolved_at: Option<DateTime<Utc>>,
-    pub decision: Option<String>,
+    pub decision: Option<ApprovalDecision>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DecideApprovalRequest {
-    pub decision: String,
+    pub decision: ApprovalDecision,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ResolveApprovalRequest {
-    pub decision: String,
+    pub decision: ApprovalDecision,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

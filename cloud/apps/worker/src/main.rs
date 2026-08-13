@@ -22,11 +22,10 @@ use zene_cloud_runtime_client::{
     RuntimeEvent, RuntimeNotification, RuntimeRequest,
 };
 use zene_cloud_domain::{
-    ApprovalRequest, ApprovalStatus, ClaimedRun, CloneAuthResponse, CreateApprovalRequest,
-    LlmAuthResponse, RunStatus, WorkerCommand, WorkerCommandAckRequest, WorkerCommandKind,
-    WorkerCommandsResponse,
-    WorkerEventRequest, WorkerFence, WorkerStatusRequest, WorkerTitleRequest,
-    WorkerAcpSessionRequest,
+    ApprovalDecision as StoredApprovalDecision, ApprovalRequest, ApprovalStatus, ClaimedRun,
+    CloneAuthResponse, CreateApprovalRequest, LlmAuthResponse, RunStatus, WorkerCommand,
+    WorkerCommandAckRequest, WorkerCommandKind, WorkerCommandsResponse, WorkerEventRequest,
+    WorkerFence, WorkerStatusRequest, WorkerTitleRequest, WorkerAcpSessionRequest,
 };
 
 #[derive(Debug, Clone, Parser)]
@@ -1206,6 +1205,14 @@ async fn run_with_real_acp(
     Ok(outcome_for_hold(true, hold_exit))
 }
 
+fn runtime_approval_decision(decision: StoredApprovalDecision) -> ApprovalDecision {
+    match decision {
+        StoredApprovalDecision::AllowOnce => ApprovalDecision::AllowOnce,
+        StoredApprovalDecision::AllowSession => ApprovalDecision::AllowSession,
+        StoredApprovalDecision::Deny => ApprovalDecision::Deny,
+    }
+}
+
 async fn resolve_permission(
     client: &reqwest::Client,
     api_url: &str,
@@ -1223,9 +1230,9 @@ async fn resolve_permission(
         risk: "medium".into(),
         payload: payload.clone(),
         allowed_decisions: vec![
-            "allow-once".into(),
-            "allow-always".into(),
-            "reject-once".into(),
+            StoredApprovalDecision::AllowOnce,
+            StoredApprovalDecision::AllowSession,
+            StoredApprovalDecision::Deny,
         ],
         expires_at: None,
     };
@@ -1242,8 +1249,8 @@ async fn resolve_permission(
 
     let approval_id = created.id;
     if created.status != ApprovalStatus::Pending {
-        return Ok(ApprovalDecision::from_stored(
-            created.decision.as_deref().unwrap_or("allow-once"),
+        return Ok(runtime_approval_decision(
+            created.decision.unwrap_or(StoredApprovalDecision::AllowOnce),
         ));
     }
 
@@ -1261,8 +1268,8 @@ async fn resolve_permission(
             .json()
             .await?;
         if approval.status != ApprovalStatus::Pending {
-            return Ok(ApprovalDecision::from_stored(
-                approval.decision.as_deref().unwrap_or("allow-once"),
+            return Ok(runtime_approval_decision(
+                approval.decision.unwrap_or(StoredApprovalDecision::AllowOnce),
             ));
         }
     }

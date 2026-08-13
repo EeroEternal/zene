@@ -2,7 +2,7 @@ use sqlx::sqlite::SqlitePoolOptions;
 use uuid::Uuid;
 use zene_cloud_db::Db;
 use zene_cloud_domain::{
-    ApprovalStatus, CreateApprovalRequest, CreateRepositoryRequest, CreateRunRequest,
+    ApprovalDecision, ApprovalStatus, CreateApprovalRequest, CreateRepositoryRequest, CreateRunRequest,
     RegisterRequest, RunStatus, WorkerCommandKind, WorkerFence,
 };
 
@@ -347,7 +347,7 @@ fn approval_request(request_key: &str) -> CreateApprovalRequest {
         kind: "permission".into(),
         risk: "medium".into(),
         payload: serde_json::json!({"path": "notes.txt"}),
-        allowed_decisions: vec!["allow-once".into(), "reject-once".into()],
+        allowed_decisions: vec![ApprovalDecision::AllowOnce, ApprovalDecision::Deny],
         expires_at: None,
     }
 }
@@ -390,8 +390,8 @@ async fn concurrent_approval_decisions_have_one_winner_event() {
     let left_db = db.clone();
     let right_db = db.clone();
     let (left, right) = tokio::join!(
-        left_db.decide_approval(approval.id, "allow-once", Some("user-a")),
-        right_db.decide_approval(approval.id, "reject-once", Some("user-b")),
+        left_db.decide_approval(approval.id, ApprovalDecision::AllowOnce, Some("user-a")),
+        right_db.decide_approval(approval.id, ApprovalDecision::Deny, Some("user-b")),
     );
     let left = left.unwrap();
     let right = right.unwrap();

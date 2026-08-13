@@ -14,10 +14,10 @@ use sqlx::SqlitePool;
 use std::str::FromStr;
 use uuid::Uuid;
 use zene_cloud_domain::{
-    ApprovalRequest, ApprovalStatus, AuthResponse, CloneAuthResponse, CreateApprovalRequest,
-    CreateRepositoryRequest, CreateRunRequest, LoginRequest, Organization, QueueActive, QueueHold,
-    QueueStats, RegisterRequest, Repository, Run, RunEvent, RunMessage, RunStatus, User,
-    WorkerCommand, WorkerFence,
+    ApprovalDecision, ApprovalRequest, ApprovalStatus, AuthResponse, CloneAuthResponse,
+    CreateApprovalRequest, CreateRepositoryRequest, CreateRunRequest, LoginRequest, Organization,
+    QueueActive, QueueHold, QueueStats, RegisterRequest, Repository, Run, RunEvent, RunMessage,
+    RunStatus, User, WorkerCommand, WorkerFence,
 };
 
 #[derive(Clone)]
@@ -1570,7 +1570,7 @@ impl Db {
             ApprovalStatus::Pending
         };
         let decision = if auto {
-            Some("allow-once".to_string())
+            Some(ApprovalDecision::AllowOnce)
         } else {
             None
         };
@@ -1602,7 +1602,7 @@ impl Db {
         .bind(req.expires_at.map(|t| t.to_rfc3339()))
         .bind(if auto { Some("system") } else { None })
         .bind(resolved_at)
-        .bind(&decision)
+        .bind(decision.map(|d| d.as_str()))
         .execute(&self.pool)
         .await?;
 
@@ -1629,7 +1629,7 @@ impl Db {
                 "event": "approval.created",
                 "approvalId": id,
                 "status": status.as_str(),
-                "decision": decision,
+                "decision": decision.map(|d| d.as_str()),
                 "kind": req.kind,
             }),
         )
@@ -1702,7 +1702,7 @@ impl Db {
     pub async fn decide_approval(
         &self,
         approval_id: Uuid,
-        decision: &str,
+        decision: ApprovalDecision,
         resolved_by: Option<&str>,
     ) -> Result<ApprovalRequest> {
         let existing = self
@@ -1713,20 +1713,14 @@ impl Db {
             return Ok(existing);
         }
         let now = Utc::now();
-        let status = if decision.starts_with("reject") || decision == "deny" {
-            ApprovalStatus::Denied
-        } else if decision.starts_with("allow") || decision == "allow" {
-            ApprovalStatus::Approved
-        } else {
-            ApprovalStatus::Resolved
-        };
+        let status = decision.status();
         let updated = sqlx::query(
             "UPDATE approval_requests
              SET status = ?, decision = ?, resolved_by = ?, resolved_at = ?
              WHERE id = ? AND status = 'pending'",
         )
         .bind(status.as_str())
-        .bind(decision)
+        .bind(decision.as_str())
         .bind(resolved_by)
         .bind(now.to_rfc3339())
         .bind(approval_id.to_string())
@@ -1760,7 +1754,7 @@ impl Db {
             serde_json::json!({
                 "event": "approval.decided",
                 "approvalId": approval_id,
-                "decision": decision,
+                "decision": decision.as_str(),
             }),
         )
         .await?;
@@ -2034,7 +2028,11 @@ pub(crate) fn map_approval_full_row(
         Option<String>,
     ),
 ) -> ApprovalRequest {
-    let allowed: Vec<String> = serde_json::from_str(&row.8).unwrap_or_default();
+    let allowed: Vec<ApprovalDecision> = serde_json::from_str::<Vec<String>>(&row.8)
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|value| ApprovalDecision::parse(&value))
+        .collect();
     ApprovalRequest {
         id: Uuid::parse_str(&row.0).unwrap(),
         run_id: Uuid::parse_str(&row.1).unwrap(),
@@ -2045,7 +2043,7 @@ pub(crate) fn map_approval_full_row(
         payload: serde_json::from_str(&row.6).unwrap_or(serde_json::json!({})),
         status: ApprovalStatus::parse(&row.7).unwrap_or(ApprovalStatus::Pending),
         allowed_decisions: allowed,
-        decision: row.9,
+        decision: row.9.as_deref().and_then(ApprovalDecision::parse),
         created_at: parse_time(&row.10),
         expires_at: row.11.as_deref().map(parse_time),
         resolved_by: row.12,
