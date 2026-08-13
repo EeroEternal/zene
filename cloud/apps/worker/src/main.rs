@@ -724,6 +724,198 @@ fn spawn_event_pump<R: RuntimeClient + 'static>(
     (pump, event_error)
 }
 
+fn spawn_command_poller<R: RuntimeClient + 'static>(
+    runtime: Arc<R>,
+    client: reqwest::Client,
+    api_url: String,
+    token: String,
+    run_id: Uuid,
+    fence: WorkerFence,
+    cancelled: Arc<AtomicBool>,
+    last_activity: Arc<tokio::sync::Mutex<tokio::time::Instant>>,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        loop {
+            match fetch_commands(&client, &api_url, &token, run_id, &fence).await {
+                Ok(commands) => {
+                    for cmd in commands {
+                        if cmd.kind == WorkerCommandKind::Cancel {
+                            cancelled.store(true, Ordering::SeqCst);
+                            let _ = runtime.send(RuntimeCommand::Cancel).await;
+                            return;
+                        }
+                        if cmd.kind == WorkerCommandKind::Prompt {
+                            if let Some(text) = cmd.text {
+                                {
+                                    let mut ts = last_activity.lock().await;
+                                    *ts = tokio::time::Instant::now();
+                                }
+                                let _ = set_status_raw(
+                                    &client,
+                                    &api_url,
+                                    &token,
+                                    run_id,
+                                    &fence,
+                                    RunStatus::Running,
+                                )
+                                .await;
+                                match runtime.send(RuntimeCommand::Prompt { text }).await {
+                                    Ok(()) => {
+                                        if let Some(message_id) = cmd.message_id {
+                                            if let Err(err) = ack_command(
+                                                &client,
+                                                &api_url,
+                                                &token,
+                                                run_id,
+                                                &fence,
+                                                message_id,
+                                            )
+                                            .await
+                                            {
+                                                warn!(error = %err, "follow-up command acknowledgement failed");
+                                            }
+                                        }
+                                    }
+                                    Err(err) => {
+                                        warn!(error = %err, "follow-up prompt failed; command will be retried");
+                                    }
+                                }
+                                {
+                                    let mut ts = last_activity.lock().await;
+                                    *ts = tokio::time::Instant::now();
+                                }
+                                if !cancelled.load(Ordering::SeqCst) {
+                                    let _ = set_status_raw(
+                                        &client,
+                                        &api_url,
+                                        &token,
+                                        run_id,
+                                        &fence,
+                                        RunStatus::WaitingForUser,
+                                    )
+                                    .await;
+                                }
+                            }
+                        }
+                    }
+                }
+                Err(err) => warn!(error = %err, "commands poll failed"),
+            }
+            tokio::time::sleep(Duration::from_secs(2)).await;
+        }
+    })
+}
+
+async fn run_runtime_session<R: RuntimeClient + 'static>(
+    runtime: Arc<R>,
+    client: &reqwest::Client,
+    cli: &Cli,
+    claimed: &ClaimedRun,
+    fence: &WorkerFence,
+    outbox: EventOutbox,
+    shutdown: Arc<AtomicBool>,
+    idle: Duration,
+    llm_env: Option<&HashMap<String, String>>,
+    persist_session: bool,
+) -> Result<RunOutcome> {
+    let run_id = claimed.run.id;
+    if persist_session {
+        let session_id = runtime.session_id().await?;
+        persist_acp_session(client, cli, run_id, fence, &session_id).await?;
+    }
+    let (pump, event_error) = spawn_event_pump(
+        runtime.clone(),
+        client.clone(),
+        cli.api_url.clone(),
+        cli.worker_token.clone(),
+        run_id,
+        (*fence).clone(),
+        outbox,
+    );
+    let cancelled = Arc::new(AtomicBool::new(false));
+    let last_activity = Arc::new(tokio::sync::Mutex::new(tokio::time::Instant::now()));
+    let cmd_task = spawn_command_poller(
+        runtime.clone(),
+        client.clone(),
+        cli.api_url.clone(),
+        cli.worker_token.clone(),
+        run_id,
+        (*fence).clone(),
+        cancelled.clone(),
+        last_activity.clone(),
+    );
+
+    runtime
+        .send(RuntimeCommand::Prompt {
+            text: claimed.run.prompt.clone(),
+        })
+        .await
+        .context("runtime prompt")?;
+    {
+        let mut ts = last_activity.lock().await;
+        *ts = tokio::time::Instant::now();
+    }
+    if !cancelled.load(Ordering::SeqCst) {
+        set_status(client, cli, run_id, fence, RunStatus::WaitingForUser, None, None).await?;
+        if let Some(llm_env) = llm_env {
+            if let Err(err) = maybe_refresh_run_title(
+                client,
+                cli,
+                run_id,
+                fence,
+                &claimed.run.prompt,
+                llm_env,
+            )
+            .await
+            {
+                warn!(run_id = %run_id, error = %err, "run title refresh failed");
+            }
+        }
+    }
+
+    let hold_exit = loop {
+        if cancelled.load(Ordering::SeqCst) {
+            break HoldExit::Cancelled;
+        }
+        if shutdown.load(Ordering::SeqCst) {
+            info!(run_id = %run_id, "ending hold due to shutdown signal");
+            break HoldExit::Shutdown;
+        }
+        if event_error.lock().await.is_some() {
+            warn!(run_id = %run_id, "ending hold after event delivery failure");
+            break HoldExit::RuntimeInterrupted;
+        }
+        if !runtime.is_alive().await {
+            info!(run_id = %run_id, "runtime child exited");
+            break HoldExit::RuntimeInterrupted;
+        }
+        let elapsed = last_activity.lock().await.elapsed();
+        if elapsed >= idle {
+            info!(run_id = %run_id, idle_secs = idle.as_secs(), "runtime idle timeout");
+            break HoldExit::IdleTimeout;
+        }
+        tokio::time::sleep(Duration::from_millis(400)).await;
+    };
+
+    cmd_task.abort();
+    let _ = runtime.send(RuntimeCommand::Shutdown).await;
+    let _ = pump.await;
+
+    if let Some(err) = event_error.lock().await.clone() {
+        bail!("event delivery failed: {err}");
+    }
+    if cancelled.load(Ordering::SeqCst) {
+        set_status(client, cli, run_id, fence, RunStatus::Cancelled, None, None).await?;
+        return Ok(RunOutcome::Cancelled);
+    }
+    if shutdown.load(Ordering::SeqCst) {
+        return Ok(RunOutcome::Shutdown);
+    }
+    Ok(outcome_for_hold(true, hold_exit))
+}
+
+const MOCK_HOLD_IDLE: Duration = Duration::from_secs(3);
+
 async fn run_with_mock(
     client: &reqwest::Client,
     cli: &Cli,
@@ -733,92 +925,25 @@ async fn run_with_mock(
     outbox_root: &Path,
     shutdown: Arc<AtomicBool>,
 ) -> Result<RunOutcome> {
-    let run_id = claimed.run.id;
-    let outbox = EventOutbox::open(outbox_root, run_id).await?;
+    let outbox = EventOutbox::open(outbox_root, claimed.run.id).await?;
     outbox
-        .flush(client, &cli.api_url, &cli.worker_token, run_id, fence)
+        .flush(client, &cli.api_url, &cli.worker_token, claimed.run.id, fence)
         .await
         .context("flush recovered event outbox")?;
     let runtime = Arc::new(MockRuntimeClient::connect(workspace));
-    let (event_task, event_error) = spawn_event_pump(
-        runtime.clone(),
-        client.clone(),
-        cli.api_url.clone(),
-        cli.worker_token.clone(),
-        run_id,
-        (*fence).clone(),
+    run_runtime_session(
+        runtime,
+        client,
+        cli,
+        claimed,
+        fence,
         outbox,
-    );
-
-    let cancelled = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-    let cancel_flag = cancelled.clone();
-    let runtime_cancel = runtime.clone();
-    let client_cmd = client.clone();
-    let cli_cmd = cli.api_url.clone();
-    let token_cmd = cli.worker_token.clone();
-    let command_fence = (*fence).clone();
-    let cmd_task = tokio::spawn(async move {
-        loop {
-            if let Ok(commands) = fetch_commands(&client_cmd, &cli_cmd, &token_cmd, run_id, &command_fence).await {
-                for cmd in commands {
-                    if cmd.kind == WorkerCommandKind::Cancel {
-                        cancel_flag.store(true, std::sync::atomic::Ordering::SeqCst);
-                        let _ = runtime_cancel.send(RuntimeCommand::Cancel).await;
-                        return;
-                    }
-                    if cmd.kind == WorkerCommandKind::Prompt {
-                        if let (Some(text), Some(message_id)) = (cmd.text, cmd.message_id) {
-                            match runtime_cancel.send(RuntimeCommand::Prompt { text }).await {
-                                Ok(()) => {
-                                    if let Err(err) = ack_command(
-                                        &client_cmd, &cli_cmd, &token_cmd, run_id,
-                                        &command_fence, message_id,
-                                    ).await {
-                                        warn!(error = %err, "mock follow-up acknowledgement failed");
-                                    }
-                                }
-                                Err(err) => warn!(error = %err, "mock follow-up prompt failed; command will be retried"),
-                            }
-                        }
-                    }
-                }
-            }
-            tokio::time::sleep(Duration::from_secs(2)).await;
-        }
-    });
-
-    runtime
-        .send(RuntimeCommand::Prompt {
-            text: claimed.run.prompt.clone(),
-        })
-        .await
-        .context("mock prompt")?;
-
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
-    while tokio::time::Instant::now() < deadline {
-        if cancelled.load(std::sync::atomic::Ordering::SeqCst)
-            || shutdown.load(Ordering::SeqCst)
-        {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(500)).await;
-    }
-
-    let _ = runtime.send(RuntimeCommand::Shutdown).await;
-    cmd_task.abort();
-    let _ = event_task.await;
-
-    if let Some(err) = event_error.lock().await.clone() {
-        bail!("event delivery failed: {err}");
-    }
-    if cancelled.load(std::sync::atomic::Ordering::SeqCst) {
-        set_status(client, cli, run_id, &fence, RunStatus::Cancelled, None, None).await?;
-        return Ok(RunOutcome::Cancelled);
-    }
-    if shutdown.load(Ordering::SeqCst) {
-        return Ok(RunOutcome::Shutdown);
-    }
-    Ok(RunOutcome::Completed)
+        shutdown,
+        MOCK_HOLD_IDLE,
+        None,
+        false,
+    )
+    .await
 }
 
 async fn fetch_llm_auth(
@@ -959,171 +1084,21 @@ async fn run_with_real_acp(
         .await
         .context("connect runtime client")?,
     );
-    let session_id = runtime.session_id().await?;
-    persist_acp_session(client, cli, run_id, fence, &session_id).await?;
-    let (pump, event_error) = spawn_event_pump(
-        runtime.clone(),
-        client.clone(),
-        cli.api_url.clone(),
-        cli.worker_token.clone(),
-        run_id,
-        (*fence).clone(),
+    run_runtime_session(
+        runtime,
+        client,
+        cli,
+        claimed,
+        fence,
         outbox,
-    );
-
-    let cancelled = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-    let last_activity = std::sync::Arc::new(tokio::sync::Mutex::new(tokio::time::Instant::now()));
-    let cancel_flag = cancelled.clone();
-    let runtime_cancel = runtime.clone();
-    let activity_cmd = last_activity.clone();
-    let client_cmd = client.clone();
-    let cli_cmd = cli.api_url.clone();
-    let token_cmd = cli.worker_token.clone();
-    let command_fence = (*fence).clone();
-    let cmd_task = tokio::spawn(async move {
-        loop {
-            match fetch_commands(&client_cmd, &cli_cmd, &token_cmd, run_id, &command_fence).await {
-                Ok(commands) => {
-                    for cmd in commands {
-                        if cmd.kind == WorkerCommandKind::Cancel {
-                            cancel_flag.store(true, std::sync::atomic::Ordering::SeqCst);
-                            let _ = runtime_cancel.send(RuntimeCommand::Cancel).await;
-                            return;
-                        }
-                        if cmd.kind == WorkerCommandKind::Prompt {
-                            if let Some(text) = cmd.text {
-                                {
-                                    let mut ts = activity_cmd.lock().await;
-                                    *ts = tokio::time::Instant::now();
-                                }
-                                let _ = set_status_raw(
-                                    &client_cmd,
-                                    &cli_cmd,
-                                    &token_cmd,
-                                    run_id,
-                                    &command_fence,
-                                    RunStatus::Running,
-                                )
-                                .await;
-                                match runtime_cancel.send(RuntimeCommand::Prompt { text }).await {
-                                    Ok(()) => {
-                                        if let Some(message_id) = cmd.message_id {
-                                            if let Err(err) = ack_command(
-                                                &client_cmd,
-                                                &cli_cmd,
-                                                &token_cmd,
-                                                run_id,
-                                                &command_fence,
-                                                message_id,
-                                            )
-                                            .await
-                                            {
-                                                warn!(error = %err, "follow-up command acknowledgement failed");
-                                            }
-                                        }
-                                    }
-                                    Err(err) => {
-                                        warn!(error = %err, "follow-up prompt failed; command will be retried");
-                                    }
-                                }
-                                {
-                                    let mut ts = activity_cmd.lock().await;
-                                    *ts = tokio::time::Instant::now();
-                                }
-                                if !cancel_flag.load(std::sync::atomic::Ordering::SeqCst) {
-                                    let _ = set_status_raw(
-                                        &client_cmd,
-                                        &cli_cmd,
-                                        &token_cmd,
-                                        run_id,
-                                        &command_fence,
-                                        RunStatus::WaitingForUser,
-                                    )
-                                    .await;
-                                }
-                            }
-                        }
-                    }
-                }
-                Err(err) => warn!(error = %err, "commands poll failed"),
-            }
-            tokio::time::sleep(Duration::from_secs(2)).await;
-        }
-    });
-
-    runtime
-        .send(RuntimeCommand::Prompt {
-            text: claimed.run.prompt.clone(),
-        })
-        .await
-        .context("session/prompt")?;
-    {
-        let mut ts = last_activity.lock().await;
-        *ts = tokio::time::Instant::now();
-    }
-    // Turn finished — free the UI for follow-ups while ACP session stays warm.
-    if !cancelled.load(std::sync::atomic::Ordering::SeqCst) {
-        set_status(client, cli, run_id, &fence, RunStatus::WaitingForUser, None, None).await?;
-        if let Err(err) =
-            maybe_refresh_run_title(
-                client,
-                cli,
-                run_id,
-                &fence,
-                &claimed.run.prompt,
-                &llm_env,
-            )
-            .await
-        {
-            warn!(run_id = %run_id, error = %err, "run title refresh failed");
-        }
-    }
-
-    // Keep the session alive for follow-ups until idle timeout, cancel, SIGTERM, or child exit.
-    let idle = Duration::from_secs(cli.acp_idle_secs.max(1));
-    let hold_exit = loop {
-        if cancelled.load(Ordering::SeqCst) {
-            break HoldExit::Cancelled;
-        }
-        if shutdown.load(Ordering::SeqCst) {
-            info!(run_id = %run_id, "ending hold due to shutdown signal");
-            break HoldExit::Shutdown;
-        }
-        if event_error.lock().await.is_some() {
-            warn!(run_id = %run_id, "ending hold after event delivery failure");
-            break HoldExit::RuntimeInterrupted;
-        }
-        if !runtime.is_alive().await {
-            info!(run_id = %run_id, "runtime child exited");
-            break HoldExit::RuntimeInterrupted;
-        }
-        let elapsed = {
-            let ts = last_activity.lock().await;
-            ts.elapsed()
-        };
-        if elapsed >= idle {
-            info!(run_id = %run_id, idle_secs = cli.acp_idle_secs, "acp idle timeout");
-            break HoldExit::IdleTimeout;
-        }
-        tokio::time::sleep(Duration::from_millis(400)).await;
-    };
-
-    cmd_task.abort();
-    let _ = runtime.send(RuntimeCommand::Shutdown).await;
-    let _ = pump.await;
-
-    if let Some(err) = event_error.lock().await.clone() {
-        bail!("event delivery failed: {err}");
-    }
-    if cancelled.load(std::sync::atomic::Ordering::SeqCst) {
-        set_status(client, cli, run_id, &fence, RunStatus::Cancelled, None, None).await?;
-        return Ok(RunOutcome::Cancelled);
-    }
-    if shutdown.load(Ordering::SeqCst) {
-        return Ok(RunOutcome::Shutdown);
-    }
-    Ok(outcome_for_hold(true, hold_exit))
+        shutdown,
+        Duration::from_secs(cli.acp_idle_secs.max(1)),
+        Some(&llm_env),
+        true,
+    )
+    .await
 }
+
 
 async fn resolve_permission(
     client: &reqwest::Client,
