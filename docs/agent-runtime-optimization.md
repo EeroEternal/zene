@@ -2,9 +2,9 @@
 
 > 状态：持续演进。Wave 0–12 把控制面/数据面的 **接口边界** 建起来了；Wave 13 起让默认执行路径真正走这些边界。
 >
-> **进度快照：2026-08-13，基线 `2e0c32d`（PR #100 已合并）。**
+> **进度快照：2026-08-13，基线 `0eb889c`（PR #101 已合并）。**
 > 本文同时记录目标架构、已实现能力和剩余工作。
-> Wave 16 的 Steer/SetMode 已对齐；Wave 14 进行中（主 Agent prepare/model-step 已抽出；Subagent 经 RuntimeScope + DefaultToolExecutor + ModelExecutor）。
+> Wave 16 的 Steer/SetMode 已对齐；Wave 14 进行中（主 Agent prepare/model/tool-batch 已抽出；Subagent 经 RuntimeScope + DefaultToolExecutor + ModelExecutor）。
 >
 > 本文基于当前 zene runtime 实现，描述如何将 `Agent`、`Turn`、`Step`、`Session`、Cloud `Run` 和 ACP transport 拉开，并给出渐进式迁移方案。
 >
