@@ -54,7 +54,7 @@ pub use events::{emit_event, runtime_event_handler, AgentEvent, EventHandler};
 pub use plan_mode::PlanApprovalPrompter;
 use plan_mode::{tool_visible_in_definitions};
 pub use runtime::RuntimeHandle;
-pub use subagent::{run_subagent, ChatBackend, CoreSubagentRunner};
+pub use subagent::{run_subagent, CoreSubagentRunner};
 pub use tool_dedup::{append_reminder, ToolDedup};
 pub use tool_scheduler::{classify_tool_accesses, ToolScheduler};
 pub use zene_hooks::{HookBlock, HookRunner, HookSpec};
