@@ -1030,15 +1030,16 @@ impl Agent {
         for call in tool_calls {
             let turn_id = scope.as_ref().map(|(turn_id, _)| turn_id.as_str());
             let step_id = scope.as_ref().and_then(|(_, step_id)| step_id.as_deref());
+            let idempotency_key = append_tool_execution_checkpoint(
+                &self.record_writer,
+                turn_id,
+                step_id,
+                &call.id,
+                ExecutionCheckpointState::ToolStarted,
+            )?;
             let tool_event = self
                 .session
                 .record_tool_call(turn_id, step_id, &call.id, &call.name, &call.arguments);
-            let idempotency_key = format!(
-                "tool/{}/{}/{}/started",
-                turn_id.unwrap_or("unknown"),
-                step_id.unwrap_or("unknown"),
-                call.id
-            );
             self.session.record_checkpoint(
                 turn_id,
                 step_id,
@@ -1102,6 +1103,13 @@ impl Agent {
             let content = message.content;
             let turn_id = scope.as_ref().map(|(turn_id, _)| turn_id.as_str());
             let step_id = scope.as_ref().and_then(|(_, step_id)| step_id.as_deref());
+            let idempotency_key = append_tool_execution_checkpoint(
+                &self.record_writer,
+                turn_id,
+                step_id,
+                &message.call.id,
+                ExecutionCheckpointState::ToolCompleted,
+            )?;
             let result_event = self.session.record_tool_result(
                 turn_id,
                 step_id,
@@ -1110,12 +1118,6 @@ impl Agent {
                 &content,
                 message.is_error,
                 message.duration_ms,
-            );
-            let idempotency_key = format!(
-                "tool/{}/{}/{}/completed",
-                turn_id.unwrap_or("unknown"),
-                step_id.unwrap_or("unknown"),
-                message.call.id
             );
             self.session.record_checkpoint(
                 turn_id,
@@ -1148,6 +1150,36 @@ impl Agent {
             ts: chrono::Utc::now(),
         })
     }
+}
+
+fn append_tool_execution_checkpoint(
+    record_writer: &AgentRecordWriter,
+    turn_id: Option<&str>,
+    step_id: Option<&str>,
+    tool_call_id: &str,
+    state: ExecutionCheckpointState,
+) -> Result<String> {
+    let state_name = match &state {
+        ExecutionCheckpointState::ToolStarted => "started",
+        ExecutionCheckpointState::ToolCompleted => "completed",
+        _ => bail!("invalid tool execution checkpoint state"),
+    };
+    let idempotency_key = format!(
+        "tool/{}/{}/{tool_call_id}/{state_name}",
+        turn_id.unwrap_or("unknown"),
+        step_id.unwrap_or("unknown"),
+    );
+    record_writer.append_execution_checkpoint(&RecordEntry::ExecutionCheckpoint {
+        turn_id: turn_id.unwrap_or("unknown").to_string(),
+        step_id: step_id.map(str::to_string),
+        tool_call_id: Some(tool_call_id.to_string()),
+        state,
+        idempotency_key: idempotency_key.clone(),
+        context_epoch: None,
+        model_request_hash: None,
+        ts: chrono::Utc::now(),
+    })?;
+    Ok(idempotency_key)
 }
 
 fn merge_event_handler(
@@ -1188,8 +1220,17 @@ fn merge_event_handler(
             let current = scope.lock();
             (current.0, current.1)
         };
-        for checkpoint in execution_checkpoints_from_agent_event(&event, turn_id, step_id) {
-            let _ = record_writer.append_execution_checkpoint(&checkpoint);
+        // Tool boundaries are persisted synchronously by `run_tools`, where
+        // failures can prevent side effects or be returned after execution.
+        // The event handler is intentionally best effort for UI/runtime
+        // publication and the remaining non-tool checkpoints.
+        if !matches!(
+            &event,
+            AgentEvent::ToolCall { .. } | AgentEvent::ToolResult { .. }
+        ) {
+            for checkpoint in execution_checkpoints_from_agent_event(&event, turn_id, step_id) {
+                let _ = record_writer.append_execution_checkpoint(&checkpoint);
+            }
         }
         shared(event);
     }))
@@ -1412,5 +1453,26 @@ mod execution_checkpoint_tests {
             None,
         );
         assert!(checkpoints.is_empty());
+    }
+
+    #[test]
+    fn failed_tool_started_checkpoint_prevents_execution_gate() {
+        let record_dir = tempfile::tempdir().expect("record dir");
+        // A directory is intentionally supplied as the record path so the
+        // mandatory append fails before the side-effect closure is reached.
+        let writer = AgentRecordWriter::from_path(record_dir.path()).expect("writer");
+        let mut executed = false;
+        let execution = append_tool_execution_checkpoint(
+            &writer,
+            Some("turn-1"),
+            Some("step-1"),
+            "call-1",
+            ExecutionCheckpointState::ToolStarted,
+        )
+        .map(|_| {
+            executed = true;
+        });
+        assert!(execution.is_err());
+        assert!(!executed, "tool execution must remain gated on persistence");
     }
 }
