@@ -61,7 +61,7 @@ impl GitBroker {
         let (token, mode) = if self.mode == GithubMode::Mock || self.github.is_mock() {
             (
                 format!("mock_clone_{}", &run.id.to_string()[..8]),
-                "mock".to_string(),
+                GithubMode::Mock,
             )
         } else {
             let installation_id = repo
@@ -69,7 +69,7 @@ impl GitBroker {
                 .as_deref()
                 .context("repository has no GitHub installation_id")?;
             let tok = self.github.installation_token(installation_id).await?;
-            (tok.token, "live".to_string())
+            (tok.token, GithubMode::Live)
         };
 
         self.db

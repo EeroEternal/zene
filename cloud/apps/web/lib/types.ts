@@ -17,8 +17,11 @@ export interface GithubInstallation {
   accountLogin?: string;
 }
 
+/** GitHub integration mode. Matches domain `GithubMode`. */
+export type GithubMode = "mock" | "live";
+
 export interface GithubStatus {
-  mode?: string;
+  mode?: GithubMode;
   configured?: boolean;
   connected?: boolean;
   account?: GithubAccount | null;
