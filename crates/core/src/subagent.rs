@@ -6,6 +6,7 @@ use async_trait::async_trait;
 use tokio_util::sync::CancellationToken;
 use zene_config::ZeneConfig;
 use zene_llm::{ChatClient, ChatRequest, ChatResponse, Message, TokenUsage, ToolCall};
+use zene_model_executor::{ChatClientExecutor, ModelExecutor, ModelStream};
 use zene_sandbox::Sandbox;
 use zene_tools::{
     RuntimeScope, SubagentEnv, SubagentProfile, SubagentRunner, ToolCatalog, ToolContext,
@@ -25,17 +26,6 @@ use zene_turn::{
     TurnRequest, TurnRuntime, TurnSessionPort, TurnState,
 };
 
-#[async_trait]
-pub trait ChatBackend: Send + Sync {
-    async fn chat(&self, request: ChatRequest) -> Result<ChatResponse>;
-}
-
-#[async_trait]
-impl ChatBackend for ChatClient {
-    async fn chat(&self, request: ChatRequest) -> Result<ChatResponse> {
-        ChatClient::chat(self, request).await
-    }
-}
 
 pub struct CoreSubagentRunner {
     config: ZeneConfig,
@@ -56,6 +46,13 @@ impl CoreSubagentRunner {
     }
 }
 
+
+async fn model_executor_from_config(config: &ZeneConfig) -> Result<Arc<dyn ModelExecutor>> {
+    let client = ChatClient::from_config(config).await?;
+    Ok(Arc::new(ChatClientExecutor::new(Arc::new(client))))
+}
+
+
 #[async_trait]
 impl SubagentRunner for CoreSubagentRunner {
     async fn run_subagent(
@@ -65,7 +62,7 @@ impl SubagentRunner for CoreSubagentRunner {
         cwd: Option<&Path>,
         parent_ctx: &ToolContext,
     ) -> Result<String> {
-        let client = ChatClient::from_config(&self.config).await?;
+        let executor = model_executor_from_config(&self.config).await?;
         let sandbox = resolve_subagent_sandbox(&parent_ctx.sandbox, cwd)?;
         let parent_depth = parent_ctx
             .subagent
@@ -78,7 +75,7 @@ impl SubagentRunner for CoreSubagentRunner {
             profile,
             sandbox,
             &self.config,
-            &client,
+            executor,
             parent_ctx.cancel.as_ref(),
             parent_depth,
             parent_ctx.permission.clone(),
@@ -94,7 +91,7 @@ pub async fn run_subagent(
     profile: SubagentProfile,
     sandbox: Arc<dyn Sandbox>,
     config: &ZeneConfig,
-    backend: &dyn ChatBackend,
+    model_executor: Arc<dyn ModelExecutor>,
     cancel: Option<&CancellationToken>,
     parent_depth: u32,
     permission: Option<SharedToolPermission>,
@@ -104,7 +101,7 @@ pub async fn run_subagent(
         profile,
         sandbox,
         config,
-        backend,
+        model_executor,
         cancel,
         parent_depth,
         permission,
@@ -119,7 +116,7 @@ pub(crate) async fn run_subagent_with_runner(
     profile: SubagentProfile,
     sandbox: Arc<dyn Sandbox>,
     config: &ZeneConfig,
-    backend: &dyn ChatBackend,
+    model_executor: Arc<dyn ModelExecutor>,
     cancel: Option<&CancellationToken>,
     parent_depth: u32,
     permission: Option<SharedToolPermission>,
@@ -135,7 +132,7 @@ pub(crate) async fn run_subagent_with_runner(
         scope,
         sandbox,
         config,
-        backend,
+        model_executor,
         subagent_env,
         permission,
         broker,
@@ -151,12 +148,11 @@ pub(crate) async fn run_subagent_with_runner(
 ///
 /// Subagents share the generic turn state machine. Conversation stays in
 /// memory; they do not publish the parent runtime's events or checkpoints.
-/// Tools come from [`RuntimeScope`] so Explore/Coder differ by scope, not a
-/// parallel wiring path.
+/// Tools come from [`RuntimeScope`]; model calls go through [`ModelExecutor`].
 struct SubagentTurnRuntime<'a> {
     sandbox: Arc<dyn Sandbox>,
     config: &'a ZeneConfig,
-    backend: &'a dyn ChatBackend,
+    model_executor: Arc<dyn ModelExecutor>,
     /// Retained for later ToolPolicy / SessionPolicy injection.
     #[allow(dead_code)]
     scope: RuntimeScope,
@@ -174,7 +170,7 @@ impl<'a> SubagentTurnRuntime<'a> {
         scope: RuntimeScope,
         sandbox: Arc<dyn Sandbox>,
         config: &'a ZeneConfig,
-        backend: &'a dyn ChatBackend,
+        model_executor: Arc<dyn ModelExecutor>,
         subagent_env: SubagentEnv,
         permission: Option<SharedToolPermission>,
         broker: Option<zene_permission::SharedApprovalBroker>,
@@ -184,7 +180,7 @@ impl<'a> SubagentTurnRuntime<'a> {
         Self {
             sandbox,
             config,
-            backend,
+            model_executor,
             scope,
             subagent_env,
             permission,
@@ -210,7 +206,7 @@ impl<'a> SubagentTurnRuntime<'a> {
             self.tools.as_ref(),
             &self.compaction_config,
             &self.config.model,
-            self.backend,
+            Arc::clone(&self.model_executor),
         )
         .await?;
         Ok(PreparedContext {
@@ -257,8 +253,8 @@ impl<'a> SubagentTurnRuntime<'a> {
             return Err(aborted_error());
         }
         let response = self
-            .backend
-            .chat(ChatRequest {
+            .model_executor
+            .complete(ChatRequest {
                 model: self.config.model.clone(),
                 messages: context.messages,
                 tools: context.tools,
@@ -509,7 +505,7 @@ async fn maybe_compact_subagent_messages(
     tools: &ToolRegistry,
     compaction_config: &zene_context::CompactionConfig,
     model: &str,
-    backend: &dyn ChatBackend,
+    model_executor: Arc<dyn ModelExecutor>,
 ) -> Result<()> {
     let tool_defs = tools.definitions();
     let estimator = TokenEstimator::default();
@@ -525,7 +521,7 @@ async fn maybe_compact_subagent_messages(
         "subagent_token_threshold",
         &tool_defs,
         &estimator,
-        |request| backend.chat(request),
+        |request| model_executor.complete(request),
     )
     .await?
     .is_some()
@@ -596,8 +592,8 @@ mod tests {
     }
 
     #[async_trait]
-    impl ChatBackend for ScriptedBackend {
-        async fn chat(&self, request: ChatRequest) -> Result<ChatResponse> {
+    impl ModelExecutor for ScriptedBackend {
+        async fn complete(&self, request: ChatRequest) -> Result<ChatResponse> {
             let idx = self.calls.fetch_add(1, Ordering::SeqCst);
             let response = self
                 .responses
@@ -612,6 +608,12 @@ mod tests {
             }
 
             Ok(response)
+        }
+
+        async fn stream(&self, _request: ChatRequest) -> Result<ModelStream> {
+            Ok(Box::pin(futures::stream::iter([Ok(
+                zene_llm::StreamEvent::Done { usage: None },
+            )])))
         }
     }
 
@@ -630,7 +632,7 @@ mod tests {
             parent_ctx: &ToolContext,
         ) -> Result<String> {
             self.calls.fetch_add(1, Ordering::SeqCst);
-            let client = ChatClient::from_config(&self.config).await?;
+            let executor = model_executor_from_config(&self.config).await?;
             let sandbox = resolve_subagent_sandbox(&parent_ctx.sandbox, cwd)?;
             let parent_depth = parent_ctx
                 .subagent
@@ -642,7 +644,7 @@ mod tests {
                 profile,
                 sandbox,
                 &self.config,
-                &client,
+                executor,
                 parent_ctx.cancel.as_ref(),
                 parent_depth,
                 parent_ctx.permission.clone(),
@@ -711,7 +713,7 @@ mod tests {
             SubagentProfile::Explore,
             Arc::clone(&sandbox),
             &config,
-            &backend,
+            Arc::new(backend),
             None,
             0,
             None,
@@ -774,7 +776,7 @@ mod tests {
             SubagentProfile::Explore,
             sandbox,
             &config,
-            &backend,
+            Arc::new(backend),
             None,
             0,
             None,
@@ -855,7 +857,7 @@ mod tests {
             SubagentProfile::Coder,
             Arc::clone(&sandbox),
             &config,
-            &backend,
+            Arc::new(backend),
             None,
             0,
             Some(permission),
