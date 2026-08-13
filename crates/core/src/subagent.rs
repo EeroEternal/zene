@@ -9,7 +9,7 @@ use zene_llm::{ChatClient, ChatRequest, ChatResponse, Message, TokenUsage, ToolC
 use zene_sandbox::Sandbox;
 use zene_tools::{
     RuntimeScope, SubagentEnv, SubagentProfile, SubagentRunner, ToolCatalog, ToolContext,
-    ToolRegistry, DEFAULT_SUBAGENT_MAX_DEPTH,
+    ToolRegistry,
 };
 
 use zene_context::{
@@ -632,7 +632,7 @@ mod tests {
     use tempfile::tempdir;
     use zene_llm::ToolCall;
     use zene_sandbox::LocalSandbox;
-    use zene_tools::default_builtin_tools;
+    use zene_tools::{default_builtin_tools, DEFAULT_SUBAGENT_MAX_DEPTH};
 
     fn test_permission_deny() -> SharedToolPermission {
         Arc::new(Mutex::new(PermissionGate::with_prompter(

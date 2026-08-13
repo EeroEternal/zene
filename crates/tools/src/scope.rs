@@ -3,7 +3,7 @@ use std::sync::Arc;
 use anyhow::{bail, Result};
 
 use crate::builtin::tools_for_profile;
-use crate::registry::{ToolCatalog, ToolRegistry};
+use crate::registry::ToolRegistry;
 use crate::subagent::{SubagentEnv, SubagentProfile, SubagentRunner, DEFAULT_SUBAGENT_MAX_DEPTH};
 
 /// Capability boundary for a child/runtime turn.
