@@ -1577,7 +1577,7 @@ impl Db {
             None
         };
         let allowed = serde_json::to_string(&req.allowed_decisions)?;
-        let payload = req.payload.to_string();
+        let payload = serde_json::to_string(&req.payload)?;
 
         let inserted = sqlx::query(
             "INSERT INTO approval_requests

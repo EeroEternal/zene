@@ -222,7 +222,8 @@ export interface Approval {
   kind?: ApprovalKind;
   risk?: ApprovalRisk;
   status?: ApprovalStatus;
-  payload?: unknown;
+  /** Product fields on new rows; legacy ACP envelopes may still include `params` / `method`. */
+  payload?: ApprovalEventPayload & { params?: unknown; method?: unknown };
   allowedDecisions?: ApprovalDecision[];
 }
 

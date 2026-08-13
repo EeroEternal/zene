@@ -1116,7 +1116,7 @@ async fn resolve_permission(
         request_key: request_key.to_string(),
         kind,
         risk: ApprovalRisk::Medium,
-        payload: serde_json::to_value(payload).unwrap_or(serde_json::json!({})),
+        payload: payload.clone(),
         allowed_decisions,
         expires_at: None,
     };

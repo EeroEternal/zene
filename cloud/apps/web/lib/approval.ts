@@ -1,4 +1,4 @@
-import type { Approval, ApprovalDecision, ApprovalEventPayload } from "@/lib/types";
+import type { Approval, ApprovalDecision } from "@/lib/types";
 
 const ALLOW_ONCE: ApprovalDecision[] = ["allow-once", "allow"];
 const DENY_ONCE: ApprovalDecision[] = ["reject-once", "deny"];
@@ -20,7 +20,7 @@ export function extraDecisions(allowed: ApprovalDecision[]): ApprovalDecision[] 
 export function approvalCardBody(payload: Approval["payload"]): string {
   if (payload == null) return "";
   if (typeof payload !== "object") return String(payload);
-  const product = payload as ApprovalEventPayload & { params?: unknown; method?: unknown };
+  const product = payload;
   if (product.params || product.method) {
     return stringify(payload);
   }
