@@ -52,7 +52,7 @@ use crate::tool_executor::{DefaultToolExecutor, ToolExecutorDeps};
 pub use agent_builder::AgentBuilder;
 pub use events::{emit_event, runtime_event_handler, AgentEvent, EventHandler};
 pub use plan_mode::PlanApprovalPrompter;
-use plan_mode::{build_effective_system_prompt, tool_visible_in_definitions};
+use plan_mode::{tool_visible_in_definitions};
 pub use runtime::RuntimeHandle;
 pub use subagent::{run_subagent, ChatBackend, CoreSubagentRunner};
 pub use tool_dedup::{append_reminder, ToolDedup};
@@ -214,7 +214,7 @@ impl Agent {
             }
         };
         if should_sync {
-            self.sync_plan_mode_system();
+            self.session.record_mode_changed("plan");
             emit_event(
                 handler,
                 AgentEvent::ModeChanged {
@@ -235,7 +235,7 @@ impl Agent {
             }
         };
         if should_sync {
-            self.sync_plan_mode_system();
+            self.session.record_mode_changed("default");
             emit_event(
                 handler,
                 AgentEvent::ModeChanged {
@@ -251,13 +251,6 @@ impl Agent {
             return true;
         }
         self.plan_mode.lock().is_tool_allowed(tool_name)
-    }
-
-    fn sync_plan_mode_system(&mut self) {
-        let active = self.is_plan_mode_active();
-        let effective = build_effective_system_prompt(&self.system_prompt, active);
-        self.session.set_system_message(&effective);
-        let _event = self.context.on_system_prefix_changed("plan_mode");
     }
 
     fn tool_definitions_for_llm(&self) -> Vec<zene_llm::ToolDefinition> {
@@ -358,7 +351,11 @@ impl Agent {
         let tools = self.tool_definitions_for_llm();
         let estimator = self.token_estimator();
         let background_tasks = self.background.lock().list();
-        let hooks = context_hooks::ZeneContextHooks::new(&self.session, &background_tasks);
+        let hooks = context_hooks::ZeneContextHooks::new(
+            &self.session,
+            &background_tasks,
+            self.is_plan_mode_active(),
+        );
         let compaction_config = context_config::context_compaction_config(&self.config.compaction);
         let mut handler = context_events::AgentContextHandler::new(
             self.context_model.as_ref(),
@@ -481,6 +478,22 @@ impl Agent {
                     .map(|start| start.to_string())
                     .unwrap_or_else(|| "-".into()),
                 explain.estimate_tokens,
+            ),
+            format!(
+                "prefix_cache: break={} prefix_end={} tail={} cached={} reprocessed_est={}",
+                explain.prefix_cache.break_kind,
+                explain.prefix_cache.prefix_end,
+                explain.prefix_cache.tail_decoration_count,
+                explain
+                    .prefix_cache
+                    .cached_tokens
+                    .map(|n| n.to_string())
+                    .unwrap_or_else(|| "-".into()),
+                explain
+                    .prefix_cache
+                    .unchanged_reprocessed_est
+                    .map(|n| n.to_string())
+                    .unwrap_or_else(|| "-".into()),
             ),
         ]);
         if water.auto_compact_suppressed {
@@ -823,7 +836,11 @@ impl Agent {
         let tools = self.tool_definitions_for_llm();
         let estimator = self.token_estimator();
         let background_tasks = self.background.lock().list();
-        let hooks = context_hooks::ZeneContextHooks::new(&self.session, &background_tasks);
+        let hooks = context_hooks::ZeneContextHooks::new(
+            &self.session,
+            &background_tasks,
+            self.is_plan_mode_active(),
+        );
         let compaction_config = context_config::context_compaction_config(&self.config.compaction);
         let mut handler = context_events::AgentContextHandler::new(
             self.context_model.as_ref(),
@@ -871,6 +888,7 @@ impl Agent {
                 delivery_tail_start: prepared.explain.delivery_tail_start,
                 estimate_tokens: prepared.explain.estimate_tokens,
                 context_epoch: prepared.explain.context_epoch,
+                prefix_cache: prepared.explain.prefix_cache.clone(),
             },
         );
         let step = prepared.step;
@@ -987,7 +1005,11 @@ impl Agent {
         self.sync_todos_to_session();
         let estimator = self.token_estimator();
         let background_tasks = self.background.lock().list();
-        let hooks = context_hooks::ZeneContextHooks::new(&self.session, &background_tasks);
+        let hooks = context_hooks::ZeneContextHooks::new(
+            &self.session,
+            &background_tasks,
+            self.is_plan_mode_active(),
+        );
         let compaction_config = context_config::context_compaction_config(&self.config.compaction);
         let mut handler = context_events::AgentContextHandler::new(
             self.context_model.as_ref(),
@@ -1165,7 +1187,6 @@ impl Agent {
             for mode_id in &result.mode_changes {
                 self.session.record_mode_changed(mode_id);
             }
-            self.sync_plan_mode_system();
         }
         for decision in &result.permission_decisions {
             self.session.record_permission_decision(

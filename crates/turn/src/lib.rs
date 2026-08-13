@@ -5,8 +5,8 @@ mod state;
 mod turn_loop;
 
 pub use events::{
-    EventSequence, ProjectionInjectedSource, ProjectionToolOutput, RuntimeEvent,
-    RuntimeEventHandler, RuntimeEventKind,
+    EventSequence, ProjectionInjectedSource, ProjectionPrefixCache, ProjectionToolOutput,
+    RuntimeEvent, RuntimeEventHandler, RuntimeEventKind,
 };
 pub use turn_loop::{
     run_turn_loop, ContextAssemblerPort, EventSinkPort, LegacyTurnPorts, ModelExecutorPort,

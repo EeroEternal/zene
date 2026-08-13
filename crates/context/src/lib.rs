@@ -6,6 +6,7 @@ mod engine;
 mod event_handler;
 mod events;
 mod hooks;
+mod layout;
 mod input_ladder;
 mod memory_store;
 mod segment_store;
@@ -49,6 +50,10 @@ pub use engine::{
     ContextDeps, ContextEngine, ContextObservation, ContextUsageUpdate, ForcedCompactResult,
     InjectedSource, OverflowHandleResult, PrefireClientFactory, PrepareStepResult,
     ProjectionExplain, StepContext, ToolOutputProvenance,
+};
+pub use layout::{
+    apply_tail_decorations, classify_prefix_break, content_is_reminder, is_step_decoration,
+    prefix_fingerprint, split_layout, PrefixCacheBreakKind, PrefixCacheExplain, ProjectionLayout,
 };
 pub use event_handler::{
     write_compaction_segment_via, ContextEventHandler, EventOutcome, NoopContextEventHandler,

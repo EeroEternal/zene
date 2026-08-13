@@ -5,7 +5,7 @@
 
 本文是 [context-engine-projection.md](./context-engine-projection.md) 在 **cache 友好布局** 上的续篇，衔接 [agent-inference-context.md](./agent-inference-context.md)（`session_id` / `epoch` / `cached_tokens`）和 [ENGINE.md](./ENGINE.md)（compaction、memory、system reminder）。控制面仍见 [agent-runtime-optimization.md](./agent-runtime-optimization.md)；本文不改 Turn / Permission / ACP 语义。
 
-**状态**：方案稿（2026-08-13）。Wave 9–12 已把 Session 事实与 Context 投影分开；prefix cache 的字节稳定性尚未成为硬契约。
+**状态**：落地中（2026-08-13）。Phase P 布局契约、Phase Q 已知前缀改写、Phase R 观测字段已开始进入 `zene-context` / ACP `projection_update`。
 
 ---
 

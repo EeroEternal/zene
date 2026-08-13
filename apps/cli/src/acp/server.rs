@@ -864,6 +864,7 @@ fn project_runtime_event(
             delivery_tail_start,
             estimate_tokens,
             context_epoch,
+            prefix_cache,
         } => Some(projection_ready_update_with_provenance(
             *source_message_count,
             *projected_message_count,
@@ -907,6 +908,15 @@ fn project_runtime_event(
             *delivery_tail_start,
             *estimate_tokens,
             *context_epoch,
+            &json!({
+                "prefixEnd": prefix_cache.prefix_end,
+                "bodyEnd": prefix_cache.body_end,
+                "tailDecorationCount": prefix_cache.tail_decoration_count,
+                "prefixFingerprint": prefix_cache.prefix_fingerprint,
+                "breakKind": prefix_cache.break_kind,
+                "cachedTokens": prefix_cache.cached_tokens,
+                "unchangedReprocessedEst": prefix_cache.unchanged_reprocessed_est,
+            }),
         )),
         RuntimeEventKind::TurnStarted
         | RuntimeEventKind::StepStarted { .. }

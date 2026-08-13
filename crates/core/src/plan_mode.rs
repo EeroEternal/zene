@@ -8,9 +8,10 @@ use serde::Deserialize;
 use zene_config::sessions_dir;
 use zene_tools::{PlanModeState, ToolResult};
 
-pub const PLAN_MODE_REMINDER: &str = r#"<system_reminder>
-You are in Plan mode. Only read-only tools (Read, Grep, Glob, Skill, WebSearch, FetchUrl) and ExitPlanMode are available. Do not use Write, Edit, Bash, or Task until you call ExitPlanMode with your plan and the user approves it.
-</system_reminder>"#;
+pub const PLAN_MODE_REMINDER_BODY: &str = "You are in Plan mode. Only read-only tools (Read, Grep, Glob, Skill, WebSearch, FetchUrl) and ExitPlanMode are available. Do not use Write, Edit, Bash, or Task until you call ExitPlanMode with your plan and the user approves it.";
+
+#[allow(dead_code)] // tagged form kept for tests; projection uses PLAN_MODE_REMINDER_BODY
+pub const PLAN_MODE_REMINDER: &str = "<system_reminder>\nYou are in Plan mode. Only read-only tools (Read, Grep, Glob, Skill, WebSearch, FetchUrl) and ExitPlanMode are available. Do not use Write, Edit, Bash, or Task until you call ExitPlanMode with your plan and the user approves it.\n</system_reminder>";
 
 pub type PlanApprovalPrompter =
     Arc<dyn Fn(&Path, &str) -> io::Result<bool> + Send + Sync>;
@@ -26,6 +27,7 @@ pub struct ExitPlanModeArgs {
     pub plan: String,
 }
 
+#[allow(dead_code)] // compatibility helper; live path uses plan_mode_tail_section
 pub fn plan_mode_system_suffix(active: bool) -> Option<&'static str> {
     if active {
         Some(PLAN_MODE_REMINDER)
@@ -34,6 +36,16 @@ pub fn plan_mode_system_suffix(active: bool) -> Option<&'static str> {
     }
 }
 
+/// Inner text for tail-projected plan decorations (not spliced into system).
+pub fn plan_mode_tail_section(active: bool) -> Option<&'static str> {
+    if active {
+        Some(PLAN_MODE_REMINDER_BODY)
+    } else {
+        None
+    }
+}
+
+#[allow(dead_code)] // old splice-into-system helper; do not use for new calls
 pub fn build_effective_system_prompt(base: &str, plan_active: bool) -> String {
     match plan_mode_system_suffix(plan_active) {
         Some(reminder) => format!("{base}\n\n{reminder}"),
@@ -188,6 +200,11 @@ mod tests {
     fn reminder_only_when_active() {
         assert!(plan_mode_system_suffix(true).is_some());
         assert!(plan_mode_system_suffix(false).is_none());
+        assert_eq!(plan_mode_tail_section(true), Some(PLAN_MODE_REMINDER_BODY));
+        assert!(plan_mode_tail_section(false).is_none());
+        let spliced = build_effective_system_prompt("base", true);
+        assert!(spliced.contains("base"));
+        assert!(spliced.contains("Plan mode"));
     }
 
     #[test]

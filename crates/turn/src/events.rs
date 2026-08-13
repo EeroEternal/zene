@@ -34,6 +34,17 @@ pub struct ProjectionInjectedSource {
     pub source: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct ProjectionPrefixCache {
+    pub prefix_end: usize,
+    pub body_end: usize,
+    pub tail_decoration_count: usize,
+    pub prefix_fingerprint: Option<String>,
+    pub break_kind: String,
+    pub cached_tokens: Option<u64>,
+    pub unchanged_reprocessed_est: Option<u64>,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct RuntimeEvent {
     pub sequence: EventSequence,
@@ -97,6 +108,7 @@ pub enum RuntimeEventKind {
         delivery_tail_start: Option<usize>,
         estimate_tokens: u32,
         context_epoch: u64,
+        prefix_cache: ProjectionPrefixCache,
     },
     TurnEnded {
         steps: u32,

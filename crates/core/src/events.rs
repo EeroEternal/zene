@@ -1,11 +1,11 @@
 use std::sync::Arc;
 
-use zene_context::{InjectedSource, ToolOutputProvenance};
+use zene_context::{InjectedSource, PrefixCacheExplain, ToolOutputProvenance};
 use zene_llm::TokenUsage;
 
 use zene_turn::{
-    EventSequence, ProjectionInjectedSource, ProjectionToolOutput, RuntimeEvent,
-    RuntimeEventHandler, RuntimeEventKind, SessionId, StepId, ToolCallId, TurnId,
+    EventSequence, ProjectionInjectedSource, ProjectionPrefixCache, ProjectionToolOutput,
+    RuntimeEvent, RuntimeEventHandler, RuntimeEventKind, SessionId, StepId, ToolCallId, TurnId,
 };
 
 pub type EventHandler = Arc<dyn Fn(AgentEvent) + Send + Sync>;
@@ -142,6 +142,7 @@ pub fn runtime_event_handler(
                 delivery_tail_start,
                 estimate_tokens,
                 context_epoch,
+                prefix_cache,
             } => (
                 current_turn,
                 current_step,
@@ -184,6 +185,15 @@ pub fn runtime_event_handler(
                     delivery_tail_start: *delivery_tail_start,
                     estimate_tokens: *estimate_tokens,
                     context_epoch: *context_epoch,
+                    prefix_cache: ProjectionPrefixCache {
+                        prefix_end: prefix_cache.prefix_end,
+                        body_end: prefix_cache.body_end,
+                        tail_decoration_count: prefix_cache.tail_decoration_count,
+                        prefix_fingerprint: prefix_cache.prefix_fingerprint.clone(),
+                        break_kind: prefix_cache.break_kind.clone(),
+                        cached_tokens: prefix_cache.cached_tokens,
+                        unchanged_reprocessed_est: prefix_cache.unchanged_reprocessed_est,
+                    },
                 },
             ),
             AgentEvent::TurnEnd { turn_id, steps } => (
@@ -284,6 +294,7 @@ pub enum AgentEvent {
         delivery_tail_start: Option<usize>,
         estimate_tokens: u32,
         context_epoch: u64,
+        prefix_cache: PrefixCacheExplain,
     },
     TurnEnd {
         turn_id: TurnId,
@@ -360,6 +371,15 @@ mod tests {
             delivery_tail_start: None,
             estimate_tokens: 128,
             context_epoch: 2,
+            prefix_cache: PrefixCacheExplain {
+                prefix_end: 1,
+                body_end: 3,
+                tail_decoration_count: 0,
+                prefix_fingerprint: Some("abc".into()),
+                break_kind: "none".into(),
+                cached_tokens: None,
+                unchanged_reprocessed_est: None,
+            },
         });
 
         let events = collected.lock().unwrap();
@@ -392,6 +412,7 @@ mod tests {
                 delivery_tail_start,
                 estimate_tokens,
                 context_epoch,
+                prefix_cache,
             } => {
                 assert_eq!(*source_message_count, 4);
                 assert_eq!(*projected_message_count, 3);
@@ -416,6 +437,7 @@ mod tests {
                 assert_eq!(*delivery_tail_start, None);
                 assert_eq!(*estimate_tokens, 128);
                 assert_eq!(*context_epoch, 2);
+                assert_eq!(prefix_cache.break_kind, "none");
             }
             other => panic!("unexpected runtime event: {other:?}"),
         }
