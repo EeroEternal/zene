@@ -95,6 +95,10 @@ impl Db {
                 "010_event_cursor",
                 include_str!("../../../migrations/010_event_cursor.sql"),
             ),
+            (
+                "011_worker_command_leases",
+                include_str!("../../../migrations/011_worker_command_leases.sql"),
+            ),
         ];
 
         for (version, sql) in migrations {
@@ -110,7 +114,8 @@ impl Db {
             let ignore_alter_dupes = version.starts_with("002")
                 || version.starts_with("003")
                 || version.starts_with("007")
-                || version.starts_with("010");
+                || version.starts_with("010")
+                || version.starts_with("011");
             for statement in split_sql_statements(sql) {
                 match sqlx::query(&statement).execute(&self.pool).await {
                     Ok(_) => {}
@@ -582,13 +587,22 @@ impl Db {
     }
 
     pub async fn reclaim_stale_runs(&self) -> Result<u64> {
-        let now = Utc::now().to_rfc3339();
+        self.reclaim_stale_runs_at(Utc::now()).await
+    }
+
+    pub async fn reclaim_stale_runs_at(&self, now: chrono::DateTime<Utc>) -> Result<u64> {
+        let now = now.to_rfc3339();
         let mut tx = self.pool.begin().await?;
+        // Explicit hold policy: a stale waiting_for_user session can be
+        // safely replaced and its unacked inbox commands retried. Approval
+        // holds are excluded because their lifecycle has separate semantics.
         let stale = sqlx::query_scalar::<_, String>(
-            "SELECT DISTINCT run_id FROM run_attempts
-             WHERE finished_at IS NULL
-               AND lease_expires_at IS NOT NULL
-               AND lease_expires_at < ?",
+            "SELECT DISTINCT a.run_id FROM run_attempts a
+             JOIN runs r ON r.id = a.run_id
+             WHERE a.finished_at IS NULL
+               AND a.lease_expires_at IS NOT NULL
+               AND a.lease_expires_at < ?
+               AND r.status IN ('provisioning','starting','cloning','running','waiting_for_user')",
         )
         .bind(&now)
         .fetch_all(&mut *tx)
@@ -607,12 +621,22 @@ impl Db {
             .bind(run_id)
             .execute(&mut *tx)
             .await?;
+            // A replacement worker should not wait for the old command lease
+            // after the attempt itself has been declared stale.
+            sqlx::query(
+                "UPDATE run_messages
+                 SET delivery_claimed_at = NULL, delivery_claim_attempt_id = NULL
+                 WHERE run_id = ? AND COALESCE(delivered_to_worker, 0) = 0",
+            )
+            .bind(run_id)
+            .execute(&mut *tx)
+            .await?;
             sqlx::query(
                 "UPDATE runs
                  SET status = 'queued', status_version = status_version + 1,
                      finished_at = NULL, last_error = 'worker lease expired; re-queued'
                  WHERE id = ?
-                   AND status IN ('provisioning','starting','cloning','running')",
+                   AND status IN ('provisioning','starting','cloning','running','waiting_for_user')",
             )
             .bind(run_id)
             .execute(&mut *tx)
@@ -1285,12 +1309,123 @@ impl Db {
         run_id: Uuid,
         fence: &WorkerFence,
     ) -> Result<Vec<WorkerCommand>> {
-        let mut tx = self.pool.begin().await?;
-        self.validate_worker_fence(&mut tx, run_id, fence).await?;
-        tx.commit().await?;
-        self.poll_worker_commands(run_id).await
+        self.poll_worker_commands_fenced_at(run_id, fence, Utc::now()).await
     }
 
+    pub async fn poll_worker_commands_fenced_at(
+        &self,
+        run_id: Uuid,
+        fence: &WorkerFence,
+        now: chrono::DateTime<Utc>,
+    ) -> Result<Vec<WorkerCommand>> {
+        // A command is visible until the worker acknowledges successful runtime
+        // delivery. Claims expire so a crashed worker cannot lose a follow-up.
+        const CLAIM_LEASE: i64 = 60;
+        let stale_before = (now - Duration::seconds(CLAIM_LEASE)).to_rfc3339();
+        let run = self
+            .get_run(run_id)
+            .await?
+            .context("run not found")?;
+        let mut tx = self.pool.begin().await?;
+        self.validate_worker_fence(&mut tx, run_id, fence).await?;
+        let mut commands = Vec::new();
+
+        if matches!(
+            run.status,
+            RunStatus::Cancelled | RunStatus::Stopping | RunStatus::TimedOut
+        ) {
+            commands.push(WorkerCommand {
+                id: format!("cancel-{}", run.status.as_str()),
+                kind: "cancel".into(),
+                text: None,
+                message_id: None,
+            });
+        }
+
+        let rows: Vec<(String, String)> = sqlx::query_as(
+            "SELECT id, content FROM run_messages
+             WHERE run_id = ? AND role = 'user' AND COALESCE(delivered_to_worker, 0) = 0
+               AND (delivery_claimed_at IS NULL OR delivery_claimed_at < ?)
+             ORDER BY created_at ASC LIMIT 20",
+        )
+        .bind(run_id.to_string())
+        .bind(&stale_before)
+        .fetch_all(&mut *tx)
+        .await?;
+
+        for (id, content) in rows {
+            let claimed = sqlx::query(
+                "UPDATE run_messages
+                 SET delivery_attempt = COALESCE(delivery_attempt, 0) + 1,
+                     delivery_claimed_at = ?, delivery_claim_attempt_id = ?
+                 WHERE id = ? AND run_id = ? AND role = 'user'
+                   AND COALESCE(delivered_to_worker, 0) = 0
+                   AND (delivery_claimed_at IS NULL OR delivery_claimed_at < ?)",
+            )
+            .bind(now.to_rfc3339())
+            .bind(fence.attempt_id.to_string())
+            .bind(&id)
+            .bind(run_id.to_string())
+            .bind(&stale_before)
+            .execute(&mut *tx)
+            .await?;
+            if claimed.rows_affected() != 1 {
+                continue;
+            }
+            let message_id = Uuid::parse_str(&id)?;
+            commands.push(WorkerCommand {
+                id: format!("msg-{id}"),
+                kind: "prompt".into(),
+                text: Some(content),
+                message_id: Some(message_id),
+            });
+        }
+        tx.commit().await?;
+        Ok(commands)
+    }
+
+    pub async fn ack_worker_command_fenced(
+        &self,
+        run_id: Uuid,
+        fence: &WorkerFence,
+        message_id: Uuid,
+    ) -> Result<()> {
+        let mut tx = self.pool.begin().await?;
+        self.validate_worker_fence(&mut tx, run_id, fence).await?;
+        let result = sqlx::query(
+            "UPDATE run_messages
+             SET delivered_to_worker = 1,
+                 delivery_claimed_at = NULL,
+                 delivery_claim_attempt_id = NULL
+             WHERE id = ? AND run_id = ? AND role = 'user'
+               AND COALESCE(delivered_to_worker, 0) = 0
+               AND delivery_claim_attempt_id = ?",
+        )
+        .bind(message_id.to_string())
+        .bind(run_id.to_string())
+        .bind(fence.attempt_id.to_string())
+        .execute(&mut *tx)
+        .await?;
+        if result.rows_affected() == 0 {
+            let already_acked: Option<(i64,)> = sqlx::query_as(
+                "SELECT delivered_to_worker FROM run_messages WHERE id = ? AND run_id = ?",
+            )
+            .bind(message_id.to_string())
+            .bind(run_id.to_string())
+            .fetch_optional(&mut *tx)
+            .await?;
+            if !matches!(already_acked, Some((1,))) {
+                bail!("command_not_claimed: worker command acknowledgement rejected")
+            }
+        }
+        tx.commit().await?;
+        Ok(())
+    }
+
+    /// Legacy, unfenced command read. Keep it read-only so old callers cannot
+    /// permanently consume a command before runtime delivery succeeds. New
+    /// workers must use `poll_worker_commands_fenced` followed by ack.
+    #[allow(dead_code)]
     pub async fn poll_worker_commands(&self, run_id: Uuid) -> Result<Vec<WorkerCommand>> {
         let run = self
             .get_run(run_id)
@@ -1321,10 +1456,6 @@ impl Db {
 
         for (id, content) in rows {
             let message_id = Uuid::parse_str(&id)?;
-            sqlx::query("UPDATE run_messages SET delivered_to_worker = 1 WHERE id = ?")
-                .bind(&id)
-                .execute(&self.pool)
-                .await?;
             commands.push(WorkerCommand {
                 id: format!("msg-{id}"),
                 kind: "prompt".into(),

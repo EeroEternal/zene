@@ -15,8 +15,8 @@ use zene_cloud_domain::{
     CreateRunRequest, DecideApprovalRequest, GithubBranchSummary, GithubProviderConfigView,
     LlmAuthResponse, LlmSettingsView, LoginRequest, PostMessageRequest, QueueStats, RegisterRequest,
     RunStatus, UpdateGithubProviderConfigRequest, UpdateLlmSettingsRequest, UpdateRunRequest,
-    WorkerCommandsResponse, WorkerEventRequest, WorkerFence, WorkerFenceRequest,
-    WorkerAcpSessionRequest,
+    WorkerCommandAckRequest, WorkerCommandsResponse, WorkerEventRequest, WorkerFence,
+    WorkerFenceRequest, WorkerAcpSessionRequest,
     WorkerPullRequestRequest, WorkerPushRequest, WorkerStatusRequest, WorkerTitleRequest,
 };
 
@@ -96,6 +96,7 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/internal/v1/runs/{run_id}/llm-auth", get(llm_auth))
         .route("/internal/v1/runs/{run_id}/commands", get(worker_commands))
+        .route("/internal/v1/runs/{run_id}/commands/ack", post(worker_command_ack))
         .route(
             "/internal/v1/runs/{run_id}/approvals",
             post(create_approval),
@@ -1288,6 +1289,19 @@ async fn worker_commands(
     Ok(Json(WorkerCommandsResponse {
         commands: state.db.poll_worker_commands_fenced(run_id, &fence).await?,
     }))
+}
+
+async fn worker_command_ack(
+    State(state): State<AppState>,
+    _worker: WorkerAuth,
+    Path(run_id): Path<Uuid>,
+    Json(req): Json<WorkerCommandAckRequest>,
+) -> Result<impl IntoResponse, AppError> {
+    state
+        .db
+        .ack_worker_command_fenced(run_id, &req.fence, req.message_id)
+        .await?;
+    Ok(Json(serde_json::json!({ "ok": true })))
 }
 
 async fn create_approval(

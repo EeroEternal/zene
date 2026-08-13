@@ -553,6 +553,7 @@ impl PermissionDecision {
 }
 
 /// Local mock agent used when `zene` binary is unavailable.
+#[derive(Clone)]
 pub struct MockAgent {
     workdir: PathBuf,
     session_id: String,
