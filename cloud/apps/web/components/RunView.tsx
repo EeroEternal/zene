@@ -31,6 +31,7 @@ import {
   saveSelectedModel,
 } from "@/lib/models";
 import type { AcpSessionUpdate, Approval, LlmSettingsView, Repo, Run, RunEvent, RunMessage } from "@/lib/types";
+import { timelineUpdateFromEvent } from "@/lib/runtimeEvent";
 import { CodePanel, useCodePanelWidth } from "./CodePanel";
 import { Markdown } from "./Markdown";
 import { repoLabel } from "./Sidebar";
@@ -271,8 +272,6 @@ function applyPlatformEventToDraft(draft: TimelineDraft, payload: NonNullable<Ru
     const text = (payload as { text?: string }).text || "";
     if (bubbleRole(role) === "user" && text) draftAppendUser(draft, text);
   }
-  const update = payload.params?.update;
-  if (update) applySessionUpdateToDraft(draft, update);
 }
 
 function finalizeTimelineDraft(draft: TimelineDraft): TimelineItem[] {
@@ -297,6 +296,8 @@ function buildTimelineFromEvents(events: RunEvent[]): TimelineDraft {
   const draft: TimelineDraft = { items: [], nextId: 1, hasAssistantTail: false };
   for (const event of events) {
     applyPlatformEventToDraft(draft, event.payload || {});
+    const update = timelineUpdateFromEvent(event);
+    if (update) applySessionUpdateToDraft(draft, update);
   }
   draft.items = finalizeTimelineDraft(draft);
   return draft;
@@ -1219,7 +1220,7 @@ export function RunView({
         }
       }
 
-      const update = payload.params?.update;
+      const update = timelineUpdateFromEvent(event);
       if (!update?.sessionUpdate) return;
 
       if (update.sessionUpdate === "agent_message_chunk") {
