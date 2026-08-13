@@ -16,8 +16,8 @@ use zene_cloud_domain::{
     LlmAuthResponse, LlmSettingsView, LoginRequest, PostMessageRequest, QueueStats, RegisterRequest,
     RunStatus, UpdateGithubProviderConfigRequest, UpdateLlmSettingsRequest, UpdateRunRequest,
     WorkerCommandAckRequest, WorkerCommandsResponse, WorkerEventRequest, WorkerFence,
-    WorkerFenceRequest, WorkerAcpSessionRequest,
-    WorkerPullRequestRequest, WorkerPushRequest, WorkerStatusRequest, WorkerTitleRequest,
+    WorkerSessionRequest, WorkerClaimRequest, WorkerPullRequestRequest, WorkerPushRequest,
+    WorkerStatusRequest, WorkerTitleRequest,
 };
 
 use crate::auth::{AuthUser, WorkerAuth};
@@ -86,7 +86,8 @@ pub fn router(state: AppState) -> Router {
         .route("/internal/v1/runs/claim", post(claim_run))
         .route("/internal/v1/queue/stats", get(queue_stats))
         .route("/internal/v1/runs/{run_id}/heartbeat", post(heartbeat))
-        .route("/internal/v1/runs/{run_id}/acp-session", post(worker_acp_session))
+        .route("/internal/v1/runs/{run_id}/runtime-session", post(worker_runtime_session))
+        .route("/internal/v1/runs/{run_id}/acp-session", post(worker_runtime_session))
         .route("/internal/v1/runs/{run_id}/events", post(worker_event))
         .route("/internal/v1/runs/{run_id}/status", post(worker_status))
         .route("/internal/v1/runs/{run_id}/title", post(worker_title))
@@ -1120,17 +1121,10 @@ async fn user_push(
     Ok(Json(result))
 }
 
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct ClaimRequest {
-    worker_id: String,
-    workspace_root: String,
-}
-
 async fn claim_run(
     State(state): State<AppState>,
     _worker: WorkerAuth,
-    Json(req): Json<ClaimRequest>,
+    Json(req): Json<WorkerClaimRequest>,
 ) -> Result<impl IntoResponse, AppError> {
     let claimed = state
         .db
@@ -1158,29 +1152,24 @@ async fn heartbeat(
     State(state): State<AppState>,
     _worker: WorkerAuth,
     Path(run_id): Path<Uuid>,
-    Json(req): Json<WorkerFenceRequest>,
+    Json(req): Json<WorkerFence>,
 ) -> Result<impl IntoResponse, AppError> {
-    let fence = WorkerFence {
-        attempt_id: req.attempt_id,
-        generation: req.generation,
-        worker_id: req.worker_id,
-    };
-    state.db.heartbeat_fenced(run_id, &fence).await?;
+    state.db.heartbeat_fenced(run_id, &req).await?;
     Ok(Json(serde_json::json!({ "ok": true })))
 }
 
-async fn worker_acp_session(
+async fn worker_runtime_session(
     State(state): State<AppState>,
     _worker: WorkerAuth,
     Path(run_id): Path<Uuid>,
-    Json(req): Json<WorkerAcpSessionRequest>,
+    Json(req): Json<WorkerSessionRequest>,
 ) -> Result<impl IntoResponse, AppError> {
     let fence = req
         .fence
         .ok_or_else(|| AppError::bad_request("worker fence is required"))?;
     state
         .db
-        .set_acp_session_id_fenced(run_id, &fence, &req.session_id)
+        .set_runtime_session_id_fenced(run_id, &fence, &req.session_id)
         .await?;
     Ok(Json(serde_json::json!({ "ok": true })))
 }
@@ -1284,15 +1273,10 @@ async fn worker_commands(
     State(state): State<AppState>,
     _worker: WorkerAuth,
     Path(run_id): Path<Uuid>,
-    Query(req): Query<WorkerFenceRequest>,
+    Query(req): Query<WorkerFence>,
 ) -> Result<impl IntoResponse, AppError> {
-    let fence = WorkerFence {
-        attempt_id: req.attempt_id,
-        generation: req.generation,
-        worker_id: req.worker_id,
-    };
     Ok(Json(WorkerCommandsResponse {
-        commands: state.db.poll_worker_commands_fenced(run_id, &fence).await?,
+        commands: state.db.poll_worker_commands_fenced(run_id, &req).await?,
     }))
 }
 
@@ -1581,7 +1565,7 @@ mod reconnect_replay_tests {
             claim_run(
                 State(state.clone()),
                 WorkerAuth,
-                Json(ClaimRequest {
+                Json(WorkerClaimRequest {
                     worker_id: "worker-1".into(),
                     workspace_root: workspace_root.to_string_lossy().into(),
                 }),
@@ -1636,7 +1620,7 @@ mod reconnect_replay_tests {
             claim_run(
                 State(state.clone()),
                 WorkerAuth,
-                Json(ClaimRequest {
+                Json(WorkerClaimRequest {
                     worker_id: "worker-2".into(),
                     workspace_root: workspace_root.to_string_lossy().into(),
                 }),

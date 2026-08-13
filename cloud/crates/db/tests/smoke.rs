@@ -73,7 +73,7 @@ async fn register_create_run_and_claim() {
         worker_id: "worker-1".into(),
     };
     db.heartbeat_fenced(run.id, &fence).await.unwrap();
-    db.set_acp_session_id_fenced(run.id, &fence, "acp-session-1")
+    db.set_runtime_session_id_fenced(run.id, &fence, "runtime-session-1")
         .await
         .unwrap();
     let event = db
@@ -125,7 +125,7 @@ async fn register_create_run_and_claim() {
         serde_json::json!({}),
     ).await.unwrap_err().to_string().contains("stale_attempt"));
     assert!(db
-        .set_acp_session_id_fenced(run.id, &stale, "stale-session")
+        .set_runtime_session_id_fenced(run.id, &stale, "stale-session")
         .await
         .unwrap_err()
         .to_string()
@@ -153,7 +153,7 @@ async fn register_create_run_and_claim() {
         .await
         .unwrap()
         .expect("failed run should be re-claimable after queueing");
-    assert_eq!(reclaimed.3.as_deref(), Some("acp-session-1"));
+    assert_eq!(reclaimed.3.as_deref(), Some("runtime-session-1"));
     let replacement_fence = WorkerFence {
         attempt_id: reclaimed.1,
         generation: reclaimed.2,

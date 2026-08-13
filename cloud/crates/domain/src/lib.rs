@@ -542,10 +542,17 @@ pub struct ClaimedRun {
     pub run: Run,
     pub attempt_id: Id,
     pub generation: i64,
-    /// Existing ACP session to resume after a worker replacement, if available.
+    /// Existing runtime session to resume after a worker replacement, if available.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub resume_session_id: Option<String>,
     pub workspace_dir: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkerClaimRequest {
+    pub worker_id: String,
+    pub workspace_root: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -600,7 +607,8 @@ mod tests {
         ApprovalDecision, ApprovalEventPayload, ApprovalKind, ApprovalRisk, ApprovalStatus,
         CloudEventKind, CreateApprovalRequest, PlatformEvent, RunEventKind, RunStatus,
         TextEventPayload, ToolCallPayload, WorkerCommand, WorkerCommandAckRequest,
-        WorkerCommandKind, WorkerEventRequest, WorkerFence,
+        WorkerCommandKind, WorkerEventRequest, WorkerFence, WorkerClaimRequest,
+        WorkerPushRequest, WorkerSessionRequest,
     };
 
     #[test]
@@ -616,6 +624,54 @@ mod tests {
         let encoded = serde_json::to_value(request).expect("ack should serialize");
         assert_eq!(encoded["messageId"], uuid::Uuid::nil().to_string());
         assert_eq!(encoded["generation"], 2);
+    }
+
+    #[test]
+    fn worker_claim_and_session_requests_round_trip_camel_case() {
+        let encoded = serde_json::to_value(WorkerClaimRequest {
+            worker_id: "worker-1".into(),
+            workspace_root: "/tmp/ws".into(),
+        })
+        .expect("claim");
+        assert_eq!(
+            encoded,
+            serde_json::json!({
+                "workerId": "worker-1",
+                "workspaceRoot": "/tmp/ws"
+            })
+        );
+        let encoded = serde_json::to_value(WorkerSessionRequest {
+            session_id: "session-1".into(),
+            fence: Some(WorkerFence {
+                attempt_id: uuid::Uuid::nil(),
+                generation: 1,
+                worker_id: "worker-1".into(),
+            }),
+        })
+        .expect("session");
+        assert_eq!(encoded["sessionId"], "session-1");
+        assert_eq!(encoded["generation"], 1);
+        let parsed: WorkerFence = serde_json::from_value(serde_json::json!({
+            "workerId": "worker-1",
+            "attemptId": uuid::Uuid::nil(),
+            "generation": 1,
+            "workspaceRoot": "."
+        }))
+        .expect("legacy heartbeat extra field should be ignored");
+        assert_eq!(parsed.worker_id, "worker-1");
+        assert_eq!(parsed.generation, 1);
+        let encoded = serde_json::to_value(WorkerPushRequest {
+            force: false,
+            idempotency_key: Some("worker-push-1".into()),
+        })
+        .expect("push");
+        assert_eq!(
+            encoded,
+            serde_json::json!({
+                "force": false,
+                "idempotencyKey": "worker-push-1"
+            })
+        );
     }
 
     #[test]
@@ -847,15 +903,7 @@ pub struct WorkerStatusRequest {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct WorkerFenceRequest {
-    pub attempt_id: Id,
-    pub generation: i64,
-    pub worker_id: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct WorkerAcpSessionRequest {
+pub struct WorkerSessionRequest {
     pub session_id: String,
     #[serde(flatten)]
     pub fence: Option<WorkerFence>,

@@ -22,9 +22,10 @@ use zene_cloud_runtime_client::{
 };
 use zene_cloud_domain::{
     ApprovalDecision, ApprovalKind, ApprovalRequest, ApprovalRisk, ApprovalStatus, ClaimedRun,
-    CloneAuthResponse, CreateApprovalRequest, LlmAuthResponse, RunStatus, WorkerCommand,
-    WorkerCommandAckRequest, WorkerCommandKind, WorkerCommandsResponse, WorkerEventRequest,
-    WorkerFence, WorkerStatusRequest, WorkerTitleRequest, WorkerAcpSessionRequest,
+    CloneAuthResponse, CreateApprovalRequest, LlmAuthResponse, RunStatus, WorkerClaimRequest,
+    WorkerCommand, WorkerCommandAckRequest, WorkerCommandKind, WorkerCommandsResponse,
+    WorkerEventRequest, WorkerFence, WorkerPullRequestRequest, WorkerPushRequest,
+    WorkerSessionRequest, WorkerStatusRequest, WorkerTitleRequest,
 };
 
 #[derive(Debug, Clone, Parser)]
@@ -284,10 +285,10 @@ async fn claim_run(
     let response = client
         .post(format!("{}/internal/v1/runs/claim", cli.api_url))
         .bearer_auth(&cli.worker_token)
-        .json(&serde_json::json!({
-            "workerId": worker_id,
-            "workspaceRoot": cli.workspace_root.display().to_string()
-        }))
+        .json(&WorkerClaimRequest {
+            worker_id: worker_id.to_string(),
+            workspace_root: cli.workspace_root.display().to_string(),
+        })
         .send()
         .await?
         .error_for_status()?;
@@ -321,7 +322,6 @@ async fn execute_run(
         client.clone(),
         cli.api_url.clone(),
         cli.worker_token.clone(),
-        worker_id.to_string(),
         run_id,
         fence.clone(),
     );
@@ -823,7 +823,7 @@ async fn run_runtime_session<R: RuntimeClient + 'static>(
     let run_id = claimed.run.id;
     if persist_session {
         let session_id = runtime.session_id().await?;
-        persist_acp_session(client, cli, run_id, fence, &session_id).await?;
+        persist_runtime_session(client, cli, run_id, fence, &session_id).await?;
     }
     let (pump, event_error) = spawn_event_pump(
         runtime.clone(),
@@ -1156,25 +1156,25 @@ async fn resolve_permission(
     bail!("approval {approval_id} timed out")
 }
 
-async fn persist_acp_session(
+async fn persist_runtime_session(
     client: &reqwest::Client,
     cli: &Cli,
     run_id: Uuid,
     fence: &WorkerFence,
     session_id: &str,
 ) -> Result<()> {
-    let request = WorkerAcpSessionRequest {
+    let request = WorkerSessionRequest {
         session_id: session_id.to_string(),
         fence: Some(fence.clone()),
     };
     client
-        .post(format!("{}/internal/v1/runs/{run_id}/acp-session", cli.api_url))
+        .post(format!("{}/internal/v1/runs/{run_id}/runtime-session", cli.api_url))
         .bearer_auth(&cli.worker_token)
         .json(&request)
         .send()
         .await?
         .error_for_status()
-        .context("persist ACP session")?;
+        .context("persist runtime session")?;
     Ok(())
 }
 
@@ -1236,7 +1236,6 @@ fn heartbeat_loop(
     client: reqwest::Client,
     api_url: String,
     token: String,
-    worker_id: String,
     run_id: Uuid,
     fence: WorkerFence,
 ) -> tokio::task::JoinHandle<()> {
@@ -1245,12 +1244,7 @@ fn heartbeat_loop(
             let _ = client
                 .post(format!("{api_url}/internal/v1/runs/{run_id}/heartbeat"))
                 .bearer_auth(&token)
-                .json(&serde_json::json!({
-                    "workerId": worker_id,
-                    "attemptId": fence.attempt_id,
-                    "generation": fence.generation,
-                    "workspaceRoot": "."
-                }))
+                .json(&fence)
                 .send()
                 .await;
             tokio::time::sleep(Duration::from_secs(20)).await;
@@ -1516,11 +1510,11 @@ async fn post_push(client: &reqwest::Client, cli: &Cli, run_id: Uuid) -> Result<
             cli.api_url
         ))
         .bearer_auth(&cli.worker_token)
-        .json(&serde_json::json!({
-            "force": false,
+        .json(&WorkerPushRequest {
+            force: false,
             // Stable across retries of this run; the broker persists the key.
-            "idempotencyKey": format!("worker-push-{run_id}"),
-        }))
+            idempotency_key: Some(format!("worker-push-{run_id}")),
+        })
         .send()
         .await?
         .error_for_status()?;
@@ -1539,11 +1533,12 @@ async fn post_pull_request(
             cli.api_url
         ))
         .bearer_auth(&cli.worker_token)
-        .json(&serde_json::json!({
-            "title": title,
-            "body": "Created by Zene Cloud worker",
-            "draft": true
-        }))
+        .json(&WorkerPullRequestRequest {
+            title: Some(title.to_string()),
+            body: Some("Created by Zene Cloud worker".into()),
+            draft: true,
+            idempotency_key: None,
+        })
         .send()
         .await?
         .error_for_status()?;
@@ -1874,7 +1869,7 @@ mod title_tests {
         use zene_cloud_db::Db;
         use zene_cloud_domain::{
             CreateRepositoryRequest, CreateRunRequest, RegisterRequest, RunEvent, RunStatus,
-            UpdateLlmSettingsRequest,
+            UpdateLlmSettingsRequest, WorkerClaimRequest,
         };
         use zene_cloud_github::{GithubClient, GithubConfig};
 
@@ -1967,10 +1962,10 @@ mod title_tests {
         let claim: zene_cloud_domain::ClaimedRun = client
             .post(format!("{api_url}/internal/v1/runs/claim"))
             .bearer_auth(worker_token)
-            .json(&serde_json::json!({
-                "workerId": "worker-1",
-                "workspaceRoot": workspace_root,
-            }))
+            .json(&WorkerClaimRequest {
+                worker_id: "worker-1".into(),
+                workspace_root: workspace_root.to_string_lossy().into(),
+            })
             .send()
             .await
             .unwrap()
@@ -2001,10 +1996,10 @@ mod title_tests {
         let replacement: zene_cloud_domain::ClaimedRun = client
             .post(format!("{api_url}/internal/v1/runs/claim"))
             .bearer_auth(worker_token)
-            .json(&serde_json::json!({
-                "workerId": "worker-2",
-                "workspaceRoot": workspace_root,
-            }))
+            .json(&WorkerClaimRequest {
+                worker_id: "worker-2".into(),
+                workspace_root: workspace_root.to_string_lossy().into(),
+            })
             .send()
             .await
             .unwrap()
