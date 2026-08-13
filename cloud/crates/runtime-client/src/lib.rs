@@ -5,13 +5,47 @@ use anyhow::{Context, Result};
 use async_trait::async_trait;
 use serde_json::Value;
 use tokio::sync::{mpsc, Mutex};
-use zene_cloud_acp_bridge::{AcpBridge, AcpEvent, BridgeMsg};
+use zene_cloud_acp_bridge::{AcpBridge, AcpEvent, BridgeMsg, PermissionDecision};
+
+/// Transport-neutral approval outcome. Variants match
+/// `zene_runtime::ApprovalDecision`; ACP `optionId` strings stay inside this
+/// adapter until Cloud depends on that crate.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ApprovalDecision {
+    AllowOnce,
+    AllowSession,
+    Deny,
+}
+
+impl ApprovalDecision {
+    pub fn from_stored(decision: &str) -> Self {
+        match decision {
+            "allow-always" | "allow" => Self::AllowSession,
+            "allow-once" => Self::AllowOnce,
+            _ => Self::Deny,
+        }
+    }
+}
+
+impl From<ApprovalDecision> for PermissionDecision {
+    fn from(decision: ApprovalDecision) -> Self {
+        match decision {
+            ApprovalDecision::AllowOnce => Self::AllowOnce,
+            ApprovalDecision::AllowSession => Self::AllowSession,
+            ApprovalDecision::Deny => Self::Deny,
+        }
+    }
+}
+
+fn acp_permission_result(decision: ApprovalDecision) -> Value {
+    PermissionDecision::from(decision).to_result()
+}
 
 #[derive(Debug, Clone)]
 pub enum RuntimeCommand {
     Prompt { text: String },
     Cancel,
-    RespondApproval { id: Value, result: Value },
+    RespondApproval { id: Value, decision: ApprovalDecision },
     RejectRequest { id: Value, code: i64, message: String },
 }
 
@@ -56,7 +90,7 @@ pub trait RuntimeClient: Send + Sync {
     async fn session_id(&self) -> Result<String>;
     async fn prompt(&self, text: &str) -> Result<()>;
     async fn cancel(&self) -> Result<()>;
-    async fn respond_approval(&self, id: &Value, result: Value) -> Result<()>;
+    async fn respond_approval(&self, id: &Value, decision: ApprovalDecision) -> Result<()>;
     async fn reject_request(&self, id: &Value, code: i64, message: &str) -> Result<()>;
     async fn next_event(&self) -> Option<RuntimeEvent>;
     async fn is_alive(&self) -> bool;
@@ -178,9 +212,13 @@ impl RuntimeClient for AcpRuntimeClient {
         let guard = self.bridge.lock().await;
         guard.as_ref().context("runtime bridge missing")?.cancel(&self.session_id).await
     }
-    async fn respond_approval(&self, id: &Value, result: Value) -> Result<()> {
+    async fn respond_approval(&self, id: &Value, decision: ApprovalDecision) -> Result<()> {
         let guard = self.bridge.lock().await;
-        guard.as_ref().context("runtime bridge missing")?.respond(id, result).await
+        guard
+            .as_ref()
+            .context("runtime bridge missing")?
+            .respond(id, acp_permission_result(decision))
+            .await
     }
     async fn reject_request(&self, id: &Value, code: i64, message: &str) -> Result<()> {
         let guard = self.bridge.lock().await;
@@ -307,5 +345,52 @@ mod tests {
     fn runtime_commands_are_transport_neutral() {
         let command = RuntimeCommand::Prompt { text: "hello".into() };
         assert!(matches!(command, RuntimeCommand::Prompt { text } if text == "hello"));
+        let command = RuntimeCommand::RespondApproval {
+            id: serde_json::json!(42),
+            decision: ApprovalDecision::AllowOnce,
+        };
+        assert!(matches!(
+            command,
+            RuntimeCommand::RespondApproval {
+                decision: ApprovalDecision::AllowOnce,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn approval_decision_maps_to_acp_result_inside_the_adapter() {
+        assert_eq!(
+            acp_permission_result(ApprovalDecision::AllowOnce),
+            serde_json::json!({ "outcome": { "optionId": "allow-once" } })
+        );
+        assert_eq!(
+            acp_permission_result(ApprovalDecision::AllowSession),
+            serde_json::json!({ "outcome": { "optionId": "allow-always" } })
+        );
+        assert_eq!(
+            acp_permission_result(ApprovalDecision::Deny),
+            serde_json::json!({ "outcome": { "optionId": "reject-once" } })
+        );
+    }
+
+    #[test]
+    fn stored_console_decisions_map_to_neutral_approval() {
+        assert_eq!(
+            ApprovalDecision::from_stored("allow-once"),
+            ApprovalDecision::AllowOnce
+        );
+        assert_eq!(
+            ApprovalDecision::from_stored("allow-always"),
+            ApprovalDecision::AllowSession
+        );
+        assert_eq!(
+            ApprovalDecision::from_stored("allow"),
+            ApprovalDecision::AllowSession
+        );
+        assert_eq!(
+            ApprovalDecision::from_stored("reject-once"),
+            ApprovalDecision::Deny
+        );
     }
 }

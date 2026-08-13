@@ -532,23 +532,42 @@ mod tests {
         assert_eq!(first.source_event_id, second.source_event_id);
         assert_eq!(first.cursor, Some(9));
     }
+
+    #[test]
+    fn permission_decision_builds_acp_result_json() {
+        assert_eq!(
+            PermissionDecision::AllowOnce.to_result(),
+            json!({ "outcome": { "optionId": "allow-once" } })
+        );
+        assert_eq!(
+            PermissionDecision::Deny.to_result(),
+            json!({ "outcome": { "optionId": "reject-once" } })
+        );
+        assert!(PermissionDecision::Deny.is_denied());
+    }
 }
 
-/// Decision returned to ACP for `session/request_permission`.
-#[derive(Debug, Clone)]
-pub struct PermissionDecision {
-    pub option_id: String,
+/// ACP-shaped permission outcome. Option ids exist only to build
+/// `session/request_permission` JSON-RPC results.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PermissionDecision {
+    AllowOnce,
+    AllowSession,
+    Deny,
 }
 
 impl PermissionDecision {
-    pub fn allow_once() -> Self {
-        Self {
-            option_id: "allow-once".into(),
-        }
+    pub fn to_result(self) -> Value {
+        let option_id = match self {
+            Self::AllowOnce => "allow-once",
+            Self::AllowSession => "allow-always",
+            Self::Deny => "reject-once",
+        };
+        json!({ "outcome": { "optionId": option_id } })
     }
 
-    pub fn to_result(&self) -> Value {
-        json!({ "outcome": { "optionId": self.option_id } })
+    pub fn is_denied(self) -> bool {
+        matches!(self, Self::Deny)
     }
 }
 
@@ -661,7 +680,7 @@ impl MockAgent {
             .map_err(|_| anyhow!("mock permission timed out"))?
             .map_err(|_| anyhow!("mock permission channel closed"))?;
 
-        if decision.option_id.starts_with("reject") {
+        if decision.is_denied() {
             send_update(
                 &msg_tx,
                 json!({
