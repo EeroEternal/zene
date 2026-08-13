@@ -5,7 +5,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::info;
 use zene_config::ZeneConfig;
 use zene_context::{ContextDeps, ContextEngine, PrefireClientFactory};
-use zene_llm::{ChatClient, Message, TokenUsage, ToolCall};
+use zene_llm::{ChatClient, TokenUsage, ToolCall};
 
 use zene_mcp::McpManager;
 use zene_model_executor::ModelExecutor;
