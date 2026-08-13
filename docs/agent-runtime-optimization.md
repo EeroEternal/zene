@@ -2,9 +2,9 @@
 
 > 状态：持续演进。Wave 0–12 把控制面/数据面的 **接口边界** 建起来了；Wave 13 起让默认执行路径真正走这些边界。
 >
-> **进度快照：2026-08-13，基线 `fca3377`（PR #66 已合并）。**
+> **进度快照：2026-08-13，基线 `6f2280f`（PR #67 已合并）。**
 > 本文同时记录目标架构、已实现能力和剩余工作。
-> Wave 16 时间线 payload 已中性。当前工作是 Cloud `RuntimeCommand` 与 core 对齐（不引入 `zene-runtime` 依赖）。
+> Wave 16 `RuntimeCommand::Approval` 已与 core 同形。当前工作是非时间线控制事件 payload 去 ACP JSON。
 >
 > 本文基于当前 zene runtime 实现，描述如何将 `Agent`、`Turn`、`Step`、`Session`、Cloud `Run` 和 ACP transport 拉开，并给出渐进式迁移方案。
 >
@@ -29,10 +29,10 @@
 
 1. `TurnEngine` 已统一主 Agent 和 Subagent 的循环，ports 也已抽出；Wave 13 起默认路径必须真正把 `prepare_context` 的 `PreparedContext` 交给 `run_model`，而不是在 model 步骤里重新组装上下文。
 2. `Provider`、`ChatClient`、`ChatBackend` 仍存在相近但不统一的模型抽象；`zene-model-executor` 已可注入，但请求类型仍是 `zene-llm::ChatRequest`，Turn 还看不到中性 `ModelRequest`。
-3. ACP、Cloud event 和 Core `AgentEvent` 仍存在语义转换。Cloud `RuntimeCommand::Approval` 已与 core 同形（`request_id` + `ApprovalDecision`），但 Cloud 仍无 Steer/SetMode 等变体，也未依赖 `zene-runtime`。时间线 payload 已是产品字段；未分类帧仍为 ACP JSON。
+3. ACP、Cloud event 和 Core `AgentEvent` 仍存在语义转换。Cloud `RuntimeCommand::Approval` 已与 core 同形（`request_id` + `ApprovalDecision`），但 Cloud 仍无 Steer/SetMode 等变体，也未依赖 `zene-runtime`。时间线与控制事件 payload 已是产品字段；usage/state 等帧仍为 ACP JSON。
 4. Session 可以恢复历史并在安全 model-boundary 上自动恢复未完成 execution；pending tool、approval 和 failure 仍必须 inspection/manual intervention。
 5. `RuntimeHandle` 已成为 active turn、prompt queue、cancel 的控制所有者，但 Agent-specific actor 仍在 `zene-core`，ACP 仍保留 transport 层 session bookkeeping。
-6. 权限已拆成纯 `evaluate` + 异步 `ApprovalBroker`。ACP 监听 `ApprovalRequested` 再发 `RuntimeCommand::Approval`。Cloud JobRunner 经 `RuntimeClient::send(RuntimeCommand::Approval)` 回复；ACP jsonrpc id 只留在 RuntimeClient adapter。时间线 payload 已是产品字段；非时间线帧仍为 ACP JSON。
+6. 权限已拆成纯 `evaluate` + 异步 `ApprovalBroker`。ACP 监听 `ApprovalRequested` 再发 `RuntimeCommand::Approval`。Cloud JobRunner 经 `RuntimeClient::send(RuntimeCommand::Approval)` 回复；ACP jsonrpc id 只留在 RuntimeClient adapter。时间线与 `approval_requested` / `session_started` payload 已是产品字段；usage/state 等帧仍为 ACP JSON。
 7. `ToolRegistry` 仍同时承担目录与执行；`RuntimeScope` 尚未成为 Subagent 的正式差异注入面。
 
 本文目标不是立刻重写 runtime，而是建立一个可以渐进落地的目标架构：
@@ -77,7 +77,7 @@ Cloud API
 zene-cloud-worker  (JobRunner)
    │  claim / workspace / heartbeat / approval / cancel
    ▼
-zene-cloud-runtime-client  (send RuntimeCommand；时间线产品 payload；其余帧仍是 ACP JSON)
+zene-cloud-runtime-client  (send RuntimeCommand；时间线/控制事件产品 payload；usage 等仍是 ACP JSON)
    │
    ▼
 zene acp
@@ -104,7 +104,7 @@ RuntimeHandle → Agent → TurnEngine
 | Subagent | `crates/core/src/subagent.rs` | 直接实现 `TurnEnginePorts`；仍用独立 `ChatBackend` 和内存消息，尚未 `RuntimeScope` |
 | Runtime | `crates/runtime` + `crates/core/src/agent_runtime.rs` | 公共 command/event 在 `zene-runtime`；Agent actor 仍在 core |
 | ACP | `apps/cli/src/acp/server.rs` | transport adapter；创建/加载 session，并把请求接入 `RuntimeHandle` |
-| Cloud Job | `cloud/apps/worker` + `cloud/crates/runtime-client` | Job 经 `RuntimeClient::send` 发 Prompt/Cancel/Approval/Shutdown；时间线 payload 已是产品字段，未分类帧仍为 ACP JSON |
+| Cloud Job | `cloud/apps/worker` + `cloud/crates/runtime-client` | Job 经 `RuntimeClient::send` 发 Prompt/Cancel/Approval/Shutdown；时间线与控制事件 payload 已是产品字段，usage/state 等仍为 ACP JSON |
 
 ## 3. 核心概念边界
 
@@ -1045,7 +1045,8 @@ Wave 16  统一 transport command/event  ← 当前工作
          Cloud event_type 使用中性 kind
          Console 按 event_type 分发时间线
          Cloud 时间线 payload 使用产品字段
-         Cloud RuntimeCommand::Approval 与 core 同形（本轮）
+         Cloud RuntimeCommand::Approval 与 core 同形
+         Cloud 控制事件 payload 使用产品字段（本轮）
          Cloud payload 不再以 ACP JSON 为产品语义
          本地与 Cloud 共用同一套 RuntimeCommand / RuntimeEvent
 ```
@@ -1070,13 +1071,13 @@ Wave 16  统一 transport command/event  ← 当前工作
 | Wave 13 | 已完成 | 默认 Agent/Subagent 路径消费 `PreparedContext`；PR #60 |
 | Wave 14 | 未开始 | RuntimeScope、ToolCatalog 拆分、Agent 退回 wiring |
 | Wave 15 | 已完成 | `evaluate` + `ApprovalBroker` + runtime-owned waiter；PR #61 / #62 |
-| Wave 16 | 进行中 | 审批 command、`event_type`、Console、时间线 payload、`RuntimeCommand::Approval` 已中性；Steer/SetMode 与非时间线 payload 仍待统一 |
+| Wave 16 | 进行中 | 审批 command、时间线/控制 payload、`RuntimeCommand::Approval` 已中性；Steer/SetMode 与 usage/state payload 仍待统一 |
 
 ### 当前收口状态与剩余边界
 
 本轮已完成仓库内可以安全验证的主要优化，并保持旧协议兼容。当前剩余项分为三类：
 
-- **本轮已完成的审批/事件收口**：runtime-owned waiter 与 Cloud `RuntimeCommand::Approval`；时间线 `event_type` 与 payload 已是产品字段；未分类帧仍为 ACP JSON。
+- **本轮已完成的审批/事件收口**：runtime-owned waiter 与 Cloud `RuntimeCommand::Approval`；时间线与 `approval_requested` / `session_started` payload 已是产品字段；usage/state 等帧仍为 ACP JSON。
 - **可继续做但需要协议的产品面解耦**：本地/Cloud 统一 `RuntimeCommand`/`RuntimeEvent`、`RuntimeScope`。这些改动跨 transport，不应通过局部兼容代码伪装完成。
 - **需要部署基础设施决策**：本地 EventOutbox 不能单独提供跨 VM durability。跨 VM replacement 必须使用共享 POSIX 持久卷，或实现 DB/object-backed spool。
 
@@ -1105,7 +1106,7 @@ Wave 16  统一 transport command/event  ← 当前工作
    - pending tool / approval 的任意副作用自动 replay：继续采用 inspection/manual intervention，避免重复写操作。
    - `Agent` 从 step orchestrator 完全退回 composition root。
    - Subagent 通过 `RuntimeScope` 复用 `DefaultToolExecutor` / ModelExecutor，而不是并行 `ChatBackend`。
-   - 本地与 Cloud 共用同一套 `RuntimeCommand` / `RuntimeEvent`（Cloud 已有 Prompt/Cancel/Approval/Shutdown；仍缺 Steer/SetMode，且不依赖 `zene-runtime`）。非时间线 Cloud payload 仍为 ACP JSON。
+   - 本地与 Cloud 共用同一套 `RuntimeCommand` / `RuntimeEvent`（Cloud 已有 Prompt/Cancel/Approval/Shutdown；仍缺 Steer/SetMode，且不依赖 `zene-runtime`）。usage/state 等 Cloud payload 仍为 ACP JSON。
    - Agent-specific actor 从 `zene-core` 移入独立 runtime implementation crate（应在 ports/审批稳定之后）。
    - 跨 VM outbox 的共享持久化实现；当前部署文档要求共享 POSIX volume 或后续 DB/object spool。
 
@@ -1171,9 +1172,9 @@ Wave 16  统一 transport command/event  ← 当前工作
 7. **Wave 16：统一 command/event（进行中）**
    - JobRunner 经 `RuntimeClient::send` 发送 Prompt/Cancel/Approval/Shutdown；`Approval` 携带 `request_id` + `ApprovalDecision`。
    - ACP jsonrpc id 与 `optionId` 只留在 RuntimeClient adapter。
-   - RuntimeClient 把 ACP `sessionUpdate` 分类为中性 `event_type`；时间线 payload 存产品字段。
+   - RuntimeClient 把 ACP `sessionUpdate` 分类为中性 `event_type`；时间线与控制事件 payload 存产品字段。
    - Console 按 `event_type` 分发；新产品 payload 直接渲染，legacy `params.update` 仍可回放。
-   - 未做：非时间线帧去 ACP JSON；Cloud 补齐 Steer/SetMode 并与 `zene-runtime` 合成一套类型。
+   - 未做：usage/state 等帧去 ACP JSON；Cloud 补齐 Steer/SetMode 并与 `zene-runtime` 合成一套类型。
 
 8. **持续质量门槛**
    - 每个 wave 保持 `cargo test --workspace --locked`；
@@ -1198,11 +1199,11 @@ Wave 16  统一 transport command/event  ← 当前工作
 
 | 选择 | Wave | 理由 |
 | --- | --- | --- |
-| 当前最大杠杆 | **Wave 16 剩余 command** | Approval 已同形；Steer/SetMode 与整型 crate 仍分叉 |
-| 剩余事件语义 | Wave 16 | 非时间线帧（审批事件、session、usage）仍是 ACP JSON |
+| 当前最大杠杆 | **Wave 16 usage/state payload** | 时间线与控制事件已中性；usage/state 仍是 ACP JSON |
+| 剩余 command | Wave 16 | Steer/SetMode 与整型 crate 仍分叉 |
 | 结构清理 | Wave 14 | Agent 退回 wiring，应在审批/事件稳定之后 |
 
-推荐组合：**继续 Wave 16 收口剩余 ACP payload 与 command 变体**，最后才用 Wave 14 把 `Agent` 收成 wiring。不要先搬 runtime crate。
+推荐组合：**继续 Wave 16 收口剩余 ACP payload**，最后才用 Wave 14 把 `Agent` 收成 wiring。不要先搬 runtime crate。
 
 **不要一上来做** actor 全量重写、完整 Event Sourcing、或再抽一层没有调用方的 crate。
 
@@ -1269,7 +1270,7 @@ Wave 16  统一 transport command/event  ← 当前工作
 - `zene-cloud-runtime-client::ApprovalDecision` 与 core 同为 AllowOnce / AllowSession / Deny。
 - `RuntimeCommand::RespondApproval` 和 `RuntimeClient::respond_approval` 不再接受 ACP result JSON。
 - ACP `optionId` 只在 adapter / `PermissionDecision::to_result` 内构造。
-- 未做：非时间线 payload 去 ACP JSON、Cloud 与 `zene-runtime::RuntimeCommand` 合成同一类型。
+- 未做：usage/state payload 去 ACP JSON、Cloud 与 `zene-runtime::RuntimeCommand` 合成同一类型。
 
 ### 2026-08-13 — Cloud event_type
 
@@ -1291,5 +1292,12 @@ Wave 16  统一 transport command/event  ← 当前工作
 
 - Cloud `RuntimeCommand` 为 Prompt / Cancel / Approval / Shutdown。`Approval` 与 core 同为 `request_id` + `ApprovalDecision`。
 - JobRunner 只 `send` 这些命令。ACP jsonrpc id 留在 adapter 的 pending map；不支持的 reverse request 在 adapter 内拒绝。
-- 未把 `zene-runtime` 引入 Cloud。未做：Steer/SetMode、非时间线 payload 去 ACP JSON。
+- 未把 `zene-runtime` 引入 Cloud。未做：Steer/SetMode、usage/state payload 去 ACP JSON。
+
+### 2026-08-13 — Cloud 控制事件 payload
+
+- `approval_requested` 存 `requestId` 与 toolCall 产品字段，不再存 jsonrpc 信封。
+- `session_started` 存 `sessionId`（resume 带 `resumed: true`）。
+- JobRunner 审批回复仍走 `RuntimeRequest` / `send(Approval)`，不读该 payload。不迁移已存记录。
+- 未做：usage/state/user_message 去 ACP JSON、Steer/SetMode。
 

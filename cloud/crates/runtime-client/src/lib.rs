@@ -127,7 +127,8 @@ pub enum RuntimeCommand {
 /// A runtime notification with the stable fields persisted by the worker.
 ///
 /// `event_type` is the product kind. Timeline kinds (`text_delta`,
-/// `thought_delta`, `tool_call`, `tool_result`) store a denormalized product
+/// `thought_delta`, `tool_call`, `tool_result`) and control kinds
+/// (`approval_requested`, `session_started`) store a denormalized product
 /// payload. Other frames keep the original ACP JSON. Records written before
 /// this change still have ACP JSON; Console falls back to `params.update`.
 #[derive(Debug, Clone, PartialEq)]
@@ -190,20 +191,26 @@ fn runtime_notification(event: AcpEvent) -> RuntimeNotification {
 }
 
 fn product_payload(kind: RuntimeEventKind, raw: &Value) -> Value {
-    let Some(update) = raw.pointer("/params/update") else {
-        return raw.clone();
-    };
     match kind {
         RuntimeEventKind::TextDelta | RuntimeEventKind::ThoughtDelta => {
+            let Some(update) = raw.pointer("/params/update") else {
+                return raw.clone();
+            };
             serde_json::json!({ "text": text_from_update(update) })
         }
         RuntimeEventKind::ToolCall => {
+            let Some(update) = raw.pointer("/params/update") else {
+                return raw.clone();
+            };
             Value::Object(take_fields(
                 update,
                 &["toolCallId", "title", "toolName", "kind", "status", "rawInput"],
             ))
         }
         RuntimeEventKind::ToolResult => {
+            let Some(update) = raw.pointer("/params/update") else {
+                return raw.clone();
+            };
             let mut map = take_fields(
                 update,
                 &[
@@ -224,8 +231,44 @@ fn product_payload(kind: RuntimeEventKind, raw: &Value) -> Value {
             }
             Value::Object(map)
         }
+        RuntimeEventKind::ApprovalRequested => approval_product(raw),
+        RuntimeEventKind::SessionStarted => session_started_product(raw),
         _ => raw.clone(),
     }
+}
+
+fn approval_product(raw: &Value) -> Value {
+    let params = raw.get("params").unwrap_or(raw);
+    let mut map = serde_json::Map::new();
+    map.insert(
+        "requestId".into(),
+        Value::String(permission_request_key(params)),
+    );
+    if let Some(tool) = params.get("toolCall") {
+        map.extend(take_fields(
+            tool,
+            &["toolCallId", "title", "toolName", "kind", "status", "rawInput"],
+        ));
+    }
+    Value::Object(map)
+}
+
+fn session_started_product(raw: &Value) -> Value {
+    let session_id = raw
+        .pointer("/result/sessionId")
+        .or_else(|| raw.pointer("/params/sessionId"))
+        .cloned();
+    let mut map = serde_json::Map::new();
+    if let Some(session_id) = session_id {
+        map.insert("sessionId".into(), session_id);
+    }
+    if raw.get("method").and_then(Value::as_str) == Some("session/resume") {
+        map.insert("resumed".into(), Value::Bool(true));
+    }
+    if map.is_empty() {
+        return raw.clone();
+    }
+    Value::Object(map)
 }
 
 fn take_fields(update: &Value, keys: &[&str]) -> serde_json::Map<String, Value> {
@@ -611,7 +654,7 @@ mod tests {
     }
 
     #[test]
-    fn session_lifecycle_methods_are_classified() {
+    fn session_lifecycle_stores_product_session_id() {
         let event = runtime_notification(AcpEvent {
             source_event_id: "session-new-1".into(),
             cursor: None,
@@ -622,18 +665,58 @@ mod tests {
             }),
         });
         assert_eq!(event.event_type, "session_started");
-        assert_eq!(event.payload["method"], "session/new");
+        assert_eq!(event.payload, serde_json::json!({ "sessionId": "session-1" }));
     }
 
     #[test]
-    fn reverse_permission_request_is_classified_as_approval() {
+    fn session_resume_marks_resumed() {
+        let event = runtime_notification(AcpEvent {
+            source_event_id: "session-resume-1".into(),
+            cursor: None,
+            event_type: "acp".into(),
+            payload: serde_json::json!({
+                "method": "session/resume",
+                "params": { "sessionId": "session-1", "cwd": "/tmp" },
+                "result": { "sessionId": "session-1" }
+            }),
+        });
+        assert_eq!(event.event_type, "session_started");
+        assert_eq!(
+            event.payload,
+            serde_json::json!({ "sessionId": "session-1", "resumed": true })
+        );
+    }
+
+    #[test]
+    fn reverse_permission_stores_product_approval_fields() {
         let event = runtime_notification(AcpEvent::from_reverse_request(
             &serde_json::json!(42),
             "session/request_permission",
-            &serde_json::json!({"toolCall": {"toolCallId": "call-7"}}),
+            &serde_json::json!({
+                "toolCall": {
+                    "toolCallId": "call-7",
+                    "title": "Write notes",
+                    "kind": "edit",
+                    "status": "pending",
+                    "rawInput": { "path": "notes.md" }
+                }
+            }),
         ));
         assert_eq!(event.event_type, "approval_requested");
-        assert_eq!(event.payload["method"], "session/request_permission");
+        assert_eq!(
+            event.payload,
+            serde_json::json!({
+                "requestId": "call-7",
+                "toolCallId": "call-7",
+                "title": "Write notes",
+                "kind": "edit",
+                "status": "pending",
+                "rawInput": { "path": "notes.md" }
+            })
+        );
+        assert!(event.payload.get("method").is_none());
+        assert!(event.payload.get("jsonrpc").is_none());
+        assert!(event.payload.get("id").is_none());
     }
 
     #[test]
