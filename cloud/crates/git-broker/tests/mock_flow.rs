@@ -1,6 +1,7 @@
 use zene_cloud_db::Db;
 use zene_cloud_domain::{
-    CreatePullRequestBody, CreateRunRequest, GithubRepoSummary, PermissionMode, RegisterRequest,
+    CreatePullRequestBody, CreateRunRequest, GithubMode, GithubRepoSummary, PermissionMode,
+    RegisterRequest,
 };
 use zene_cloud_git_broker::GitBroker;
 
@@ -54,7 +55,7 @@ async fn mock_clone_push_and_draft_pr() {
 
     let broker = GitBroker::mock(db.clone());
     let token = broker.issue_read_clone_token(&run).await.unwrap();
-    assert_eq!(token.mode, "mock");
+    assert_eq!(token.mode, GithubMode::Mock);
     assert!(token.token.starts_with("mock_clone_"));
 
     let pushed = broker

@@ -12,7 +12,8 @@ use tokio_stream::wrappers::ReceiverStream;
 use uuid::Uuid;
 use zene_cloud_domain::{
     ClaimedRun, CreateApprovalRequest, CreatePullRequestBody, CreateRepositoryRequest,
-    CreateRunRequest, DecideApprovalRequest, GithubBranchSummary, GithubProviderConfigView,
+    CreateRunRequest, DecideApprovalRequest, GithubBranchSummary, GithubMode,
+    GithubProviderConfigView,
     LlmAuthResponse, LlmSettingsView, LoginRequest, PostMessageRequest, QueueStats, RegisterRequest,
     MessageRole, RunStatus, UpdateGithubProviderConfigRequest, UpdateLlmSettingsRequest, UpdateRunRequest,
     WorkerCommandAckRequest, WorkerCommandsResponse, WorkerEventRequest, WorkerFence,
@@ -120,7 +121,7 @@ async fn health(State(state): State<AppState>) -> impl IntoResponse {
         "ok": true,
         "service": "zene-cloud-api",
         "version": env!("CARGO_PKG_VERSION"),
-        "githubMode": format!("{:?}", github.mode()).to_lowercase(),
+        "githubMode": github.mode(),
     }))
 }
 
@@ -150,7 +151,7 @@ async fn me(
         "user": user,
         "organization": org,
         "github": gh_account,
-        "githubMode": format!("{:?}", github.mode()).to_lowercase(),
+        "githubMode": github.mode(),
         "githubConfigured": github.config().is_app_configured(),
     })))
 }
@@ -308,7 +309,7 @@ async fn github_status(
         })
         .or_else(|| installations.first().map(|i| i.account_login.clone()));
     Ok(Json(serde_json::json!({
-        "mode": format!("{:?}", github.mode()).to_lowercase(),
+        "mode": github.mode(),
         "configured": github.config().is_app_configured(),
         "connected": connected,
         "account": account,
@@ -1256,7 +1257,7 @@ async fn clone_auth(
         .await
         .map_err(AppError::from)?;
     let github = state.github_client().await;
-    let mock = token.mode == "mock" || github.is_mock();
+    let mock = token.mode == GithubMode::Mock || github.is_mock();
     Ok(Json(zene_cloud_domain::CloneAuthResponse {
         run_id: run.id,
         repository_id: run.repository_id,

@@ -681,8 +681,8 @@ pub struct WorkerEventRequest {
 mod tests {
     use super::{
         ApprovalDecision, ApprovalEventPayload, ApprovalKind, ApprovalRisk, ApprovalStatus,
-        CloudEventKind, CreateApprovalRequest, MessageRole, PlatformEvent, PermissionMode,
-        ProjectionPayload,
+        CloudEventKind, CreateApprovalRequest, GithubMode, MessageRole, PlatformEvent,
+        PermissionMode, ProjectionPayload,
         RunEventKind, RunStatus, TextEventPayload, ToolCallPayload, WorkerCommand,
         WorkerCommandAckRequest, WorkerCommandKind, WorkerEventRequest, WorkerFence,
         WorkerClaimRequest, WorkerPushRequest, WorkerSessionRequest,
@@ -882,6 +882,16 @@ mod tests {
                 "text": "follow-up"
             })
         );
+    }
+
+    #[test]
+    fn github_mode_round_trips_snake_case() {
+        for mode in [GithubMode::Mock, GithubMode::Live] {
+            let encoded = serde_json::to_value(mode).expect("serialize");
+            assert_eq!(encoded, serde_json::json!(mode.as_str()));
+            assert_eq!(GithubMode::parse(mode.as_str()), Some(mode));
+        }
+        assert_eq!(GithubMode::parse("other"), None);
     }
 
     #[test]
@@ -1377,6 +1387,14 @@ impl GithubMode {
             Self::Live => "live",
         }
     }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        Some(match value {
+            "mock" => Self::Mock,
+            "live" => Self::Live,
+            _ => return None,
+        })
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1666,7 +1684,7 @@ pub struct CloneTokenResponse {
     pub token: String,
     pub clone_url: String,
     pub expires_at: DateTime<Utc>,
-    pub mode: String,
+    pub mode: GithubMode,
 }
 
 /// User-facing BYOK settings (never includes full api_key).
