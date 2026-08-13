@@ -879,30 +879,56 @@ impl SessionRecord {
         self.meta.updated_at = Utc::now();
     }
 
-    /// Replace the leading system message, or insert one if missing.
-    pub fn set_system_message(&mut self, content: &str) {
-        if let Some(message) = self.messages.first_mut() {
-            if message.role == zene_llm::Role::System {
-                message.content = Some(content.to_string());
-                self.append_event(SessionEvent::SystemPrefixChanged {
+    /// Replace the leading system prefix through the conversation event log.
+    ///
+    /// The projected view is authoritative when the materialized cache has
+    /// drifted. The cache is refreshed only as a compatibility snapshot after
+    /// the event is appended.
+    pub fn update_system_prefix(&mut self, content: &str) {
+        let view = self.view();
+        let mut messages = view.messages;
+        if view.fallback_reason == Some(ProjectionFallbackReason::NoEvents) {
+            // Seed cache-only legacy sessions before appending the prefix fact;
+            // otherwise a later projection would know only about the prefix.
+            for message in messages.iter().cloned() {
+                self.append_event(SessionEvent::MessageAppended {
                     sequence: 0,
                     id: Uuid::new_v4().to_string(),
                     created_at: Utc::now(),
-                    content: content.to_string(),
+                    message,
                 });
-                self.meta.updated_at = Utc::now();
-                return;
             }
         }
-        let message = Message::system(content);
-        self.messages.insert(0, message.clone());
-        self.append_event(SessionEvent::MessageAppended {
-            sequence: 0,
-            id: Uuid::new_v4().to_string(),
-            created_at: Utc::now(),
-            message,
-        });
+        if let Some(message) = messages.first_mut().filter(|m| m.role == zene_llm::Role::System) {
+            if message.content.as_deref() == Some(content) {
+                self.messages = messages;
+                return;
+            }
+            message.content = Some(content.to_string());
+            self.messages = messages;
+            self.append_event(SessionEvent::SystemPrefixChanged {
+                sequence: 0,
+                id: Uuid::new_v4().to_string(),
+                created_at: Utc::now(),
+                content: content.to_string(),
+            });
+        } else {
+            let message = Message::system(content);
+            messages.insert(0, message.clone());
+            self.messages = messages;
+            self.append_event(SessionEvent::MessageAppended {
+                sequence: 0,
+                id: Uuid::new_v4().to_string(),
+                created_at: Utc::now(),
+                message,
+            });
+        }
         self.meta.updated_at = Utc::now();
+    }
+
+    /// Replace the leading system message, or insert one if missing.
+    pub fn set_system_message(&mut self, content: &str) {
+        self.update_system_prefix(content);
     }
 
     pub fn set_title_from_prompt(&mut self, prompt: &str) {
@@ -1254,6 +1280,25 @@ mod tests {
         session.ensure_system_message("system prompt");
         session.push_message(Message::system("another system"));
         assert_eq!(session.messages.len(), 1);
+    }
+
+    #[test]
+    fn system_prefix_update_is_event_backed_when_cache_drifts() {
+        let mut session = SessionRecord::new(Path::new("."));
+        session.ensure_system_message("original");
+        session.push_message(Message::user("request"));
+        session.messages[0].content = Some("stale cache".into());
+
+        session.update_system_prefix("updated");
+
+        let view = session.try_view().expect("system prefix event is projectable");
+        assert_eq!(view.messages[0].content.as_deref(), Some("updated"));
+        assert_eq!(view.messages[1].content.as_deref(), Some("request"));
+        assert_eq!(session.messages[0].content.as_deref(), Some("updated"));
+        assert!(matches!(
+            session.events.last(),
+            Some(SessionEvent::SystemPrefixChanged { content, .. }) if content == "updated"
+        ));
     }
 
     #[test]

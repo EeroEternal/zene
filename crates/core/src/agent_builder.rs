@@ -7,7 +7,9 @@ use anyhow::Result;
 use parking_lot::Mutex;
 use tracing::{info, warn};
 use zene_config::ZeneConfig;
-use zene_context::{ensure_memory_in_system, ContextEngine, FsMemoryStore};
+use zene_context::{
+    conversation_has_memory_context, memory_reminder_from_store, ContextEngine, FsMemoryStore,
+};
 use zene_llm::ChatClient;
 use zene_mcp::McpManager;
 use zene_sandbox::{LocalSandbox, Sandbox};
@@ -212,7 +214,18 @@ impl AgentBuilder {
             include_workspace,
         );
         self.session.ensure_system_message(&system_prompt);
-        ensure_memory_in_system(&mut self.session.messages, &FsMemoryStore::new(&workdir));
+        let memory_store = FsMemoryStore::new(&workdir);
+        let projected = self.session.view().messages;
+        if !conversation_has_memory_context(&projected) {
+            if let (Some(system), Some(memory)) = (
+                projected.first().filter(|message| message.role == zene_llm::Role::System),
+                memory_reminder_from_store(&memory_store),
+            ) {
+                let existing = system.content.clone().unwrap_or_default();
+                self.session
+                    .update_system_prefix(&format!("{existing}\n\n{memory}"));
+            }
+        }
 
         let client = Arc::new(match self.client {
             Some(client) => client,

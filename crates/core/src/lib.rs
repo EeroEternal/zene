@@ -415,7 +415,7 @@ impl Agent {
                     .map(|v| v.to_string())
                     .unwrap_or_else(|| "-".into())
             ),
-            format!("messages: {}", self.session.messages.len()),
+            format!("messages: {}", self.session.view().messages.len()),
             format!("model: {}", self.config.model),
             format!("context_epoch: {}", self.context.epoch()),
         ];
