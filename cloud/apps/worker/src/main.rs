@@ -691,6 +691,7 @@ fn spawn_event_pump<R: RuntimeClient + 'static>(
                     let RuntimeRequest::Approval {
                         request_id,
                         kind,
+                        allowed_decisions,
                         context,
                     } = request;
                     let decision = match resolve_permission(
@@ -700,6 +701,7 @@ fn spawn_event_pump<R: RuntimeClient + 'static>(
                         run_id,
                         &request_id,
                         kind,
+                        allowed_decisions,
                         &context,
                     )
                     .await
@@ -1107,6 +1109,7 @@ async fn resolve_permission(
     run_id: Uuid,
     request_key: &str,
     kind: ApprovalKind,
+    allowed_decisions: Vec<ApprovalDecision>,
     payload: &serde_json::Value,
 ) -> Result<ApprovalDecision> {
     let body = CreateApprovalRequest {
@@ -1114,11 +1117,7 @@ async fn resolve_permission(
         kind,
         risk: ApprovalRisk::Medium,
         payload: payload.clone(),
-        allowed_decisions: vec![
-            ApprovalDecision::AllowOnce,
-            ApprovalDecision::AllowSession,
-            ApprovalDecision::Deny,
-        ],
+        allowed_decisions,
         expires_at: None,
     };
     let created: ApprovalRequest = client

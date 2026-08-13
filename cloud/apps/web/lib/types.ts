@@ -94,6 +94,67 @@ export interface AcpSessionUpdate {
   rawOutput?: { text?: string; isError?: boolean };
 }
 
+export interface TextEventPayload {
+  text?: string;
+}
+
+export interface ToolCallPayload {
+  toolCallId?: string;
+  title?: string;
+  toolName?: string;
+  kind?: string;
+  status?: string;
+  rawInput?: unknown;
+}
+
+export interface ToolResultPayload {
+  toolCallId?: string;
+  title?: string;
+  toolName?: string;
+  kind?: string;
+  status?: string;
+  rawOutput?: { text?: string; isError?: boolean };
+  text?: string;
+  isError?: boolean;
+}
+
+export interface SessionStartedPayload {
+  sessionId?: string;
+  resumed?: boolean;
+}
+
+export interface StateChangedPayload {
+  state?: unknown;
+}
+
+export interface UsagePayload {
+  used?: unknown;
+  size?: unknown;
+  promptTokens?: unknown;
+  completionTokens?: unknown;
+  contextPercent?: unknown;
+  contextEpoch?: unknown;
+  cachedTokens?: unknown;
+}
+
+export interface PlanPayload {
+  entries?: unknown;
+}
+
+export interface AvailableCommandsPayload {
+  availableCommands?: unknown;
+}
+
+export interface ApprovalEventPayload {
+  requestId: string;
+  toolCallId?: string;
+  title?: string;
+  toolName?: string;
+  kind?: string;
+  status?: string;
+  rawInput?: unknown;
+}
+
 export interface RunEvent {
   seq: number;
   /** Optional provider/runtime cursor; `seq` remains the server ordering. */
@@ -115,6 +176,9 @@ export interface RunEvent {
     rawInput?: unknown;
     rawOutput?: { text?: string; isError?: boolean };
     isError?: boolean;
+    requestId?: string;
+    sessionId?: string;
+    resumed?: boolean;
     params?: {
       update?: AcpSessionUpdate;
     };
