@@ -423,6 +423,7 @@ impl Db {
             finished_at: None,
             archived_at: None,
         };
+        let mut tx = self.pool.begin().await?;
         sqlx::query(
             "INSERT INTO runs
              (id, organization_id, repository_id, requested_by, status, status_version, title,
@@ -449,7 +450,7 @@ impl Db {
         .bind(Option::<String>::None)
         .bind(Option::<String>::None)
         .bind(Option::<String>::None)
-        .execute(&self.pool)
+        .execute(&mut *tx)
         .await?;
 
         let msg_id = Uuid::new_v4();
@@ -465,13 +466,15 @@ impl Db {
         .bind("user")
         .bind(&req.prompt)
         .bind(now.to_rfc3339())
-        .execute(&self.pool)
+        .execute(&mut *tx)
         .await?;
 
-        self.append_event(
+        self.append_event_tx(
+            &mut tx,
             run.id,
             0,
             Some("platform.run.created"),
+            None,
             "platform",
             serde_json::json!({
                 "event": "run.created",
@@ -480,6 +483,7 @@ impl Db {
             }),
         )
         .await?;
+        tx.commit().await?;
         Ok(run)
     }
 
@@ -511,14 +515,22 @@ impl Db {
         title: Option<&str>,
         archived: Option<bool>,
     ) -> Result<Run> {
-        let run = self.get_run(run_id).await?.context("run not found")?;
+        let mut tx = self.pool.begin().await?;
+        let sql = format!("SELECT {RUN_COLUMNS} FROM runs WHERE id = ?");
+        sqlx::query_as::<_, RunRow>(&sql)
+            .bind(run_id.to_string())
+            .fetch_optional(&mut *tx)
+            .await?
+            .map(RunRow::into_run)
+            .context("run not found")?;
+
         if let Some(title) = title {
             let title = title.trim();
             if !title.is_empty() {
                 sqlx::query("UPDATE runs SET title = ? WHERE id = ?")
                     .bind(title.chars().take(80).collect::<String>())
                     .bind(run_id.to_string())
-                    .execute(&self.pool)
+                    .execute(&mut *tx)
                     .await?;
             }
         }
@@ -527,21 +539,28 @@ impl Db {
                 sqlx::query("UPDATE runs SET archived_at = ? WHERE id = ?")
                     .bind(Utc::now().to_rfc3339())
                     .bind(run_id.to_string())
-                    .execute(&self.pool)
+                    .execute(&mut *tx)
                     .await?;
             } else {
                 sqlx::query("UPDATE runs SET archived_at = NULL WHERE id = ?")
                     .bind(run_id.to_string())
-                    .execute(&self.pool)
+                    .execute(&mut *tx)
                     .await?;
             }
         }
+
+        let updated = sqlx::query_as::<_, RunRow>(&sql)
+            .bind(run_id.to_string())
+            .fetch_one(&mut *tx)
+            .await?
+            .into_run();
         if title.is_some() {
-            let updated = self.get_run(run_id).await?.context("run not found")?;
-            self.append_event(
+            self.append_event_tx(
+                &mut tx,
                 run_id,
                 0,
                 Some("platform.run.title"),
+                None,
                 "platform",
                 serde_json::json!({
                     "event": "run.title",
@@ -551,17 +570,19 @@ impl Db {
             .await?;
         }
         if archived == Some(true) {
-            self.append_event(
+            self.append_event_tx(
+                &mut tx,
                 run_id,
                 0,
                 Some("platform.run.archived"),
+                None,
                 "platform",
                 serde_json::json!({ "event": "run.archived" }),
             )
             .await?;
         }
-        let _ = run;
-        self.get_run(run_id).await?.context("run not found")
+        tx.commit().await?;
+        Ok(updated)
     }
 
     pub async fn delete_run(&self, run_id: Uuid) -> Result<()> {
@@ -807,6 +828,7 @@ impl Db {
         head_sha: Option<String>,
         failure_code: Option<String>,
     ) -> Result<Run> {
+        let mut tx = self.pool.begin().await?;
         let now = Utc::now();
         let finished = if status.is_terminal() || matches!(status, RunStatus::Completed) {
             Some(now.to_rfc3339())
@@ -823,7 +845,7 @@ impl Db {
         .bind(head_sha)
         .bind(finished)
         .bind(run_id.to_string())
-        .execute(&self.pool)
+        .execute(&mut *tx)
         .await?;
         if let Some(code) = failure_code {
             sqlx::query(
@@ -833,20 +855,27 @@ impl Db {
             .bind(code)
             .bind(now.to_rfc3339())
             .bind(run_id.to_string())
-            .execute(&self.pool)
+            .execute(&mut *tx)
             .await?;
         }
-        self.append_event(
+        self.append_event_tx(
+            &mut tx,
             run_id,
             0,
             Some(&format!("platform.status.{}", status.as_str())),
+            None,
             "platform",
             serde_json::json!({ "event": "run.status", "status": status.as_str() }),
         )
         .await?;
-        self.get_run(run_id)
+        let updated = sqlx::query_as::<_, RunRow>(&format!("SELECT {RUN_COLUMNS} FROM runs WHERE id = ?"))
+            .bind(run_id.to_string())
+            .fetch_optional(&mut *tx)
             .await?
-            .context("run missing after status update")
+            .map(RunRow::into_run)
+            .context("run missing after status update")?;
+        tx.commit().await?;
+        Ok(updated)
     }
 
     pub async fn heartbeat_fenced(&self, run_id: Uuid, fence: &WorkerFence) -> Result<()> {
@@ -1169,6 +1198,7 @@ impl Db {
     ) -> Result<RunMessage> {
         let id = Uuid::new_v4();
         let now = Utc::now();
+        let mut tx = self.pool.begin().await?;
         sqlx::query(
             "INSERT INTO run_messages
              (id, run_id, author_id, role, content, client_message_id, created_at)
@@ -1181,12 +1211,14 @@ impl Db {
         .bind(content)
         .bind(client_message_id)
         .bind(now.to_rfc3339())
-        .execute(&self.pool)
+        .execute(&mut *tx)
         .await?;
-        self.append_event(
+        self.append_event_tx(
+            &mut tx,
             run_id,
             0,
             client_message_id,
+            None,
             "platform",
             serde_json::json!({
                 "event": "message.created",
@@ -1195,23 +1227,44 @@ impl Db {
             }),
         )
         .await?;
-        if matches!(
-            self.get_run(run_id).await?.map(|r| r.status),
-            Some(RunStatus::Completed)
-        ) {
+        let current_status: Option<String> = sqlx::query_scalar(
+            "SELECT status FROM runs WHERE id = ?",
+        )
+        .bind(run_id.to_string())
+        .fetch_optional(&mut *tx)
+        .await?;
+        if current_status.as_deref() == Some(RunStatus::Completed.as_str()) {
             // Re-queue with the follow-up as the next claim prompt.
             sqlx::query("UPDATE runs SET prompt = ? WHERE id = ?")
                 .bind(content)
                 .bind(run_id.to_string())
-                .execute(&self.pool)
+                .execute(&mut *tx)
                 .await?;
             sqlx::query("UPDATE run_messages SET delivered_to_worker = 1 WHERE id = ?")
                 .bind(id.to_string())
-                .execute(&self.pool)
+                .execute(&mut *tx)
                 .await?;
-            self.update_run_status(run_id, RunStatus::Queued, None, None)
-                .await?;
+            sqlx::query(
+                "UPDATE runs
+                 SET status = ?, status_version = status_version + 1
+                 WHERE id = ?",
+            )
+            .bind(RunStatus::Queued.as_str())
+            .bind(run_id.to_string())
+            .execute(&mut *tx)
+            .await?;
+            self.append_event_tx(
+                &mut tx,
+                run_id,
+                0,
+                Some("platform.status.queued"),
+                None,
+                "platform",
+                serde_json::json!({ "event": "run.status", "status": RunStatus::Queued.as_str() }),
+            )
+            .await?;
         }
+        tx.commit().await?;
         Ok(RunMessage {
             id,
             run_id,

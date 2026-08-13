@@ -215,6 +215,90 @@ async fn register_create_run_and_claim() {
     assert!(resumed.iter().all(|item| item.seq > event.seq));
 }
 
+#[tokio::test]
+async fn run_state_mutations_have_matching_events() {
+    let db = Db::connect("sqlite::memory:").await.unwrap();
+    db.migrate().await.unwrap();
+    let auth = db
+        .register(RegisterRequest {
+            email: format!("{}@example.com", Uuid::new_v4()),
+            password: "password123".into(),
+            display_name: "Transaction test".into(),
+        })
+        .await
+        .unwrap();
+    let repo = db
+        .create_repository(
+            auth.organization.id,
+            CreateRepositoryRequest {
+                owner: "transaction".into(),
+                name: "consistency".into(),
+                default_branch: "main".into(),
+                clone_url: None,
+            },
+        )
+        .await
+        .unwrap();
+    let run = db
+        .create_run(
+            auth.organization.id,
+            auth.user.id,
+            CreateRunRequest {
+                repository_id: repo.id,
+                prompt: "initial prompt".into(),
+                base_ref: None,
+                model: "default".into(),
+                permission_mode: "default".into(),
+                max_turns: 10,
+            },
+        )
+        .await
+        .unwrap();
+
+    let events = db.events_after(run.id, 0).await.unwrap();
+    assert!(events.iter().any(|event| {
+        event.event_type == "platform"
+            && event.payload["event"] == "run.created"
+            && event.payload["prompt"] == "initial prompt"
+    }));
+
+    let updated = db
+        .update_run_meta(run.id, Some("Renamed"), Some(true))
+        .await
+        .unwrap();
+    assert_eq!(updated.title, "Renamed");
+    assert!(updated.archived_at.is_some());
+
+    let updated = db
+        .update_run_status(run.id, RunStatus::Completed, None, None)
+        .await
+        .unwrap();
+    assert_eq!(updated.status, RunStatus::Completed);
+    assert!(updated.finished_at.is_some());
+
+    let message = db
+        .add_message(run.id, Some(auth.user.id), "user", "follow-up", None)
+        .await
+        .unwrap();
+    assert_eq!(db.get_run(run.id).await.unwrap().unwrap().status, RunStatus::Queued);
+
+    let events = db.events_after(run.id, 0).await.unwrap();
+    assert!(events.iter().any(|event| {
+        event.payload["event"] == "run.title" && event.payload["title"] == "Renamed"
+    }));
+    assert!(events.iter().any(|event| event.payload["event"] == "run.archived"));
+    assert!(events.iter().any(|event| {
+        event.payload["event"] == "message.created" && event.payload["text"] == "follow-up"
+    }));
+    assert!(events.iter().any(|event| {
+        event.payload["event"] == "run.status" && event.payload["status"] == "completed"
+    }));
+    assert!(events.iter().any(|event| {
+        event.payload["event"] == "run.status" && event.payload["status"] == "queued"
+    }));
+    assert_eq!(message.content, "follow-up");
+}
+
 async fn approval_test_run(permission_mode: &str) -> (Db, Uuid) {
     let db = Db::connect("sqlite::memory:").await.unwrap();
     db.migrate().await.unwrap();
