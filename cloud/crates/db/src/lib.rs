@@ -788,7 +788,7 @@ impl Db {
         Ok(Some((run, attempt_id, generation, resume_session_id, workspace_dir)))
     }
 
-    pub async fn set_acp_session_id_fenced(
+    pub async fn set_runtime_session_id_fenced(
         &self,
         run_id: Uuid,
         fence: &WorkerFence,
@@ -807,7 +807,7 @@ impl Db {
         .execute(&self.pool)
         .await?;
         if result.rows_affected() != 1 {
-            bail!("stale_attempt: worker fence rejected ACP session update")
+            bail!("stale_attempt: worker fence rejected runtime session update")
         }
         Ok(())
     }
@@ -1163,7 +1163,7 @@ impl Db {
         match row {
             Some((generation, Some(worker_id), None))
                 if generation == fence.generation && worker_id == fence.worker_id => Ok(()),
-            _ => bail!("stale_attempt: worker fence rejected ACP session update"),
+            _ => bail!("stale_attempt: worker fence rejected runtime session update"),
         }
     }
 
