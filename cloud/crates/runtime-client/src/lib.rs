@@ -154,14 +154,30 @@ pub enum RuntimeEvent {
 
 /// Runtime-level meaning of a request requiring user approval. Protocol method
 /// names, JSON-RPC ids, and parameter paths stay inside this adapter.
-/// `context` is opaque request context retained for existing approval
-/// resolution and compatibility with stored payloads.
+/// `context` is the product payload stored on the approval row.
 #[derive(Debug)]
 pub enum RuntimeRequest {
     Approval {
         request_id: String,
         context: Value,
     },
+}
+
+/// Product payload stored on Cloud approval rows. ACP option lists and
+/// session metadata stay inside the adapter.
+pub fn approval_payload(params: &Value) -> Value {
+    let mut map = serde_json::Map::new();
+    map.insert(
+        "requestId".into(),
+        Value::String(permission_request_key(params)),
+    );
+    if let Some(tool) = params.get("toolCall") {
+        map.extend(take_fields(
+            tool,
+            &["toolCallId", "title", "toolName", "kind", "status", "rawInput"],
+        ));
+    }
+    Value::Object(map)
 }
 
 #[async_trait]
@@ -244,19 +260,7 @@ fn product_payload(kind: RuntimeEventKind, raw: &Value) -> Value {
 }
 
 fn approval_product(raw: &Value) -> Value {
-    let params = raw.get("params").unwrap_or(raw);
-    let mut map = serde_json::Map::new();
-    map.insert(
-        "requestId".into(),
-        Value::String(permission_request_key(params)),
-    );
-    if let Some(tool) = params.get("toolCall") {
-        map.extend(take_fields(
-            tool,
-            &["toolCallId", "title", "toolName", "kind", "status", "rawInput"],
-        ));
-    }
-    Value::Object(map)
+    approval_payload(raw.get("params").unwrap_or(raw))
 }
 
 fn session_started_product(raw: &Value) -> Value {
@@ -383,7 +387,7 @@ fn runtime_request(method: &str, params: &Value) -> Option<RuntimeRequest> {
     if method == "session/request_permission" {
         Some(RuntimeRequest::Approval {
             request_id: permission_request_key(params),
-            context: params.clone(),
+            context: approval_payload(params),
         })
     } else {
         None
@@ -922,14 +926,25 @@ mod tests {
     #[test]
     fn approval_contract_exposes_neutral_context_and_identity() {
         let params = serde_json::json!({
-            "toolCall": { "toolCallId": "call-7" },
-            "reason": "write"
+            "toolCall": {
+                "toolCallId": "call-7",
+                "title": "Write notes",
+                "kind": "edit"
+            },
+            "reason": "write",
+            "options": [{ "optionId": "allow-once" }]
         });
         let request = runtime_request("session/request_permission", &params);
         assert!(matches!(
             request,
             Some(RuntimeRequest::Approval { request_id, context })
-                if request_id == "call-7" && context == params
+                if request_id == "call-7"
+                    && context == serde_json::json!({
+                        "requestId": "call-7",
+                        "toolCallId": "call-7",
+                        "title": "Write notes",
+                        "kind": "edit"
+                    })
         ));
     }
 
