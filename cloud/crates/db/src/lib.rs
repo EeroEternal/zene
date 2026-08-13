@@ -1435,12 +1435,7 @@ impl Db {
             run.status,
             RunStatus::Cancelled | RunStatus::Stopping | RunStatus::TimedOut
         ) {
-            commands.push(WorkerCommand {
-                id: format!("cancel-{}", run.status.as_str()),
-                kind: "cancel".into(),
-                text: None,
-                message_id: None,
-            });
+            commands.push(WorkerCommand::cancel(format!("cancel-{}", run.status.as_str())));
         }
 
         let rows: Vec<(String, String)> = sqlx::query_as(
@@ -1474,12 +1469,7 @@ impl Db {
                 continue;
             }
             let message_id = Uuid::parse_str(&id)?;
-            commands.push(WorkerCommand {
-                id: format!("msg-{id}"),
-                kind: "prompt".into(),
-                text: Some(content),
-                message_id: Some(message_id),
-            });
+            commands.push(WorkerCommand::prompt(format!("msg-{id}"), content, message_id));
         }
         tx.commit().await?;
         Ok(commands)
@@ -1538,12 +1528,7 @@ impl Db {
             run.status,
             RunStatus::Cancelled | RunStatus::Stopping | RunStatus::TimedOut
         ) {
-            commands.push(WorkerCommand {
-                id: format!("cancel-{}", run.status.as_str()),
-                kind: "cancel".into(),
-                text: None,
-                message_id: None,
-            });
+            commands.push(WorkerCommand::cancel(format!("cancel-{}", run.status.as_str())));
         }
 
         let rows: Vec<(String, String)> = sqlx::query_as(
@@ -1557,12 +1542,7 @@ impl Db {
 
         for (id, content) in rows {
             let message_id = Uuid::parse_str(&id)?;
-            commands.push(WorkerCommand {
-                id: format!("msg-{id}"),
-                kind: "prompt".into(),
-                text: Some(content),
-                message_id: Some(message_id),
-            });
+            commands.push(WorkerCommand::prompt(format!("msg-{id}"), content, message_id));
         }
 
         Ok(commands)
