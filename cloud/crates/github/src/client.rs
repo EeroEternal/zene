@@ -1,6 +1,8 @@
 use anyhow::{bail, Context, Result};
 use serde::Deserialize;
-use zene_cloud_domain::{GithubRepoSummary, GithubUser, PullRequest};
+use zene_cloud_domain::{
+    GithubAccountType, GithubRepoSummary, GithubUser, PullRequest, PullRequestState,
+};
 
 use crate::app::{GithubAppAuth, InstallationToken};
 use crate::oauth::{self, OauthConfig, OauthTokens};
@@ -10,7 +12,7 @@ use crate::types::{CreatePullRequestParams, GithubConfig, ListedRepo};
 pub struct AppInstallation {
     pub id: String,
     pub account_login: String,
-    pub account_type: String,
+    pub account_type: GithubAccountType,
 }
 
 #[derive(Clone)]
@@ -129,7 +131,7 @@ impl GithubClient {
             return Ok(AppInstallation {
                 id: installation_id.into(),
                 account_login: "mock-org".into(),
-                account_type: "Organization".into(),
+                account_type: GithubAccountType::Organization,
             });
         }
 
@@ -168,7 +170,7 @@ impl GithubClient {
         Ok(AppInstallation {
             id: body.id.to_string(),
             account_login: body.account.login,
-            account_type: body.account.account_type,
+            account_type: github_account_type(&body.account.account_type),
         })
     }
 
@@ -177,7 +179,7 @@ impl GithubClient {
             return Ok(vec![AppInstallation {
                 id: "10001".into(),
                 account_login: "mock-org".into(),
-                account_type: "Organization".into(),
+                account_type: GithubAccountType::Organization,
             }]);
         }
 
@@ -222,7 +224,7 @@ impl GithubClient {
                 out.push(AppInstallation {
                     id: inst.id.to_string(),
                     account_login: inst.account.login,
-                    account_type: inst.account.account_type,
+                    account_type: github_account_type(&inst.account.account_type),
                 });
             }
             if count < 100 {
@@ -441,9 +443,9 @@ impl GithubClient {
                 base_sha: None,
                 head_sha: None,
                 state: if params.draft {
-                    "draft".into()
+                    PullRequestState::Draft
                 } else {
-                    "open".into()
+                    PullRequestState::Open
                 },
                 draft: params.draft,
                 created_at: chrono::Utc::now(),
@@ -507,9 +509,21 @@ impl GithubClient {
             body: pr.body,
             base_sha: None,
             head_sha: None,
-            state: pr.state,
+            state: pull_request_state(&pr.state, pr.draft.unwrap_or(params.draft)),
             draft: pr.draft.unwrap_or(params.draft),
             created_at: chrono::Utc::now(),
         })
     }
+}
+
+fn github_account_type(value: &str) -> GithubAccountType {
+    GithubAccountType::parse(value).unwrap_or(GithubAccountType::Organization)
+}
+
+fn pull_request_state(value: &str, draft: bool) -> PullRequestState {
+    PullRequestState::parse(value).unwrap_or(if draft {
+        PullRequestState::Draft
+    } else {
+        PullRequestState::Open
+    })
 }

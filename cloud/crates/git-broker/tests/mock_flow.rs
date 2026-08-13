@@ -1,7 +1,7 @@
 use zene_cloud_db::Db;
 use zene_cloud_domain::{
-    CreatePullRequestBody, CreateRunRequest, GithubMode, GithubRepoSummary, PermissionMode,
-    RegisterRequest,
+    CreatePullRequestBody, CreateRunRequest, GithubAccountType, GithubInstallationStatus,
+    GithubMode, GithubRepoSummary, PermissionMode, RegisterRequest,
 };
 use zene_cloud_git_broker::GitBroker;
 
@@ -17,7 +17,7 @@ async fn mock_clone_push_and_draft_pr() {
         })
         .await
         .unwrap();
-    db.upsert_installation(auth.organization.id, "1", "acme", "Organization", "active")
+    db.upsert_installation(auth.organization.id, "1", "acme", GithubAccountType::Organization, GithubInstallationStatus::Active)
         .await
         .unwrap();
     let repos = db

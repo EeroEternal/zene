@@ -2,9 +2,9 @@
 
 > 状态：持续演进。Wave 0–12 把控制面/数据面的 **接口边界** 建起来了；Wave 13 起让默认执行路径真正走这些边界。
 >
-> **进度快照：2026-08-13，基线 `2779b53`（PR #92 已合并）。**
+> **进度快照：2026-08-13，基线 `bbb7030`（PR #93 已合并）。**
 > 本文同时记录目标架构、已实现能力和剩余工作。
-> Wave 16 当前工作是 Cloud GitHub `mode` 使用 `GithubMode`；Steer/SetMode 与整型 crate 仍未做。
+> Wave 16 当前工作是 Cloud git/queue 剩余产品枚举一次收口；Steer/SetMode 与整型 crate 仍未做。
 >
 > 本文基于当前 zene runtime 实现，描述如何将 `Agent`、`Turn`、`Step`、`Session`、Cloud `Run` 和 ACP transport 拉开，并给出渐进式迁移方案。
 >
@@ -1072,7 +1072,8 @@ Wave 16  统一 transport command/event  ← 当前工作
          Console Run.status 使用 RunStatus
          Cloud permission_mode 使用 PermissionMode
          Cloud 消息 role 使用 MessageRole
-         Cloud GitHub mode 使用 GithubMode（本轮）
+         Cloud GitHub mode 使用 GithubMode
+         Cloud git/queue 剩余产品枚举一次收口（本轮）
          Cloud payload 不再以 ACP JSON 为产品语义
          本地与 Cloud 共用同一套 RuntimeCommand / RuntimeEvent
 ```
@@ -1097,13 +1098,13 @@ Wave 16  统一 transport command/event  ← 当前工作
 | Wave 13 | 已完成 | 默认 Agent/Subagent 路径消费 `PreparedContext`；PR #60 |
 | Wave 14 | 未开始 | RuntimeScope、ToolCatalog 拆分、Agent 退回 wiring |
 | Wave 15 | 已完成 | `evaluate` + `ApprovalBroker` + runtime-owned waiter；PR #61 / #62 |
-| Wave 16 | 进行中 | Cloud GitHub `mode` 已是 `GithubMode`；Steer/SetMode 与整型 crate 仍待统一 |
+| Wave 16 | 进行中 | Cloud git/queue 剩余产品枚举已收口；Steer/SetMode 与整型 crate 仍待统一 |
 
 ### 当前收口状态与剩余边界
 
 本轮已完成仓库内可以安全验证的主要优化，并保持旧协议兼容。当前剩余项分为三类：
 
-- **本轮已完成的审批/事件收口**：runtime-owned waiter 与 Cloud `RuntimeCommand::Approval`；已分类 Cloud payload 与审批表 payload 已是产品字段（domain 结构体）；平台事件 payload 同样是 domain `PlatformEvent`（`run.status` 带 `headSha`）；写入路径 `event_type` 是 domain `RunEventKind`（`RunEvent` 读出仍为字符串）；`RuntimeRequest::Approval.allowed_decisions` 来自 ACP options，JobRunner 不再写死三按钮；API→worker `WorkerCommand` 为 Prompt/Cancel；Cloud 审批产品面（决策/kind/risk）从 DB 到 Console 到 RuntimeCommand 共用 domain 类型；产品审批类型不再携带 `jsonrpc_id`；domain `CloudEventKind` 与 Console 时间线共用分类结果；JobRunner mock 与真实 ACP 共用同一条 runtime session（event / command / hold）；worker 内部控制 HTTP 使用 domain 请求类型，产品 runtime session 写入 `acp_session_id` 列；`RuntimeNotification.payload` 与 `RuntimeRequest` 审批 context 在内存中是 domain 结构体；`CreateApprovalRequest.payload` 是 `ApprovalEventPayload`，`ApprovalRequest.payload` 读出仍为 JSON；`projection_ready` 写入 `ProjectionPayload`；Console `Run.status` 与 `PlatformEvent["run.status"]` 使用 `RunStatus`；Cloud `Run.permission_mode` 与 `CreateRunRequest.permission_mode` 使用 `PermissionMode`；`RunMessage.role` 与 `PlatformEvent::MessageCreated.role` 使用 `MessageRole`；`CloneTokenResponse.mode` 与 Console `GithubStatus.mode` 使用已有 `GithubMode`；未识别帧仍为 ACP JSON。
+- **本轮已完成的审批/事件收口**：runtime-owned waiter 与 Cloud `RuntimeCommand::Approval`；已分类 Cloud payload 与审批表 payload 已是产品字段（domain 结构体）；平台事件 payload 同样是 domain `PlatformEvent`（`run.status` 带 `headSha`）；写入路径 `event_type` 是 domain `RunEventKind`（`RunEvent` 读出仍为字符串）；`RuntimeRequest::Approval.allowed_decisions` 来自 ACP options，JobRunner 不再写死三按钮；API→worker `WorkerCommand` 为 Prompt/Cancel；Cloud 审批产品面（决策/kind/risk）从 DB 到 Console 到 RuntimeCommand 共用 domain 类型；产品审批类型不再携带 `jsonrpc_id`；domain `CloudEventKind` 与 Console 时间线共用分类结果；JobRunner mock 与真实 ACP 共用同一条 runtime session（event / command / hold）；worker 内部控制 HTTP 使用 domain 请求类型，产品 runtime session 写入 `acp_session_id` 列；`RuntimeNotification.payload` 与 `RuntimeRequest` 审批 context 在内存中是 domain 结构体；`CreateApprovalRequest.payload` 是 `ApprovalEventPayload`，`ApprovalRequest.payload` 读出仍为 JSON；`projection_ready` 写入 `ProjectionPayload`；Console `Run.status` 与 `PlatformEvent["run.status"]` 使用 `RunStatus`；Cloud `Run.permission_mode` 与 `CreateRunRequest.permission_mode` 使用 `PermissionMode`；`RunMessage.role` 与 `PlatformEvent::MessageCreated.role` 使用 `MessageRole`；`CloneTokenResponse.mode` 与 Console `GithubStatus.mode` 使用已有 `GithubMode`；`QueueActive.status` 使用 `RunStatus`；`PullRequest.state` 使用 `PullRequestState`；installation `account_type` / `status` 使用 `GithubAccountType` / `GithubInstallationStatus`；未识别帧仍为 ACP JSON。
 - **可继续做但需要协议的产品面解耦**：本地/Cloud 统一 `RuntimeCommand`/`RuntimeEvent`、`RuntimeScope`。这些改动跨 transport，不应通过局部兼容代码伪装完成。
 - **需要部署基础设施决策**：本地 EventOutbox 不能单独提供跨 VM durability。跨 VM replacement 必须使用共享 POSIX 持久卷，或实现 DB/object-backed spool。
 
@@ -1207,6 +1208,7 @@ Wave 16  统一 transport command/event  ← 当前工作
    - Cloud `Run.permission_mode` 与 `CreateRunRequest.permission_mode` 使用 `PermissionMode`（`default` / `accept_edits` / `yolo` / 历史 `auto`）。`default` / `yolo` / `auto` 仍自动 resolve 审批；未知历史值读成 `accept_edits`（不自动批准、不启用 `--yolo`）。不补 SetMode。
    - `RunMessage.role` 与 `PlatformEvent::MessageCreated.role` 使用 `MessageRole`（`user` / `assistant`）。未知历史值读成 `assistant`，与 Console `bubbleRole` 一致。
    - `CloneTokenResponse.mode`、API `githubMode` / GitHub status `mode` 与 Console `GithubStatus.mode` 使用已有 `GithubMode`。不再用 Debug 格式拼 wire 字符串。
+   - `QueueActive.status` 使用 `RunStatus`。`PullRequest.state` 使用 `PullRequestState`（含 mock `draft`）。installation `account_type` / `status` 使用 `GithubAccountType`（`User` / `Organization`）与 `GithubInstallationStatus`。未知历史值分别读成 `failed` / `open` / `Organization` / `active`。
    - 未做：Cloud 补齐 Steer/SetMode 并与 `zene-runtime` 合成一套类型。
 
 8. **持续质量门槛**
@@ -1433,4 +1435,10 @@ Wave 16  统一 transport command/event  ← 当前工作
 - `CloneTokenResponse.mode` 使用已有 `GithubMode`。clone-auth 用枚举比较 mock。
 - API `githubMode` / GitHub status `mode` 直接序列化 `GithubMode`，不再 `format!("{:?}", …)`。Console `GithubStatus.mode` 对齐。
 - 不补 Steer/SetMode。不把 `zene-runtime` 引入 Cloud。
+
+### 2026-08-13 — Cloud git/queue 剩余产品枚举
+
+- `QueueActive.status` 使用 `RunStatus`。`PullRequest.state` 使用 `PullRequestState`（`open` / `closed` / `merged` / mock `draft`）。Console GitPanel 对齐，不改颜色。
+- installation `account_type` / `status` 使用 `GithubAccountType`（wire 仍为 `User` / `Organization`）与 `GithubInstallationStatus`。
+- 未知历史值分别读成 `failed` / `open` / `Organization` / `active`。不补 Steer/SetMode。不把 `zene-runtime` 引入 Cloud。
 

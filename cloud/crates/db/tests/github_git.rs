@@ -1,7 +1,8 @@
 use zene_cloud_db::Db;
 use zene_cloud_domain::{
     CreateRepositoryRequest, CreateRunRequest, GitOperationKind, GitOperationStatus,
-    GithubRepoSummary, PermissionMode, RegisterRequest,
+    GithubAccountType, GithubInstallationStatus, GithubRepoSummary, PermissionMode, PullRequestState,
+    RegisterRequest,
 };
 
 #[tokio::test]
@@ -41,7 +42,7 @@ async fn github_crud_and_migrations() {
     assert_eq!(account.login, "octocat");
 
     let inst = db
-        .upsert_installation(auth.organization.id, "999", "acme", "Organization", "active")
+        .upsert_installation(auth.organization.id, "999", "acme", GithubAccountType::Organization, GithubInstallationStatus::Active)
         .await
         .unwrap();
     assert_eq!(inst.installation_id, "999");
@@ -116,7 +117,7 @@ async fn github_crud_and_migrations() {
             Some("https://github.com/acme/app/pull/7"),
             None,
             Some("def456"),
-            "draft",
+            PullRequestState::Draft,
             true,
         )
         .await

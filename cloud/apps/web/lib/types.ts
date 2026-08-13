@@ -15,10 +15,18 @@ export interface GithubAccount {
 
 export interface GithubInstallation {
   accountLogin?: string;
+  accountType?: GithubAccountType;
+  status?: GithubInstallationStatus;
 }
 
 /** GitHub integration mode. Matches domain `GithubMode`. */
 export type GithubMode = "mock" | "live";
+
+/** GitHub account kind stored on installations. Matches domain `GithubAccountType`. */
+export type GithubAccountType = "User" | "Organization";
+
+/** GitHub App installation status. Matches domain `GithubInstallationStatus`. */
+export type GithubInstallationStatus = "active" | "suspended";
 
 export interface GithubStatus {
   mode?: GithubMode;
@@ -295,11 +303,14 @@ export interface GitCommit {
   authoredAt: string;
 }
 
+/** Stored pull-request lifecycle. Matches domain `PullRequestState`. */
+export type PullRequestState = "open" | "closed" | "merged" | "draft";
+
 export interface PullRequest {
   title: string;
   url?: string;
   providerNumber?: number;
-  state: string;
+  state: PullRequestState;
   draft?: boolean;
 }
 

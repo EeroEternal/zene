@@ -15,7 +15,7 @@ use uuid::Uuid;
 use zene_cloud_db::Db;
 use zene_cloud_domain::{
     AcceptBundleResult, CloneTokenResponse, CreatePullRequestBody, GitOperationKind,
-    GitOperationStatus, GithubMode, PullRequest, Run,
+    GitOperationStatus, GithubMode, PullRequest, PullRequestState, Run,
 };
 use zene_cloud_github::{CreatePullRequestParams, GithubClient};
 
@@ -273,7 +273,11 @@ impl GitBroker {
                 remote.url.as_deref(),
                 run.base_sha.as_deref(),
                 run.head_sha.as_deref(),
-                if draft { "draft" } else { "open" },
+                if draft {
+                    PullRequestState::Draft
+                } else {
+                    PullRequestState::Open
+                },
                 draft,
             )
             .await?;

@@ -995,7 +995,7 @@ impl Db {
                 Some(QueueActive {
                     worker_id,
                     run_id,
-                    status,
+                    status: RunStatus::parse(&status).unwrap_or(RunStatus::Failed),
                 })
             })
             .collect::<Vec<_>>();

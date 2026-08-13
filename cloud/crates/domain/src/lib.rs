@@ -652,7 +652,7 @@ pub struct QueueHold {
 pub struct QueueActive {
     pub worker_id: String,
     pub run_id: Id,
-    pub status: String,
+    pub status: RunStatus,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -681,8 +681,9 @@ pub struct WorkerEventRequest {
 mod tests {
     use super::{
         ApprovalDecision, ApprovalEventPayload, ApprovalKind, ApprovalRisk, ApprovalStatus,
-        CloudEventKind, CreateApprovalRequest, GithubMode, MessageRole, PlatformEvent,
-        PermissionMode, ProjectionPayload,
+        CloudEventKind, CreateApprovalRequest, GithubAccountType, GithubInstallationStatus,
+        GithubMode, MessageRole, PlatformEvent, PermissionMode, ProjectionPayload,
+        PullRequestState,
         RunEventKind, RunStatus, TextEventPayload, ToolCallPayload, WorkerCommand,
         WorkerCommandAckRequest, WorkerCommandKind, WorkerEventRequest, WorkerFence,
         WorkerClaimRequest, WorkerPushRequest, WorkerSessionRequest,
@@ -892,6 +893,32 @@ mod tests {
             assert_eq!(GithubMode::parse(mode.as_str()), Some(mode));
         }
         assert_eq!(GithubMode::parse("other"), None);
+    }
+
+    #[test]
+    fn git_product_enums_round_trip_wire_strings() {
+        for state in [
+            PullRequestState::Open,
+            PullRequestState::Closed,
+            PullRequestState::Merged,
+            PullRequestState::Draft,
+        ] {
+            let encoded = serde_json::to_value(state).expect("serialize");
+            assert_eq!(encoded, serde_json::json!(state.as_str()));
+            assert_eq!(PullRequestState::parse(state.as_str()), Some(state));
+        }
+        let encoded = serde_json::to_value(GithubAccountType::Organization).expect("account");
+        assert_eq!(encoded, serde_json::json!("Organization"));
+        assert_eq!(
+            GithubAccountType::parse("User"),
+            Some(GithubAccountType::User)
+        );
+        let encoded = serde_json::to_value(GithubInstallationStatus::Active).expect("status");
+        assert_eq!(encoded, serde_json::json!("active"));
+        assert_eq!(
+            GithubInstallationStatus::parse("suspended"),
+            Some(GithubInstallationStatus::Suspended)
+        );
     }
 
     #[test]
@@ -1397,6 +1424,57 @@ impl GithubMode {
     }
 }
 
+/// GitHub account kind stored on installations. Wire JSON stays `User` / `Organization`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum GithubAccountType {
+    User,
+    #[default]
+    Organization,
+}
+
+impl GithubAccountType {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::User => "User",
+            Self::Organization => "Organization",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        Some(match value {
+            "User" | "user" => Self::User,
+            "Organization" | "organization" => Self::Organization,
+            _ => return None,
+        })
+    }
+}
+
+/// GitHub App installation status. Wire JSON stays snake_case.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum GithubInstallationStatus {
+    #[default]
+    Active,
+    Suspended,
+}
+
+impl GithubInstallationStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Active => "active",
+            Self::Suspended => "suspended",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        Some(match value {
+            "active" => Self::Active,
+            "suspended" => Self::Suspended,
+            _ => return None,
+        })
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GithubAccount {
@@ -1418,8 +1496,8 @@ pub struct GithubInstallation {
     pub organization_id: Id,
     pub installation_id: String,
     pub account_login: String,
-    pub account_type: String,
-    pub status: String,
+    pub account_type: GithubAccountType,
+    pub status: GithubInstallationStatus,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -1516,6 +1594,37 @@ pub struct GitOperation {
     pub finished_at: Option<DateTime<Utc>>,
 }
 
+/// Stored pull-request lifecycle. Mock rows may use `draft`; GitHub live rows use `open` / `closed`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PullRequestState {
+    Open,
+    Closed,
+    Merged,
+    Draft,
+}
+
+impl PullRequestState {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Open => "open",
+            Self::Closed => "closed",
+            Self::Merged => "merged",
+            Self::Draft => "draft",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        Some(match value {
+            "open" => Self::Open,
+            "closed" => Self::Closed,
+            "merged" => Self::Merged,
+            "draft" => Self::Draft,
+            _ => return None,
+        })
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PullRequest {
@@ -1528,7 +1637,7 @@ pub struct PullRequest {
     pub body: Option<String>,
     pub base_sha: Option<String>,
     pub head_sha: Option<String>,
-    pub state: String,
+    pub state: PullRequestState,
     pub draft: bool,
     pub created_at: DateTime<Utc>,
 }
@@ -1601,18 +1710,10 @@ pub struct GithubOauthCallbackRequest {
 pub struct UpsertInstallationRequest {
     pub installation_id: String,
     pub account_login: String,
-    #[serde(default = "default_account_type")]
-    pub account_type: String,
-    #[serde(default = "default_installation_status")]
-    pub status: String,
-}
-
-fn default_account_type() -> String {
-    "Organization".into()
-}
-
-fn default_installation_status() -> String {
-    "active".into()
+    #[serde(default)]
+    pub account_type: GithubAccountType,
+    #[serde(default)]
+    pub status: GithubInstallationStatus,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

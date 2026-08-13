@@ -1,13 +1,14 @@
 "use client";
 
 import { useState } from "react";
+import type { PullRequestState } from "@/lib/types";
 import { ChangesPanel } from "./ChangesPanel";
 import { CommitsPanel } from "./CommitsPanel";
 import { ReviewPanel } from "./ReviewPanel";
 
 export type GitSubTab = "diff" | "review" | "commits";
 
-function prStateClass(state?: string): string {
+function prStateClass(state?: PullRequestState | string): string {
   const s = (state || "").toLowerCase();
   if (s === "merged") return "bg-active text-ink";
   if (s === "open") return "bg-[#e6ffec] text-[#1a7f37]";
@@ -29,7 +30,7 @@ export function GitPanel({
   defaultBaseRef?: string;
   headBranch?: string;
   prUrl?: string;
-  prState?: string;
+  prState?: PullRequestState;
 }) {
   const [subTab, setSubTab] = useState<GitSubTab>("diff");
   const title = defaultTitle || "Changes";
