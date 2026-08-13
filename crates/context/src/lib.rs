@@ -53,7 +53,8 @@ pub use engine::{
 };
 pub use layout::{
     apply_tail_decorations, classify_prefix_break, content_is_reminder, is_step_decoration,
-    prefix_fingerprint, split_layout, PrefixCacheBreakKind, PrefixCacheExplain, ProjectionLayout,
+    prefix_adjacent_decoration_index, prefix_fingerprint, relocate_prefix_adjacent_decorations,
+    split_layout, InjectionZone, PrefixCacheBreakKind, PrefixCacheExplain, ProjectionLayout,
 };
 pub use event_handler::{
     write_compaction_segment_via, ContextEventHandler, EventOutcome, NoopContextEventHandler,

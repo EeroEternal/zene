@@ -1,173 +1,170 @@
-# ContextEngine：上下文解耦设计
+# ContextEngine
 
-本文档是 [agent-inference-context.md](./agent-inference-context.md) 的落地设计，描述如何将 Zene 的语义上下文从 runtime（turn loop、tools、permission）中独立出来。
+Zene 的语义上下文引擎（`crates/context`）。它从 Session 事实算出**这一次**发给模型的视图，不把「模型碰巧看到的 messages」当成会话历史。
 
-相关实现：`crates/context/`（`zene-context`）、`crates/llm/`（协议字段）、`crates/core/`（Agent orchestrator）。
+相关实现：`zene-context`、`zene-llm` 协议字段、`zene-core` 组装。心智模型见 [session-as-source-of-truth.md](./session-as-source-of-truth.md)；推理协议见 [agent-inference-context.md](./agent-inference-context.md)；compaction 算法细节见 [ENGINE.md](./ENGINE.md)；控制面见 [agent-runtime-optimization.md](./agent-runtime-optimization.md)。
 
-可组装组件总览见 [agent-components.md](./agent-components.md)。Session 与 Context 的边界心智模型见 [session-as-source-of-truth.md](./session-as-source-of-truth.md)。下一阶段投影化优化见 [context-engine-projection.md](./context-engine-projection.md)。前缀稳定与 prefix cache 见 [context-engine-prefix-cache.md](./context-engine-prefix-cache.md)。Runtime / Turn 控制面与合并 Wave 见 [agent-runtime-optimization.md](./agent-runtime-optimization.md)。Pi Harness 对照见 [pi-agent-harness-lessons.md](./pi-agent-harness-lessons.md)。
+**不在本文范围**：新的 compress 算法、改成 Pi JSONL、把 permission / MCP / Turn 塞进 ContextEngine。
 
----
-
-## 背景
-
-当前 `Agent`（`crates/core`）同时承担 runtime 编排与上下文管理：compaction、water level、prefire、memory flush 等逻辑嵌在 `maybe_compact_before_llm` / `run_llm_step` 中，与 turn、tool、steer 耦合。后续要对接推理层（`session_id` + `context_epoch`、cached_tokens、delta）时，缺少稳定边界。
-
-原则（与 agent-inference-context.md 一致）：
-
-- **Agent / runtime**：turn flow、tools、permission、steer
-- **ContextEngine**：estimate → compact → memory → assemble → epoch
-- **推理层**：会话亲和、KV/prompt cache、usage 回传
+**进度（2026-08-13）**：crate 边界、`observe → commit → project`、event-backed projection、前缀三区、Plan/overflow 去改写、prefix-adjacent 注入拖尾已在实现里。剩余是 legacy fallback 清理，以及 Console 对 `prefixCache` 的展示。
 
 ---
 
-## Crate 边界
+## 1. 职责
 
 ```
-zene-session     持久化：messages、compactions、checkpoints、todos
-zene-context     语义上下文：estimate、compact、memory、prefire、epoch、assemble
-zene-llm         传输：ChatRequest + ContextMetadata 透传、TokenUsage 含 cached_tokens
-zene-core        Runtime：turn loop、tools、permission、steer
+Agent / runtime     turn、tools、permission、steer、审批
+ContextEngine       estimate → compact → memory → assemble → epoch → 前缀布局
+推理层              会话亲和、KV / prompt cache、cached_tokens 回传
 ```
 
-依赖方向：`core → context → {session, llm, config}`，`llm` 不依赖 `context`。
+```
+zene-session     持久化：events、兼容 messages cache、checkpoints、todos
+zene-context     语义上下文：estimate、compact、memory、prefire、epoch、assemble、layout
+zene-llm         ChatRequest + ContextMetadata、TokenUsage.cached_tokens
+zene-core        composition root
+```
+
+依赖：`core → context → {session, llm}`，`llm` 不依赖 `context`。
+
+四层：
+
+| 层 | 名称 | 回答什么 | 谁拥有 |
+|----|------|----------|--------|
+| L0 | Session Events | 发生过什么 | `zene-session` |
+| L1 | Active Branch | 当前叶到根 | session `view` / `try_view` |
+| L2 | Context Plan | 如何投影（cut、summary、注入、三区） | `zene-context` |
+| L3 | Provider Request | 最终 `messages[]` + metadata | `ContextEngine` → `zene-llm` |
+
+同一份 Session 还可投影出 UI transcript、replay、export；那些不是 ContextEngine 的职责。
 
 ---
 
-## 核心类型
+## 2. API
+
+Runtime 主要调：
+
+| 方法 | 用途 |
+|------|------|
+| `prepare_step(deps, tools)` | 门面：observe → commit → project |
+| `record_step_usage` | water + `cached_tokens` + session 占用 |
+| `handle_overflow` | 当前 turn steps-first truncate，不够再完整 compact |
+| `compact_forced` | `/compact` |
+| `set_step_tail_decorations` | 无 hooks 时的尾巴注入 |
+| `on_system_prefix_changed` | 真正改冻结 system 时 `epoch++` |
+| `metadata` / `water` | 出站 metadata、`/context` |
+
+`prepare_step` 不再在同一次调用里偷偷既改历史又当唯一真相。三段式：
+
+```text
+observe   只读 SessionView，估算 token / water，决定是否 compact
+commit    唯一写 Conversation SoT 的入口（CompactionApplied、memory flush、checkpoint）
+project   事件路径 → messages；尾巴注入 reminder；full|delta 组装；ProjectionExplain
+```
+
+Compact **追加** `CompactionApplied`，不把旧事件从事实日志物理删掉。`SessionRecord.messages` 只是兼容缓存；cache drift 不覆盖 event-backed projection。
+
+`ContextHooks::step_tail_decorations` 是 todos / plan / 后台任务的注入源，写进出站尾巴，不写进 SoT。
+
+---
+
+## 3. 核心类型（现状）
 
 ```rust
-/// 出站一步的上下文视图
 pub struct StepContext {
     pub messages: Vec<Message>,
     pub metadata: ContextMetadata,
     pub estimate_tokens: u32,
 }
 
-/// 推理层协议字段（session_id + epoch）
 pub struct ContextMetadata {
     pub session_id: String,
     pub context_epoch: u64,
     pub prefix_hash: Option<String>,
+    pub delivery: ContextDelivery, // full | delta
+    pub tail_start: Option<usize>,
 }
 
-pub enum ContextEvent {
-    EpochBumped { old: u64, new: u64, reason: &'static str },
-    PublishPrefix { session_id: String, epoch: u64, messages: Vec<Message> },
-    Checkpoint { reason: &'static str },
-    CompactionSegment { session_id: String, body: String },
-    MemoryFlush { conversation: String },
-}
-
-pub struct ContextDeps<'a> {
-    pub session: &'a mut dyn ContextSession,
-    pub compaction_config: &'a CompactionConfig,
-    pub model: &'a str,
-    pub client: &'a ChatClient,
-    pub hooks: Option<&'a dyn ContextHooks>,
-    pub system_prompt: &'a str,
-    pub estimator: &'a TokenEstimator,
-    pub handler: &'a mut dyn ContextEventHandler,
-    pub prefire_client_factory: Option<PrefireClientFactory>,
-}
-```
-
----
-
-## ContextEngine API
-
-Runtime 只需调用：
-
-| 方法 | 替代现有逻辑 |
-|------|-------------|
-| `prepare_step(deps, tools)` | `maybe_compact_before_llm` + `build_messages` |
-| `record_step_usage(usage, session, tools, estimator)` | `context_water.record_usage` + session 持久化 |
-| `handle_overflow(deps, tools)` | `run_llm_step` 内 overflow compact 分支 |
-| `compact_forced(deps, tools, hint)` | `/compact` |
-| `metadata(session_id)` | 构造 `ChatRequest.context` |
-| `on_system_prefix_changed(reason)` | plan mode / memory 变更 → `epoch++` |
-| `clear_prefire()` | rewind / fork |
-| `water()` | `/context` 报告、UsageUpdate |
-
-`prepare_step` 内部顺序：assemble → estimate → prefire → steps-first → memory flush → compact → epoch++ → 返回 `StepContext`。
-
----
-
-## zene-llm 扩展
-
-```rust
-pub struct ChatRequest {
-    // ... existing fields ...
-    pub context: Option<ContextMetadata>,
-}
-
-pub struct TokenUsage {
-    // ... existing fields ...
+pub struct ProjectionExplain { /* path / fallback / injected / delivery / prefix_cache */ }
+pub struct PrefixCacheExplain {
+    pub prefix_end: usize,
+    pub body_end: usize,
+    pub tail_decoration_count: usize,
+    pub prefix_fingerprint: Option<String>,
+    pub break_kind: String, // none | compact | system_resize | injected_resize | body_mutate | unknown
     pub cached_tokens: Option<u64>,
+    pub unchanged_reprocessed_est: Option<u64>,
 }
 ```
 
-Provider 将 `ContextMetadata` 映射为 `X-Zene-Session-Id` / `X-Zene-Context-Epoch`（或与 PR #42 对齐的 body metadata）。
+`ChatRequest.context` 与 `TokenUsage.cached_tokens` 在 `zene-llm`。Provider 透传 `X-Zene-Session-Id` / `X-Zene-Context-Epoch`。ACP `projection_update._meta.prefixCache` 带上 zone 与 `breakKind`。
 
 ---
 
-## Agent 字段迁移
+## 4. 前缀稳定与 Prefix Cache
 
-| 原 Agent 字段/逻辑 | 归属 |
-|-------------------|------|
-| `context_water` | `ContextEngine` |
-| `prefire` | `ContextEngine` |
-| `last_memory_flush_compaction` | `ContextEngine` |
-| `compaction.rs` 等 | `zene-context` |
-| `record_compaction` | 保留在 Agent（依赖 `AgentRecordWriter`） |
-| `tool_bound` | 保留在 core（tool 执行层） |
+厂商 prefix cache 只认：从 prompt 左侧起，连续多少 token 与上一请求 **字节级相同**。`session_id` / `epoch` / `prefix_hash` 是给网关的信号，不能替代字节前缀。
 
----
+一次 DeepSeek-V4-Pro 诊断（11 次 LLM call，窗口 56.2k）：注入块 `<agent_documents_index>` 只有 698 token，却因 3 次 resize 让约 52k 未变更 token 被重算。位置比体积更贵。
 
-## 迁移分期
+```text
+可变内容的位置 ≫ 可变内容的大小
+意外打断 ≫ 一次合法 compact
+epoch 正确 ≠ 前缀字节稳定
+```
 
-### Phase 0 — 协议 glue（可与 Phase 1 并行）
+### 布局契约
 
-- `ChatRequest.context`、`TokenUsage.cached_tokens`
-- Agent 维护 `context_epoch`，compact 后递增
-- Provider 透传 header
+```text
+[冻结 system 基座] [pinned / compaction 边界] [只追加的对话 + 工具] [本步装饰]
+        ← 稳定前缀：变了才 epoch++ →           ← 只往尾部涨 →         ← 只放尾巴 →
+```
 
-### Phase 1 — 抽 crate（当前）
+实现：`crates/context/src/layout.rs`。`project()` 先把紧贴 pinned 前缀的 reminder 拖到尾巴，再按 hooks 换成当前装饰。历史中间残留的旧 reminder 保持不动（字节冻结）。
 
-- 创建 `zene-context`，迁移 compaction / tokens / water / prefire / memory / two_pass / input_ladder
-- 引入 `ContextEngine`，Agent 改调 API，行为不变
+索引 / RAG 只允许：开工写入冻结 system（定长或不再改），或当本步 tail。禁止做成 msg[1] 那种变长块（`InjectionZone::BodyInsert`）。
 
-### Phase 2 — 协议闭环（当前）
+Compact 是 **允许的一次打断**（`epoch++`）。要消灭的是同一会话里 system / 注入块 / 旧 tool 被反复 resize。
 
-- Worker 注入 `ZENE_RUN_ID` → Agent 自动 `set_external_session_id`
-- compact / system 变更 → `epoch++`；网关 `POST /v1/zene/sessions/{id}/publish`（需 `ZENE_INFERENCE_GATEWAY_URL`）
-- Run 结束 `Agent::shutdown` → `DELETE /v1/zene/sessions/{id}`
-- `cached_tokens` 结构化日志 + ACP `usage_update._meta.cachedTokens` / `contextEpoch`
+### 已落地（Phase P–R）
 
-### Phase 3 — Delta 与 tool handle（当前）
+- 三区：`split_layout` / `PrefixCacheExplain`
+- Plan reminder、todos、后台任务走 tail，进出 Plan 不改 system、不 bump epoch
+- Overflow 先 `apply_steps_truncate_pass`（当前 user 之后）；不够再完整 compact
+- Compact 快照不再持久化 volatile `<system-reminder>`
+- Memory 开工写入 system 一次；本步可见的更新走 tail
+- Workspace / skills 只在 session start 编进 system
+- `break_kind` + `cached_tokens` 进入 explain / ACP（`cached_tokens` 为上一轮 provider 回传）
+- Phase S：`InjectionZone`（FrozenPrefix / TailDecorations）；`project()` 把紧贴 pinned 前缀的 reminder 拖到尾巴；debug 断言拒绝 msg[1] 注入块
 
-- `assemble_outbound`：`ZENE_CONTEXT_DELIVERY=full|delta`（配 gateway 时默认 delta）
-- 出站 metadata：`delivery`、`tail_start`、`prefix_hash`；header `X-Zene-Context-Delivery` 等
-- `gateway_prefix_len`：compact/publish 后更新；delta 只传 tail
-- `ZENE_TOOL_OUTPUT_HANDLES=1`：大 tool 输出仅传句柄 `[zene-tool-output path=… bytes=…]`
+### 还没做完
 
-### Phase 4 — 网关（当前）
+| 项 | 说明 |
+|----|------|
+| `cached_tokens` 当次闭环 | 现在是上一轮回填；UsageUpdate 已有当次值，Console 条形图仍非目标 |
+| 旧 compact reminder 在 body 中间 | 保持冻结，不回写；新 compact 不再写入 |
+| legacy session fallback | 仅清理可无损迁移的兼容代码 |
 
-- 二进制 `zene-inference-gateway`（`apps/inference-gateway`）
-- Cloud：`systemd/zene-inference-gateway.service` + VM 本机 Redis（`ZENE_SESSION_REDIS_URL`）
-- 生产 session：`FingerprintPolicy=required`（Redis 默认）、idle TTL 1h、max lifetime 24h、size limits
-- BYOK：gateway 将客户端 `Authorization: Bearer` 转发 upstream
-- `POST /v1/zene/sessions/{id}/publish` / `DELETE ...` / delta chat
-- 本地默认内存 store，**不必装 Redis**；需多实例联调时 `export ZENE_SESSION_REDIS_URL=redis://127.0.0.1/`
-
-### Phase 5 — Cloud 与 pinned 协议（当前）
-
-- Worker 注入 `ZENE_INFERENCE_GATEWAY_URL`（CLI / worker 进程 env → ACP 子进程）
-- Run 首次 `prepare_step` 时 initial publish（epoch=0），使 delta 从第二步起可用
-- `publish` body 增加 `pinned_boundary`（system + compaction summary 下界；网关不得淘汰）
+Water / auto-compact 仍看窗口占用 `max(usage, estimate)`，不因 cache 命中率推迟 compact。
 
 ---
 
-## 数据流（Phase 1 后）
+## 5. 出站：epoch、delta、gateway
+
+已实现行为（原 Phase 0–5）：
+
+- compact 或真正的 system 基座变更 → `epoch++` 并 `PublishPrefix`
+- `ZENE_CONTEXT_DELIVERY=full|delta`（配 `ZENE_INFERENCE_GATEWAY_URL` 时默认 delta）
+- `pinned_boundary` = `stable_system_boundary`（system + compaction summary）
+- 大 tool 输出可句柄化（`ZENE_TOOL_OUTPUT_HANDLES`）
+- Cloud Worker 注入 `ZENE_RUN_ID`；Run 结束 `close_session`
+- 网关：`apps/inference-gateway`，可选 Redis session store
+
+推理收益三档仍见 [agent-inference-context.md](./agent-inference-context.md)。**A 档**（full messages + 稳定前缀）是 prefix cache 的大头；前缀抖动时 B/C 档也救不了。
+
+---
+
+## 6. 数据流
 
 ```mermaid
 sequenceDiagram
@@ -177,64 +174,53 @@ sequenceDiagram
     participant LLM as zene-llm
 
     RT->>CE: prepare_step(deps, tools)
-    CE->>SE: maybe compact / memory
-    CE-->>RT: StepContext { messages, epoch }
+    CE->>SE: observe / commit compact
+    CE-->>RT: StepContext + ProjectionExplain
     RT->>LLM: ChatRequest + ContextMetadata
     LLM-->>RT: response + cached_tokens
     RT->>CE: record_step_usage(usage)
     CE->>SE: update_context_usage
 ```
 
+TurnEngine 只依赖 `ContextAssembler::prepare` / `handle_overflow`；三段式是引擎内部实现。
+
+---
+
+## 7. 剩余工作
+
+- 仅清理可无损迁移的 legacy session fallback
+- Console 按产品需求展示 `prefixCache`（非第一版必做彩图）
+- Agent-specific runtime wiring 的进一步 crate 化（控制面，见 runtime 文档）
+
+---
+
+## 相关文档
+
+- [session-as-source-of-truth.md](./session-as-source-of-truth.md) — Session 事实 vs Context 投影
+- [agent-inference-context.md](./agent-inference-context.md) — 与推理层的 session / cache / 续算
+- [ENGINE.md](./ENGINE.md) — turn、compaction 算法、memory、sandbox
+- [agent-components.md](./agent-components.md) — 可组装组件栈
+- [agent-runtime-optimization.md](./agent-runtime-optimization.md) — 控制面；本文不替代
+- [pi-agent-harness-lessons.md](./pi-agent-harness-lessons.md) — Pi 对照
+
+曾拆成 `context-engine-projection.md` 与 `context-engine-prefix-cache.md`，已并入本文。
+
 ---
 
 ## 讨论记录
 
-### 2026-08-11 — Cloud gateway + Redis + E2E
+### 2026-08-13 — 前缀稳定 + 文档合并
 
-- `cloud/deploy`：inference-gateway systemd、startup 安装 redis-server、CI 打包
-- 生产 session 配置 env；delta 请求带 `fingerprint`；E2E test `tests/e2e_session.rs`
+- DeepSeek 诊断：msg[1] 注入块 resize 导致约 52k 未变更 token 重算。
+- PR #70：三区布局、Plan/overflow 去改写、`prefixCache` 观测。
+- Phase S：`InjectionZone`、`project()` 拖走 prefix-adjacent reminder、debug 断言。
 
-### 2026-08-11 — unigateway 2.14 接入
+### 2026-08-11 — 投影化与 Runtime 对齐
 
-- `unigateway-session-redis`：设 `ZENE_SESSION_REDIS_URL` 启用 Redis session store；默认内存
-- 依赖升至 `unigateway-sdk 2.14`
+- SoT / 投影四层、`observe|commit|project`、compaction 事件化、ProjectionExplain。
+- TurnEngine 只依赖 assembler port；三段式为对内实现。
 
-### 2026-08-11 — unigateway 2.13 接入
+### 2026-08-10–11 — crate 与网关
 
-- `session_router` merge（Axum 0.8）；删除手写 publish/delete 路由
-- 依赖 `unigateway-sdk 2.13` / `unigateway-session` `http` feature
-
-### 2026-08-11 — unigateway 2.12 接入
-
-- 依赖升至 `unigateway-sdk 2.12` / `unigateway-session 2.12`
-- publish body 增加 `fingerprint`（`zene-v1`）与 `message_count`
-- gateway middleware：`FingerprintPolicy::Optional`、`TailPositionPolicy::Optional`、namespace `zene`
-- delta 请求透传 `tail_start`；header `X-Zene-Tail-Start` 映射至 `_session_context`
-
-### 2026-08-10 — unigateway 2.11 接入
-
-- 依赖升至 `unigateway-sdk 2.11`；`_session_context` + metadata header 转发
-- inference-gateway 使用 `unigateway-session` DeltaAssembly + protocol render
-
-### 2026-08-10 — Phase 5 Cloud 与 pinned
-
-- Worker 转发 `ZENE_INFERENCE_GATEWAY_URL`；ContextEngine initial publish
-- `pinned_boundary` 写入 publish body（`stable_system_boundary`）
-
-### 2026-08-10 — 网关 stub
-
-- `apps/inference-gateway`：publish / delta assemble / upstream proxy
-- `publish_prefix` 携带完整 messages；config 自动路由 LLM 至 gateway
-
-### 2026-08-10 — Phase 3 delta 与 tool handle
-
-- `zene-context::assemble`：full/delta 组装、`prefix_hash`、`gateway_prefix_len`
-- `ContextMetadata` 扩展 delivery / tail_start；LLM provider 透传对应 header
-- `ZENE_TOOL_OUTPUT_HANDLES`：spill 后句柄化，减少 delta 带宽
-
-### 2026-08-10 — Phase 2 协议闭环
-
-- Worker 注入 `ZENE_RUN_ID`；Agent 启动时绑定 inference session id
-- `zene-context::gateway`：`publish_prefix` / `close_session`（`ZENE_INFERENCE_GATEWAY_URL` 可选）
-- compact 后 gateway publish；plan mode 等 system 变更 deferred publish 于下次 step
-- Usage 观测：`cached_tokens` 日志 + ACP `_meta`
+- 抽出 `zene-context`；delta / tool handle / `pinned_boundary` / Cloud publish。
+- inference-gateway 经 unigateway-sdk session 演进（版本细节见 git 历史）。

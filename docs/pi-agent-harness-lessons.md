@@ -6,8 +6,7 @@
 相关 Zene 文档：
 
 - [session-as-source-of-truth.md](./session-as-source-of-truth.md) — Session 事实 vs Context 投影
-- [context-engine-projection.md](./context-engine-projection.md) — Context Engine 投影化路线
-- [context-engine.md](./context-engine.md) — 已实现 ContextEngine
+- [context-engine.md](./context-engine.md) — ContextEngine
 - [agent-components.md](./agent-components.md) — 可组装组件栈
 - [ENGINE.md](./ENGINE.md) — turn / compaction / ACP 行为
 
@@ -130,7 +129,7 @@ Agent Runtime Context
 Provider Request Context
 ```
 
-展开与落地：[session-as-source-of-truth.md](./session-as-source-of-truth.md)、[context-engine-projection.md](./context-engine-projection.md)。
+展开与落地：[session-as-source-of-truth.md](./session-as-source-of-truth.md)、[context-engine.md](./context-engine.md)。
 
 ### 4.2 生命周期事件
 
@@ -208,7 +207,7 @@ Summary 结构（Goal / Constraints / Progress / Decisions / Next / Critical Con
 - branch summary ≠ 普通 compaction  
 - summary **schema 稳定且可解释**  
 
-投影侧路线：[context-engine-projection.md](./context-engine-projection.md)。
+投影侧路线：[context-engine.md](./context-engine.md)。
 
 ### 4.7 Extensions / Skills / Packages
 
@@ -242,7 +241,7 @@ Packages 可打包 extensions/skills/prompts/themes，npm/git，带 trust 与 pi
 
 Pi 强调：精确控制每次进入模型的内容；session 可检视；token/cache/context 可见。
 
-**Zene：** Context Engine 能力领先；下一杠杆是 **可解释投影**（`ProjectionExplain`、`/context`、compact 前后可见性）。见 [context-engine-projection.md](./context-engine-projection.md) Phase E。
+**Zene：** Context Engine 能力领先；下一杠杆是 **前缀稳定 / prefix cache** 与可解释投影。见 [context-engine.md](./context-engine.md)。
 
 ### 4.9 集成表面
 
@@ -286,7 +285,7 @@ Zene：ACP + Cloud worker + Console 更适合远程产品。
 2. **明确 Context Projection 契约**  
    `observe` / `commit` / `project`；compaction 追加事件；注入物分类。  
    对外 port 名对齐 `ContextAssembler`。  
-   细节：[context-engine-projection.md](./context-engine-projection.md)。
+   细节：[context-engine.md](./context-engine.md)。
 
 3. **固定 Tool Batch 终止协议**（落在 `ToolExecutor`，非 Agent 私货）  
    block / error / terminate / cancel / retry 及批量、顺序、ACP 表达。

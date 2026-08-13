@@ -2,7 +2,7 @@
 //!
 //! Prefix cache only survives when bytes to the left of the first change stay
 //! identical. Volatile reminders therefore belong at the tail, never between
-//! the system prefix and conversation history. See `docs/context-engine-prefix-cache.md`.
+//! the system prefix and conversation history. See `docs/context-engine.md`.
 
 use serde::{Deserialize, Serialize};
 use zene_llm::{Message, Role};
@@ -68,6 +68,14 @@ pub struct PrefixCacheExplain {
     pub unchanged_reprocessed_est: Option<u64>,
 }
 
+/// Where a new model-visible injection may live. `BodyInsert` is intentionally
+/// omitted — that is the cache-killing `<agent_documents_index>` pattern.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InjectionZone {
+    FrozenPrefix,
+    TailDecorations,
+}
+
 pub fn is_step_decoration(message: &Message) -> bool {
     if message.role != Role::User {
         return false;
@@ -125,6 +133,38 @@ pub fn prefix_fingerprint(messages: &[Message], prefix_end: usize) -> Option<Str
         return None;
     }
     Some(format!("{:016x}", fingerprint_messages(&messages[..end])))
+}
+
+/// Index of a live reminder sitting immediately after the pinned prefix with
+/// conversation still following it (the DeepSeek msg[1] pattern).
+pub fn prefix_adjacent_decoration_index(messages: &[Message]) -> Option<usize> {
+    let prefix_end = stable_system_boundary(messages).min(messages.len());
+    if prefix_end < messages.len()
+        && is_step_decoration(&messages[prefix_end])
+        && messages.len() > prefix_end + 1
+    {
+        Some(prefix_end)
+    } else {
+        None
+    }
+}
+
+/// Move prefix-adjacent reminders to the end of the outbound list.
+///
+/// Does not rewrite Session facts. `apply_tail_decorations` then replaces any
+/// trailing reminders with the current step's decorations.
+pub fn relocate_prefix_adjacent_decorations(messages: &mut Vec<Message>) -> usize {
+    let prefix_end = stable_system_boundary(messages).min(messages.len());
+    let mut moved = 0usize;
+    while prefix_end < messages.len()
+        && is_step_decoration(&messages[prefix_end])
+        && messages.len() > prefix_end + 1
+    {
+        let decoration = messages.remove(prefix_end);
+        messages.push(decoration);
+        moved += 1;
+    }
+    moved
 }
 
 pub fn classify_prefix_break(
@@ -192,14 +232,52 @@ mod tests {
     fn mid_body_reminder_stays_in_body_zone() {
         let messages = vec![
             Message::system("sys"),
+            Message::user("hello"),
             Message::user("<system-reminder>\nold compact note\n</system-reminder>"),
-            Message::user("next"),
             Message::assistant("go"),
         ];
         let layout = split_layout(&messages);
         assert_eq!(layout.prefix_end, 1);
         assert_eq!(layout.body_end, 4);
         assert_eq!(layout.tail_decoration_count, 0);
+        assert!(prefix_adjacent_decoration_index(&messages).is_none());
+        let mut cloned = messages.clone();
+        assert_eq!(relocate_prefix_adjacent_decorations(&mut cloned), 0);
+        assert!(cloned[2]
+            .content
+            .as_deref()
+            .unwrap()
+            .contains("old compact"));
+    }
+
+    #[test]
+    fn relocates_index_block_after_system() {
+        let mut messages = vec![
+            Message::system("sys"),
+            Message::user("<system-reminder>\n<agent_documents_index>\n</system-reminder>"),
+            Message::user("hello"),
+            Message::assistant("ok"),
+        ];
+        let prefix = prefix_fingerprint(&messages, 1);
+        assert_eq!(prefix_adjacent_decoration_index(&messages), Some(1));
+        assert_eq!(relocate_prefix_adjacent_decorations(&mut messages), 1);
+        assert!(prefix_adjacent_decoration_index(&messages).is_none());
+        assert_eq!(messages[1].content.as_deref(), Some("hello"));
+        assert!(is_step_decoration(messages.last().unwrap()));
+        assert_eq!(prefix, prefix_fingerprint(&messages, 1));
+        apply_tail_decorations(&mut messages, &["fresh tail".into()]);
+        assert!(prefix_adjacent_decoration_index(&messages).is_none());
+        assert!(messages
+            .last()
+            .unwrap()
+            .content
+            .as_deref()
+            .unwrap()
+            .contains("fresh tail"));
+        assert!(!messages.iter().any(|m| m
+            .content
+            .as_deref()
+            .is_some_and(|c| c.contains("agent_documents_index"))));
     }
 
     #[test]
@@ -269,5 +347,20 @@ mod tests {
             classify_prefix_break(Some("aaa"), Some("bbb"), false, None),
             PrefixCacheBreakKind::InjectedResize
         );
+    }
+
+    #[test]
+    fn classify_system_prefix_reason_as_system_resize() {
+        assert_eq!(
+            classify_prefix_break(Some("aaa"), Some("bbb"), true, Some("system_prefix")),
+            PrefixCacheBreakKind::SystemResize
+        );
+    }
+
+    #[test]
+    fn injection_zone_has_no_body_insert() {
+        match InjectionZone::TailDecorations {
+            InjectionZone::FrozenPrefix | InjectionZone::TailDecorations => {}
+        }
     }
 }

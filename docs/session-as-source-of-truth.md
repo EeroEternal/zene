@@ -5,7 +5,7 @@
 > 两者相关，但不是同一件事；也绝不能反过来让 Context 变成事实来源。
 
 本文是架构心智模型，不是实现清单。对照实现见 [ENGINE.md](./ENGINE.md)、[context-engine.md](./context-engine.md)、[agent-inference-context.md](./agent-inference-context.md)、[agent-components.md](./agent-components.md)。  
-控制面（谁在跑、命令与状态归谁）见 [agent-runtime-optimization.md](./agent-runtime-optimization.md)；Context 投影落地见 [context-engine-projection.md](./context-engine-projection.md)。  
+控制面（谁在跑、命令与状态归谁）见 [agent-runtime-optimization.md](./agent-runtime-optimization.md)；Context 投影落地见 [context-engine.md](./context-engine.md)。  
 灵感来源：Pi Session Tree（JSONL event tree + `buildSessionContext` 投影）；Zene 不必照搬其格式。更完整的 Pi→Zene 对照见 [pi-agent-harness-lessons.md](./pi-agent-harness-lessons.md)。
 
 ---
@@ -368,10 +368,8 @@ Wave 12    Safe resume 与 Cloud RuntimeClient                 已完成 reconne
 ## 相关文档
 
 - [ENGINE.md](./ENGINE.md) — turn / steer / compaction 行为
-- [context-engine.md](./context-engine.md) — ContextEngine 边界
-- [context-engine-projection.md](./context-engine-projection.md) — Context 投影化优化路线
+- [context-engine.md](./context-engine.md) — ContextEngine 边界、投影与 prefix cache
 - [agent-runtime-optimization.md](./agent-runtime-optimization.md) — AgentRuntime / Turn / ports（控制面）
 - [agent-inference-context.md](./agent-inference-context.md) — 推理上下文装配
-- [context-engine-prefix-cache.md](./context-engine-prefix-cache.md) — 投影布局与 prefix cache
 - [agent-components.md](./agent-components.md) — 可组装组件栈
 - [pi-agent-harness-lessons.md](./pi-agent-harness-lessons.md) — Pi Agent Harness 对照与启发总览

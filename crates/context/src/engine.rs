@@ -26,7 +26,8 @@ use crate::gateway::gateway_configured;
 use crate::gateway_stub::gateway_configured;
 use crate::hooks::ContextHooks;
 use crate::layout::{
-    apply_tail_decorations, classify_prefix_break, content_is_reminder, prefix_fingerprint,
+    apply_tail_decorations, classify_prefix_break, content_is_reminder,
+    prefix_adjacent_decoration_index, prefix_fingerprint, relocate_prefix_adjacent_decorations,
     split_layout, PrefixCacheExplain,
 };
 #[cfg(feature = "memory")]
@@ -413,6 +414,61 @@ mod projection_tests {
                 .break_kind,
             "none"
         );
+    }
+
+    #[test]
+    fn assemble_relocates_prefix_adjacent_index_block() {
+        use crate::tokens::TokenEstimator;
+        use zene_session::SessionRecord;
+
+        let mut engine = ContextEngine::new(128_000);
+        let mut session = SessionRecord::new(std::path::Path::new("/tmp"));
+        session.ensure_system_message("frozen system");
+        session.push_message(Message::user(
+            "<system-reminder>\n<agent_documents_index>\n</system-reminder>",
+        ));
+        session.push_message(Message::user("hello"));
+        let estimator = TokenEstimator::default();
+        let tools = [];
+        engine.set_step_tail_decorations(vec!["live tail".into()]);
+        let step = engine.assemble_step(&session, &tools, &estimator);
+        assert!(crate::layout::prefix_adjacent_decoration_index(&step.messages).is_none());
+        assert_eq!(step.messages[1].content.as_deref(), Some("hello"));
+        assert!(step
+            .messages
+            .last()
+            .unwrap()
+            .content
+            .as_deref()
+            .unwrap()
+            .contains("live tail"));
+        assert!(!step.messages.iter().any(|message| message
+            .content
+            .as_deref()
+            .is_some_and(|content| content.contains("agent_documents_index"))));
+    }
+
+    #[test]
+    fn system_resize_is_distinct_from_append_only_none() {
+        use crate::tokens::TokenEstimator;
+        use zene_session::SessionRecord;
+
+        let mut engine = ContextEngine::new(128_000);
+        let mut session = SessionRecord::new(std::path::Path::new("/tmp"));
+        session.ensure_system_message("sys v1");
+        session.push_message(Message::user("hello"));
+        let estimator = TokenEstimator::default();
+        let tools = [];
+        let _ = engine.assemble_step(&session, &tools, &estimator);
+
+        session.push_message(Message::assistant("hi"));
+        let append = engine.explain_projection(&session, &tools, &estimator);
+        assert_eq!(append.prefix_cache.break_kind, "none");
+
+        session.update_system_prefix("sys v2 is longer and breaks the prefix");
+        let _ = engine.on_system_prefix_changed("system_prefix");
+        let resized = engine.explain_projection(&session, &tools, &estimator);
+        assert_eq!(resized.prefix_cache.break_kind, "system_resize");
     }
 }
 
@@ -1061,7 +1117,12 @@ impl ContextEngine {
         let mode = delivery_mode_from_env();
         let view = session.view();
         let mut messages = view.messages;
+        relocate_prefix_adjacent_decorations(&mut messages);
         apply_tail_decorations(&mut messages, &self.tail_sections);
+        debug_assert!(
+            prefix_adjacent_decoration_index(&messages).is_none(),
+            "live decoration must not sit between pinned prefix and conversation body"
+        );
         let assembled = assemble_outbound(&messages, self.gateway_prefix_len, mode);
         let metadata = self.metadata_for_outbound(session, &assembled);
         let estimate_tokens =
