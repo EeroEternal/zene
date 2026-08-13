@@ -126,10 +126,10 @@ pub enum RuntimeCommand {
 
 /// A runtime notification with the stable fields persisted by the worker.
 ///
-/// `event_type` is the product kind. Timeline, control, usage, and state
-/// kinds store a denormalized product payload. Other frames keep the original
-/// ACP JSON. Records written before this change still have ACP JSON; Console
-/// falls back to `params.update`.
+/// `event_type` is the product kind. Classified kinds store a denormalized
+/// product payload. Unrecognized frames stay `acp` with the original ACP JSON.
+/// Records written before this change still have ACP JSON; Console falls back
+/// to `params.update`.
 #[derive(Debug, Clone, PartialEq)]
 pub struct RuntimeNotification {
     pub source_event_id: String,
@@ -236,6 +236,9 @@ fn product_payload(kind: RuntimeEventKind, raw: &Value) -> Value {
         RuntimeEventKind::SessionStarted => session_started_product(raw),
         RuntimeEventKind::StateChanged => state_product(raw),
         RuntimeEventKind::UsageUpdate => usage_product(raw),
+        RuntimeEventKind::ProjectionReady => projection_product(raw),
+        RuntimeEventKind::Plan => plan_product(raw),
+        RuntimeEventKind::AvailableCommands => commands_product(raw),
         _ => raw.clone(),
     }
 }
@@ -302,6 +305,30 @@ fn usage_product(raw: &Value) -> Value {
         ));
     }
     Value::Object(map)
+}
+
+fn projection_product(raw: &Value) -> Value {
+    let Some(update) = raw.pointer("/params/update") else {
+        return raw.clone();
+    };
+    match update.get("_meta") {
+        Some(meta) if meta.is_object() => meta.clone(),
+        _ => serde_json::json!({}),
+    }
+}
+
+fn plan_product(raw: &Value) -> Value {
+    let Some(update) = raw.pointer("/params/update") else {
+        return raw.clone();
+    };
+    Value::Object(take_fields(update, &["entries"]))
+}
+
+fn commands_product(raw: &Value) -> Value {
+    let Some(update) = raw.pointer("/params/update") else {
+        return raw.clone();
+    };
+    Value::Object(take_fields(update, &["availableCommands"]))
 }
 
 fn take_fields(update: &Value, keys: &[&str]) -> serde_json::Map<String, Value> {
@@ -737,24 +764,93 @@ mod tests {
     }
 
     #[test]
-    fn unclassified_session_updates_keep_original_payload() {
-        let cases = [
-            ("projection_update", "projection_ready"),
-            ("unknown_update", "acp"),
-        ];
-        for (session_update, event_type) in cases {
-            let raw = serde_json::json!({
-                "jsonrpc": "2.0",
-                "method": "session/update",
-                "params": {
-                    "sessionId": "session-1",
-                    "update": { "sessionUpdate": session_update }
+    fn projection_ready_lifts_meta_to_product_payload() {
+        let raw = serde_json::json!({
+            "jsonrpc": "2.0",
+            "method": "session/update",
+            "params": {
+                "sessionId": "session-1",
+                "update": {
+                    "sessionUpdate": "projection_update",
+                    "_meta": {
+                        "sourceMessageCount": 4,
+                        "projectedMessageCount": 3,
+                        "delivery": "strict",
+                        "contextEpoch": 2
+                    }
                 }
-            });
-            let event = runtime_notification(AcpEvent::from_notification(&raw));
-            assert_eq!(event.event_type, event_type, "{session_update}");
-            assert_eq!(event.payload, raw);
-        }
+            }
+        });
+        let event = runtime_notification(AcpEvent::from_notification(&raw));
+        assert_eq!(event.event_type, "projection_ready");
+        assert_eq!(
+            event.payload,
+            serde_json::json!({
+                "sourceMessageCount": 4,
+                "projectedMessageCount": 3,
+                "delivery": "strict",
+                "contextEpoch": 2
+            })
+        );
+        assert!(event.payload.get("sessionUpdate").is_none());
+        assert!(event.payload.get("method").is_none());
+    }
+
+    #[test]
+    fn plan_stores_entries() {
+        let raw = serde_json::json!({
+            "method": "session/update",
+            "params": {
+                "update": {
+                    "sessionUpdate": "plan",
+                    "entries": [{ "content": "edit", "status": "pending", "priority": "medium" }]
+                }
+            }
+        });
+        let event = runtime_notification(AcpEvent::from_notification(&raw));
+        assert_eq!(event.event_type, "plan");
+        assert_eq!(
+            event.payload,
+            serde_json::json!({
+                "entries": [{ "content": "edit", "status": "pending", "priority": "medium" }]
+            })
+        );
+    }
+
+    #[test]
+    fn available_commands_stores_command_list() {
+        let raw = serde_json::json!({
+            "method": "session/update",
+            "params": {
+                "update": {
+                    "sessionUpdate": "available_commands_update",
+                    "availableCommands": [{ "name": "compact", "description": "Compact context" }]
+                }
+            }
+        });
+        let event = runtime_notification(AcpEvent::from_notification(&raw));
+        assert_eq!(event.event_type, "available_commands");
+        assert_eq!(
+            event.payload,
+            serde_json::json!({
+                "availableCommands": [{ "name": "compact", "description": "Compact context" }]
+            })
+        );
+    }
+
+    #[test]
+    fn unclassified_session_updates_keep_original_payload() {
+        let raw = serde_json::json!({
+            "jsonrpc": "2.0",
+            "method": "session/update",
+            "params": {
+                "sessionId": "session-1",
+                "update": { "sessionUpdate": "unknown_update" }
+            }
+        });
+        let event = runtime_notification(AcpEvent::from_notification(&raw));
+        assert_eq!(event.event_type, "acp");
+        assert_eq!(event.payload, raw);
     }
 
     #[test]
