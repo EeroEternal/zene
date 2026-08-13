@@ -10,7 +10,7 @@
 >
 > **与 Session / Context 优化的关系：** 本文主攻 **控制面**（谁在跑、怎么被控制、状态归谁）；
 > [session-as-source-of-truth.md](./session-as-source-of-truth.md) 与
-> [context-engine-projection.md](./context-engine-projection.md) 主攻 **数据面**（记什么、模型看见什么）。
+> [context-engine.md](./context-engine.md) 主攻 **数据面**（记什么、模型看见什么）。
 > 两条线 **正交且必须合并落地**，不互相取代。合并后的 Wave 顺序见
 > [§16](#16-merged-implementation-waves)。
 
@@ -364,7 +364,7 @@ pub trait ContextAssembler: Send + Sync {
 ```
 
 **对外** 这是 TurnEngine 看到的 port；**对内** 实现应对齐投影三段式
-（见 [context-engine-projection.md](./context-engine-projection.md)）：
+（见 [context-engine.md](./context-engine.md)）：
 
 ```text
 observe  — 只读 SessionView，估算 token / water，提出 recommended actions
@@ -905,7 +905,7 @@ crates/
 - Tool batch 的 block / error / terminate / cancel 语义在 `ToolExecutor` 层可测。
 
 场景表与 Phase 细节见
-[context-engine-projection.md](./context-engine-projection.md)、
+[context-engine.md](./context-engine.md)、
 [session-as-source-of-truth.md](./session-as-source-of-truth.md)。
 
 ## 15. 当前进度与最终判断
@@ -991,7 +991,7 @@ Wave 2   Conversation SoT 双写                 ← session-as-source-of-truth
          与 Record / RuntimeEvent 共享 ID；messages 仍为 cache
          读路径暂不切换
 
-Wave 3   ContextAssembler 对齐投影             ← context-engine-projection
+Wave 3   ContextAssembler 对齐投影             ← context-engine
          prepare_step 内 observe → commit → project
          对外可仍叫 prepare_step / ContextEngine
          对 Turn 只暴露 prepare / handle_overflow
@@ -1232,8 +1232,7 @@ Wave 16  统一 transport command/event  ← 当前工作
 ## 相关文档
 
 - [session-as-source-of-truth.md](./session-as-source-of-truth.md) — Session 事实 vs Context 投影
-- [context-engine-projection.md](./context-engine-projection.md) — Context 投影化路线
-- [context-engine.md](./context-engine.md) — 已实现 ContextEngine
+- [context-engine.md](./context-engine.md) — ContextEngine（投影、prefix cache、epoch/delta）
 - [pi-agent-harness-lessons.md](./pi-agent-harness-lessons.md) — Pi Harness 对照
 - [agent-components.md](./agent-components.md) — 可组装组件栈
 - [ENGINE.md](./ENGINE.md) — turn / compaction 行为

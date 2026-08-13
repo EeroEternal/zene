@@ -1,6 +1,6 @@
 # Zene Engine Notes
 
-Core agent loop lives in `crates/core`. This document tracks engine-level behaviors (turn flow, context, permissions) beyond the milestone checklist in [ROADMAP.md](./ROADMAP.md). For the Session-vs-Context architecture model, see [session-as-source-of-truth.md](./session-as-source-of-truth.md). For Context Engine projection-oriented next steps, see [context-engine-projection.md](./context-engine-projection.md). For prefix-cache layout (stable prefix vs tail decorations), see [context-engine-prefix-cache.md](./context-engine-prefix-cache.md). For AgentRuntime / Turn / ports and merged implementation waves, see [agent-runtime-optimization.md](./agent-runtime-optimization.md). For Pi agent-harness comparisons, see [pi-agent-harness-lessons.md](./pi-agent-harness-lessons.md).
+Core agent loop lives in `crates/core`. This document tracks engine-level behaviors (turn flow, context, permissions) beyond the milestone checklist in [ROADMAP.md](./ROADMAP.md). For the Session-vs-Context architecture model, see [session-as-source-of-truth.md](./session-as-source-of-truth.md). For Context Engine (projection, prefix cache, epoch/delta), see [context-engine.md](./context-engine.md). For AgentRuntime / Turn / ports and merged implementation waves, see [agent-runtime-optimization.md](./agent-runtime-optimization.md). For Pi agent-harness comparisons, see [pi-agent-harness-lessons.md](./pi-agent-harness-lessons.md).
 
 ## Turn flow & steer
 
@@ -85,7 +85,7 @@ Avoids paying for LLM summarize when truncation alone fixes the overflow.
 
 LLM summarize rebuilds history as:
 
-`system + last_user_query + recent_after_query + compaction_summary`. Volatile `<system-reminder>` (todos, plan, background, memory) is **not** persisted into history; `project()` appends it at the request tail. See [context-engine-prefix-cache.md](./context-engine-prefix-cache.md).
+`system + last_user_query + recent_after_query + compaction_summary`. Volatile `<system-reminder>` (todos, plan, background, memory) is **not** persisted into history; `project()` appends it at the request tail. See [context-engine.md](./context-engine.md).
 
 Tail selection snaps so assistant `tool_calls` are never split from their tool results. Summarizer input steps `verbatim → fitted → lossy` (`input_ladder.rs`): fitted shrinks bodies and drops oldest whole turns; lossy flattens tool results. Summaries shorter than **500** chars are rejected (retries, then hard fail — aligned with grok-build). Manual `/compact [hint]` forces summarize and writes compaction checkpoints.
 
