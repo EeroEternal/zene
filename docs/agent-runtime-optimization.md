@@ -2,9 +2,9 @@
 
 > 状态：持续演进。Wave 0–12 把控制面/数据面的 **接口边界** 建起来了；Wave 13 起让默认执行路径真正走这些边界。
 >
-> **进度快照：2026-08-13，基线 `1e6c97f`（PR #105 已合并）。**
+> **进度快照：2026-08-13，基线 `122666a`（PR #106 已合并）。**
 > 本文同时记录目标架构、已实现能力和剩余工作。
-> Wave 16 的 Steer/SetMode 已对齐；**Wave 14 已完成**；Agent-specific actor 已迁至 `zene-agent-runtime`（协议仍在 `zene-runtime`；Cloud 不依赖二者）；Turn 与 ContextModel 共用中性 `ModelRequest`。
+> Wave 16 的 Steer/SetMode 已对齐；**Wave 14 已完成**；Agent-specific actor 已迁至 `zene-agent-runtime`（协议仍在 `zene-runtime`；Cloud 不依赖二者）；Turn 与 ContextModel 共用中性 `ModelRequest`。Cloud/本地共享 `RuntimeCommand` 变体已评估为字段对齐；`GetMode` / `ResumeSafeTurn` 仍仅本地。
 >
 > 本文基于当前 zene runtime 实现，描述如何将 `Agent`、`Turn`、`Step`、`Session`、Cloud `Run` 和 ACP transport 拉开，并给出渐进式迁移方案。
 >
@@ -29,7 +29,7 @@
 
 1. `TurnEngine` 已统一主 Agent 和 Subagent 的循环，ports 也已抽出；Wave 13 起默认路径必须真正把 `prepare_context` 的 `PreparedContext` 交给 `run_model`，而不是在 model 步骤里重新组装上下文。
 2. `Provider` / `ChatClient` 仍是 provider 面；Turn/runtime 与 Context compaction/memory 经中性 `ModelRequest` / `ModelResponse`，`ChatClientExecutor` 与 `ContextModel` 对 `ChatClient` 的适配内部映射为 `ChatRequest`。
-3. ACP、Cloud event 和 Core `AgentEvent` 仍存在语义转换。Cloud `RuntimeCommand::Approval` 已与 core 同形（`request_id` + `ApprovalDecision`），但 Cloud 仍无 Steer/SetMode 等变体，也未依赖 `zene-runtime`。已分类 Cloud payload 已是产品字段；未识别帧仍为 ACP JSON。
+3. ACP、Cloud event 和 Core `AgentEvent` 仍存在语义转换。Cloud `RuntimeCommand` 已与本地共享变体字段对齐（Prompt/Steer/Cancel/Approval/SetMode/Shutdown），仍不依赖 `zene-runtime`；`GetMode` / `ResumeSafeTurn` 仍仅本地。已分类 Cloud payload 已是产品字段；未识别帧仍为 ACP JSON。
 4. Session 可以恢复历史并在安全 model-boundary 上自动恢复未完成 execution；pending tool、approval 和 failure 仍必须 inspection/manual intervention。
 5. `RuntimeHandle` 已成为 active turn、prompt queue、cancel 的控制所有者；Agent-specific actor 在 `zene-agent-runtime`，ACP 仍保留 transport 层 session bookkeeping。
 6. 权限已拆成纯 `evaluate` + 异步 `ApprovalBroker`。ACP 监听 `ApprovalRequested` 再发 `RuntimeCommand::Approval`。Cloud JobRunner 经 `RuntimeClient::send(RuntimeCommand::Approval)` 回复；ACP jsonrpc id 与 option 列表只留在 adapter。Cloud 产品审批类型不再携带 `jsonrpc_id`。存库/API/Console/RuntimeCommand 共用 domain `ApprovalDecision`，并带 `ApprovalKind` / `ApprovalRisk`。已分类 Cloud payload 与审批表 payload 已是产品字段；未识别帧仍为 ACP JSON。API→worker `WorkerCommand.kind` 是 `Prompt` / `Cancel` 枚举。
@@ -104,7 +104,7 @@ RuntimeHandle → Agent → TurnEngine
 | Subagent | `crates/core/src/subagent.rs` | 经 `RuntimeScope`（含 ToolPolicy/SessionPolicy）注入；工具走 `DefaultToolExecutor`；模型走 `ModelExecutor`；`SessionPersistence::Ephemeral` |
 | Runtime | `crates/runtime` + `crates/agent-runtime` | 公共 command/event 在 `zene-runtime`；Agent actor 在 `zene-agent-runtime` |
 | ACP | `apps/cli/src/acp/server.rs` | transport adapter；创建/加载 session，并把请求接入 `RuntimeHandle` |
-| Cloud Job | `cloud/apps/worker` + `cloud/crates/runtime-client` | Job 经 `RuntimeClient::send` 发 Prompt/Cancel/Approval/Shutdown；API→worker `WorkerCommand` 为 Prompt/Cancel；审批产品面（决策/kind/risk）从 DB 到 Console 到 RuntimeCommand 共用 domain 类型；ACP `optionId` 只在 adapter 内映射 |
+| Cloud Job | `cloud/apps/worker` + `cloud/crates/runtime-client` | Job 经 `RuntimeClient::send` 发 Prompt/Steer/Cancel/Approval/SetMode/Shutdown；API→worker `WorkerCommand` 为 Prompt/Cancel；审批产品面（决策/kind/risk）从 DB 到 Console 到 RuntimeCommand 共用 domain 类型；ACP `optionId` 只在 adapter 内映射 |
 
 ## 3. 核心概念边界
 
@@ -952,7 +952,7 @@ Wave 0–12 的价值是把 **所有权和语义** 分开：Runtime 控制面、
 2. **`Agent` 仍是 God Object**：它同时持有 model、tools、sandbox、permission、hooks、MCP、todos、plan mode。下一步是把它变成 wiring，而不是继续实现 step。
 3. **模型抽象**：Turn 与 ContextModel 经 `PreparedContext` → `ModelRequest`；provider / `ChatClient` 仍用 `ChatRequest`。
 4. **审批 waiter 已打通（Wave 15）**：`PermissionGate::evaluate` 只做 allow/deny/ask；`Ask` 交给 `ApprovalBroker`。Runtime actor 持有 oneshot waiter，`RuntimeCommand::Approval` 唤醒 in-flight tool。ACP 只做事件适配。
-5. **Cloud 审批 command 已中性化（Wave 16）**：JobRunner 用 `send(RuntimeCommand::Approval { request_id, decision })` 回复审批。ACP jsonrpc id 与 `optionId` 只留在 adapter。Cloud 产品审批类型不再携带 `jsonrpc_id`。API→worker `WorkerCommand.kind` 是 Prompt/Cancel 枚举。存库/API/Console/RuntimeCommand 共用 domain `ApprovalDecision` / `ApprovalKind` / `ApprovalRisk`。Cloud 仍不是 `zene-runtime::RuntimeCommand`（无 Steer/SetMode，不引入该 crate）。
+5. **Cloud 审批 command 已中性化（Wave 16）**：JobRunner 用 `send(RuntimeCommand::Approval { request_id, decision })` 回复审批。ACP jsonrpc id 与 `optionId` 只留在 adapter。Cloud 产品审批类型不再携带 `jsonrpc_id`。API→worker `WorkerCommand.kind` 是 Prompt/Cancel 枚举。存库/API/Console/RuntimeCommand 共用 domain `ApprovalDecision` / `ApprovalKind` / `ApprovalRisk`。Cloud 与本地共享 command 变体已字段对齐，仍不引入 `zene-runtime`；`GetMode` / `ResumeSafeTurn` 仍仅本地。
 6. **Cloud 事件产品面已接到 Console（Wave 16）**：domain `CloudEventKind` 是 RuntimeClient 分类结果；已分类 payload 存产品字段。平台事件 payload 是 domain `PlatformEvent`。写入路径 `event_type` 是 `RunEventKind`。Console 时间线按 `event_type` 渲染 `text_delta` / `thought_delta` / `user_message` / `tool_call` / `tool_result`（含 legacy `params.update` 回放）。plan/usage/projection 等不进时间线。未识别帧仍为 `acp`。
 7. **JobRunner 只看见 RuntimeClient 产品类型（Wave 16）**：mock 与真实 ACP 共用 event pump、command poller 与 idle hold；`RuntimeNotification.event_type` 是 `CloudEventKind`；`RuntimeNotification.payload` 是 `RuntimePayload`；`RuntimeRequest::Approval` 携带 `ApprovalKind`、`allowed_decisions` 与 `ApprovalEventPayload`。`CreateApprovalRequest.payload` 同样是 `ApprovalEventPayload`。ACP `MockMsg` / `optionId` 只留在 adapter。
 8. **Worker 内部控制已走 domain 类型（Wave 16）**：claim / heartbeat / commands query / runtime session / push / PR 使用 `WorkerClaimRequest`、`WorkerFence`、`WorkerSessionRequest`、`WorkerPushRequest`、`WorkerPullRequestRequest`。产品 runtime session 仍存在 `acp_session_id` 列。CLI ACP transport session 未动。
@@ -1133,8 +1133,8 @@ Wave 16  统一 transport command/event  ← 已完成（含 Steer/SetMode）
 4. **仍明确未自动完成的项目**
    - pending tool / approval 的任意副作用自动 replay：继续采用 inspection/manual intervention，避免重复写操作。
    - Subagent 仍用内存消息（`SessionPersistence::Ephemeral`）；未做 durable child session。
-   - 本地与 Cloud 共用同一套 `RuntimeCommand` / `RuntimeEvent`（Cloud 已有 Prompt/Steer/Cancel/Approval/SetMode/Shutdown；API→worker 仍是 Prompt/Cancel；不依赖 `zene-runtime`）。`GetMode` / `ResumeSafeTurn` 仍仅本地。未识别 Cloud 帧仍为 ACP JSON。
-   - Agent-specific actor 已迁入 `zene-agent-runtime`（协议仍在 `zene-runtime`；Cloud 不依赖）。后续可继续收缩 core 对 protocol 的 re-export。
+   - 本地与 Cloud 共享 `RuntimeCommand` 变体已字段对齐（Prompt/Steer/Cancel/Approval/SetMode/Shutdown；API→worker 仍是 Prompt/Cancel；不依赖 `zene-runtime`）。`GetMode` / `ResumeSafeTurn` 仍仅本地（Cloud `send` 为 fire-and-forget，尚无 reply-shaped 控制面）。未识别 Cloud 帧仍为 ACP JSON。本地与 Cloud 的 `RuntimeEvent` 信封不同（turn 流 vs ACP session adapter），不合并为同一类型。
+   - Agent-specific actor 已迁入 `zene-agent-runtime`（协议仍在 `zene-runtime`；Cloud 不依赖）。`zene-core` 不再 re-export runtime protocol；ACP 从 `zene_agent_runtime` / `zene_runtime` 取类型。
    - 跨 VM outbox 的共享持久化实现；当前部署文档要求共享 POSIX volume 或后续 DB/object spool。
    - Provider / `ChatClient` 仍是 `ChatRequest` 面（Turn 与 ContextModel 已用 `ModelRequest`）。
 
@@ -1234,11 +1234,11 @@ Wave 16  统一 transport command/event  ← 已完成（含 Steer/SetMode）
 
 | 选择 | Wave | 理由 |
 | --- | --- | --- |
-| 当前最大杠杆 | Cloud 协议对齐评估 | ContextModel 与 ModelExecutor 已共用 ModelRequest；下一步可评估 Cloud command 面 |
-| 结构清理 | protocol re-export 收缩 | core 仍 re-export 部分 `zene-runtime` 类型供兼容 |
-| 可选后续 | GetMode on Cloud | Cloud 仍不引入 `zene-runtime`；本地 GetMode/ResumeSafeTurn 仍仅本地 |
+| 当前最大杠杆 | 未识别 Cloud 帧产品化 | command 面已评估对齐；事件信封仍分本地/Cloud 两套 |
+| 结构清理 | （已完成）core protocol re-export 收缩 | protocol 由 `zene-runtime` / `zene-agent-runtime` 拥有 |
+| 可选后续 | GetMode on Cloud | 需 reply-shaped 控制通道；模式今日已由 SetMode + `current_mode_update` 覆盖 |
 
-推荐组合：**ContextModel 中性化已落地**。下一步优先 Cloud 与本地 RuntimeCommand 对齐评估；不要碎片化。
+推荐组合：**Cloud/本地 RuntimeCommand 对齐已评估**；core 不再 re-export protocol。下一步优先未识别 Cloud 帧的产品化，或有明确协议后再做 GetMode；不要碎片化。
 
 **不要一上来做** actor 全量重写、完整 Event Sourcing、或再抽一层没有调用方的 crate。
 
@@ -1519,3 +1519,9 @@ Wave 16  统一 transport command/event  ← 已完成（含 Steer/SetMode）
 - compaction / memory flush / `compact_message_list_with_chat` 回调面同步中性化；Subagent compaction 直接把 `ModelRequest` 交给 `ModelExecutor`。
 - `zene-context` 依赖 `zene-model-executor`（仅类型与边界，不引入 Turn/runtime）。
 - 不做 Cloud。不改 Console。不自动 replay pending tools。
+
+### 2026-08-13 — Cloud RuntimeCommand alignment + core re-export shrink
+
+- **评估结论**：Cloud 与本地共享 `RuntimeCommand` 变体（Prompt/Steer/Cancel/Approval/SetMode/Shutdown）字段已对齐；故意保留差异为 `GetMode` / `ResumeSafeTurn`（本地有 `RuntimeResponse`；Cloud `send` 为 fire-and-forget）以及不同的 `RuntimeEvent` 信封。Cloud 继续不依赖 `zene-runtime`。
+- **代码**：`zene-core` 移除对 `ApprovalDecision` / `ExecutionState` / `RuntimeCommand` / `RuntimeLifecycle` / `RuntimeResponse` 的 re-export，并去掉对 `zene-runtime` 的依赖；ACP 从 `zene_agent_runtime` 取 `ApprovalDecision`。
+- 不做 GetMode on Cloud。不合并 RuntimeEvent。不改 Console。不自动 replay pending tools。
