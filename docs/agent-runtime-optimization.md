@@ -2,9 +2,9 @@
 
 > 状态：持续演进。Wave 0–12 把控制面/数据面的 **接口边界** 建起来了；Wave 13 起让默认执行路径真正走这些边界。
 >
-> **进度快照：2026-08-13，基线 `ad7e8e9`（PR #95 已合并）。**
+> **进度快照：2026-08-13，基线 `fa5a1dd`（PR #96 已合并）。**
 > 本文同时记录目标架构、已实现能力和剩余工作。
-> Wave 16 的 Steer/SetMode 已对齐；Wave 14 进行中（RuntimeScope / ToolCatalog 第一刀）。
+> Wave 16 的 Steer/SetMode 已对齐；Wave 14 进行中（Subagent 已走 RuntimeScope + DefaultToolExecutor）。
 >
 > 本文基于当前 zene runtime 实现，描述如何将 `Agent`、`Turn`、`Step`、`Session`、Cloud `Run` 和 ACP transport 拉开，并给出渐进式迁移方案。
 >
@@ -33,7 +33,7 @@
 4. Session 可以恢复历史并在安全 model-boundary 上自动恢复未完成 execution；pending tool、approval 和 failure 仍必须 inspection/manual intervention。
 5. `RuntimeHandle` 已成为 active turn、prompt queue、cancel 的控制所有者，但 Agent-specific actor 仍在 `zene-core`，ACP 仍保留 transport 层 session bookkeeping。
 6. 权限已拆成纯 `evaluate` + 异步 `ApprovalBroker`。ACP 监听 `ApprovalRequested` 再发 `RuntimeCommand::Approval`。Cloud JobRunner 经 `RuntimeClient::send(RuntimeCommand::Approval)` 回复；ACP jsonrpc id 与 option 列表只留在 adapter。Cloud 产品审批类型不再携带 `jsonrpc_id`。存库/API/Console/RuntimeCommand 共用 domain `ApprovalDecision`，并带 `ApprovalKind` / `ApprovalRisk`。已分类 Cloud payload 与审批表 payload 已是产品字段；未识别帧仍为 ACP JSON。API→worker `WorkerCommand.kind` 是 `Prompt` / `Cancel` 枚举。
-7. `ToolRegistry` 仍同时承担目录与执行；`RuntimeScope` 尚未成为 Subagent 的正式差异注入面。
+7. `ToolRegistry` 仍同时承担目录与执行；`ToolCatalog` 已抽出定义端口，Subagent 经 `RuntimeScope` 注入。主 Agent 仍直接持有 registry。
 
 本文目标不是立刻重写 runtime，而是建立一个可以渐进落地的目标架构：
 
@@ -1097,7 +1097,7 @@ Wave 16  统一 transport command/event  ← 已完成（含 Steer/SetMode）
 | Wave 11 | 已完成第一阶段 | ModelExecutor、ContextModel、usage boundary、runtime protocol 和 lifecycle publisher 已落地；Agent-specific actor 尚在 core |
 | Wave 12 | 已完成第一阶段 | safe resume、Cloud RuntimeClient、neutral runtime notifications、fenced command lease/ack、atomic state/event writes、outbox replay 和真实 replacement 测试已落地 |
 | Wave 13 | 已完成 | 默认 Agent/Subagent 路径消费 `PreparedContext`；PR #60 |
-| Wave 14 | 进行中 | RuntimeScope + ToolCatalog 第一刀已接到 Subagent；Agent 退回 wiring 仍待做 |
+| Wave 14 | 进行中 | RuntimeScope + ToolCatalog + Subagent `DefaultToolExecutor`；Agent 退回 wiring / ChatBackend→ModelExecutor 仍待做 |
 | Wave 15 | 已完成 | `evaluate` + `ApprovalBroker` + runtime-owned waiter；PR #61 / #62 |
 | Wave 16 | 已完成 command 对齐 | Cloud RuntimeCommand 含 Prompt/Steer/Cancel/Approval/SetMode/Shutdown；仍不依赖 `zene-runtime` |
 
@@ -1455,3 +1455,9 @@ Wave 16  统一 transport command/event  ← 已完成（含 Steer/SetMode）
 - 新增 `zene_tools::RuntimeScope`：Subagent 经 scope 注入 profile / depth / max_depth / tool catalog。
 - 新增 `ToolCatalog` trait；`ToolRegistry` 实现该 trait。Subagent `PreparedContext.tools` 经 catalog 取定义。
 - 保留 `SubagentRunner` facade。不搬 Agent actor。不做 Cloud 改动。
+
+### 2026-08-13 — Wave 14 Subagent DefaultToolExecutor
+
+- Subagent 工具批次经 `execute_subagent_tool_batch` 走与主 Agent 相同的 `DefaultToolExecutor`（permission / scheduler / output bound / dedup）。
+- 删除并行的 `run_subagent_tools` 顺序执行路径。无 permission 时仍 bypass。
+- 不替换 Subagent `ChatBackend`。不搬 Agent actor。不做 Cloud 改动。
