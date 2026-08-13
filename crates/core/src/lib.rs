@@ -1,13 +1,11 @@
 use anyhow::{bail, Context, Result};
-use futures::StreamExt;
 use parking_lot::Mutex;
-use std::io::{self, Write};
 use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
 use zene_config::ZeneConfig;
-use zene_context::{ContextDeps, ContextEngine, PrefireClientFactory, StepContext};
-use zene_llm::{ChatClient, ChatRequest, Message, StreamEvent, TokenUsage, ToolCall};
+use zene_context::{ContextDeps, ContextEngine, PrefireClientFactory};
+use zene_llm::{ChatClient, Message, TokenUsage, ToolCall};
 
 use zene_mcp::McpManager;
 use zene_model_executor::ModelExecutor;
@@ -32,6 +30,7 @@ pub use zene_model_executor as model_executor;
 mod context_events;
 mod context_hooks;
 mod events;
+mod model_step;
 mod plan_mode;
 mod runtime;
 mod subagent;
@@ -74,7 +73,7 @@ pub use zene_turn::{
 };
 pub use zene_workspace::{build_system_prompt, FsWorkspaceProvider, WorkspaceProvider};
 
-fn make_context_deps<'a>(
+pub(crate) fn make_context_deps<'a>(
     session: &'a mut SessionRecord,
     compaction_config: &'a zene_context::CompactionConfig,
     model: &'a str,
@@ -923,196 +922,30 @@ impl Agent {
         options: &PromptOptions,
         cancel: Option<&CancellationToken>,
     ) -> Result<zene_turn::StepResult> {
-        let tools = context.tools.clone();
-        let step = StepContext {
-            estimate_tokens: context.estimate_tokens.unwrap_or(0),
-            metadata: context.metadata.unwrap_or_default(),
-            messages: context.messages,
-        };
-        let (assistant_message, usage) = self
-            .run_llm_step(&step, &tools, options, cancel)
-            .await
-            .context("llm step")?;
-        let had_tool_calls = assistant_message
-            .tool_calls
-            .as_ref()
-            .is_some_and(|calls| !calls.is_empty());
-        Ok(zene_turn::StepResult {
-            message: assistant_message,
-            usage,
-            had_tool_calls,
-        })
-    }
-
-    async fn run_llm_step(
-        &mut self,
-        step: &StepContext,
-        tools: &[zene_llm::ToolDefinition],
-        options: &PromptOptions,
-        cancel: Option<&CancellationToken>,
-    ) -> Result<(Message, Option<TokenUsage>)> {
-        let mut overflow_state = model_executor::OverflowRetryState::default();
-        let mut messages = step.messages.clone();
-        let mut metadata = step.metadata.clone();
-
-        loop {
-            if Self::check_cancelled(cancel)? {
-                return Err(zene_turn::aborted_error());
-            }
-
-            debug!(
-                estimated_context_tokens = step.estimate_tokens,
-                message_count = messages.len(),
-                "llm step context estimate"
-            );
-
-            let request = model_executor::build_request(
-                &self.config.model,
-                messages.clone(),
-                tools.to_vec(),
-                options.stream,
-                Some(metadata.clone()),
-            );
-
-            let result = if options.stream {
-                self.run_streaming_step(self.model_executor.as_ref(), request, options, cancel)
-                    .await
-            } else {
-                self.model_executor
-                    .complete(request)
-                    .await
-                    .map(|response| (response.message, response.usage))
-            };
-
-            match result {
-                Ok(value) => return Ok(value),
-                Err(err) if ContextEngine::is_context_overflow_error(&err) => {
-                    if let Some(refreshed) =
-                        self.recover_overflow(tools, &mut overflow_state).await?
-                    {
-                        messages = refreshed.messages;
-                        metadata = refreshed.metadata;
-                        continue;
-                    }
-                    return Err(err);
-                }
-                Err(err) => return Err(err),
-            }
-        }
-    }
-
-    async fn recover_overflow(
-        &mut self,
-        tools: &[zene_llm::ToolDefinition],
-        overflow_state: &mut model_executor::OverflowRetryState,
-    ) -> Result<Option<StepContext>> {
-        self.sync_todos_to_session();
-        let estimator = self.token_estimator();
-        let background_tasks = self.background.lock().list();
-        let hooks = context_hooks::ZeneContextHooks::new(
-            &self.session,
-            &background_tasks,
-            self.is_plan_mode_active(),
-        );
-        let compaction_config = context_config::context_compaction_config(&self.config.compaction);
-        let mut handler = context_events::AgentContextHandler::new(
-            self.context_model.as_ref(),
-            &self.config.model,
-            self.sandbox.workdir(),
-        );
-        let prefire_factory = self.prefire_client_factory();
-        let (mut overflow_truncated, mut overflow_summarized) = overflow_state.flags();
-        let overflow = {
-            let mut deps = make_context_deps(
-                &mut self.session,
-                &compaction_config,
-                &self.config.model,
-                self.context_model.as_ref(),
-                Some(&hooks),
-                &self.system_prompt,
-                &estimator,
-                &mut handler,
-                prefire_factory,
-            );
-            self.context
-                .handle_overflow(
-                    &mut deps,
-                    tools,
-                    &mut overflow_truncated,
-                    &mut overflow_summarized,
-                )
-                .await?
-        };
-        overflow_state.set_flags(overflow_truncated, overflow_summarized);
-        if let Some(result) = &overflow.compaction {
-            self.record_compaction(result)?;
-        }
-        overflow
-            .retry
-            .then(|| {
-                self.context
-                    .try_assemble_step(&self.session, tools, &estimator)
-            })
-            .transpose()
+        let plan_mode_active = self.is_plan_mode_active();
+        model_step::run_model_step(
+            model_step::ModelStepDeps {
+                config: &self.config,
+                model_executor: self.model_executor.as_ref(),
+                context_model: self.context_model.as_ref(),
+                context: &mut self.context,
+                session: &mut self.session,
+                system_prompt: &self.system_prompt,
+                workdir: self.sandbox.workdir(),
+                background: &self.background,
+                todos: &self.todos,
+                plan_mode_active,
+                record_writer: &self.record_writer,
+            },
+            context,
+            options,
+            cancel,
+        )
+        .await
     }
 
     fn check_cancelled(cancel: Option<&CancellationToken>) -> Result<bool> {
         Ok(zene_turn::is_cancelled(cancel))
-    }
-
-    async fn run_streaming_step(
-        &self,
-        executor: &dyn zene_model_executor::ModelExecutor,
-        request: ChatRequest,
-        options: &PromptOptions,
-        cancel: Option<&CancellationToken>,
-    ) -> Result<(Message, Option<TokenUsage>)> {
-        if Self::check_cancelled(cancel)? {
-            return Err(zene_turn::aborted_error());
-        }
-
-        let mut stream = executor.stream(request).await?;
-        let mut accumulator = model_executor::StreamAccumulator::default();
-
-        while let Some(event) = stream.next().await {
-            if Self::check_cancelled(cancel)? {
-                return Err(zene_turn::aborted_error());
-            }
-            let event = event.context("stream event")?;
-            match &event {
-                StreamEvent::TextDelta(delta) => {
-                    emit_event(
-                        &options.event_handler,
-                        AgentEvent::TextDelta {
-                            delta: delta.clone(),
-                        },
-                    );
-                    if !options.quiet {
-                        print!("{delta}");
-                        let _ = io::stdout().flush();
-                    }
-                }
-                StreamEvent::ThoughtDelta(delta) => {
-                    emit_event(
-                        &options.event_handler,
-                        AgentEvent::ThoughtDelta {
-                            delta: delta.clone(),
-                        },
-                    );
-                }
-                StreamEvent::ToolCallDelta { .. } => {}
-                StreamEvent::Done { .. } => {}
-            }
-            if accumulator.apply(&event) {
-                break;
-            }
-        }
-
-        if accumulator.has_text() && !options.quiet {
-            println!();
-        }
-
-        Ok(accumulator.finish())
     }
 
     async fn run_tools(
