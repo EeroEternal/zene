@@ -2,7 +2,7 @@ use anyhow::Result;
 use async_trait::async_trait;
 use tokio_util::sync::CancellationToken;
 use tracing::debug;
-use zene_llm::{Message, TokenUsage, ToolCall, ToolDefinition};
+use zene_llm::{ContextMetadata, Message, TokenUsage, ToolCall, ToolDefinition};
 
 use crate::state::{aborted_error, is_cancelled, StepId, TurnId, TurnState};
 
@@ -116,11 +116,17 @@ pub trait TurnSessionPort<O>: Send {
 }
 
 /// Context projected for one model invocation.
+///
+/// TurnEngine passes this value from [`ContextAssemblerPort`] to
+/// [`ModelExecutorPort`]. Default-path ports must consume these fields rather
+/// than re-assembling context inside `run_model`.
 #[derive(Debug, Clone, Default)]
 pub struct PreparedContext {
     pub messages: Vec<Message>,
     pub tools: Vec<ToolDefinition>,
     pub context_epoch: Option<u64>,
+    pub metadata: Option<ContextMetadata>,
+    pub estimate_tokens: Option<u32>,
 }
 
 /// Context projection capabilities consumed by [`TurnEngine`].
@@ -448,6 +454,7 @@ mod tests {
         active: Option<TurnState>,
         model_calls: Arc<AtomicUsize>,
         max_steps: u32,
+        seen_user: Arc<std::sync::Mutex<Option<String>>>,
     }
 
     impl TurnEnginePorts for DirectPorts {
@@ -461,7 +468,13 @@ mod tests {
             _options: &(),
             _cancel: Option<&CancellationToken>,
         ) -> Result<PreparedContext> {
-            Ok(PreparedContext::default())
+            Ok(PreparedContext {
+                messages: vec![Message::user("from-assembler")],
+                tools: Vec::new(),
+                context_epoch: Some(7),
+                metadata: None,
+                estimate_tokens: Some(12),
+            })
         }
     }
 
@@ -505,11 +518,13 @@ mod tests {
     impl ModelExecutorPort<()> for DirectPorts {
         async fn run_model(
             &mut self,
-            _context: PreparedContext,
+            context: PreparedContext,
             _options: &(),
             _cancel: Option<&CancellationToken>,
         ) -> Result<StepResult> {
             let call = self.model_calls.fetch_add(1, Ordering::SeqCst);
+            *self.seen_user.lock().expect("seen_user") =
+                context.messages.first().and_then(|message| message.content.clone());
             Ok(if call == 0 {
                 StepResult {
                     message: Message::assistant("direct"),
@@ -641,10 +656,12 @@ mod tests {
     #[test]
     fn engine_accepts_direct_ports_without_legacy_runtime() {
         let model_calls = Arc::new(AtomicUsize::new(0));
+        let seen_user = Arc::new(std::sync::Mutex::new(None));
         let mut ports = DirectPorts {
             active: None,
             model_calls: Arc::clone(&model_calls),
             max_steps: 4,
+            seen_user: Arc::clone(&seen_user),
         };
 
         let outcome =
@@ -654,6 +671,10 @@ mod tests {
         assert_eq!(outcome.status, TurnStatus::Completed);
         assert_eq!(outcome.steps, 1);
         assert_eq!(model_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            seen_user.lock().expect("seen_user").as_deref(),
+            Some("from-assembler")
+        );
     }
 
     #[test]

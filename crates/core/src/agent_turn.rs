@@ -13,9 +13,9 @@ use crate::Agent;
 
 /// Native turn-engine ports for the primary agent runtime.
 ///
-/// This keeps the top-level agent on the explicit port contract while
-/// preserving the existing [`TurnRuntime`] implementation as the delegation
-/// source. Subagents continue to use the compatibility adapter.
+/// Context assembly and model invocation are separate port calls. The engine
+/// passes [`PreparedContext`] from assembler to executor; `Agent` no longer
+/// re-assembles context inside the model step.
 pub(super) struct AgentTurnPorts<'a> {
     agent: &'a mut Agent,
 }
@@ -70,12 +70,11 @@ impl TurnSessionPort<crate::PromptOptions> for AgentTurnPorts<'_> {
 impl ContextAssemblerPort<crate::PromptOptions> for AgentTurnPorts<'_> {
     async fn prepare_context(
         &mut self,
-        _options: &crate::PromptOptions,
-        _cancel: Option<&CancellationToken>,
+        options: &crate::PromptOptions,
+        cancel: Option<&CancellationToken>,
     ) -> Result<PreparedContext, anyhow::Error> {
-        // Agent::run_step assembles context as part of the legacy runtime
-        // hook. Keep this deliberate no-op while the native ports migrate.
-        Ok(PreparedContext::default())
+        self.agent.record_step_started()?;
+        self.agent.prepare_step_context(options, cancel).await
     }
 }
 
@@ -83,11 +82,11 @@ impl ContextAssemblerPort<crate::PromptOptions> for AgentTurnPorts<'_> {
 impl ModelExecutorPort<crate::PromptOptions> for AgentTurnPorts<'_> {
     async fn run_model(
         &mut self,
-        _context: PreparedContext,
+        context: PreparedContext,
         options: &crate::PromptOptions,
         cancel: Option<&CancellationToken>,
     ) -> Result<StepResult, anyhow::Error> {
-        <Agent as TurnRuntime>::run_step(self.agent, options, cancel).await
+        self.agent.invoke_model(context, options, cancel).await
     }
 
     async fn on_step_usage(
@@ -169,33 +168,9 @@ impl TurnRuntime for Agent {
         options: &Self::Options,
         cancel: Option<&CancellationToken>,
     ) -> Result<StepResult, anyhow::Error> {
-        if let Some(turn) = self.active_turn.as_ref() {
-            if let Some(step_id) = turn.step_id {
-                let turn_id = turn.turn_id.to_string();
-                let step_id = step_id.to_string();
-                self.session
-                    .record_step_started(&turn_id, &step_id, turn.step);
-                let idempotency_key = format!("{turn_id}/{step_id}/started");
-                let step_event = self.session.record_checkpoint(
-                    Some(&turn_id),
-                    Some(&step_id),
-                    None,
-                    "step_started",
-                    &idempotency_key,
-                );
-                self.record_writer.append_execution_link(
-                    &idempotency_key,
-                    &step_event.id,
-                    step_event.sequence,
-                )?;
-            }
-        }
-        let (message, usage, had_tool_calls) = Agent::run_step(self, options, cancel).await?;
-        Ok(StepResult {
-            message,
-            usage,
-            had_tool_calls,
-        })
+        self.record_step_started()?;
+        let context = self.prepare_step_context(options, cancel).await?;
+        self.invoke_model(context, options, cancel).await
     }
 
     async fn on_step_usage(
@@ -284,11 +259,52 @@ impl TurnRuntime for Agent {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use zene_turn::TurnEnginePorts;
 
     fn assert_turn_engine_ports<P: TurnEnginePorts>() {}
 
     #[test]
     fn agent_turn_ports_implements_turn_engine_ports() {
         assert_turn_engine_ports::<AgentTurnPorts<'static>>();
+    }
+
+    #[tokio::test]
+    async fn prepare_context_projects_session_messages() {
+        let workdir = tempfile::tempdir().expect("workdir");
+        let mut config = zene_config::ZeneConfig::default();
+        config.provider = "anthropic".into();
+        config.anthropic_api_key = Some("test-key".into());
+        let session = zene_session::SessionRecord::new(workdir.path());
+        let mut agent = crate::AgentBuilder::new(
+            config,
+            zene_sandbox::LocalSandbox::new(workdir.path()),
+            session,
+            zene_permission::PermissionMode::BypassPermissions,
+        )
+        .without_mcp()
+        .build()
+        .await
+        .expect("build agent");
+
+        zene_turn::begin_turn(&mut agent.active_turn).expect("begin turn");
+        <Agent as TurnRuntime>::prepare_turn(&mut agent, "hello from test")
+            .await
+            .expect("prepare turn");
+
+        let mut ports = AgentTurnPorts::new(&mut agent);
+        let context = ports
+            .prepare_context(&crate::PromptOptions::default(), None)
+            .await
+            .expect("prepare context");
+
+        assert!(
+            context
+                .messages
+                .iter()
+                .any(|message| message.content.as_deref() == Some("hello from test")),
+            "assembler must project the user prompt instead of returning an empty context"
+        );
+        assert!(context.context_epoch.is_some());
+        assert!(context.metadata.is_some());
     }
 }

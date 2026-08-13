@@ -63,6 +63,7 @@ pub struct AgentBuilder {
     background: Option<SharedBackgroundTasks>,
     record_writer: Option<AgentRecordWriter>,
     session_store: Option<Arc<dyn SessionStore>>,
+    model_executor: Option<Arc<dyn zene_model_executor::ModelExecutor>>,
     external_session_id: Option<String>,
     include_workspace_context: Option<bool>,
 }
@@ -93,6 +94,7 @@ impl AgentBuilder {
             background: None,
             record_writer: None,
             session_store: None,
+            model_executor: None,
             external_session_id: None,
             include_workspace_context: None,
         }
@@ -143,6 +145,15 @@ impl AgentBuilder {
     /// Inject the session snapshot store used by runtime writeback.
     pub fn session_store(mut self, store: Arc<dyn SessionStore>) -> Self {
         self.session_store = Some(store);
+        self
+    }
+
+    /// Inject a runtime model executor instead of wrapping [`ChatClient`].
+    pub fn model_executor(
+        mut self,
+        executor: Arc<dyn zene_model_executor::ModelExecutor>,
+    ) -> Self {
+        self.model_executor = Some(executor);
         self
     }
 
@@ -306,9 +317,11 @@ impl AgentBuilder {
 
         Ok(Agent {
             config: self.config,
-            model_executor: Arc::new(zene_model_executor::ChatClientExecutor::new(Arc::clone(
-                &client,
-            ))),
+            model_executor: self.model_executor.unwrap_or_else(|| {
+                Arc::new(zene_model_executor::ChatClientExecutor::new(Arc::clone(
+                    &client,
+                )))
+            }),
             context_model: client,
             tools: Arc::new(tools),
             sandbox,
