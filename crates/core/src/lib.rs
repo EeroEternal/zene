@@ -46,6 +46,7 @@ pub use zene_context::{
     EstimateProvider, InputLadderStage, TiktokenEncoding, TokenEstimator,
 };
 
+use crate::agent_turn::AgentTurnPorts;
 use crate::tool_executor::{DefaultToolExecutor, ToolExecutorDeps};
 pub use agent_builder::AgentBuilder;
 pub use events::{emit_event, runtime_event_handler, AgentEvent, EventHandler};
@@ -732,7 +733,7 @@ impl Agent {
         options: &PromptOptions,
         cancel: Option<&CancellationToken>,
     ) -> Result<String> {
-        let mut ports = zene_turn::LegacyTurnPorts::new(self);
+        let mut ports = AgentTurnPorts::new(self);
         zene_turn::TurnEngine::new(&mut ports)
             .run(zene_turn::TurnRequest::new(user_input, options, cancel))
             .await

@@ -3,10 +3,125 @@
 use async_trait::async_trait;
 use tokio_util::sync::CancellationToken;
 use zene_llm::{Message, TokenUsage, ToolCall};
-use zene_turn::{max_turns_notice, StepResult, ToolBatchOutcome, TurnRuntime};
+use zene_turn::{
+    max_turns_notice, ContextAssemblerPort, EventSinkPort, ModelExecutorPort, PreparedContext,
+    StepResult, ToolBatchOutcome, ToolExecutorPort, TurnEnginePorts, TurnRuntime, TurnSessionPort,
+};
 
 use crate::events::{emit_event, AgentEvent};
 use crate::Agent;
+
+/// Native turn-engine ports for the primary agent runtime.
+///
+/// This keeps the top-level agent on the explicit port contract while
+/// preserving the existing [`TurnRuntime`] implementation as the delegation
+/// source. Subagents continue to use the compatibility adapter.
+pub(super) struct AgentTurnPorts<'a> {
+    agent: &'a mut Agent,
+}
+
+impl<'a> AgentTurnPorts<'a> {
+    pub(super) fn new(agent: &'a mut Agent) -> Self {
+        Self { agent }
+    }
+}
+
+impl TurnEnginePorts for AgentTurnPorts<'_> {
+    type Options = crate::PromptOptions;
+}
+
+#[async_trait]
+impl TurnSessionPort<crate::PromptOptions> for AgentTurnPorts<'_> {
+    fn max_steps(&self) -> u32 {
+        <Agent as TurnRuntime>::max_steps(self.agent)
+    }
+
+    fn active_turn(&mut self) -> Option<&mut zene_turn::TurnState> {
+        <Agent as TurnRuntime>::active_turn(self.agent)
+    }
+
+    async fn prepare_turn(&mut self, user_input: &str) -> Result<(), anyhow::Error> {
+        <Agent as TurnRuntime>::prepare_turn(self.agent, user_input).await
+    }
+
+    fn inject_steer(&mut self, options: &crate::PromptOptions) -> Result<bool, anyhow::Error> {
+        <Agent as TurnRuntime>::inject_steer(self.agent, options)
+    }
+
+    fn push_assistant(&mut self, message: Message) {
+        <Agent as TurnRuntime>::push_assistant(self.agent, message);
+    }
+
+    fn on_incomplete_turn(
+        &mut self,
+        max_steps: u32,
+        final_text: &mut String,
+        options: &crate::PromptOptions,
+    ) -> Result<(), anyhow::Error> {
+        <Agent as TurnRuntime>::on_incomplete_turn(self.agent, max_steps, final_text, options)
+    }
+
+    async fn finish_turn(&mut self) -> Result<(), anyhow::Error> {
+        <Agent as TurnRuntime>::finish_turn(self.agent).await
+    }
+}
+
+#[async_trait]
+impl ContextAssemblerPort<crate::PromptOptions> for AgentTurnPorts<'_> {
+    async fn prepare_context(
+        &mut self,
+        _options: &crate::PromptOptions,
+        _cancel: Option<&CancellationToken>,
+    ) -> Result<PreparedContext, anyhow::Error> {
+        // Agent::run_step assembles context as part of the legacy runtime
+        // hook. Keep this deliberate no-op while the native ports migrate.
+        Ok(PreparedContext::default())
+    }
+}
+
+#[async_trait]
+impl ModelExecutorPort<crate::PromptOptions> for AgentTurnPorts<'_> {
+    async fn run_model(
+        &mut self,
+        _context: PreparedContext,
+        options: &crate::PromptOptions,
+        cancel: Option<&CancellationToken>,
+    ) -> Result<StepResult, anyhow::Error> {
+        <Agent as TurnRuntime>::run_step(self.agent, options, cancel).await
+    }
+
+    async fn on_step_usage(
+        &mut self,
+        usage: &TokenUsage,
+        options: &crate::PromptOptions,
+    ) -> Result<(), anyhow::Error> {
+        <Agent as TurnRuntime>::on_step_usage(self.agent, usage, options).await
+    }
+}
+
+#[async_trait]
+impl ToolExecutorPort<crate::PromptOptions> for AgentTurnPorts<'_> {
+    async fn run_tools(
+        &mut self,
+        tool_calls: &[ToolCall],
+        options: &crate::PromptOptions,
+        cancel: Option<&CancellationToken>,
+    ) -> Result<ToolBatchOutcome, anyhow::Error> {
+        <Agent as TurnRuntime>::run_tools(self.agent, tool_calls, options, cancel).await
+    }
+}
+
+impl EventSinkPort<crate::PromptOptions> for AgentTurnPorts<'_> {
+    fn on_step_begin(
+        &self,
+        turn_id: zene_turn::TurnId,
+        step_id: zene_turn::StepId,
+        step: u32,
+        options: &crate::PromptOptions,
+    ) {
+        <Agent as TurnRuntime>::on_step_begin(self.agent, turn_id, step_id, step, options);
+    }
+}
 
 #[async_trait]
 impl TurnRuntime for Agent {
@@ -163,5 +278,17 @@ impl TurnRuntime for Agent {
         self.sync_todos_to_session();
         self.save_session()?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn assert_turn_engine_ports<P: TurnEnginePorts>() {}
+
+    #[test]
+    fn agent_turn_ports_implements_turn_engine_ports() {
+        assert_turn_engine_ports::<AgentTurnPorts<'static>>();
     }
 }
