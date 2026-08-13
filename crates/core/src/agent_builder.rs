@@ -64,6 +64,7 @@ pub struct AgentBuilder {
     record_writer: Option<AgentRecordWriter>,
     session_store: Option<Arc<dyn SessionStore>>,
     model_executor: Option<Arc<dyn zene_model_executor::ModelExecutor>>,
+    approval_broker: Option<zene_permission::SharedApprovalBroker>,
     external_session_id: Option<String>,
     include_workspace_context: Option<bool>,
 }
@@ -95,6 +96,7 @@ impl AgentBuilder {
             record_writer: None,
             session_store: None,
             model_executor: None,
+            approval_broker: None,
             external_session_id: None,
             include_workspace_context: None,
         }
@@ -154,6 +156,12 @@ impl AgentBuilder {
         executor: Arc<dyn zene_model_executor::ModelExecutor>,
     ) -> Self {
         self.model_executor = Some(executor);
+        self
+    }
+
+    /// Inject the async approval waiter used when policy returns `Ask`.
+    pub fn approval_broker(mut self, broker: zene_permission::SharedApprovalBroker) -> Self {
+        self.approval_broker = Some(broker);
         self
     }
 
@@ -347,6 +355,7 @@ impl AgentBuilder {
                 .unwrap_or_else(|| Arc::new(FileSessionStore)),
             mcp,
             background: self.background.unwrap_or_else(shared_background_tasks),
+            approval_broker: self.approval_broker,
         })
     }
 }

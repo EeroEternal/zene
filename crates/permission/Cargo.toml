@@ -10,7 +10,9 @@ keywords = ["agent", "permission", "security"]
 categories = ["development-tools"]
 
 [dependencies]
+async-trait.workspace = true
 parking_lot.workspace = true
 serde_json.workspace = true
+tokio.workspace = true
 
 [dev-dependencies]

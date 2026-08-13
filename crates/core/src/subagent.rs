@@ -38,11 +38,20 @@ impl ChatBackend for ChatClient {
 
 pub struct CoreSubagentRunner {
     config: ZeneConfig,
+    broker: Option<zene_permission::SharedApprovalBroker>,
 }
 
 impl CoreSubagentRunner {
     pub fn new(config: ZeneConfig) -> Self {
-        Self { config }
+        Self {
+            config,
+            broker: None,
+        }
+    }
+
+    pub fn with_broker(mut self, broker: Option<zene_permission::SharedApprovalBroker>) -> Self {
+        self.broker = broker;
+        self
     }
 }
 
@@ -63,7 +72,7 @@ impl SubagentRunner for CoreSubagentRunner {
             .map(|env| env.depth)
             .unwrap_or(0);
 
-        run_subagent(
+        run_subagent_with_runner(
             prompt,
             profile,
             sandbox,
@@ -72,6 +81,8 @@ impl SubagentRunner for CoreSubagentRunner {
             parent_ctx.cancel.as_ref(),
             parent_depth,
             parent_ctx.permission.clone(),
+            None,
+            self.broker.clone(),
         )
         .await
     }
@@ -97,6 +108,7 @@ pub async fn run_subagent(
         parent_depth,
         permission,
         None,
+        None,
     )
     .await
 }
@@ -111,6 +123,7 @@ pub(crate) async fn run_subagent_with_runner(
     parent_depth: u32,
     permission: Option<SharedToolPermission>,
     runner: Option<Arc<dyn SubagentRunner>>,
+    broker: Option<zene_permission::SharedApprovalBroker>,
 ) -> Result<String> {
     let subagent_depth = parent_depth + 1;
     if subagent_depth > DEFAULT_SUBAGENT_MAX_DEPTH {
@@ -119,7 +132,9 @@ pub(crate) async fn run_subagent_with_runner(
         );
     }
 
-    let runner = runner.unwrap_or_else(|| Arc::new(CoreSubagentRunner::new(config.clone())));
+    let runner = runner.unwrap_or_else(|| {
+        Arc::new(CoreSubagentRunner::new(config.clone()).with_broker(broker.clone()))
+    });
     let subagent_env = SubagentEnv {
         depth: subagent_depth,
         max_depth: DEFAULT_SUBAGENT_MAX_DEPTH,
@@ -132,6 +147,7 @@ pub(crate) async fn run_subagent_with_runner(
         backend,
         subagent_env,
         permission,
+        broker,
     );
 
     TurnEngine::new(&mut runtime)
@@ -150,6 +166,7 @@ struct SubagentTurnRuntime<'a> {
     backend: &'a dyn ChatBackend,
     subagent_env: SubagentEnv,
     permission: Option<SharedToolPermission>,
+    broker: Option<zene_permission::SharedApprovalBroker>,
     tools: ToolRegistry,
     messages: Vec<Message>,
     compaction_config: zene_context::CompactionConfig,
@@ -164,6 +181,7 @@ impl<'a> SubagentTurnRuntime<'a> {
         backend: &'a dyn ChatBackend,
         subagent_env: SubagentEnv,
         permission: Option<SharedToolPermission>,
+        broker: Option<zene_permission::SharedApprovalBroker>,
     ) -> Self {
         let system_prompt = subagent_system_prompt(profile, sandbox.workdir());
         Self {
@@ -172,6 +190,7 @@ impl<'a> SubagentTurnRuntime<'a> {
             backend,
             subagent_env,
             permission,
+            broker,
             tools: tools_for_profile(profile),
             messages: vec![Message::system(&system_prompt)],
             compaction_config: subagent_compaction_config(
@@ -332,6 +351,7 @@ impl ToolExecutorPort<()> for SubagentTurnRuntime<'_> {
             cancel,
             &self.subagent_env,
             self.permission.clone(),
+            self.broker.clone(),
             &mut self.messages,
         )
         .await?;
@@ -407,6 +427,7 @@ impl TurnRuntime for SubagentTurnRuntime<'_> {
             cancel,
             &self.subagent_env,
             self.permission.clone(),
+            self.broker.clone(),
             &mut self.messages,
         )
         .await?;
@@ -449,6 +470,7 @@ async fn run_subagent_tools(
     cancel: Option<&CancellationToken>,
     subagent_env: &SubagentEnv,
     permission: Option<SharedToolPermission>,
+    broker: Option<zene_permission::SharedApprovalBroker>,
     messages: &mut Vec<Message>,
 ) -> Result<()> {
     let ctx = ToolContext {
@@ -468,7 +490,17 @@ async fn run_subagent_tools(
         }
 
         let allowed = if let Some(ref gate) = permission {
-            gate.lock().approve_tool_call(&call.name, &call.arguments)?
+            zene_permission::resolve_permission(
+                gate,
+                broker.as_ref(),
+                zene_permission::ApprovalRequest {
+                    request_id: call.id.clone(),
+                    tool_name: call.name.clone(),
+                    arguments: call.arguments.clone(),
+                    tool_call_id: Some(call.id.clone()),
+                },
+            )
+            .await?
         } else {
             true
         };
@@ -681,7 +713,7 @@ mod tests {
                 .as_ref()
                 .map(|env| env.depth)
                 .unwrap_or(0);
-            run_subagent(
+            run_subagent_with_runner(
                 prompt,
                 profile,
                 sandbox,
@@ -690,6 +722,8 @@ mod tests {
                 parent_ctx.cancel.as_ref(),
                 parent_depth,
                 parent_ctx.permission.clone(),
+                None,
+                None,
             )
             .await
         }

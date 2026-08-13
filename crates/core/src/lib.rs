@@ -58,8 +58,10 @@ pub use tool_dedup::{append_reminder, ToolDedup};
 pub use tool_scheduler::{classify_tool_accesses, ToolScheduler};
 pub use zene_hooks::{HookBlock, HookRunner, HookSpec};
 pub use zene_permission::{
-    approve_tool_call, policy_denied, PermissionGate, PermissionMode, PermissionPrompter,
-    PermissionRule, PromptChoice, RuleAction, SharedToolPermission, ToolPermission,
+    approve_tool_call, policy_denied, resolve_permission, ApprovalBroker, ApprovalRequest,
+    AutoApprovalBroker, PermissionGate, PermissionMode, PermissionPrompter, PermissionRule,
+    PolicyDecision, PromptChoice, RuleAction, SharedApprovalBroker, SharedToolPermission,
+    TerminalApprovalBroker, ToolPermission,
 };
 pub use zene_runtime::{
     ApprovalDecision, ExecutionState, RuntimeCommand, RuntimeLifecycle, RuntimeResponse,
@@ -122,6 +124,7 @@ pub struct Agent {
     session_store: Arc<dyn zene_session::SessionStore>,
     mcp: Option<McpManager>,
     background: SharedBackgroundTasks,
+    approval_broker: Option<zene_permission::SharedApprovalBroker>,
 }
 
 pub struct PromptOptions {
@@ -626,6 +629,11 @@ impl Agent {
         self.permission = Arc::new(Mutex::new(gate));
     }
 
+    /// Inject the async approval waiter used when policy returns `Ask`.
+    pub fn set_approval_broker(&mut self, broker: zene_permission::SharedApprovalBroker) {
+        self.approval_broker = Some(broker);
+    }
+
     /// Replace the AskUserQuestion prompter (e.g. TUI modal).
     pub fn set_ask_user_prompter(&mut self, prompter: SharedAskUserPrompter) {
         self.ask_user = prompter;
@@ -1106,12 +1114,15 @@ impl Agent {
             )?;
         }
 
-        let subagent_runner = Arc::new(CoreSubagentRunner::new(self.config.clone()));
+        let subagent_runner = Arc::new(
+            CoreSubagentRunner::new(self.config.clone()).with_broker(self.approval_broker.clone()),
+        );
         let result = {
             let executor = DefaultToolExecutor::new(ToolExecutorDeps {
                 tools: Arc::clone(&self.tools),
                 sandbox: Arc::clone(&self.sandbox),
                 permission: Arc::clone(&self.permission),
+                approval_broker: self.approval_broker.clone(),
                 plan_mode: Arc::clone(&self.plan_mode),
                 plan_approval: &self.plan_approval,
                 todos: Arc::clone(&self.todos),
