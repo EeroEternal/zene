@@ -2,9 +2,9 @@
 
 > 状态：持续演进。Wave 0–12 把控制面/数据面的 **接口边界** 建起来了；Wave 13 起让默认执行路径真正走这些边界。
 >
-> **进度快照：2026-08-13，基线 `6efd592`。**
+> **进度快照：2026-08-13，基线 `39257dc`（PR #60 已合并）。**
 > 本文同时记录目标架构、已实现能力和剩余工作。
-> 「已建立边界」不等于「可插拔 runtime 已完成」。下一阶段不再优先拆 crate，而是让 `TurnEngine` 的默认路径消费真实 ports，让 `Agent` 退回 composition root。
+> Wave 13 已让默认 Turn 路径消费 `PreparedContext`。当前工作是 Wave 15：把策略判定和异步 `ApprovalBroker` 拆开。
 >
 > 本文基于当前 zene runtime 实现，描述如何将 `Agent`、`Turn`、`Step`、`Session`、Cloud `Run` 和 ACP transport 拉开，并给出渐进式迁移方案。
 >
@@ -32,7 +32,7 @@
 3. ACP、Cloud event 和 Core `AgentEvent` 仍存在语义转换。本地 `zene-runtime::RuntimeCommand` 与 Cloud `RuntimeCommand` 是两套类型；Cloud `RuntimeNotification.payload` 仍携带原始 ACP JSON。
 4. Session 可以恢复历史并在安全 model-boundary 上自动恢复未完成 execution；pending tool、approval 和 failure 仍必须 inspection/manual intervention。
 5. `RuntimeHandle` 已成为 active turn、prompt queue、cancel 的控制所有者，但 Agent-specific actor 仍在 `zene-core`，ACP 仍保留 transport 层 session bookkeeping。
-6. 权限仍是同步 `ToolPermission` + stdio prompt，没有独立的异步 `ApprovalBroker`，因此 ACP / Cloud 审批只能绕开 Core 各自实现。
+6. 权限已拆成纯 `evaluate` + 异步 `ApprovalBroker`；ACP 通过 broker 等待客户端，不再用同步 prompter 卡线程。Runtime-owned approval waiter（`RuntimeCommand::Approval` 唤醒）仍待下一刀。
 7. `ToolRegistry` 仍同时承担目录与执行；`RuntimeScope` 尚未成为 Subagent 的正式差异注入面。
 
 本文目标不是立刻重写 runtime，而是建立一个可以渐进落地的目标架构：
@@ -100,7 +100,7 @@ RuntimeHandle → Agent → TurnEngine
 | Tool 并发 | `crates/core/src/tool_scheduler.rs` | 同一模型 step 内进行冲突感知并发 |
 | Session | `crates/session` | `SessionRecord` + `SessionStore`；events 优先，messages 为 materialized cache |
 | Context | `crates/context` | observe/commit/project；`SessionView` 驱动 event-backed projection |
-| Permission | `crates/permission` | 策略判断仍与同步 prompter 绑在一起，尚无 `ApprovalBroker` |
+| Permission | `crates/permission` | `evaluate` 纯判定；`Ask` 走 `ApprovalBroker`。ACP 注入 `AcpApprovalBroker` |
 | Subagent | `crates/core/src/subagent.rs` | 直接实现 `TurnEnginePorts`；仍用独立 `ChatBackend` 和内存消息，尚未 `RuntimeScope` |
 | Runtime | `crates/runtime` + `crates/core/src/agent_runtime.rs` | 公共 command/event 在 `zene-runtime`；Agent actor 仍在 core |
 | ACP | `apps/cli/src/acp/server.rs` | transport adapter；创建/加载 session，并把请求接入 `RuntimeHandle` |
@@ -939,6 +939,7 @@ crates/
 - PR #56：Runtime control plane
 - PR #57：Execution recovery checkpoints and ACP recovery metadata
 - PR #58：Subagent TurnEngine unification and SessionStore injection
+- PR #60：TurnEngine default path consumes PreparedContext
 
 ### 15.2 当前判断（2026-08-13）
 
@@ -946,12 +947,12 @@ Wave 0–12 的价值是把 **所有权和语义** 分开：Runtime 控制面、
 
 真正的缺口不在 crate 数量，而在默认执行路径和产品面仍耦合在具体对象上：
 
-1. **Turn ports 必须成为真入口（Wave 13，本轮）**：`AgentTurnPorts.prepare_context` 产出 `PreparedContext`，`run_model` 只消费它；Subagent 直接实现 `TurnEnginePorts`。`LegacyTurnPorts` 只服务旧 `TurnRuntime` 适配，不再是默认 Agent/Subagent 路径。
+1. **Turn ports 已是真入口（Wave 13，PR #60）**：`AgentTurnPorts.prepare_context` 产出 `PreparedContext`，`run_model` 只消费它；Subagent 直接实现 `TurnEnginePorts`。
 2. **`Agent` 仍是 God Object**：它同时持有 model、tools、sandbox、permission、hooks、MCP、todos、plan mode。下一步是把它变成 wiring，而不是继续实现 step。
 3. **模型抽象仍偏 provider**：`ModelExecutor` 吃 `ChatRequest`；Subagent 另有 `ChatBackend`。目标是 Turn 只看见 `PreparedContext` → `ModelRequest`。
-4. **审批不是 port**：同步 `ToolPermission` 无法表达 ACP/Cloud 异步等待。需要 `PermissionService`（纯判定）+ `ApprovalBroker`（外部交互）。
+4. **审批 port 已建立（Wave 15，本轮）**：`PermissionGate::evaluate` 只做 allow/deny/ask；`Ask` 交给 `ApprovalBroker`。ACP 不再把 reverse RPC 塞进同步 prompter。仍缺 runtime-owned waiter：`RuntimeCommand::Approval` 尚未唤醒正在执行的 tool。
 5. **Cloud 仍消费 transport 形状**：`zene-cloud-runtime-client` 藏起了 ACP method，但 `payload` 仍是原始 JSON；本地与 Cloud 的 `RuntimeCommand` 不是同一类型。JobRunner 应对齐 Core 的 command/event，而不是再包一层 ACP。
-6. **不要再为干净拆 crate**：在 ports 成为默认路径、审批和事件语义统一之前，把 actor 搬到新 crate 只会搬耦合。
+6. **不要再为干净拆 crate**：在审批 waiter 和事件语义统一之前，把 actor 搬到新 crate 只会搬耦合。
 
 Conversation event 与 materialized `messages` cache 的双轨可以保留，直到 legacy session 可证明无损迁移。不要为了架构干净上完整 Event Sourcing。
 
@@ -1060,9 +1061,9 @@ Wave 16  统一 transport command/event
 | Wave 10 | 已完成（当前设计范围） | strict projection、compaction event-backed planning、ProjectionExplain、cache drift/fallback provenance 已落地 |
 | Wave 11 | 已完成第一阶段 | ModelExecutor、ContextModel、usage boundary、runtime protocol 和 lifecycle publisher 已落地；Agent-specific actor 尚在 core |
 | Wave 12 | 已完成第一阶段 | safe resume、Cloud RuntimeClient、neutral runtime notifications、fenced command lease/ack、atomic state/event writes、outbox replay 和真实 replacement 测试已落地 |
-| Wave 13 | 进行中 | 默认 Agent/Subagent 路径消费 `PreparedContext`；不再在 `run_model` 内重新组装上下文 |
+| Wave 13 | 已完成 | 默认 Agent/Subagent 路径消费 `PreparedContext`；PR #60 |
 | Wave 14 | 未开始 | RuntimeScope、ToolCatalog 拆分、Agent 退回 wiring |
-| Wave 15 | 未开始 | 异步 ApprovalBroker |
+| Wave 15 | 进行中 | `evaluate` + `ApprovalBroker` 已落地；runtime-owned waiter 仍待完成 |
 | Wave 16 | 未开始 | 统一本地/Cloud command/event 语义 |
 
 ### 当前收口状态与剩余边界
@@ -1098,7 +1099,7 @@ Wave 16  统一 transport command/event
    - pending tool / approval 的任意副作用自动 replay：继续采用 inspection/manual intervention，避免重复写操作。
    - `Agent` 从 step orchestrator 完全退回 composition root。
    - Subagent 通过 `RuntimeScope` 复用 `DefaultToolExecutor` / ModelExecutor，而不是并行 `ChatBackend`。
-   - 异步 `ApprovalBroker`；ACP/Cloud 审批不再绕开 Core。
+   - Runtime-owned approval waiter：`RuntimeCommand::Approval` 唤醒正在执行的 tool；Cloud 审批走同一 broker，而不是 ACP JSON。
    - 本地与 Cloud 共用同一套 `RuntimeCommand` / `RuntimeEvent`；Cloud payload 不再以 ACP JSON 为产品语义。
    - Agent-specific actor 从 `zene-core` 移入独立 runtime implementation crate（应在 ports/审批稳定之后）。
    - 跨 VM outbox 的共享持久化实现；当前部署文档要求共享 POSIX volume 或后续 DB/object spool。
@@ -1148,14 +1149,20 @@ Wave 16  统一 transport command/event
    - 已覆盖 outbox retryable HTTP failure（503 → retry → 200）和 non-retryable HTTP failure（400 保留事件）路径，并在 Cloud deploy 文档中明确本地 outbox 的跨 VM 限制、共享持久卷要求和清理策略。
    - 同一 durable filesystem 的真实跨 worker reconnect/replay、crash recovery 和 DB/API/SSE 集成测试已完成；跨 VM outbox 仍需共享 POSIX volume 或 DB/object-backed spool 的部署决策。
 
-5. **Wave 13：默认路径真正走 ports（进行中）**
+5. **Wave 13：默认路径真正走 ports（PR #60，已完成）**
    - `PreparedContext` 携带 messages、tools、metadata、estimate_tokens；TurnEngine 把 assembler 输出传给 `run_model`。
    - `AgentTurnPorts.prepare_context` 调用 ContextEngine 并记录 step checkpoint；`run_model` 只调用 `invoke_model`，不再忽略上下文。
    - Subagent 直接实现 `TurnEnginePorts`，`ChatBackend` 收到的 messages/tools 来自 `PreparedContext`。
    - `AgentBuilder.model_executor` 允许注入 fake executor，便于不经过真实 provider 测试 runtime。
    - `LegacyTurnPorts` / `run_turn_loop` 保留给旧 `TurnRuntime` 实现。
 
-6. **持续质量门槛**
+6. **Wave 15：ApprovalBroker（进行中）**
+   - `PermissionGate::evaluate` 纯 allow/deny/ask；`Ask` 才进入 broker。
+   - `resolve_permission` 在 await 期间不持有 permission mutex。
+   - `AutoApprovalBroker` / `TerminalApprovalBroker` 可注入；ACP 使用 `AcpApprovalBroker`，不再 `std::thread` 阻塞等待。
+   - 未做：runtime-owned waiter 与 `RuntimeCommand::Approval` 打通。
+
+7. **持续质量门槛**
    - 每个 wave 保持 `cargo test --workspace --locked`；
    - 不破坏旧 ACP `AgentEvent` / RuntimeEvent 协议；
    - 不把 Cloud HTTP、Git、ACP JSON 格式引入 `zene-turn`；
@@ -1178,11 +1185,11 @@ Wave 16  统一 transport command/event
 
 | 选择 | Wave | 理由 |
 | --- | --- | --- |
-| 当前最大杠杆 | **Wave 13** | ports 存在但默认路径不走，开放/解耦都是假的 |
-| 产品面灵活度 | Wave 15 | 没有 ApprovalBroker，ACP/Cloud 无法只换 port |
-| 跨进程一致 | Wave 16 | 两套 RuntimeCommand 会让 CLI/Cloud 行为分叉 |
+| 当前最大杠杆 | **Wave 15 waiter** | broker 已在，但 Approval command 还不能唤醒 tool |
+| 产品面灵活度 | Wave 16 | 两套 RuntimeCommand 会让 CLI/Cloud 行为分叉 |
+| 结构清理 | Wave 14 | Agent 退回 wiring，应在审批/事件稳定之后 |
 
-推荐组合：**先完成 Wave 13**（本轮），再 **Wave 15 ApprovalBroker** 与 **Wave 16 统一事件**，最后才用 Wave 14 把 `Agent` 收成 wiring。不要先搬 runtime crate。
+推荐组合：**Wave 15 收口 runtime-owned waiter**，再 **Wave 16 统一事件**，最后才用 Wave 14 把 `Agent` 收成 wiring。不要先搬 runtime crate。
 
 **不要一上来做** actor 全量重写、完整 Event Sourcing、或再抽一层没有调用方的 crate。
 
@@ -1229,4 +1236,10 @@ Wave 16  统一 transport command/event
 - 下一阶段优先级改为 Wave 13 → 15 → 16；暂缓再拆 crate。
 - 本轮落地：`PreparedContext` 携带 messages/tools/metadata；Agent/Subagent 默认路径消费它；`AgentBuilder` 可注入 `ModelExecutor`。
 - 明确非目标：完整 Event Sourcing、pending tool 自动 replay、把 God Object 一次性拆完。
+
+### 2026-08-13 — ApprovalBroker
+
+- 策略 `evaluate` 与异步 `ApprovalBroker` 拆开；`resolve_permission` 在 await 期间不持有 permission mutex。
+- ACP 注入 `AcpApprovalBroker`，去掉 `spawn` + `std::thread` 同步等待。
+- 未做：`RuntimeCommand::Approval` 唤醒 tool、`RuntimeEventKind::ApprovalRequested`、Cloud 共用同一 broker。
 

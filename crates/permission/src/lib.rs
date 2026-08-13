@@ -1,14 +1,23 @@
 //! Tool permission gate: modes, rules, and interactive approval for gated tools.
 
+mod broker;
+
 use std::collections::HashSet;
 use std::io::{self, Write};
 use std::sync::Arc;
 
 use serde_json::Value;
 
+pub use broker::{
+    ApprovalBroker, ApprovalRequest, AutoApprovalBroker, SharedApprovalBroker,
+    TerminalApprovalBroker,
+};
+
 /// Shared permission gate used by main agent and subagents.
 pub trait ToolPermission: Send + Sync {
     fn approve_tool_call(&mut self, tool_name: &str, arguments: &str) -> io::Result<bool>;
+    fn evaluate(&self, tool_name: &str, arguments: &str) -> PolicyDecision;
+    fn apply_choice(&mut self, tool_name: &str, arguments: &str, choice: PromptChoice) -> bool;
     fn denied_message(tool_name: &str) -> String
     where
         Self: Sized;
@@ -77,6 +86,14 @@ pub enum PromptChoice {
     AllowOnce,
     AllowSession,
     Deny,
+}
+
+/// Pure policy outcome. `Ask` is the only case that may call [`ApprovalBroker`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PolicyDecision {
+    Allow,
+    Deny,
+    Ask,
 }
 
 /// A single allow/deny/ask rule matched against tool name (glob-ish prefix/suffix `*`).
@@ -189,10 +206,10 @@ impl PermissionGate {
         self.rules.iter().find(|r| r.matches(tool_name))
     }
 
-    /// Returns `Ok(true)` if the tool may run, `Ok(false)` if denied.
-    pub fn check(&mut self, tool_name: &str, arguments: &str) -> io::Result<bool> {
+    /// Classify a tool call without talking to a user.
+    pub fn evaluate(&self, tool_name: &str, arguments: &str) -> PolicyDecision {
         if policy_denied(tool_name, arguments).is_some() {
-            return Ok(false);
+            return PolicyDecision::Deny;
         }
 
         let forced_ask = matches!(
@@ -202,52 +219,74 @@ impl PermissionGate {
 
         if let Some(rule) = self.matching_rule(tool_name) {
             match rule.action {
-                RuleAction::Allow => return Ok(true),
-                RuleAction::Deny => return Ok(false),
-                RuleAction::Ask => { /* force prompt below */ }
+                RuleAction::Allow => return PolicyDecision::Allow,
+                RuleAction::Deny => return PolicyDecision::Deny,
+                RuleAction::Ask => {}
             }
         }
 
         if !forced_ask {
             if self.mode.auto_approves_all() {
-                return Ok(true);
+                return PolicyDecision::Allow;
             }
 
             if !Self::requires_confirmation(tool_name) {
-                return Ok(true);
+                return PolicyDecision::Allow;
             }
 
             if self.mode.auto_approves_edits() && matches!(tool_name, "Write" | "Edit") {
-                return Ok(true);
+                return PolicyDecision::Allow;
             }
 
             if self.auto_allow_bash && tool_name == "Bash" {
-                return Ok(true);
+                return PolicyDecision::Allow;
             }
 
             if self.mode.denies_without_prompt() {
-                return Ok(false);
+                return PolicyDecision::Deny;
             }
         } else if self.mode.denies_without_prompt() {
-            return Ok(false);
+            return PolicyDecision::Deny;
         }
 
         if let Some(key) = session_approval_key(tool_name, arguments) {
             if self.approved_session.contains(&key) {
-                return Ok(true);
+                return PolicyDecision::Allow;
             }
         }
 
-        let preview = truncate(arguments, 120);
-        match (self.prompter)(tool_name, &preview)? {
-            PromptChoice::AllowOnce => Ok(true),
+        PolicyDecision::Ask
+    }
+
+    /// Record a prompt decision. `AllowSession` is remembered for this gate.
+    pub fn apply_choice(
+        &mut self,
+        tool_name: &str,
+        arguments: &str,
+        choice: PromptChoice,
+    ) -> bool {
+        match choice {
+            PromptChoice::AllowOnce => true,
             PromptChoice::AllowSession => {
                 if let Some(key) = session_approval_key(tool_name, arguments) {
                     self.approved_session.insert(key);
                 }
-                Ok(true)
+                true
             }
-            PromptChoice::Deny => Ok(false),
+            PromptChoice::Deny => false,
+        }
+    }
+
+    /// Returns `Ok(true)` if the tool may run, `Ok(false)` if denied.
+    pub fn check(&mut self, tool_name: &str, arguments: &str) -> io::Result<bool> {
+        match self.evaluate(tool_name, arguments) {
+            PolicyDecision::Allow => Ok(true),
+            PolicyDecision::Deny => Ok(false),
+            PolicyDecision::Ask => {
+                let preview = truncate(arguments, 120);
+                let choice = (self.prompter)(tool_name, &preview)?;
+                Ok(self.apply_choice(tool_name, arguments, choice))
+            }
         }
     }
 
@@ -289,8 +328,47 @@ impl ToolPermission for PermissionGate {
         self.check(tool_name, arguments)
     }
 
+    fn evaluate(&self, tool_name: &str, arguments: &str) -> PolicyDecision {
+        PermissionGate::evaluate(self, tool_name, arguments)
+    }
+
+    fn apply_choice(&mut self, tool_name: &str, arguments: &str, choice: PromptChoice) -> bool {
+        PermissionGate::apply_choice(self, tool_name, arguments, choice)
+    }
+
     fn denied_message(tool_name: &str) -> String {
         PermissionGate::denied_message(tool_name)
+    }
+}
+
+/// Resolve a tool call against policy, then the optional async broker.
+///
+/// The permission mutex is not held while awaiting the broker.
+pub async fn resolve_permission(
+    permission: &SharedToolPermission,
+    broker: Option<&SharedApprovalBroker>,
+    request: ApprovalRequest,
+) -> io::Result<bool> {
+    let decision = permission
+        .lock()
+        .evaluate(&request.tool_name, &request.arguments);
+    match decision {
+        PolicyDecision::Allow => Ok(true),
+        PolicyDecision::Deny => Ok(false),
+        PolicyDecision::Ask => {
+            let choice = if let Some(broker) = broker {
+                broker.request(request.clone()).await?
+            } else {
+                return permission
+                    .lock()
+                    .approve_tool_call(&request.tool_name, &request.arguments);
+            };
+            Ok(permission.lock().apply_choice(
+                &request.tool_name,
+                &request.arguments,
+                choice,
+            ))
+        }
     }
 }
 
@@ -312,7 +390,7 @@ fn path_has_segment(path: &str, segment: &str) -> bool {
     path.split('/').any(|part| part == segment)
 }
 
-fn default_prompter(tool_name: &str, args_preview: &str) -> io::Result<PromptChoice> {
+pub(crate) fn default_prompter(tool_name: &str, args_preview: &str) -> io::Result<PromptChoice> {
     eprint!(
         "\nAllow {tool_name}({args_preview})? [y]es / [n]o / [a]pprove for session: "
     );
@@ -343,7 +421,7 @@ pub fn session_approval_key(tool_name: &str, arguments: &str) -> Option<String> 
     }
 }
 
-fn truncate(input: &str, max: usize) -> String {
+pub(crate) fn truncate(input: &str, max: usize) -> String {
     if input.chars().count() <= max {
         input.to_string()
     } else {
@@ -521,5 +599,77 @@ mod tests {
         assert_eq!(PermissionMode::parse("accept_edits"), PermissionMode::AcceptEdits);
         assert_eq!(PermissionMode::parse("dont_ask"), PermissionMode::DontAsk);
         assert_eq!(PermissionMode::parse("manual"), PermissionMode::Default);
+    }
+
+    #[test]
+    fn evaluate_is_pure_and_does_not_prompt() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let calls_clone = Arc::clone(&calls);
+        let gate = PermissionGate::with_prompter(PermissionMode::Default, {
+            Box::new(move |_tool, _args| {
+                calls_clone.fetch_add(1, Ordering::SeqCst);
+                Ok(PromptChoice::Deny)
+            })
+        });
+        assert_eq!(
+            gate.evaluate("Read", r#"{"path":"a.txt"}"#),
+            PolicyDecision::Allow
+        );
+        assert_eq!(
+            gate.evaluate("Write", r#"{"path":"a.txt","content":"x"}"#),
+            PolicyDecision::Ask
+        );
+        assert_eq!(
+            gate.evaluate("Write", r#"{"path":"node_modules/x","content":"x"}"#),
+            PolicyDecision::Deny
+        );
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn resolve_permission_uses_broker_for_ask() {
+        let permission: SharedToolPermission = Arc::new(parking_lot::Mutex::new(
+            PermissionGate::with_prompter(PermissionMode::Default, {
+                Box::new(|_tool, _args| panic!("sync prompter should not run"))
+            }),
+        ));
+        let broker: SharedApprovalBroker = Arc::new(AutoApprovalBroker::deny());
+        let allowed = resolve_permission(
+            &permission,
+            Some(&broker),
+            ApprovalRequest {
+                request_id: "req".into(),
+                tool_name: "Bash".into(),
+                arguments: r#"{"command":"ls"}"#.into(),
+                tool_call_id: None,
+            },
+        )
+        .await
+        .unwrap();
+        assert!(!allowed);
+    }
+
+    #[tokio::test]
+    async fn resolve_permission_records_session_approval() {
+        let permission: SharedToolPermission =
+            Arc::new(parking_lot::Mutex::new(PermissionGate::new(PermissionMode::Default)));
+        let broker: SharedApprovalBroker = Arc::new(AutoApprovalBroker {
+            choice: PromptChoice::AllowSession,
+        });
+        let request = ApprovalRequest {
+            request_id: "req".into(),
+            tool_name: "Write".into(),
+            arguments: r#"{"path":"src/foo.rs","content":"x"}"#.into(),
+            tool_call_id: None,
+        };
+        assert!(resolve_permission(&permission, Some(&broker), request.clone())
+            .await
+            .unwrap());
+        assert_eq!(
+            permission
+                .lock()
+                .evaluate("Write", r#"{"path":"src/foo.rs","content":"x"}"#),
+            PolicyDecision::Allow
+        );
     }
 }

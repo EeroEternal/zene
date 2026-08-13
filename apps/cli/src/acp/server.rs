@@ -4,13 +4,14 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use anyhow::{anyhow, bail, Context, Result};
+use async_trait::async_trait;
 use serde_json::{json, Value};
 use tokio::sync::{mpsc, oneshot};
 use tracing::{debug, warn};
 use zene_config::ZeneConfig;
 use zene_core::{
-    Agent, AskUserOption, PermissionGate, PermissionMode, PromptChoice, RuntimeEvent,
-    RuntimeEventKind, RuntimeHandle,
+    Agent, ApprovalBroker, ApprovalRequest, AskUserOption, PermissionGate, PermissionMode,
+    PromptChoice, RuntimeEvent, RuntimeEventKind, RuntimeHandle,
 };
 use zene_runtime::{RuntimeControl, RuntimeRecoveryInfo};
 use zene_sandbox::LocalSandbox;
@@ -640,36 +641,49 @@ fn configure_agent_brokers(
     pending_tool: Arc<Mutex<PendingToolCall>>,
 ) {
     if !yolo {
-        let writer_perm = writer.clone();
-        let session_id = sid.clone();
-        let mode_str = permission_mode.as_str().to_string();
-        let pending_for_perm = Arc::clone(&pending_tool);
-        let gate = PermissionGate::with_prompter(
-            permission_mode,
-            Box::new(move |tool_name, preview| {
-                let tool_call_id = pending_for_perm
-                    .lock()
-                    .unwrap()
-                    .id
-                    .clone()
-                    .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
-                acp_permission_prompt(
-                    &writer_perm,
-                    &session_id,
-                    &mode_str,
-                    tool_name,
-                    preview,
-                    &tool_call_id,
-                )
-            }),
-        );
-        agent.set_permission_gate(gate);
+        agent.set_permission_gate(PermissionGate::new(permission_mode));
+        agent.set_approval_broker(Arc::new(AcpApprovalBroker {
+            writer: writer.clone(),
+            session_id: sid.clone(),
+            permission_mode: permission_mode.as_str().to_string(),
+            pending_tool: Arc::clone(&pending_tool),
+        }));
     }
 
     let writer_ask = writer.clone();
     agent.set_ask_user_prompter(Arc::new(move |question, options| {
         acp_ask_user_prompt(&writer_ask, &sid, question, options)
     }));
+}
+
+struct AcpApprovalBroker {
+    writer: AcpWriter,
+    session_id: String,
+    permission_mode: String,
+    pending_tool: Arc<Mutex<PendingToolCall>>,
+}
+
+#[async_trait]
+impl ApprovalBroker for AcpApprovalBroker {
+    async fn request(&self, request: ApprovalRequest) -> io::Result<PromptChoice> {
+        let tool_call_id = request.tool_call_id.clone().unwrap_or_else(|| {
+            self.pending_tool
+                .lock()
+                .unwrap()
+                .id
+                .clone()
+                .unwrap_or_else(|| uuid::Uuid::new_v4().to_string())
+        });
+        acp_permission_prompt(
+            &self.writer,
+            &self.session_id,
+            &self.permission_mode,
+            &request.tool_name,
+            &request.preview(),
+            &tool_call_id,
+        )
+        .await
+    }
 }
 
 async fn run_prompt_job(
@@ -1020,7 +1034,7 @@ fn acp_ask_user_prompt(
     Ok(option_id.to_string())
 }
 
-fn acp_permission_prompt(
+async fn acp_permission_prompt(
     writer: &AcpWriter,
     session_id: &str,
     permission_mode: &str,
@@ -1028,60 +1042,42 @@ fn acp_permission_prompt(
     preview: &str,
     tool_call_id: &str,
 ) -> io::Result<PromptChoice> {
-    let (tx, rx) = std::sync::mpsc::channel::<Result<Value, String>>();
-    let writer = writer.clone();
-    let session_id = session_id.to_string();
-    let permission_mode = permission_mode.to_string();
-    let tool = tool_name.to_string();
-    let preview = preview.to_string();
-    let tool_call_id = tool_call_id.to_string();
-    let handle = tokio::runtime::Handle::current();
-    handle.spawn(async move {
-        let raw_input = serde_json::from_str::<Value>(&preview)
-            .unwrap_or_else(|_| json!({ "preview": preview }));
-        let result = writer
-            .request(
-                "session/request_permission",
-                json!({
-                    "sessionId": session_id,
-                    "toolCall": {
-                        "toolCallId": tool_call_id,
-                        "title": tool_title(&tool, &preview),
-                        "kind": tool_kind(&tool),
-                        "status": "pending",
-                        "rawInput": raw_input,
+    let raw_input = serde_json::from_str::<Value>(preview)
+        .unwrap_or_else(|_| json!({ "preview": preview }));
+    let result = writer
+        .request(
+            "session/request_permission",
+            json!({
+                "sessionId": session_id,
+                "toolCall": {
+                    "toolCallId": tool_call_id,
+                    "title": tool_title(tool_name, preview),
+                    "kind": tool_kind(tool_name),
+                    "status": "pending",
+                    "rawInput": raw_input,
+                },
+                "options": [
+                    {
+                        "optionId": "allow-once",
+                        "name": "Allow once",
+                        "kind": "allow_once"
                     },
-                    "options": [
-                        {
-                            "optionId": "allow-once",
-                            "name": "Allow once",
-                            "kind": "allow_once"
-                        },
-                        {
-                            "optionId": "allow-always",
-                            "name": "Allow always",
-                            "kind": "allow_always"
-                        },
-                        {
-                            "optionId": "reject-once",
-                            "name": "Reject",
-                            "kind": "reject_once"
-                        }
-                    ],
-                    "permissionMode": permission_mode,
-                }),
-            )
-            .await
-            .map_err(|e| e.to_string());
-        let _ = tx.send(result);
-    });
-
-    // Avoid blocking a tokio worker while waiting for the client reply.
-    let result = std::thread::spawn(move || rx.recv())
-        .join()
-        .map_err(|_| io::Error::new(io::ErrorKind::BrokenPipe, "permission thread panicked"))?
-        .map_err(|e| io::Error::new(io::ErrorKind::BrokenPipe, e))?
-        .map_err(|e| io::Error::new(io::ErrorKind::BrokenPipe, e))?;
+                    {
+                        "optionId": "allow-always",
+                        "name": "Allow always",
+                        "kind": "allow_always"
+                    },
+                    {
+                        "optionId": "reject-once",
+                        "name": "Reject",
+                        "kind": "reject_once"
+                    }
+                ],
+                "permissionMode": permission_mode,
+            }),
+        )
+        .await
+        .map_err(|err| io::Error::new(io::ErrorKind::BrokenPipe, err))?;
 
     let option_id = result
         .pointer("/outcome/optionId")

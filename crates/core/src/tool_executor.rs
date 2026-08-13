@@ -26,6 +26,7 @@ pub(crate) struct ToolExecutorDeps<'a> {
     pub tools: Arc<ToolRegistry>,
     pub sandbox: Arc<dyn Sandbox>,
     pub permission: zene_tools::SharedToolPermission,
+    pub approval_broker: Option<zene_permission::SharedApprovalBroker>,
     pub plan_mode: SharedPlanMode,
     pub plan_approval: &'a PlanApprovalPrompter,
     pub todos: SharedTodoStore,
@@ -183,11 +184,17 @@ impl<'a> DefaultToolExecutor<'a> {
                     None,
                 ))
             } else {
-                let allowed = match self
-                    .deps
-                    .permission
-                    .lock()
-                    .approve_tool_call(&call.name, &call.arguments)
+                let allowed = match zene_permission::resolve_permission(
+                    &self.deps.permission,
+                    self.deps.approval_broker.as_ref(),
+                    zene_permission::ApprovalRequest {
+                        request_id: call.id.clone(),
+                        tool_name: call.name.clone(),
+                        arguments: call.arguments.clone(),
+                        tool_call_id: Some(call.id.clone()),
+                    },
+                )
+                .await
                 {
                     Ok(v) => v,
                     Err(err) => {
