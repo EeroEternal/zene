@@ -4,7 +4,7 @@ use zene_cloud_db::Db;
 use zene_cloud_domain::{
     ApprovalDecision, ApprovalKind, ApprovalRisk, ApprovalStatus, CreateApprovalRequest,
     CreateRepositoryRequest, CreateRunRequest,
-    RegisterRequest, RunStatus, WorkerCommandKind, WorkerFence,
+    RegisterRequest, RunEventKind, RunStatus, WorkerCommandKind, WorkerFence,
 };
 
 #[tokio::test]
@@ -82,7 +82,7 @@ async fn register_create_run_and_claim() {
             &fence,
             Some("fenced-event-1"),
             Some(17),
-            "runtime",
+            RunEventKind::Runtime,
             serde_json::json!({"ok": true}),
         )
         .await
@@ -93,7 +93,7 @@ async fn register_create_run_and_claim() {
             run.id,
             &fence,
             Some("platform-event-1"),
-            "platform",
+            RunEventKind::Platform,
             serde_json::json!({"platform": true}),
         )
         .await
@@ -105,7 +105,7 @@ async fn register_create_run_and_claim() {
             &fence,
             Some("fenced-event-1"),
             Some(99),
-            "runtime-retry",
+            RunEventKind::Runtime,
             serde_json::json!({"retry": true}),
         )
         .await
@@ -121,7 +121,7 @@ async fn register_create_run_and_claim() {
         run.id,
         &stale,
         Some("stale-event"),
-        "runtime",
+        RunEventKind::Runtime,
         serde_json::json!({}),
     ).await.unwrap_err().to_string().contains("stale_attempt"));
     assert!(db
@@ -165,7 +165,7 @@ async fn register_create_run_and_claim() {
             &replacement_fence,
             Some("fenced-event-1"),
             Some(99),
-            "runtime-replayed",
+            RunEventKind::Runtime,
             serde_json::json!({"replayed": true}),
         )
         .await
@@ -199,7 +199,7 @@ async fn register_create_run_and_claim() {
             run.id,
             &replacement_fence,
             Some("post-cursor-platform-event"),
-            "platform",
+            RunEventKind::Platform,
             serde_json::json!({"after_cursor": true}),
         )
         .await

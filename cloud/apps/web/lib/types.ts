@@ -64,7 +64,7 @@ export interface RunMessage {
   createdAt: string;
 }
 
-/** Classified product kinds written by RuntimeClient. `platform` / legacy `runtime` stay outside this union. */
+/** Classified product kinds written by RuntimeClient. */
 export type CloudEventKind =
   | "text_delta"
   | "thought_delta"
@@ -80,6 +80,7 @@ export type CloudEventKind =
   | "approval_requested"
   | "acp";
 
+/** Stored `event_type` written by Cloud. Matches domain `RunEventKind`. */
 export type RunEventType = CloudEventKind | "platform" | "runtime";
 
 export interface AcpSessionUpdate {

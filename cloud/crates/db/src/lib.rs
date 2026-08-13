@@ -16,7 +16,7 @@ use uuid::Uuid;
 use zene_cloud_domain::{
     ApprovalDecision, ApprovalKind, ApprovalRequest, ApprovalRisk, ApprovalStatus, AuthResponse,
     CloneAuthResponse, CreateApprovalRequest, CreateRepositoryRequest, CreateRunRequest, LoginRequest, Organization,
-    PlatformEvent, QueueActive, QueueHold, QueueStats, RegisterRequest, Repository, Run, RunEvent, RunMessage,
+    PlatformEvent, QueueActive, QueueHold, QueueStats, RegisterRequest, Repository, Run, RunEvent, RunEventKind, RunMessage,
     RunStatus, User, WorkerCommand, WorkerFence,
 };
 
@@ -475,7 +475,7 @@ impl Db {
             0,
             Some("platform.run.created"),
             None,
-            "platform",
+            RunEventKind::Platform,
             platform_payload(PlatformEvent::RunCreated {
                 title: run.title.clone(),
                 prompt: run.prompt.clone(),
@@ -608,7 +608,7 @@ impl Db {
                 fence.map_or(0, |fence| fence.generation),
                 title_event_id.as_deref().or(Some("platform.run.title")), 
                 None,
-                "platform",
+                RunEventKind::Platform,
                 platform_payload(PlatformEvent::RunTitle {
                     title: updated.title.clone(),
                 }),
@@ -622,7 +622,7 @@ impl Db {
                 0,
                 Some("platform.run.archived"),
                 None,
-                "platform",
+                RunEventKind::Platform,
                 platform_payload(PlatformEvent::RunArchived),
             )
             .await?;
@@ -857,7 +857,7 @@ impl Db {
             fence.generation,
             Some(&format!("platform.status.{}", status.as_str())),
             None,
-            "platform",
+            RunEventKind::Platform,
             run_status_payload(status, head_sha),
         )
         .await?;
@@ -910,7 +910,7 @@ impl Db {
             0,
             Some(&format!("platform.status.{}", status.as_str())),
             None,
-            "platform",
+            RunEventKind::Platform,
             run_status_payload(status, head_sha),
         )
         .await?;
@@ -1039,7 +1039,7 @@ impl Db {
         run_id: Uuid,
         fence: &WorkerFence,
         source_event_id: Option<&str>,
-        event_type: &str,
+        event_type: RunEventKind,
         payload: serde_json::Value,
     ) -> Result<RunEvent> {
         let mut tx = self.pool.begin().await?;
@@ -1056,7 +1056,7 @@ impl Db {
         run_id: Uuid,
         attempt_generation: i64,
         source_event_id: Option<&str>,
-        event_type: &str,
+        event_type: RunEventKind,
         payload: serde_json::Value,
     ) -> Result<RunEvent> {
         let mut tx = self.pool.begin().await?;
@@ -1073,7 +1073,7 @@ impl Db {
         fence: &WorkerFence,
         source_event_id: Option<&str>,
         cursor: Option<u64>,
-        event_type: &str,
+        event_type: RunEventKind,
         payload: serde_json::Value,
     ) -> Result<RunEvent> {
         let mut tx = self.pool.begin().await?;
@@ -1092,7 +1092,7 @@ impl Db {
         attempt_generation: i64,
         source_event_id: Option<&str>,
         cursor: Option<u64>,
-        event_type: &str,
+        event_type: RunEventKind,
         payload: serde_json::Value,
     ) -> Result<RunEvent> {
         let next: (i64,) =
@@ -1132,7 +1132,7 @@ impl Db {
         .bind(attempt_generation)
         .bind(source_event_id)
         .bind(cursor.map(|value| value as i64))
-        .bind(event_type)
+        .bind(event_type.as_event_type())
         .bind(payload.to_string())
         .bind(now.to_rfc3339())
         .execute(&mut **tx)
@@ -1141,7 +1141,7 @@ impl Db {
             run_id,
             seq: next.0,
             cursor,
-            event_type: event_type.into(),
+            event_type: event_type.as_event_type().to_string(),
             payload,
             created_at: now,
         })
@@ -1265,7 +1265,7 @@ impl Db {
             0,
             client_message_id,
             None,
-            "platform",
+            RunEventKind::Platform,
             platform_payload(PlatformEvent::MessageCreated {
                 role: role.to_string(),
                 text: content.to_string(),
@@ -1304,7 +1304,7 @@ impl Db {
                 0,
                 Some("platform.status.queued"),
                 None,
-                "platform",
+                RunEventKind::Platform,
                 run_status_payload(RunStatus::Queued, None),
             )
             .await?;
@@ -1620,7 +1620,7 @@ impl Db {
             run_id,
             0,
             Some(&format!("approval.{}", req.request_key)),
-            "platform",
+            RunEventKind::Platform,
             platform_payload(PlatformEvent::ApprovalCreated {
                 approval_id: id,
                 status,
@@ -1743,7 +1743,7 @@ impl Db {
             existing.run_id,
             0,
             Some(&format!("approval.decided.{}", existing.request_key)),
-            "platform",
+            RunEventKind::Platform,
             platform_payload(PlatformEvent::ApprovalDecided {
                 approval_id,
                 decision,
