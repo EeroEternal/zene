@@ -13,8 +13,8 @@ use crate::assemble::{
     assemble_outbound, delivery_mode_from_env, stable_system_boundary, DeliveryMode,
 };
 use crate::compaction::{
-    apply_overflow_truncate_pass, apply_steps_truncate_pass, compact_session,
-    compact_session_forced, is_context_overflow_error, CompactionResult,
+    apply_steps_truncate_pass, compact_session, compact_session_forced, is_context_overflow_error,
+    CompactionResult,
 };
 use crate::config::CompactionConfig;
 use crate::context_water::ContextWaterLevel;
@@ -25,6 +25,10 @@ use crate::gateway::gateway_configured;
 #[cfg(not(feature = "gateway"))]
 use crate::gateway_stub::gateway_configured;
 use crate::hooks::ContextHooks;
+use crate::layout::{
+    apply_tail_decorations, classify_prefix_break, content_is_reminder, prefix_fingerprint,
+    split_layout, PrefixCacheExplain,
+};
 #[cfg(feature = "memory")]
 use crate::memory;
 #[cfg(not(feature = "memory"))]
@@ -51,7 +55,7 @@ fn projection_injected_labels(messages: &[Message]) -> Vec<String> {
         message
             .content
             .as_deref()
-            .is_some_and(|content| content.contains("<system-reminder>"))
+            .is_some_and(content_is_reminder)
     }) {
         labels.push("system_reminder".to_string());
     }
@@ -147,6 +151,9 @@ fn injected_source_kind(content: &str) -> Vec<&'static str> {
     if lower.contains("background") || lower.contains("task") {
         sources.push("background_tasks");
     }
+    if lower.contains("plan mode") || lower.contains("exitplanmode") {
+        sources.push("plan");
+    }
     if sources.is_empty() {
         sources.push("system");
     }
@@ -168,7 +175,7 @@ fn projection_injected_sources(messages: &[Message]) -> Vec<InjectedSource> {
             let Some(content) = message.content.as_deref() else {
                 return Vec::new();
             };
-            if !content.contains("<system-reminder>") {
+            if !content_is_reminder(content) {
                 return Vec::new();
             }
             injected_source_kind(content)
@@ -245,6 +252,8 @@ pub struct ProjectionExplain {
     pub delivery_tail_start: Option<usize>,
     pub estimate_tokens: u32,
     pub context_epoch: u64,
+    /// Prefix-cache layout and predicted break versus the previous outbound call.
+    pub prefix_cache: PrefixCacheExplain,
 }
 
 /// Result of [`ContextEngine::prepare_step`].
@@ -301,6 +310,12 @@ pub struct ContextEngine {
     pending_publish: bool,
     gateway_prefix_len: usize,
     initial_publish_done: bool,
+    tail_sections: Vec<String>,
+    last_prefix_fingerprint: Option<String>,
+    last_prefix_tokens: u32,
+    last_epoch_bump_reason: Option<&'static str>,
+    last_cached_tokens: Option<u64>,
+    last_unchanged_reprocessed_est: Option<u64>,
 }
 
 #[cfg(test)]
@@ -347,6 +362,58 @@ mod projection_tests {
         assert_eq!(sources[1].source, "memory");
         assert_eq!(sources[2].source, "todos");
     }
+
+    #[test]
+    fn tail_decorations_keep_prefix_fingerprint_stable() {
+        use crate::tokens::TokenEstimator;
+        use zene_session::SessionRecord;
+
+        let mut engine = ContextEngine::new(128_000);
+        let mut session = SessionRecord::new(std::path::Path::new("/tmp"));
+        session.ensure_system_message("frozen system");
+        session.push_message(Message::user("hello"));
+        session.push_message(Message::assistant("hi"));
+        let estimator = TokenEstimator::default();
+        let tools = [];
+
+        let first = engine.assemble_step(&session, &tools, &estimator);
+        let first_prefix = crate::layout::prefix_fingerprint(&first.messages, 1);
+        let explain_first = engine.explain_projection(&session, &tools, &estimator);
+        assert_eq!(explain_first.prefix_cache.prefix_end, 1);
+        assert_eq!(explain_first.prefix_cache.tail_decoration_count, 0);
+
+        engine.set_step_tail_decorations(vec!["Active todos:\n- [pending] ship".into()]);
+        let second = engine.assemble_step(&session, &tools, &estimator);
+        let explain_second = engine.explain_projection(&session, &tools, &estimator);
+        assert_eq!(explain_second.prefix_cache.prefix_end, 1);
+        assert_eq!(explain_second.prefix_cache.tail_decoration_count, 1);
+        assert!(second
+            .messages
+            .last()
+            .unwrap()
+            .content
+            .as_deref()
+            .unwrap()
+            .contains("ship"));
+        assert_eq!(
+            first_prefix,
+            crate::layout::prefix_fingerprint(&second.messages, 1)
+        );
+
+        engine.set_step_tail_decorations(vec!["You are in Plan mode.".into()]);
+        let third = engine.assemble_step(&session, &tools, &estimator);
+        assert_eq!(
+            first_prefix,
+            crate::layout::prefix_fingerprint(&third.messages, 1)
+        );
+        assert_eq!(
+            engine
+                .explain_projection(&session, &tools, &estimator)
+                .prefix_cache
+                .break_kind,
+            "none"
+        );
+    }
 }
 
 impl ContextEngine {
@@ -360,6 +427,12 @@ impl ContextEngine {
             pending_publish: false,
             gateway_prefix_len: 0,
             initial_publish_done: false,
+            tail_sections: Vec::new(),
+            last_prefix_fingerprint: None,
+            last_prefix_tokens: 0,
+            last_epoch_bump_reason: None,
+            last_cached_tokens: None,
+            last_unchanged_reprocessed_est: None,
         }
     }
 
@@ -425,6 +498,7 @@ impl ContextEngine {
         let old = self.epoch;
         self.epoch = self.epoch.saturating_add(1);
         self.pending_publish = true;
+        self.last_epoch_bump_reason = Some(reason);
         ContextEvent::EpochBumped {
             old,
             new: self.epoch,
@@ -432,19 +506,28 @@ impl ContextEngine {
         }
     }
 
+    /// Live tail decorations for the next `project` / `assemble_step` call.
+    /// `prepare_step` overwrites this from [`ContextHooks::step_tail_decorations`].
+    pub fn set_step_tail_decorations(&mut self, sections: Vec<String>) {
+        self.tail_sections = sections;
+    }
+
     /// Re-assemble outbound view after session mutation (e.g. overflow compact).
     pub fn assemble_step(
-        &self,
+        &mut self,
         session: &dyn ContextSession,
         tools: &[ToolDefinition],
         estimator: &TokenEstimator,
     ) -> StepContext {
-        self.project(session, tools, estimator)
+        let step = self.project(session, tools, estimator);
+        let explain = self.explain_projection_for_step(session, &step);
+        self.remember_projection(&step, &explain);
+        step
     }
 
     /// Strict event-backed variant used by new model requests.
     pub fn try_assemble_step(
-        &self,
+        &mut self,
         session: &dyn ContextSession,
         tools: &[ToolDefinition],
         estimator: &TokenEstimator,
@@ -455,7 +538,7 @@ impl ContextEngine {
                 reason.as_str()
             )
         })?;
-        Ok(self.project(session, tools, estimator))
+        Ok(self.assemble_step(session, tools, estimator))
     }
 
     /// Observe session pressure without mutating the session.
@@ -491,9 +574,11 @@ impl ContextEngine {
             )
         })?;
         let observation = self.observe(deps.session, tools, deps.estimator, deps.compaction_config);
+        self.capture_tail_sections(deps.hooks);
         let commit = self.commit(deps, tools, &observation).await?;
         let step = self.project(deps.session, tools, deps.estimator);
         let explain = self.explain_projection_for_step(deps.session, &step);
+        self.remember_projection(&step, &explain);
         Ok(PrepareStepResult {
             step,
             compaction: commit.compaction,
@@ -608,12 +693,16 @@ impl ContextEngine {
     ) -> Result<ContextUsageUpdate> {
         self.water.record_usage(usage);
         if let Some(cached) = usage.cached_tokens {
+            let prefix = u64::from(self.last_prefix_tokens);
+            self.last_cached_tokens = Some(cached);
+            self.last_unchanged_reprocessed_est = Some(prefix.saturating_sub(cached));
             let effective = self.water.effective_tokens();
             if effective > 0 {
                 tracing::info!(
                     cached_tokens = cached,
                     prompt_tokens = usage.prompt_tokens,
                     effective_tokens = effective,
+                    unchanged_reprocessed_est = self.last_unchanged_reprocessed_est,
                     cache_pct = (cached * 100 / u64::from(effective.max(1))),
                     "provider prompt cache usage"
                 );
@@ -707,7 +796,7 @@ impl ContextEngine {
         }
     }
 
-    /// Handle provider context-overflow: truncate then full compact. Returns true if retry.
+    /// Handle provider context-overflow: steps-first tail truncate, then full compact.
     pub async fn handle_overflow(
         &mut self,
         deps: &mut ContextDeps<'_>,
@@ -716,15 +805,13 @@ impl ContextEngine {
         overflow_summarized: &mut bool,
     ) -> Result<OverflowHandleResult> {
         let mut events = Vec::new();
+        self.capture_tail_sections(deps.hooks);
         if !*overflow_truncated {
             *overflow_truncated = true;
-            if apply_overflow_truncate_pass(
-                deps.session,
-                deps.compaction_config,
-                tools,
-                deps.estimator,
-            ) {
-                info!("context overflow: applied truncate pass before retry");
+            let mut steps_config = deps.compaction_config.clone();
+            steps_config.intra_steps_first = true;
+            if apply_steps_truncate_pass(deps.session, &steps_config) {
+                info!("context overflow: applied steps-first truncate before retry");
                 deps.session.ensure_system_message(deps.system_prompt);
                 return Ok(OverflowHandleResult {
                     retry: true,
@@ -732,6 +819,9 @@ impl ContextEngine {
                     events,
                 });
             }
+            info!(
+                "context overflow: no current-turn tool tail to truncate; compacting instead of rewriting older bodies"
+            );
         }
         if !*overflow_summarized {
             *overflow_summarized = true;
@@ -914,7 +1004,52 @@ impl ContextEngine {
             delivery_tail_start: step.metadata.tail_start,
             estimate_tokens: step.estimate_tokens,
             context_epoch: step.metadata.context_epoch,
+            prefix_cache: self.prefix_cache_explain(step),
         }
+    }
+
+    fn prefix_cache_explain(&self, step: &StepContext) -> PrefixCacheExplain {
+        let layout = split_layout(&step.messages);
+        let fingerprint = prefix_fingerprint(&step.messages, layout.prefix_end);
+        let epoch_reason = self.last_epoch_bump_reason;
+        let epoch_bumped = epoch_reason.is_some();
+        let break_kind = classify_prefix_break(
+            self.last_prefix_fingerprint.as_deref(),
+            fingerprint.as_deref(),
+            epoch_bumped,
+            epoch_reason,
+        );
+        PrefixCacheExplain {
+            prefix_end: layout.prefix_end,
+            body_end: layout.body_end,
+            tail_decoration_count: layout.tail_decoration_count,
+            prefix_fingerprint: fingerprint,
+            break_kind: break_kind.as_str().to_string(),
+            cached_tokens: self.last_cached_tokens,
+            unchanged_reprocessed_est: self.last_unchanged_reprocessed_est,
+        }
+    }
+
+    fn capture_tail_sections(&mut self, hooks: Option<&dyn ContextHooks>) {
+        if let Some(hooks) = hooks {
+            self.tail_sections = hooks.step_tail_decorations();
+        }
+    }
+
+    fn remember_projection(&mut self, step: &StepContext, explain: &ProjectionExplain) {
+        self.last_prefix_fingerprint = explain.prefix_cache.prefix_fingerprint.clone();
+        let prefix_end = explain.prefix_cache.prefix_end.min(step.messages.len());
+        self.last_prefix_tokens = if prefix_end == 0 {
+            0
+        } else {
+            // Cheap standing estimate: chars/4 of the frozen prefix.
+            let chars: usize = step.messages[..prefix_end]
+                .iter()
+                .map(|message| message.content.as_deref().unwrap_or("").chars().count())
+                .sum();
+            u32::try_from((chars / 4).max(1)).unwrap_or(u32::MAX)
+        };
+        self.last_epoch_bump_reason = None;
     }
 
     fn project(
@@ -925,7 +1060,9 @@ impl ContextEngine {
     ) -> StepContext {
         let mode = delivery_mode_from_env();
         let view = session.view();
-        let assembled = assemble_outbound(&view.messages, self.gateway_prefix_len, mode);
+        let mut messages = view.messages;
+        apply_tail_decorations(&mut messages, &self.tail_sections);
+        let assembled = assemble_outbound(&messages, self.gateway_prefix_len, mode);
         let metadata = self.metadata_for_outbound(session, &assembled);
         let estimate_tokens =
             tokens::estimate_context(&assembled.messages, tools, estimator) as u32;
@@ -1056,6 +1193,7 @@ impl ContextEngine {
     ) -> Result<()> {
         let old = self.epoch;
         self.epoch = self.epoch.saturating_add(1);
+        self.last_epoch_bump_reason = Some(reason);
         let view = deps.session.view();
         self.gateway_prefix_len = view.messages.len();
         info!(

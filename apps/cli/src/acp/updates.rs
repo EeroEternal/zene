@@ -357,6 +357,7 @@ pub fn projection_ready_update(
         delivery_tail_start,
         estimate_tokens,
         context_epoch,
+        &json!({}),
     )
 }
 
@@ -383,6 +384,7 @@ pub fn projection_ready_update_with_provenance(
     delivery_tail_start: Option<usize>,
     estimate_tokens: u32,
     context_epoch: u64,
+    prefix_cache: &Value,
 ) -> Value {
     json!({
         "sessionUpdate": "projection_update",
@@ -409,6 +411,7 @@ pub fn projection_ready_update_with_provenance(
             "deliveryTailStart": delivery_tail_start,
             "estimateTokens": estimate_tokens,
             "contextEpoch": context_epoch,
+            "prefixCache": prefix_cache,
         },
     })
 }

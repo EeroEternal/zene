@@ -278,7 +278,7 @@ function project_llm(path, policy):
 **epoch 策略收紧（对齐 gateway delta / cache）：**
 
 - 只有 **稳定 prefix 集合** 变化才 `epoch++`（system 基座、compaction 边界、pinned 区）
-- 每步都变的 reminder（todos 计数、bg task）**尽量不 bump epoch**，避免 cache 抖动
+- 每步都变的 reminder（todos 计数、bg task）**尽量不 bump epoch**，避免 cache 抖动；它们还必须放在请求 **尾巴**，不能插进稳定前缀和历史中间（见 [context-engine-prefix-cache.md](./context-engine-prefix-cache.md)）
 - `ProjectionExplain.injected` 标明本步装饰，供 UI / ACP 展示「模型额外看到了什么」；当前已识别 `compaction_summary` 和 `system_reminder`
 - RuntimeEvent / ACP `projection_update` 当前暴露 `sourceEventCount`、`activeEventCount`、`cacheDriftDetected`、分支路径、fallback、`injected`、`delivery` 和 `deliveryTailStart`
 - 完整事件日志优先于 materialized `messages` cache；cache drift 只进入 explain，不覆盖 event-backed projection；仅 legacy / incomplete event log 触发兼容 fallback
@@ -389,6 +389,7 @@ engine.record_step_usage(usage, /* … */)?;
 | **已完成** | 注入物分类 + epoch / delta 规则 | 与 gateway publish / `tail_start` 对齐 |
 | **剩余** | legacy fallback 与历史格式清理 | 仅清理可无损迁移的兼容代码 |
 | **剩余** | UI / replay 与 LLM 共享 active path 查询 | 按 Console 产品需求继续扩展 |
+| **下一杠杆** | 前缀稳定与 prefix cache | 见 [context-engine-prefix-cache.md](./context-engine-prefix-cache.md)；不改 compact 算法 |
 
 ### 6.1 与 AgentRuntime 合并后的 Wave 映射
 
@@ -448,6 +449,7 @@ engine.record_step_usage(usage, /* … */)?;
 | [session-as-source-of-truth.md](./session-as-source-of-truth.md) | 心智模型：Session 事实 vs Context 投影 |
 | [context-engine.md](./context-engine.md) | 已实现 crate 边界、`prepare_step`、gateway / delta |
 | [agent-inference-context.md](./agent-inference-context.md) | epoch、delta、与推理层协议 |
+| [context-engine-prefix-cache.md](./context-engine-prefix-cache.md) | 投影三区布局与 prefix cache（Phase D 的续篇） |
 | [ENGINE.md](./ENGINE.md) | compaction 阶段、water、steer 等运行时行为 |
 | [agent-components.md](./agent-components.md) | 可组装组件栈与发布边界 |
 | [agent-runtime-optimization.md](./agent-runtime-optimization.md) | Runtime / Turn / ports；Merged Wave |
@@ -461,7 +463,7 @@ engine.record_step_usage(usage, /* … */)?;
 
 > **Context Engine 当前已是以 Session 事件事实为输入、以 active-path projection 为默认路径、以 `ProjectionExplain` 解释每一步模型视图的投影引擎；剩余优化在兼容清理、组合边界与外部生命周期。**
 
-算法层已具备优势；下一杠杆不是继续堆 compression phase，而是收口 legacy fallback、Agent-specific runtime wiring 与部署级恢复边界。
+算法层已具备优势；Context 侧下一杠杆不是继续堆 compression phase，而是 [前缀稳定 / prefix cache](./context-engine-prefix-cache.md)。投影文档自身的剩余工作仍是 legacy fallback、Agent-specific runtime wiring 与部署级恢复边界。
 
 ---
 

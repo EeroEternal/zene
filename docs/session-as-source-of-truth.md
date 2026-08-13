@@ -372,5 +372,6 @@ Wave 12    Safe resume 与 Cloud RuntimeClient                 已完成 reconne
 - [context-engine-projection.md](./context-engine-projection.md) — Context 投影化优化路线
 - [agent-runtime-optimization.md](./agent-runtime-optimization.md) — AgentRuntime / Turn / ports（控制面）
 - [agent-inference-context.md](./agent-inference-context.md) — 推理上下文装配
+- [context-engine-prefix-cache.md](./context-engine-prefix-cache.md) — 投影布局与 prefix cache
 - [agent-components.md](./agent-components.md) — 可组装组件栈
 - [pi-agent-harness-lessons.md](./pi-agent-harness-lessons.md) — Pi Agent Harness 对照与启发总览

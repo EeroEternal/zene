@@ -1159,8 +1159,8 @@ fn apply_full_replace_to_session<S: ContextSession + ?Sized>(
     compacted_count: usize,
     reason: &str,
     tokens_before: u32,
-    hooks: Option<&dyn ContextHooks>,
-    memory_block: Option<&str>,
+    _hooks: Option<&dyn ContextHooks>,
+    _memory_block: Option<&str>,
 ) {
     let messages = projected_messages(session);
     let system = messages.first().filter(|m| m.role == Role::System).cloned();
@@ -1177,13 +1177,10 @@ fn apply_full_replace_to_session<S: ContextSession + ?Sized>(
         }
         None => (None, messages[tail_start..].to_vec()),
     };
-    let extra = hooks
-        .map(|h| h.compaction_reminder_sections())
-        .unwrap_or_default();
-    let extra_refs: Vec<&str> = extra.iter().map(String::as_str).collect();
-    let reminder = build_compaction_reminder(&extra_refs, memory_block);
+    // Volatile todos / memory reminders are projected at the request tail.
+    // Persisting them here would freeze a resize-prone block in the body.
     let projected =
-        assemble_full_replace_history(system, last_user, recent, summary.clone(), reminder);
+        assemble_full_replace_history(system, last_user, recent, summary.clone(), None);
     session.commit_compaction_snapshot(
         reason,
         compacted_count,

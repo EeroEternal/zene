@@ -4,13 +4,23 @@ use zene_context::ContextHooks;
 use zene_session::{SessionRecord, TodoStatus};
 use zene_tools::{BackgroundTask, BackgroundTaskKind, BackgroundTaskStatus};
 
+use crate::plan_mode::plan_mode_tail_section;
+
 pub struct ZeneContextHooks {
     sections: Vec<String>,
 }
 
 impl ZeneContextHooks {
-    pub fn new(session: &SessionRecord, background_tasks: &[BackgroundTask]) -> Self {
+    pub fn new(
+        session: &SessionRecord,
+        background_tasks: &[BackgroundTask],
+        plan_active: bool,
+    ) -> Self {
         let mut sections = Vec::new();
+
+        if let Some(plan) = plan_mode_tail_section(plan_active) {
+            sections.push(plan.to_string());
+        }
 
         let actionable: Vec<_> = session
             .todos
@@ -52,6 +62,10 @@ impl ZeneContextHooks {
 
 impl ContextHooks for ZeneContextHooks {
     fn compaction_reminder_sections(&self) -> Vec<String> {
+        self.sections.clone()
+    }
+
+    fn step_tail_decorations(&self) -> Vec<String> {
         self.sections.clone()
     }
 }
