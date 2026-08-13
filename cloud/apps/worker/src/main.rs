@@ -90,6 +90,37 @@ pub(crate) struct Cli {
     pub(crate) inference_gateway_url: Option<String>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RunOutcome {
+    /// The runtime completed the prompt and the hold ended naturally.
+    Completed,
+    /// The user cancelled the run; the runner has already recorded Cancelled.
+    Cancelled,
+    /// The worker is stopping; leave the run for lease recovery/reconciliation.
+    Shutdown,
+    /// The runtime disappeared before a normal completion.
+    RuntimeInterrupted,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum HoldExit {
+    IdleTimeout,
+    Cancelled,
+    Shutdown,
+    RuntimeInterrupted,
+}
+
+fn outcome_for_hold(prompt_completed: bool, exit: HoldExit) -> RunOutcome {
+    match exit {
+        HoldExit::Cancelled => RunOutcome::Cancelled,
+        HoldExit::Shutdown => RunOutcome::Shutdown,
+        HoldExit::RuntimeInterrupted => RunOutcome::RuntimeInterrupted,
+        HoldExit::IdleTimeout if prompt_completed => RunOutcome::Completed,
+        // An idle-looking exit before the prompt completed is not success.
+        HoldExit::IdleTimeout => RunOutcome::RuntimeInterrupted,
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     tracing_subscriber::fmt()
@@ -315,7 +346,7 @@ async fn execute_run(
             &workspace,
             &cli.workspace_root,
             bin,
-            shutdown,
+            shutdown.clone(),
         )
         .await
     } else if cli.allow_mock {
@@ -327,6 +358,7 @@ async fn execute_run(
             &fence,
             &workspace,
             &cli.workspace_root,
+            shutdown.clone(),
         )
         .await
     } else {
@@ -334,7 +366,11 @@ async fn execute_run(
     };
 
     match result {
-        Ok(()) => {
+        Ok(RunOutcome::Completed) => {
+            if shutdown.load(Ordering::SeqCst) {
+                hb.abort();
+                return Ok(());
+            }
             let head_sha = git_commit_all(&workspace, &claimed.run.title)
                 .await
                 .ok()
@@ -342,6 +378,10 @@ async fn execute_run(
             if cli.push_pr {
                 let _ = post_push(client, cli, run_id).await;
                 let _ = post_pull_request(client, cli, run_id, &claimed.run.title).await;
+            }
+            if shutdown.load(Ordering::SeqCst) {
+                hb.abort();
+                return Ok(());
             }
             set_status(
                 client,
@@ -355,6 +395,14 @@ async fn execute_run(
             .await?;
             hb.abort();
             Ok(())
+        }
+        Ok(RunOutcome::Cancelled | RunOutcome::Shutdown) => {
+            hb.abort();
+            Ok(())
+        }
+        Ok(RunOutcome::RuntimeInterrupted) => {
+            hb.abort();
+            bail!("ACP runtime interrupted before completion")
         }
         Err(err) => {
             hb.abort();
@@ -597,7 +645,8 @@ async fn run_with_mock(
     fence: &WorkerFence,
     workspace: &Path,
     outbox_root: &Path,
-) -> Result<()> {
+    shutdown: Arc<AtomicBool>,
+) -> Result<RunOutcome> {
     let run_id = claimed.run.id;
     let outbox = EventOutbox::open(outbox_root, run_id).await?;
     outbox
@@ -704,7 +753,7 @@ async fn run_with_mock(
                     bail!("event delivery failed: {err}");
                 }
                 set_status(client, cli, run_id, &fence, RunStatus::Cancelled, None, None).await?;
-                return Ok(());
+                return Ok(RunOutcome::Cancelled);
             }
             if cmd.kind == "prompt" {
                 if let Some(text) = cmd.text {
@@ -718,13 +767,21 @@ async fn run_with_mock(
         if cancelled.load(std::sync::atomic::Ordering::SeqCst) {
             break;
         }
+        if shutdown.load(Ordering::SeqCst) {
+            drop(msg_tx);
+            cmd_task.abort();
+            event_task.await.context("event pump")?;
+            return Ok(RunOutcome::Shutdown);
+        }
         agent.run_prompt(&prompt, msg_tx.clone()).await?;
     }
 
     // Keep listening briefly for follow-up prompts.
     let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
     while tokio::time::Instant::now() < deadline {
-        if cancelled.load(std::sync::atomic::Ordering::SeqCst) {
+        if cancelled.load(std::sync::atomic::Ordering::SeqCst)
+            || shutdown.load(Ordering::SeqCst)
+        {
             break;
         }
         if let Ok(commands) = fetch_commands(client, &cli.api_url, &cli.worker_token, run_id, &fence).await {
@@ -752,9 +809,13 @@ async fn run_with_mock(
         bail!("event delivery failed: {err}");
     }
     if cancelled.load(std::sync::atomic::Ordering::SeqCst) {
-        set_status(client, cli, run_id, &fence, RunStatus::Cancelled, None, None).await?
+        set_status(client, cli, run_id, &fence, RunStatus::Cancelled, None, None).await?;
+        return Ok(RunOutcome::Cancelled);
     }
-    Ok(())
+    if shutdown.load(Ordering::SeqCst) {
+        return Ok(RunOutcome::Shutdown);
+    }
+    Ok(RunOutcome::Completed)
 }
 
 async fn fetch_llm_auth(
@@ -830,7 +891,7 @@ async fn run_with_real_acp(
     outbox_root: &Path,
     zene_bin: &Path,
     shutdown: Arc<AtomicBool>,
-) -> Result<()> {
+) -> Result<RunOutcome> {
     let run_id = claimed.run.id;
     let outbox = EventOutbox::open(outbox_root, run_id).await?;
     outbox
@@ -902,8 +963,6 @@ async fn run_with_real_acp(
     let token = cli.worker_token.clone();
     let pump_fence = (*fence).clone();
     let pump_outbox = outbox.clone();
-    let child_failed = Arc::new(std::sync::atomic::AtomicBool::new(false));
-    let child_failed_pump = child_failed.clone();
     let event_error = Arc::new(tokio::sync::Mutex::new(None::<String>));
     let event_error_pump = event_error.clone();
     let runtime_bg = runtime.clone();
@@ -979,7 +1038,6 @@ async fn run_with_real_acp(
                 }
                 RuntimeEvent::ChildExited => {
                     info!(run_id = %run_id, "runtime child exited");
-                    child_failed_pump.store(true, Ordering::SeqCst);
                     break;
                 }
             }
@@ -1065,22 +1123,21 @@ async fn run_with_real_acp(
 
     // Keep the session alive for follow-ups until idle timeout, cancel, SIGTERM, or child exit.
     let idle = Duration::from_secs(cli.acp_idle_secs.max(1));
-    loop {
+    let hold_exit = loop {
         if cancelled.load(Ordering::SeqCst) {
-            break;
+            break HoldExit::Cancelled;
         }
         if shutdown.load(Ordering::SeqCst) {
             info!(run_id = %run_id, "ending hold due to shutdown signal");
-            break;
+            break HoldExit::Shutdown;
         }
         if event_error.lock().await.is_some() {
             warn!(run_id = %run_id, "ending hold after event delivery failure");
-            break;
+            break HoldExit::RuntimeInterrupted;
         }
         if !runtime.is_alive().await {
             info!(run_id = %run_id, "runtime child exited");
-            child_failed.store(true, Ordering::SeqCst);
-            break;
+            break HoldExit::RuntimeInterrupted;
         }
         let elapsed = {
             let ts = last_activity.lock().await;
@@ -1088,10 +1145,10 @@ async fn run_with_real_acp(
         };
         if elapsed >= idle {
             info!(run_id = %run_id, idle_secs = cli.acp_idle_secs, "acp idle timeout");
-            break;
+            break HoldExit::IdleTimeout;
         }
         tokio::time::sleep(Duration::from_millis(400)).await;
-    }
+    };
 
     cmd_task.abort();
     let _ = runtime.shutdown().await;
@@ -1102,14 +1159,12 @@ async fn run_with_real_acp(
     }
     if cancelled.load(std::sync::atomic::Ordering::SeqCst) {
         set_status(client, cli, run_id, &fence, RunStatus::Cancelled, None, None).await?;
+        return Ok(RunOutcome::Cancelled);
     }
-    if child_failed.load(Ordering::SeqCst)
-        && !cancelled.load(Ordering::SeqCst)
-        && !shutdown.load(Ordering::SeqCst)
-    {
-        bail!("ACP runtime child exited unexpectedly");
+    if shutdown.load(Ordering::SeqCst) {
+        return Ok(RunOutcome::Shutdown);
     }
-    Ok(())
+    Ok(outcome_for_hold(true, hold_exit))
 }
 
 async fn resolve_permission(
@@ -1628,7 +1683,8 @@ async fn drain_stderr_lines(stderr: tokio::process::ChildStderr) {
 #[cfg(test)]
 mod title_tests {
     use super::{
-        chat_completions_url, event_file_key, sanitize_run_title, EventOutbox,
+        chat_completions_url, event_file_key, outcome_for_hold, sanitize_run_title, EventOutbox,
+        HoldExit, RunOutcome,
     };
     use futures::StreamExt;
     use std::future::IntoFuture;
@@ -1658,6 +1714,42 @@ mod title_tests {
     fn sanitize_strips_wrapping() {
         assert_eq!(sanitize_run_title("  \"项目总结\"  "), "项目总结");
         assert_eq!(sanitize_run_title("# Fix login bug\nmore"), "Fix login bug");
+    }
+
+    #[test]
+    fn completed_prompt_may_finish_after_idle_hold() {
+        assert_eq!(
+            outcome_for_hold(true, HoldExit::IdleTimeout),
+            RunOutcome::Completed
+        );
+    }
+
+    #[test]
+    fn shutdown_and_interruption_never_map_to_completed() {
+        assert_eq!(
+            outcome_for_hold(true, HoldExit::Shutdown),
+            RunOutcome::Shutdown
+        );
+        assert_eq!(
+            outcome_for_hold(true, HoldExit::RuntimeInterrupted),
+            RunOutcome::RuntimeInterrupted
+        );
+        assert_eq!(
+            outcome_for_hold(false, HoldExit::IdleTimeout),
+            RunOutcome::RuntimeInterrupted
+        );
+    }
+
+    #[test]
+    fn cancellation_is_distinct_from_idle_completion() {
+        assert_eq!(
+            outcome_for_hold(true, HoldExit::Cancelled),
+            RunOutcome::Cancelled
+        );
+        assert_ne!(
+            outcome_for_hold(true, HoldExit::Cancelled),
+            outcome_for_hold(true, HoldExit::IdleTimeout)
+        );
     }
 
     #[test]
