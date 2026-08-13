@@ -21,11 +21,11 @@ use zene_cloud_runtime_client::{
     RuntimeNotification, RuntimeRequest,
 };
 use zene_cloud_domain::{
-    ApprovalDecision, ApprovalKind, ApprovalRequest, ApprovalRisk, ApprovalStatus, ClaimedRun,
-    CloneAuthResponse, CreateApprovalRequest, LlmAuthResponse, RunStatus, WorkerClaimRequest,
-    WorkerCommand, WorkerCommandAckRequest, WorkerCommandKind, WorkerCommandsResponse,
-    WorkerEventRequest, WorkerFence, WorkerPullRequestRequest, WorkerPushRequest,
-    WorkerSessionRequest, WorkerStatusRequest, WorkerTitleRequest,
+    ApprovalDecision, ApprovalEventPayload, ApprovalKind, ApprovalRequest, ApprovalRisk,
+    ApprovalStatus, ClaimedRun, CloneAuthResponse, CreateApprovalRequest, LlmAuthResponse,
+    RunStatus, WorkerClaimRequest, WorkerCommand, WorkerCommandAckRequest, WorkerCommandKind,
+    WorkerCommandsResponse, WorkerEventRequest, WorkerFence, WorkerPullRequestRequest,
+    WorkerPushRequest, WorkerSessionRequest, WorkerStatusRequest, WorkerTitleRequest,
 };
 
 #[derive(Debug, Clone, Parser)]
@@ -1110,13 +1110,13 @@ async fn resolve_permission(
     request_key: &str,
     kind: ApprovalKind,
     allowed_decisions: Vec<ApprovalDecision>,
-    payload: &serde_json::Value,
+    payload: &ApprovalEventPayload,
 ) -> Result<ApprovalDecision> {
     let body = CreateApprovalRequest {
         request_key: request_key.to_string(),
         kind,
         risk: ApprovalRisk::Medium,
-        payload: payload.clone(),
+        payload: serde_json::to_value(payload).unwrap_or(serde_json::json!({})),
         allowed_decisions,
         expires_at: None,
     };
@@ -1227,7 +1227,7 @@ fn event_to_req(event: RuntimeNotification) -> WorkerEventRequest {
         source_event_id: event.source_event_id,
         cursor: event.cursor,
         event_type: event.event_type.into(),
-        payload: event.payload,
+        payload: event.payload.to_value(),
         fence: None,
     }
 }

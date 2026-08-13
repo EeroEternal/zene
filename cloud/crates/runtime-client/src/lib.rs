@@ -75,6 +75,48 @@ pub enum RuntimeCommand {
     Shutdown,
 }
 
+/// In-memory product payload produced by the adapter.
+///
+/// Classified kinds keep domain structs until JobRunner serializes at the
+/// HTTP/DB boundary. Unrecognized frames and extraction fallbacks stay
+/// [`RuntimePayload::Json`].
+#[derive(Debug, Clone, PartialEq)]
+pub enum RuntimePayload {
+    Text(TextEventPayload),
+    ToolCall(ToolCallPayload),
+    ToolResult(ToolResultPayload),
+    State(StateChangedPayload),
+    Usage(UsagePayload),
+    Plan(PlanPayload),
+    Commands(AvailableCommandsPayload),
+    SessionStarted(SessionStartedPayload),
+    ApprovalRequested(ApprovalEventPayload),
+    Json(Value),
+}
+
+impl RuntimePayload {
+    pub fn to_value(&self) -> Value {
+        match self {
+            Self::Text(payload) => to_json(payload),
+            Self::ToolCall(payload) => to_json(payload),
+            Self::ToolResult(payload) => to_json(payload),
+            Self::State(payload) => to_json(payload),
+            Self::Usage(payload) => to_json(payload),
+            Self::Plan(payload) => to_json(payload),
+            Self::Commands(payload) => to_json(payload),
+            Self::SessionStarted(payload) => to_json(payload),
+            Self::ApprovalRequested(payload) => to_json(payload),
+            Self::Json(value) => value.clone(),
+        }
+    }
+}
+
+impl PartialEq<Value> for RuntimePayload {
+    fn eq(&self, other: &Value) -> bool {
+        self.to_value() == *other
+    }
+}
+
 /// A runtime notification with the stable fields persisted by the worker.
 ///
 /// `event_type` is the product kind. Classified kinds store a denormalized
@@ -86,7 +128,7 @@ pub struct RuntimeNotification {
     pub source_event_id: String,
     pub cursor: Option<u64>,
     pub event_type: CloudEventKind,
-    pub payload: Value,
+    pub payload: RuntimePayload,
 }
 
 impl RuntimeNotification {
@@ -113,15 +155,15 @@ pub enum RuntimeRequest {
         request_id: String,
         kind: ApprovalKind,
         allowed_decisions: Vec<ApprovalDecision>,
-        context: Value,
+        context: ApprovalEventPayload,
     },
 }
 
 /// Product payload stored on Cloud approval rows. ACP option lists and
 /// session metadata stay inside the adapter.
-fn approval_payload(params: &Value) -> Value {
+fn approval_payload(params: &Value) -> ApprovalEventPayload {
     let tool = params.get("toolCall").unwrap_or(&Value::Null);
-    to_json(ApprovalEventPayload {
+    ApprovalEventPayload {
         request_id: permission_request_key(params),
         tool_call_id: json_str(tool, "toolCallId"),
         title: json_str(tool, "title"),
@@ -129,7 +171,7 @@ fn approval_payload(params: &Value) -> Value {
         kind: json_str(tool, "kind"),
         status: json_str(tool, "status"),
         raw_input: json_opt(tool, "rawInput"),
-    })
+    }
 }
 
 fn allowed_decisions_from_params(params: &Value) -> Vec<ApprovalDecision> {
@@ -179,29 +221,29 @@ fn runtime_notification(event: AcpEvent) -> RuntimeNotification {
     }
 }
 
-fn product_payload(kind: CloudEventKind, raw: &Value) -> Value {
+fn product_payload(kind: CloudEventKind, raw: &Value) -> RuntimePayload {
     match kind {
         CloudEventKind::TextDelta
         | CloudEventKind::ThoughtDelta
         | CloudEventKind::UserMessage => {
             let Some(update) = raw.pointer("/params/update") else {
-                return raw.clone();
+                return RuntimePayload::Json(raw.clone());
             };
-            to_json(TextEventPayload {
+            RuntimePayload::Text(TextEventPayload {
                 text: text_from_update(update),
             })
         }
         CloudEventKind::ToolCall => {
             let Some(update) = raw.pointer("/params/update") else {
-                return raw.clone();
+                return RuntimePayload::Json(raw.clone());
             };
-            to_json(tool_call_payload(update))
+            RuntimePayload::ToolCall(tool_call_payload(update))
         }
         CloudEventKind::ToolResult => {
             let Some(update) = raw.pointer("/params/update") else {
-                return raw.clone();
+                return RuntimePayload::Json(raw.clone());
             };
-            to_json(tool_result_payload(update))
+            RuntimePayload::ToolResult(tool_result_payload(update))
         }
         CloudEventKind::ApprovalRequested => approval_product(raw),
         CloudEventKind::SessionStarted => session_started_product(raw),
@@ -210,7 +252,7 @@ fn product_payload(kind: CloudEventKind, raw: &Value) -> Value {
         CloudEventKind::ProjectionReady => projection_product(raw),
         CloudEventKind::Plan => plan_product(raw),
         CloudEventKind::AvailableCommands => commands_product(raw),
-        _ => raw.clone(),
+        _ => RuntimePayload::Json(raw.clone()),
     }
 }
 
@@ -251,11 +293,11 @@ fn tool_result_payload(update: &Value) -> ToolResultPayload {
     }
 }
 
-fn approval_product(raw: &Value) -> Value {
-    approval_payload(raw.get("params").unwrap_or(raw))
+fn approval_product(raw: &Value) -> RuntimePayload {
+    RuntimePayload::ApprovalRequested(approval_payload(raw.get("params").unwrap_or(raw)))
 }
 
-fn session_started_product(raw: &Value) -> Value {
+fn session_started_product(raw: &Value) -> RuntimePayload {
     let session_id = raw
         .pointer("/result/sessionId")
         .or_else(|| raw.pointer("/params/sessionId"))
@@ -268,23 +310,23 @@ fn session_started_product(raw: &Value) -> Value {
         resumed,
     };
     if payload.session_id.is_none() && payload.resumed.is_none() {
-        return raw.clone();
+        return RuntimePayload::Json(raw.clone());
     }
-    to_json(payload)
+    RuntimePayload::SessionStarted(payload)
 }
 
-fn state_product(raw: &Value) -> Value {
+fn state_product(raw: &Value) -> RuntimePayload {
     let Some(update) = raw.pointer("/params/update") else {
-        return raw.clone();
+        return RuntimePayload::Json(raw.clone());
     };
-    to_json(StateChangedPayload {
+    RuntimePayload::State(StateChangedPayload {
         state: json_opt(update, "modeId"),
     })
 }
 
-fn usage_product(raw: &Value) -> Value {
+fn usage_product(raw: &Value) -> RuntimePayload {
     let Some(update) = raw.pointer("/params/update") else {
-        return raw.clone();
+        return RuntimePayload::Json(raw.clone());
     };
     let mut payload = UsagePayload {
         used: json_opt(update, "used"),
@@ -298,33 +340,33 @@ fn usage_product(raw: &Value) -> Value {
         payload.context_epoch = json_opt(meta, "contextEpoch");
         payload.cached_tokens = json_opt(meta, "cachedTokens");
     }
-    to_json(payload)
+    RuntimePayload::Usage(payload)
 }
 
-fn projection_product(raw: &Value) -> Value {
+fn projection_product(raw: &Value) -> RuntimePayload {
     let Some(update) = raw.pointer("/params/update") else {
-        return raw.clone();
+        return RuntimePayload::Json(raw.clone());
     };
-    match update.get("_meta") {
+    RuntimePayload::Json(match update.get("_meta") {
         Some(meta) if meta.is_object() => meta.clone(),
         _ => serde_json::json!({}),
-    }
+    })
 }
 
-fn plan_product(raw: &Value) -> Value {
+fn plan_product(raw: &Value) -> RuntimePayload {
     let Some(update) = raw.pointer("/params/update") else {
-        return raw.clone();
+        return RuntimePayload::Json(raw.clone());
     };
-    to_json(PlanPayload {
+    RuntimePayload::Plan(PlanPayload {
         entries: json_opt(update, "entries"),
     })
 }
 
-fn commands_product(raw: &Value) -> Value {
+fn commands_product(raw: &Value) -> RuntimePayload {
     let Some(update) = raw.pointer("/params/update") else {
-        return raw.clone();
+        return RuntimePayload::Json(raw.clone());
     };
-    to_json(AvailableCommandsPayload {
+    RuntimePayload::Commands(AvailableCommandsPayload {
         available_commands: json_opt(update, "availableCommands"),
     })
 }
@@ -554,7 +596,10 @@ impl MockRuntimeClient {
                 source_event_id: format!("mock-session-{session_id}"),
                 cursor: None,
                 event_type: CloudEventKind::SessionStarted,
-                payload: serde_json::json!({ "sessionId": session_id }),
+                payload: RuntimePayload::SessionStarted(SessionStartedPayload {
+                    session_id: Some(session_id.clone()),
+                    resumed: None,
+                }),
             },
         });
         tokio::spawn(async move {
@@ -575,9 +620,7 @@ impl MockRuntimeClient {
                             &params,
                         ));
                         let mut context = approval_payload(&params);
-                        if let Some(map) = context.as_object_mut() {
-                            map.insert("requestId".into(), Value::String(request_key.clone()));
-                        }
+                        context.request_id = request_key.clone();
                         RuntimeEvent::Request {
                             request: RuntimeRequest::Approval {
                                 request_id: request_key,
@@ -655,6 +698,10 @@ impl RuntimeClient for MockRuntimeClient {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn json(event: &RuntimeNotification) -> Value {
+        event.payload.to_value()
+    }
 
     #[test]
     fn permission_request_is_normalized_without_exposing_method_paths() {
@@ -798,13 +845,13 @@ mod tests {
         });
         let event = runtime_notification(AcpEvent::from_notification(&raw));
         assert_eq!(event.event_type.as_event_type(), "tool_result");
-        assert_eq!(event.payload["toolCallId"], "call-1");
-        assert_eq!(event.payload["status"], "completed");
-        assert_eq!(event.payload["text"], "ok");
-        assert_eq!(event.payload["isError"], false);
-        assert_eq!(event.payload["rawOutput"]["text"], "ok");
-        assert!(event.payload.get("sessionUpdate").is_none());
-        assert!(event.payload.get("method").is_none());
+        assert_eq!(json(&event)["toolCallId"], "call-1");
+        assert_eq!(json(&event)["status"], "completed");
+        assert_eq!(json(&event)["text"], "ok");
+        assert_eq!(json(&event)["isError"], false);
+        assert_eq!(json(&event)["rawOutput"]["text"], "ok");
+        assert!(json(&event).get("sessionUpdate").is_none());
+        assert!(json(&event).get("method").is_none());
     }
 
     #[test]
@@ -837,8 +884,8 @@ mod tests {
         let event = runtime_notification(AcpEvent::from_notification(&raw));
         assert_eq!(event.event_type.as_event_type(), "state_changed");
         assert_eq!(event.payload, serde_json::json!({ "state": "plan" }));
-        assert!(event.payload.get("modeId").is_none());
-        assert!(event.payload.get("sessionUpdate").is_none());
+        assert!(json(&event).get("modeId").is_none());
+        assert!(json(&event).get("sessionUpdate").is_none());
     }
 
     #[test]
@@ -876,8 +923,8 @@ mod tests {
                 "cachedTokens": 40
             })
         );
-        assert!(event.payload.get("_meta").is_none());
-        assert!(event.payload.get("method").is_none());
+        assert!(json(&event).get("_meta").is_none());
+        assert!(json(&event).get("method").is_none());
     }
 
     #[test]
@@ -909,8 +956,8 @@ mod tests {
                 "contextEpoch": 2
             })
         );
-        assert!(event.payload.get("sessionUpdate").is_none());
-        assert!(event.payload.get("method").is_none());
+        assert!(json(&event).get("sessionUpdate").is_none());
+        assert!(json(&event).get("method").is_none());
     }
 
     #[test]
@@ -1031,9 +1078,9 @@ mod tests {
                 "rawInput": { "path": "notes.md" }
             })
         );
-        assert!(event.payload.get("method").is_none());
-        assert!(event.payload.get("jsonrpc").is_none());
-        assert!(event.payload.get("id").is_none());
+        assert!(json(&event).get("method").is_none());
+        assert!(json(&event).get("jsonrpc").is_none());
+        assert!(json(&event).get("id").is_none());
     }
 
     #[test]
@@ -1058,12 +1105,16 @@ mod tests {
             })
                 if request_id == "call-7"
                     && allowed_decisions == vec![ApprovalDecision::AllowOnce]
-                    && context == serde_json::json!({
-                        "requestId": "call-7",
-                        "toolCallId": "call-7",
-                        "title": "Write notes",
-                        "kind": "edit"
-                    })
+                    && context
+                        == ApprovalEventPayload {
+                            request_id: "call-7".into(),
+                            tool_call_id: Some("call-7".into()),
+                            title: Some("Write notes".into()),
+                            tool_name: None,
+                            kind: Some("edit".into()),
+                            status: None,
+                            raw_input: None,
+                        }
         ));
     }
 
@@ -1172,7 +1223,7 @@ mod tests {
                             allowed_decisions,
                             vec![ApprovalDecision::AllowOnce, ApprovalDecision::Deny]
                         );
-                        assert_eq!(context["toolCallId"], "tool_write_notes");
+                        assert_eq!(context.tool_call_id.as_deref(), Some("tool_write_notes"));
                         pump.send(RuntimeCommand::Approval {
                             request_id,
                             decision: ApprovalDecision::AllowOnce,
