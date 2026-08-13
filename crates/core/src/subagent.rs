@@ -5,8 +5,8 @@ use anyhow::{Context, Result};
 use async_trait::async_trait;
 use tokio_util::sync::CancellationToken;
 use zene_config::ZeneConfig;
-use zene_llm::{ChatClient, ChatRequest, ChatResponse, Message, TokenUsage, ToolCall};
-use zene_model_executor::{ChatClientExecutor, ModelExecutor, ModelStream};
+use zene_llm::{ChatClient, Message, TokenUsage, ToolCall};
+use zene_model_executor::{ChatClientExecutor, ModelExecutor, ModelRequest, ModelResponse, ModelStream};
 use zene_sandbox::Sandbox;
 use zene_tools::{
     RuntimeScope, SubagentEnv, SubagentProfile, SubagentRunner, ToolCatalog, ToolContext,
@@ -256,7 +256,7 @@ impl<'a> SubagentTurnRuntime<'a> {
         }
         let response = self
             .model_executor
-            .complete(ChatRequest {
+            .complete(ModelRequest {
                 model: self.config.model.clone(),
                 messages: context.messages,
                 tools: context.tools,
@@ -524,7 +524,10 @@ async fn maybe_compact_subagent_messages(
         "subagent_token_threshold",
         &tool_defs,
         &estimator,
-        |request| model_executor.complete(request),
+        |request| {
+            let model_executor = Arc::clone(&model_executor);
+            async move { Ok(model_executor.complete(request.into()).await?.into()) }
+        },
     )
     .await?
     .is_some()
@@ -568,13 +571,13 @@ mod tests {
     }
 
     struct ScriptedBackend {
-        responses: Vec<ChatResponse>,
+        responses: Vec<ModelResponse>,
         calls: AtomicUsize,
-        on_first_call: Option<Box<dyn Fn(&ChatRequest) + Send + Sync>>,
+        on_first_call: Option<Box<dyn Fn(&ModelRequest) + Send + Sync>>,
     }
 
     impl ScriptedBackend {
-        fn new(responses: Vec<ChatResponse>) -> Self {
+        fn new(responses: Vec<ModelResponse>) -> Self {
             Self {
                 responses,
                 calls: AtomicUsize::new(0),
@@ -583,8 +586,8 @@ mod tests {
         }
 
         fn with_first_call_check(
-            responses: Vec<ChatResponse>,
-            check: impl Fn(&ChatRequest) + Send + Sync + 'static,
+            responses: Vec<ModelResponse>,
+            check: impl Fn(&ModelRequest) + Send + Sync + 'static,
         ) -> Self {
             Self {
                 responses,
@@ -596,7 +599,7 @@ mod tests {
 
     #[async_trait]
     impl ModelExecutor for ScriptedBackend {
-        async fn complete(&self, request: ChatRequest) -> Result<ChatResponse> {
+        async fn complete(&self, request: ModelRequest) -> Result<ModelResponse> {
             let idx = self.calls.fetch_add(1, Ordering::SeqCst);
             let response = self
                 .responses
@@ -613,7 +616,7 @@ mod tests {
             Ok(response)
         }
 
-        async fn stream(&self, _request: ChatRequest) -> Result<ModelStream> {
+        async fn stream(&self, _request: ModelRequest) -> Result<ModelStream> {
             Ok(Box::pin(futures::stream::iter([Ok(
                 zene_llm::StreamEvent::Done { usage: None },
             )])))
@@ -676,7 +679,7 @@ mod tests {
 
         let backend = ScriptedBackend::with_first_call_check(
             vec![
-            ChatResponse {
+            ModelResponse {
                 message: Message::assistant_with_tools(
                     None,
                     vec![ToolCall {
@@ -687,7 +690,7 @@ mod tests {
                 ),
                 usage: None,
             },
-            ChatResponse {
+            ModelResponse {
                 message: Message::assistant("Found alpha.txt and beta.txt"),
                 usage: None,
             },
@@ -762,7 +765,7 @@ mod tests {
         let sandbox = zene_sandbox::into_arc(LocalSandbox::new(dir.path()));
         let mut config = ZeneConfig::default();
         config.max_turns = 1;
-        let backend = ScriptedBackend::new(vec![ChatResponse {
+        let backend = ScriptedBackend::new(vec![ModelResponse {
             message: Message::assistant_with_tools(
                 None,
                 vec![ToolCall {
@@ -838,7 +841,7 @@ mod tests {
         let permission = test_permission_deny();
 
         let backend = ScriptedBackend::new(vec![
-            ChatResponse {
+            ModelResponse {
                 message: Message::assistant_with_tools(
                     None,
                     vec![ToolCall {
@@ -849,7 +852,7 @@ mod tests {
                 ),
                 usage: None,
             },
-            ChatResponse {
+            ModelResponse {
                 message: Message::assistant("Write was denied"),
                 usage: None,
             },
