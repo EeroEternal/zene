@@ -3042,7 +3042,9 @@ name = "zene-cloud-worker"
 version = "0.1.3"
 dependencies = [
  "anyhow",
+ "axum",
  "clap",
+ "futures",
  "libc",
  "reqwest",
  "serde",
@@ -3052,7 +3054,10 @@ dependencies = [
  "tracing-subscriber",
  "uuid",
  "zene-cloud-acp-bridge",
+ "zene-cloud-api",
+ "zene-cloud-db",
  "zene-cloud-domain",
+ "zene-cloud-github",
  "zene-cloud-runtime-client",
 ]
 

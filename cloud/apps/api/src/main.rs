@@ -1,9 +1,3 @@
-mod auth;
-mod error;
-mod routes;
-mod state;
-mod workspace;
-
 use std::net::SocketAddr;
 use std::path::PathBuf;
 
@@ -17,7 +11,7 @@ use zene_cloud_db::Db;
 use zene_cloud_domain::GithubMode;
 use zene_cloud_github::GithubClient;
 
-use crate::state::AppState;
+use zene_cloud_api::{router, AppState};
 
 #[derive(Debug, Parser)]
 #[command(name = "zene-cloud-api")]
@@ -72,7 +66,7 @@ async fn main() -> Result<()> {
         cli.public_base_url.clone(),
     );
 
-    let api = routes::router(state);
+    let api = router(state);
     let app = api
         .layer(
             CorsLayer::new()

@@ -1406,3 +1406,285 @@ async fn create_bundle(root: &std::path::Path) -> anyhow::Result<Vec<u8>> {
         Ok(bytes)
     }
 }
+
+#[cfg(test)]
+mod reconnect_replay_tests {
+    use super::*;
+    use axum::body::to_bytes;
+    use axum::http::{HeaderMap, StatusCode};
+    use axum::response::{IntoResponse, Response};
+    use futures::StreamExt;
+    use serde::de::DeserializeOwned;
+    use serde_json::json;
+    use std::path::PathBuf;
+    use std::time::Duration;
+    use uuid::Uuid;
+    use zene_cloud_db::Db;
+    use zene_cloud_domain::{
+        AuthResponse, ClaimedRun, CreateRepositoryRequest, CreateRunRequest, RegisterRequest,
+        Repository, Run, RunEvent, RunStatus, UpdateLlmSettingsRequest, WorkerEventRequest,
+        WorkerFence,
+    };
+    use zene_cloud_github::{GithubClient, GithubConfig};
+
+    async fn decode_json<T: DeserializeOwned>(response: Response) -> T {
+        assert_eq!(response.status(), StatusCode::OK);
+        let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        serde_json::from_slice(&bytes).unwrap_or_else(|error| {
+            panic!("invalid JSON response: {error}; body={}", String::from_utf8_lossy(&bytes))
+        })
+    }
+
+    async fn read_sse_until(response: Response, marker: &str) -> String {
+        assert_eq!(response.status(), StatusCode::OK);
+        let mut stream = response.into_body().into_data_stream();
+        let mut data = String::new();
+        loop {
+            let chunk = tokio::time::timeout(Duration::from_secs(3), stream.next())
+                .await
+                .expect("SSE replay did not arrive")
+                .expect("SSE stream closed before replay")
+                .expect("SSE body chunk failed");
+            data.push_str(&String::from_utf8_lossy(&chunk));
+            if data.contains(marker) {
+                return data;
+            }
+        }
+    }
+
+    async fn worker_event_response(
+        state: &AppState,
+        run_id: Uuid,
+        fence: WorkerFence,
+        source_event_id: &str,
+        cursor: u64,
+        marker: &str,
+    ) -> RunEvent {
+        decode_json(
+            worker_event(
+                State(state.clone()),
+                WorkerAuth,
+                Path(run_id),
+                Json(WorkerEventRequest {
+                    source_event_id: source_event_id.into(),
+                    cursor: Some(cursor),
+                    event_type: "runtime".into(),
+                    payload: json!({ "marker": marker }),
+                    fence: Some(fence),
+                }),
+            )
+            .await
+            .unwrap()
+            .into_response(),
+        )
+        .await
+    }
+
+    #[tokio::test]
+    async fn cloud_api_sse_reconnect_replays_after_replacement_worker_without_duplicates() {
+        let db = Db::connect("sqlite::memory:").await.unwrap();
+        db.migrate().await.unwrap();
+        let worker_token = "integration-worker-token";
+        db.ensure_dev_worker_token(worker_token).await.unwrap();
+        let workspace_root = std::env::temp_dir().join(format!("zene-api-replay-{}", Uuid::new_v4()));
+        tokio::fs::create_dir_all(&workspace_root).await.unwrap();
+        let state = AppState::new(
+            db.clone(),
+            worker_token.into(),
+            GithubClient::new(GithubConfig::mock()),
+            workspace_root.clone(),
+            "http://127.0.0.1:8788".into(),
+        );
+        let auth: AuthResponse = decode_json(
+            register(
+                State(state.clone()),
+                Json(RegisterRequest {
+                    email: "replay@example.com".into(),
+                    password: "password123".into(),
+                    display_name: "Replay Test".into(),
+                }),
+            )
+            .await
+            .unwrap()
+            .into_response(),
+        )
+        .await;
+        let repo: Repository = decode_json(
+            create_repo(
+                State(state.clone()),
+                AuthUser(auth.user.clone()),
+                Json(CreateRepositoryRequest {
+                    owner: "replay".into(),
+                    name: "demo".into(),
+                    default_branch: "main".into(),
+                    clone_url: None,
+                }),
+            )
+            .await
+            .unwrap()
+            .into_response(),
+        )
+        .await;
+        state
+            .db
+            .upsert_user_llm_settings(
+                auth.user.id,
+                UpdateLlmSettingsRequest {
+                    provider_id: "test".into(),
+                    base_url: "https://llm.invalid".into(),
+                    default_model: "default".into(),
+                    models: vec!["default".into()],
+                    api_key: Some("test-key".into()),
+                },
+            )
+            .await
+            .unwrap();
+        let run: Run = decode_json(
+            create_run(
+                State(state.clone()),
+                AuthUser(auth.user.clone()),
+                Json(CreateRunRequest {
+                    repository_id: repo.id,
+                    prompt: "replay integration".into(),
+                    base_ref: Some("main".into()),
+                    model: "default".into(),
+                    permission_mode: "default".into(),
+                    max_turns: 10,
+                }),
+            )
+            .await
+            .unwrap()
+            .into_response(),
+        )
+        .await;
+
+        let claimed: ClaimedRun = decode_json(
+            claim_run(
+                State(state.clone()),
+                WorkerAuth,
+                Json(ClaimRequest {
+                    worker_id: "worker-1".into(),
+                    workspace_root: workspace_root.to_string_lossy().into(),
+                }),
+            )
+            .await
+            .unwrap()
+            .into_response(),
+        )
+        .await;
+        assert_eq!(claimed.run.id, run.id);
+        let first_fence = zene_cloud_domain::WorkerFence {
+            attempt_id: claimed.attempt_id,
+            generation: claimed.generation,
+            worker_id: "worker-1".into(),
+        };
+
+        let first = worker_event_response(
+            &state,
+            run.id,
+            first_fence.clone(),
+            "provider-event-1",
+            11,
+            "event-1",
+        )
+        .await;
+        let initial_sse = read_sse_until(
+            stream_events(
+                State(state.clone()),
+                AuthUser(auth.user.clone()),
+                Path(run.id),
+                HeaderMap::new(),
+                Query(EventsQuery {
+                    after_seq: None,
+                    after_cursor: None,
+                }),
+            )
+            .await
+            .unwrap()
+            .into_response(),
+            "event-1",
+        )
+        .await;
+        assert!(initial_sse.contains(&format!("id: {}", first.seq)));
+
+        db.update_run_status(run.id, RunStatus::Failed, None, Some("worker_lost".into()))
+            .await
+            .unwrap();
+        db.update_run_status(run.id, RunStatus::Queued, None, None)
+            .await
+            .unwrap();
+        let replacement: ClaimedRun = decode_json(
+            claim_run(
+                State(state.clone()),
+                WorkerAuth,
+                Json(ClaimRequest {
+                    worker_id: "worker-2".into(),
+                    workspace_root: workspace_root.to_string_lossy().into(),
+                }),
+            )
+            .await
+            .unwrap()
+            .into_response(),
+        )
+        .await;
+        assert_eq!(replacement.resume_session_id, None);
+        let second_fence = zene_cloud_domain::WorkerFence {
+            attempt_id: replacement.attempt_id,
+            generation: replacement.generation,
+            worker_id: "worker-2".into(),
+        };
+
+        let replay = worker_event_response(
+            &state,
+            run.id,
+            second_fence.clone(),
+            "provider-event-1",
+            99,
+            "replayed-event-1",
+        )
+        .await;
+        assert_eq!(replay.seq, first.seq);
+        assert_eq!(replay.cursor, first.cursor);
+        assert_eq!(replay.payload, first.payload);
+
+        let second = worker_event_response(
+            &state,
+            run.id,
+            second_fence,
+            "provider-event-2",
+            12,
+            "event-2",
+        )
+        .await;
+        assert!(second.seq > first.seq);
+        let persisted = state.db.events_after(run.id, first.seq).await.unwrap();
+        assert_eq!(
+            persisted.iter().filter(|event| event.payload == second.payload).count(),
+            1
+        );
+
+        let mut headers = HeaderMap::new();
+        headers.insert("last-event-id", first.seq.to_string().parse().unwrap());
+        let resumed_sse = read_sse_until(
+            stream_events(
+                State(state.clone()),
+                AuthUser(auth.user),
+                Path(run.id),
+                headers,
+                Query(EventsQuery {
+                    after_seq: None,
+                    after_cursor: None,
+                }),
+            )
+            .await
+            .unwrap()
+            .into_response(),
+            "event-2",
+        )
+        .await;
+        assert!(resumed_sse.contains(&format!("id: {}", second.seq)));
+        assert!(!resumed_sse.contains("event-1"));
+
+        let _ = tokio::fs::remove_dir_all(PathBuf::from(workspace_root)).await;
+    }
+}

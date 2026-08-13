@@ -1630,6 +1630,9 @@ mod title_tests {
     use super::{
         chat_completions_url, event_file_key, sanitize_run_title, EventOutbox,
     };
+    use futures::StreamExt;
+    use std::future::IntoFuture;
+    use std::time::Duration;
     use serde_json::json;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use uuid::Uuid;
@@ -1825,6 +1828,204 @@ mod title_tests {
             .expect("reject server should complete")
             .unwrap();
         assert_eq!(outbox.stats().await.unwrap().0, 1);
+        tokio::fs::remove_dir_all(root).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn event_outbox_reconnects_to_real_api_and_sse_replays_after_replacement() {
+        use zene_cloud_api::{router, AppState};
+        use zene_cloud_db::Db;
+        use zene_cloud_domain::{
+            CreateRepositoryRequest, CreateRunRequest, RegisterRequest, RunEvent, RunStatus,
+            UpdateLlmSettingsRequest,
+        };
+        use zene_cloud_github::{GithubClient, GithubConfig};
+
+        let db = Db::connect("sqlite::memory:").await.unwrap();
+        db.migrate().await.unwrap();
+        let worker_token = "real-api-worker-token";
+        db.ensure_dev_worker_token(worker_token).await.unwrap();
+        let root = std::env::temp_dir().join(format!("zene-worker-api-{}", Uuid::new_v4()));
+        let workspace_root = root.join("workspaces");
+        tokio::fs::create_dir_all(&workspace_root).await.unwrap();
+        let state = AppState::new(
+            db.clone(),
+            worker_token.into(),
+            GithubClient::new(GithubConfig::mock()),
+            workspace_root.clone(),
+            "http://127.0.0.1".into(),
+        );
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let api_task = tokio::spawn(
+            axum::serve(listener, router(state.clone())).into_future(),
+        );
+        let api_url = format!("http://{address}");
+        let client = reqwest::Client::new();
+
+        let auth: zene_cloud_domain::AuthResponse = client
+            .post(format!("{api_url}/api/v1/auth/register"))
+            .json(&RegisterRequest {
+                email: "worker-reconnect@example.com".into(),
+                password: "password123".into(),
+                display_name: "Worker Reconnect".into(),
+            })
+            .send()
+            .await
+            .unwrap()
+            .error_for_status()
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        let repo: zene_cloud_domain::Repository = client
+            .post(format!("{api_url}/api/v1/repositories"))
+            .bearer_auth(&auth.token)
+            .json(&CreateRepositoryRequest {
+                owner: "worker".into(),
+                name: "reconnect".into(),
+                default_branch: "main".into(),
+                clone_url: None,
+            })
+            .send()
+            .await
+            .unwrap()
+            .error_for_status()
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        db.upsert_user_llm_settings(
+            auth.user.id,
+            UpdateLlmSettingsRequest {
+                provider_id: "test".into(),
+                base_url: "https://llm.invalid".into(),
+                default_model: "default".into(),
+                models: vec!["default".into()],
+                api_key: Some("test-key".into()),
+            },
+        )
+        .await
+        .unwrap();
+        let run: zene_cloud_domain::Run = client
+            .post(format!("{api_url}/api/v1/runs"))
+            .bearer_auth(&auth.token)
+            .json(&CreateRunRequest {
+                repository_id: repo.id,
+                prompt: "worker reconnect".into(),
+                base_ref: Some("main".into()),
+                model: "default".into(),
+                permission_mode: "default".into(),
+                max_turns: 10,
+            })
+            .send()
+            .await
+            .unwrap()
+            .error_for_status()
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+
+        let claim: zene_cloud_domain::ClaimedRun = client
+            .post(format!("{api_url}/internal/v1/runs/claim"))
+            .bearer_auth(worker_token)
+            .json(&serde_json::json!({
+                "workerId": "worker-1",
+                "workspaceRoot": workspace_root,
+            }))
+            .send()
+            .await
+            .unwrap()
+            .error_for_status()
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(claim.run.id, run.id);
+        let first_root = root.join("first-worker");
+        let first_outbox = EventOutbox::open(&first_root, run.id).await.unwrap();
+        let first_event = WorkerEventRequest {
+            source_event_id: "real-provider-event-1".into(),
+            cursor: Some(21),
+            event_type: "runtime".into(),
+            payload: json!({"marker": "first"}),
+            fence: None,
+        };
+        first_outbox.enqueue(&first_event).await.unwrap();
+        drop(first_outbox);
+
+        db.update_run_status(run.id, RunStatus::Failed, None, Some("worker_lost".into()))
+            .await
+            .unwrap();
+        db.update_run_status(run.id, RunStatus::Queued, None, None)
+            .await
+            .unwrap();
+        let replacement: zene_cloud_domain::ClaimedRun = client
+            .post(format!("{api_url}/internal/v1/runs/claim"))
+            .bearer_auth(worker_token)
+            .json(&serde_json::json!({
+                "workerId": "worker-2",
+                "workspaceRoot": workspace_root,
+            }))
+            .send()
+            .await
+            .unwrap()
+            .error_for_status()
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        let second_fence = WorkerFence {
+            attempt_id: replacement.attempt_id,
+            generation: replacement.generation,
+            worker_id: "worker-2".into(),
+        };
+        let replacement_outbox = EventOutbox::open(&first_root, run.id).await.unwrap();
+        replacement_outbox
+            .flush(&client, &api_url, worker_token, run.id, &second_fence)
+            .await
+            .unwrap();
+        assert_eq!(replacement_outbox.stats().await.unwrap(), (0, 0));
+
+        let first: RunEvent = db.events_after(run.id, 0).await.unwrap().into_iter().find(|event| event.event_type == "runtime").unwrap();
+        let second_event = WorkerEventRequest {
+            source_event_id: "real-provider-event-2".into(),
+            cursor: Some(22),
+            event_type: "runtime".into(),
+            payload: json!({"marker": "second"}),
+            fence: None,
+        };
+        replacement_outbox.enqueue(&second_event).await.unwrap();
+        replacement_outbox
+            .flush(&client, &api_url, worker_token, run.id, &second_fence)
+            .await
+            .unwrap();
+
+        let response = client
+            .get(format!("{api_url}/api/v1/runs/{}/events/stream", run.id))
+            .bearer_auth(&auth.token)
+            .header("Last-Event-ID", first.seq.to_string())
+            .send()
+            .await
+            .unwrap()
+            .error_for_status()
+            .unwrap();
+        let mut stream = response.bytes_stream();
+        let mut sse = String::new();
+        while !sse.contains("second") {
+            let chunk = tokio::time::timeout(Duration::from_secs(3), stream.next())
+                .await
+                .expect("SSE replay timeout")
+                .expect("SSE closed")
+                .unwrap();
+            sse.push_str(&String::from_utf8_lossy(&chunk));
+        }
+        assert!(sse.contains("second"));
+        assert!(!sse.contains("first"));
+
+        api_task.abort();
+        let _ = api_task.await;
         tokio::fs::remove_dir_all(root).await.unwrap();
     }
 

@@ -4,6 +4,7 @@ use axum::Json;
 use uuid::Uuid;
 use zene_cloud_domain::ApiError;
 
+#[derive(Debug)]
 pub struct AppError {
     status: StatusCode,
     error: String,
