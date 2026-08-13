@@ -37,6 +37,8 @@ const RUN_EVENT_TYPES: readonly RunEventType[] = [
   "available_commands",
   "session_started",
   "approval_requested",
+  "initialized",
+  "unsupported_request",
   "acp",
   "platform",
   "runtime",

@@ -111,6 +111,8 @@ export type CloudEventKind =
   | "available_commands"
   | "session_started"
   | "approval_requested"
+  | "initialized"
+  | "unsupported_request"
   | "acp";
 
 /** Stored `event_type` written by Cloud. Matches domain `RunEventKind`. */
@@ -155,6 +157,25 @@ export interface ToolResultPayload {
 export interface SessionStartedPayload {
   sessionId?: string;
   resumed?: boolean;
+}
+
+export interface InitializedPayload {
+  protocolVersion?: unknown;
+  agentCapabilities?: unknown;
+  agentInfo?: unknown;
+  authMethods?: unknown;
+  [key: string]: unknown;
+}
+
+export interface UnsupportedRequestPayload {
+  method: string;
+  params?: unknown;
+}
+
+export interface AcpResidualPayload {
+  method?: string;
+  sessionUpdate?: string;
+  update?: unknown;
 }
 
 export interface StateChangedPayload {

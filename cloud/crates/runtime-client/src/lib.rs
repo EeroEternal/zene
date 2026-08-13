@@ -13,9 +13,10 @@ use zene_cloud_acp_bridge::{
 };
 
 pub use zene_cloud_domain::{
-    ApprovalDecision, ApprovalEventPayload, ApprovalKind, AvailableCommandsPayload,
-    CloudEventKind, PlanPayload, ProjectionPayload, SessionStartedPayload, StateChangedPayload,
-    TextEventPayload, ToolCallPayload, ToolResultPayload, UsagePayload,
+    AcpResidualPayload, ApprovalDecision, ApprovalEventPayload, ApprovalKind,
+    AvailableCommandsPayload, CloudEventKind, InitializedPayload, PlanPayload, ProjectionPayload,
+    SessionStartedPayload, StateChangedPayload, TextEventPayload, ToolCallPayload,
+    ToolResultPayload, UnsupportedRequestPayload, UsagePayload,
 };
 
 /// ACP `optionId` mapping stays inside this adapter.
@@ -43,8 +44,15 @@ fn classify_payload(payload: &Value) -> CloudEventKind {
     match payload.get("method").and_then(Value::as_str) {
         Some("session/request_permission") => CloudEventKind::ApprovalRequested,
         Some("session/new") | Some("session/resume") => CloudEventKind::SessionStarted,
+        Some("initialize") => CloudEventKind::Initialized,
+        Some(_) if is_reverse_request_frame(payload) => CloudEventKind::UnsupportedRequest,
         _ => CloudEventKind::Acp,
     }
+}
+
+/// Reverse requests carry a JSON-RPC id and params, without a result.
+fn is_reverse_request_frame(payload: &Value) -> bool {
+    payload.get("id").is_some() && payload.get("result").is_none()
 }
 
 fn map_session_update(update: &str) -> CloudEventKind {
@@ -82,7 +90,7 @@ pub enum RuntimeCommand {
 /// In-memory product payload produced by the adapter.
 ///
 /// Classified kinds keep domain structs until JobRunner serializes at the
-/// HTTP/DB boundary. Unrecognized frames and extraction fallbacks stay
+/// HTTP/DB boundary. Extraction failures and non-session residual frames stay
 /// [`RuntimePayload::Json`].
 #[derive(Debug, Clone, PartialEq)]
 pub enum RuntimePayload {
@@ -96,6 +104,9 @@ pub enum RuntimePayload {
     SessionStarted(SessionStartedPayload),
     ApprovalRequested(ApprovalEventPayload),
     Projection(ProjectionPayload),
+    Initialized(InitializedPayload),
+    UnsupportedRequest(UnsupportedRequestPayload),
+    AcpResidual(AcpResidualPayload),
     Json(Value),
 }
 
@@ -112,6 +123,9 @@ impl RuntimePayload {
             Self::SessionStarted(payload) => to_json(payload),
             Self::ApprovalRequested(payload) => to_json(payload),
             Self::Projection(payload) => to_json(payload),
+            Self::Initialized(payload) => to_json(payload),
+            Self::UnsupportedRequest(payload) => to_json(payload),
+            Self::AcpResidual(payload) => to_json(payload),
             Self::Json(value) => value.clone(),
         }
     }
@@ -126,9 +140,9 @@ impl PartialEq<Value> for RuntimePayload {
 /// A runtime notification with the stable fields persisted by the worker.
 ///
 /// `event_type` is the product kind. Classified kinds store a denormalized
-/// product payload. Unrecognized frames stay `acp` with the original ACP JSON.
-/// Records written before this change still have ACP JSON; Console falls back
-/// to `params.update`.
+/// product payload. Unknown `session/update` frames stay `acp` with a residual
+/// product payload (no JSON-RPC envelope). Records written before productization
+/// still have ACP JSON; Console falls back to `params.update`.
 #[derive(Debug, Clone, PartialEq)]
 pub struct RuntimeNotification {
     pub source_event_id: String,
@@ -258,7 +272,9 @@ fn product_payload(kind: CloudEventKind, raw: &Value) -> RuntimePayload {
         CloudEventKind::ProjectionReady => projection_product(raw),
         CloudEventKind::Plan => plan_product(raw),
         CloudEventKind::AvailableCommands => commands_product(raw),
-        _ => RuntimePayload::Json(raw.clone()),
+        CloudEventKind::Initialized => initialized_product(raw),
+        CloudEventKind::UnsupportedRequest => unsupported_request_product(raw),
+        CloudEventKind::Acp => acp_residual_product(raw),
     }
 }
 
@@ -319,6 +335,61 @@ fn session_started_product(raw: &Value) -> RuntimePayload {
         return RuntimePayload::Json(raw.clone());
     }
     RuntimePayload::SessionStarted(payload)
+}
+
+fn initialized_product(raw: &Value) -> RuntimePayload {
+    let Some(result) = raw.get("result").filter(|value| value.is_object()) else {
+        return RuntimePayload::Json(raw.clone());
+    };
+    let mut extra = serde_json::Map::new();
+    let mut protocol_version = None;
+    let mut agent_capabilities = None;
+    let mut agent_info = None;
+    let mut auth_methods = None;
+    if let Some(object) = result.as_object() {
+        for (key, value) in object {
+            match key.as_str() {
+                "protocolVersion" => protocol_version = Some(value.clone()),
+                "agentCapabilities" => agent_capabilities = Some(value.clone()),
+                "agentInfo" => agent_info = Some(value.clone()),
+                "authMethods" => auth_methods = Some(value.clone()),
+                _ => {
+                    extra.insert(key.clone(), value.clone());
+                }
+            }
+        }
+    }
+    RuntimePayload::Initialized(InitializedPayload {
+        protocol_version,
+        agent_capabilities,
+        agent_info,
+        auth_methods,
+        extra,
+    })
+}
+
+fn unsupported_request_product(raw: &Value) -> RuntimePayload {
+    let Some(method) = raw.get("method").and_then(Value::as_str) else {
+        return RuntimePayload::Json(raw.clone());
+    };
+    RuntimePayload::UnsupportedRequest(UnsupportedRequestPayload {
+        method: method.to_string(),
+        params: raw.get("params").cloned(),
+    })
+}
+
+fn acp_residual_product(raw: &Value) -> RuntimePayload {
+    let Some(update) = raw.pointer("/params/update") else {
+        return RuntimePayload::Json(raw.clone());
+    };
+    RuntimePayload::AcpResidual(AcpResidualPayload {
+        method: raw.get("method").and_then(Value::as_str).map(str::to_string),
+        session_update: update
+            .get("sessionUpdate")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        update: Some(update.clone()),
+    })
 }
 
 fn state_product(raw: &Value) -> RuntimePayload {
@@ -1061,18 +1132,75 @@ mod tests {
     }
 
     #[test]
-    fn unclassified_session_updates_keep_original_payload() {
+    fn unclassified_session_updates_store_residual_product_payload() {
         let raw = serde_json::json!({
             "jsonrpc": "2.0",
             "method": "session/update",
             "params": {
                 "sessionId": "session-1",
-                "update": { "sessionUpdate": "unknown_update" }
+                "update": { "sessionUpdate": "unknown_update", "note": "x" }
             }
         });
         let event = runtime_notification(AcpEvent::from_notification(&raw));
         assert_eq!(event.event_type.as_event_type(), "acp");
-        assert_eq!(event.payload, raw);
+        assert_eq!(
+            event.payload,
+            serde_json::json!({
+                "method": "session/update",
+                "sessionUpdate": "unknown_update",
+                "update": { "sessionUpdate": "unknown_update", "note": "x" }
+            })
+        );
+    }
+
+    #[test]
+    fn initialize_stores_product_handshake_fields() {
+        let event = runtime_notification(AcpEvent {
+            source_event_id: "init-1".into(),
+            cursor: None,
+            event_type: "acp".into(),
+            payload: serde_json::json!({
+                "method": "initialize",
+                "result": {
+                    "protocolVersion": 1,
+                    "agentCapabilities": { "loadSession": true },
+                    "agentInfo": { "name": "zene" },
+                    "authMethods": [],
+                    "extraFlag": true
+                }
+            }),
+        });
+        assert_eq!(event.event_type.as_event_type(), "initialized");
+        assert_eq!(
+            event.payload,
+            serde_json::json!({
+                "protocolVersion": 1,
+                "agentCapabilities": { "loadSession": true },
+                "agentInfo": { "name": "zene" },
+                "authMethods": [],
+                "extraFlag": true
+            })
+        );
+    }
+
+    #[test]
+    fn unsupported_reverse_request_stores_method_without_jsonrpc_id() {
+        let event = runtime_notification(AcpEvent::from_reverse_request(
+            &serde_json::json!(7),
+            "fs/read_text_file",
+            &serde_json::json!({ "path": "README.md" }),
+        ));
+        assert_eq!(event.event_type.as_event_type(), "unsupported_request");
+        assert_eq!(
+            event.payload,
+            serde_json::json!({
+                "method": "fs/read_text_file",
+                "params": { "path": "README.md" }
+            })
+        );
+        let value = event.payload.to_value();
+        assert!(value.get("id").is_none());
+        assert!(value.get("jsonrpc").is_none());
     }
 
     #[test]
