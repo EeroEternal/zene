@@ -52,6 +52,37 @@ pub enum ExecutionState {
     Shutdown,
 }
 
+/// Terminal lifecycle transition emitted by a runtime actor.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RuntimeLifecycle {
+    Completed,
+    Failed { message: String },
+    Cancelled,
+    Shutdown,
+}
+
+impl RuntimeLifecycle {
+    fn event_state(&self) -> &'static str {
+        match self {
+            Self::Completed => "completed",
+            Self::Failed { .. } => "failed",
+            Self::Cancelled => "cancelled",
+            Self::Shutdown => "shutdown",
+        }
+    }
+}
+
+impl From<RuntimeLifecycle> for ExecutionState {
+    fn from(lifecycle: RuntimeLifecycle) -> Self {
+        match lifecycle {
+            RuntimeLifecycle::Completed => Self::Completed,
+            RuntimeLifecycle::Failed { message } => Self::Failed { message },
+            RuntimeLifecycle::Cancelled => Self::Cancelled,
+            RuntimeLifecycle::Shutdown => Self::Shutdown,
+        }
+    }
+}
+
 /// Acknowledgement returned by a runtime command.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RuntimeResponse {
@@ -186,6 +217,17 @@ impl RuntimeEventPublisher {
 
     pub fn set_state(&self, state: ExecutionState) {
         let _ = self.state.send(state);
+    }
+
+    /// Apply a terminal lifecycle transition and publish its event in order.
+    ///
+    /// The state channel is updated before the event is sent so an event
+    /// consumer that immediately reads the state channel observes the same
+    /// terminal transition as the event stream.
+    pub fn publish_lifecycle(&self, lifecycle: RuntimeLifecycle) {
+        let event_state = lifecycle.event_state();
+        self.set_state(lifecycle.into());
+        self.publish_state(event_state);
     }
 
     pub fn publish_state(&self, state: impl Into<String>) {
@@ -419,6 +461,67 @@ mod tests {
         assert_eq!(first.session_id, session_id);
         assert_eq!(second.session_id, session_id);
         assert_eq!(*state_receiver.borrow(), ExecutionState::Idle);
+    }
+
+    #[test]
+    fn terminal_lifecycle_maps_to_execution_state() {
+        let cases = [
+            (RuntimeLifecycle::Completed, ExecutionState::Completed),
+            (
+                RuntimeLifecycle::Failed {
+                    message: "boom".into(),
+                },
+                ExecutionState::Failed {
+                    message: "boom".into(),
+                },
+            ),
+            (RuntimeLifecycle::Cancelled, ExecutionState::Cancelled),
+            (RuntimeLifecycle::Shutdown, ExecutionState::Shutdown),
+        ];
+
+        for (lifecycle, expected) in cases {
+            assert_eq!(ExecutionState::from(lifecycle), expected);
+        }
+    }
+
+    #[tokio::test]
+    async fn event_publisher_mirrors_terminal_state_before_event() {
+        let (events, mut receiver) = broadcast::channel(4);
+        let (state, state_receiver) = watch::channel(ExecutionState::Idle);
+        let publisher = RuntimeEventPublisher::new(
+            events,
+            state,
+            SessionId::from_string("runtime-session"),
+        );
+
+        let handler = publisher.handler();
+        handler(RuntimeEvent {
+            sequence: zene_turn::EventSequence::new(0),
+            session_id: SessionId::from_string("wrong-session"),
+            turn_id: None,
+            step_id: None,
+            kind: RuntimeEventKind::TextDelta { delta: "x".into() },
+        });
+        publisher.publish_lifecycle(RuntimeLifecycle::Failed {
+            message: "boom".into(),
+        });
+
+        let first = receiver.try_recv().expect("runtime event");
+        let terminal = receiver.try_recv().expect("terminal state event");
+        assert_eq!(first.sequence.value(), 1);
+        assert_eq!(terminal.sequence.value(), 2);
+        assert_eq!(
+            terminal.kind,
+            RuntimeEventKind::StateChanged {
+                state: "failed".into(),
+            }
+        );
+        assert_eq!(
+            *state_receiver.borrow(),
+            ExecutionState::Failed {
+                message: "boom".into(),
+            }
+        );
     }
 
     #[tokio::test]

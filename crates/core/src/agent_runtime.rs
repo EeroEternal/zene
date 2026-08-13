@@ -21,8 +21,8 @@ use zene_permission::PromptChoice;
 use zene_runtime::ApprovalDecision;
 use zene_runtime::{
     ExecutionState, RuntimeCommand, RuntimeCommandMessage, RuntimeCommandReceiver,
-    RuntimeCommandRouter, RuntimeControl, RuntimeEventPublisher, RuntimeRecoveryInfo,
-    RuntimeResponse,
+    RuntimeCommandRouter, RuntimeControl, RuntimeEventPublisher, RuntimeLifecycle,
+    RuntimeRecoveryInfo, RuntimeResponse,
 };
 use zene_session::{AgentRecordWriter, ExecutionCheckpointState, RecoveryPlan};
 use zene_turn::{RuntimeEvent, SessionId, SteerBuffer};
@@ -177,6 +177,20 @@ impl RuntimeHandle {
     }
 }
 
+fn terminal_lifecycle(
+    cancelled: bool,
+    result: &Result<String>,
+) -> RuntimeLifecycle {
+    match result {
+        Ok(_) if !cancelled => RuntimeLifecycle::Completed,
+        Ok(_) | Err(_) if cancelled => RuntimeLifecycle::Cancelled,
+        Err(err) if err.to_string().contains("aborted") => RuntimeLifecycle::Cancelled,
+        Err(err) => RuntimeLifecycle::Failed {
+            message: err.to_string(),
+        },
+    }
+}
+
 fn recovery_disposition_name(disposition: zene_session::RecoveryDisposition) -> &'static str {
     match disposition {
         zene_session::RecoveryDisposition::Clean => "clean",
@@ -293,7 +307,7 @@ async fn run_actor(
                     Some("shutdown"),
                 )
                 .await;
-                publisher.set_state(ExecutionState::Shutdown);
+                publisher.publish_lifecycle(RuntimeLifecycle::Shutdown);
                 if let Some(mut agent) = agent.take() {
                     agent.shutdown().await?;
                 }
@@ -339,32 +353,32 @@ async fn run_actor(
                 match result {
                     Ok((finished_agent, prompt_result)) => {
                         agent = Some(finished_agent);
-                        let response = match prompt_result {
-                            Ok(text) if !cancelled => {
-                                publisher.set_state(ExecutionState::Completed);
+                        let lifecycle = terminal_lifecycle(cancelled, &prompt_result);
+                        let response = match (lifecycle, prompt_result) {
+                            (RuntimeLifecycle::Completed, Ok(text)) => {
+                                publisher.publish_lifecycle(RuntimeLifecycle::Completed);
                                 Ok(RuntimeResponse::Prompt { text })
                             }
-                            Ok(_text) => {
-                                publisher.set_state(ExecutionState::Cancelled);
+                            (RuntimeLifecycle::Cancelled, _) => {
+                                publisher.publish_lifecycle(RuntimeLifecycle::Cancelled);
                                 Err("turn cancelled".into())
                             }
-                            Err(err) if cancelled || err.to_string().contains("aborted") => {
-                                publisher.set_state(ExecutionState::Cancelled);
-                                Err("turn cancelled".into())
-                            }
-                            Err(err) => {
-                                let message = err.to_string();
-                                publisher.set_state(ExecutionState::Failed {
+                            (RuntimeLifecycle::Failed { message }, Err(_)) => {
+                                publisher.publish_lifecycle(RuntimeLifecycle::Failed {
                                     message: message.clone(),
                                 });
                                 Err(message)
+                            }
+                            (RuntimeLifecycle::Completed, Err(_))
+                            | (RuntimeLifecycle::Failed { .. }, Ok(_)) => {
+                                unreachable!("terminal lifecycle must match prompt result")
                             }
                         };
                         let _ = current.reply.send(response);
                     }
                     Err(err) => {
                         let message = format!("runtime turn task failed: {err}");
-                        publisher.set_state(ExecutionState::Failed {
+                        publisher.publish_lifecycle(RuntimeLifecycle::Failed {
                             message: message.clone(),
                         });
                         let _ = current.reply.send(Err(message));
@@ -378,7 +392,7 @@ async fn run_actor(
                             Some("task_failed"),
                         )
                         .await;
-                        publisher.set_state(ExecutionState::Shutdown);
+                        publisher.publish_lifecycle(RuntimeLifecycle::Shutdown);
                         return Ok(());
                     }
                 }
@@ -677,6 +691,28 @@ mod tests {
         let turn_id = TurnId::new();
         let state = ExecutionState::Running { turn_id, step: 2 };
         assert!(matches!(state, ExecutionState::Running { step: 2, .. }));
+    }
+
+    #[test]
+    fn terminal_lifecycle_classifies_prompt_outcomes() {
+        assert_eq!(
+            terminal_lifecycle(false, &Ok("done".into())),
+            RuntimeLifecycle::Completed
+        );
+        assert_eq!(
+            terminal_lifecycle(true, &Ok("done".into())),
+            RuntimeLifecycle::Cancelled
+        );
+        assert_eq!(
+            terminal_lifecycle(false, &Err(anyhow!("aborted by caller"))),
+            RuntimeLifecycle::Cancelled
+        );
+        assert_eq!(
+            terminal_lifecycle(false, &Err(anyhow!("provider failed"))),
+            RuntimeLifecycle::Failed {
+                message: "provider failed".into(),
+            }
+        );
     }
 
     #[tokio::test]
