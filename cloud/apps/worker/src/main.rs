@@ -1737,6 +1737,98 @@ mod title_tests {
     }
 
     #[tokio::test]
+    async fn event_outbox_retries_transient_http_failure_before_acknowledging() {
+        let root = std::env::temp_dir().join(format!("zene-worker-outbox-{}", Uuid::new_v4()));
+        let run_id = Uuid::new_v4();
+        let outbox = EventOutbox::open(&root, run_id).await.unwrap();
+        outbox.enqueue(&event("retry-event")).await.unwrap();
+
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            for response in [
+                b"HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".as_slice(),
+                b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}".as_slice(),
+            ] {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let mut buffer = [0_u8; 4096];
+                let _ = stream.read(&mut buffer).await.unwrap();
+                stream.write_all(response).await.unwrap();
+            }
+        });
+        let fence = WorkerFence {
+            attempt_id: Uuid::new_v4(),
+            generation: 1,
+            worker_id: "worker-retry".into(),
+        };
+        tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            outbox.flush(
+                &reqwest::Client::new(),
+                &format!("http://{address}"),
+                "worker-token",
+                run_id,
+                &fence,
+            ),
+        )
+        .await
+        .expect("retrying flush should complete")
+        .unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(5), server)
+            .await
+            .expect("retry server should complete")
+            .unwrap();
+        assert_eq!(outbox.stats().await.unwrap(), (0, 0));
+        tokio::fs::remove_dir_all(root).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn event_outbox_retains_event_after_non_retryable_http_failure() {
+        let root = std::env::temp_dir().join(format!("zene-worker-outbox-{}", Uuid::new_v4()));
+        let run_id = Uuid::new_v4();
+        let outbox = EventOutbox::open(&root, run_id).await.unwrap();
+        let queued = event("rejected-event");
+        outbox.enqueue(&queued).await.unwrap();
+
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut buffer = [0_u8; 4096];
+            let _ = stream.read(&mut buffer).await.unwrap();
+            stream
+                .write_all(b"HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+                .await
+                .unwrap();
+        });
+        let fence = WorkerFence {
+            attempt_id: Uuid::new_v4(),
+            generation: 1,
+            worker_id: "worker-reject".into(),
+        };
+        let error = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            outbox.flush(
+                &reqwest::Client::new(),
+                &format!("http://{address}"),
+                "worker-token",
+                run_id,
+                &fence,
+            ),
+        )
+        .await
+        .expect("non-retryable flush should complete")
+        .expect_err("HTTP 400 must be surfaced");
+        assert!(error.to_string().contains("400"));
+        tokio::time::timeout(std::time::Duration::from_secs(5), server)
+            .await
+            .expect("reject server should complete")
+            .unwrap();
+        assert_eq!(outbox.stats().await.unwrap().0, 1);
+        tokio::fs::remove_dir_all(root).await.unwrap();
+    }
+
+    #[tokio::test]
     async fn event_outbox_reopen_flushes_pending_event_and_removes_acknowledged_file() {
         let root = std::env::temp_dir().join(format!("zene-worker-outbox-{}", Uuid::new_v4()));
         let run_id = Uuid::new_v4();

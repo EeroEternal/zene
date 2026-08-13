@@ -1077,6 +1077,7 @@ Wave 12  Execution resume 与 Cloud RuntimeClient
    - 已完成 Cloud JobRunner → RuntimeClient 第一层分离、attempt/generation fencing、ACP child failure propagation、按 attempt 持久化的 session resume、稳定 ACP event identity、run-level dedupe、canonical seq/cursor replay、Last-Event-ID、worker event retry、event pump failure propagation/flush barrier，以及本地 crash-safe durable event outbox；outbox 事件先经文件 `sync_all` 和目录同步后原子落盘，使用固定长度稳定 key 和原子 hard-link 占位，成功 POST 后删除，新 attempt 启动时按 source event ID 重放，并清理崩溃遗留临时文件；同时具备 10,000 事件/128 MiB 背压上限。EventOutbox 已内聚为 worker 内部模块，并使用跨进程 advisory lock 将容量检查与原子占位合并为一个临界区，避免 replacement worker 并发 enqueue 突破背压限制。RuntimeClient 还将 ACP reverse request 归一化为 `Permission` / `Unsupported` runtime request，worker 不再解析 ACP method/parameter 路径。
    - 已增加 provider cursor 之后混合 platform/runtime event 的 canonical seq replay 测试，覆盖 cursor 重连后继续接收无 cursor platform event；EventOutbox 已迁移到独立 worker 模块。
    - 已增加 worker restart/ACK 集成切片：第一 worker 持久化未发送事件后退出，replacement worker 重开同一 outbox，通过 HTTP 重放事件并在成功 ACK 后确认 outbox 清空；DB smoke 同时覆盖跨 attempt 的 run-level source-event 去重。
+   - 已覆盖 outbox retryable HTTP failure（503 → retry → 200）和 non-retryable HTTP failure（400 保留事件）路径，并在 Cloud deploy 文档中明确本地 outbox 的跨 VM 限制、共享持久卷要求和清理策略。
    - 继续增加真实跨 worker reconnect/replay、crash recovery 集成测试，并评估多 worker 共享持久化 outbox 的部署策略。
 
 5. **持续质量门槛**

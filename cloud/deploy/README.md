@@ -64,3 +64,27 @@ Repo secrets:
 | `ZENE_CLOUD_USER` | `deploy` |
 
 Business secrets stay in `/etc/zene-cloud.env` only.
+
+## Worker event outbox durability
+
+The worker stores unsent runtime events under the configured worker workspace
+root in `.event-outbox/<run-id>/`. The outbox is crash-safe for process restarts
+on the same durable filesystem: entries are fsynced before publication, use an
+atomic hard-link commit, and are removed only after a successful API response.
+
+The outbox is **not** a cross-VM durable store by itself. If worker replacement
+can land on a different VM, configure the workspace/outbox root on a durable
+shared POSIX volume, or add a separate database/object-backed event spool before
+relying on replacement replay across instances. Network filesystems must support
+POSIX advisory locks for the current locking strategy.
+
+Operational requirements:
+
+- preserve the outbox root across worker process restarts;
+- do not delete `.event-outbox` while a run is active;
+- retain completed-run directories until the API has persisted/acknowledged all
+  events, then clean them with an explicit retention policy;
+- monitor outbox event count/bytes and investigate the 10,000-event or 128 MiB
+  backpressure limit before it is reached;
+- treat non-retryable event POST failures as retained events requiring operator
+  or policy-driven follow-up, not as safe-to-delete data.
