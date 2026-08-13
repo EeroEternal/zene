@@ -215,4 +215,15 @@
 6. **vLLM**：prefix caching 已成熟；Agent 向 RFC（RetentionDirective、release_kv_cache、Mooncake、session_id/continuation_id）演进中。
 7. 详见上文「推理引擎备注（Session 续算与业界趋势）」。
 
+### 2026-08-13 — Prefix cache 布局（Agent 侧）
+
+参与：用户 ↔ Agent（本仓库 Cloud Agent）
+
+要点：
+
+1. 厂商 prefix cache 只认字节前缀；`epoch` / `session_id` 不能替代布局约束。
+2. 一次 DeepSeek 诊断：msg[1] 注入块 resize 导致约 52k 未变更 token 重算。
+3. Zene 优先兑现本文 **A 档**（full messages + 稳定前缀）；布局契约见 [context-engine-prefix-cache.md](./context-engine-prefix-cache.md)。
+4. Compact 仍是合法的一次 miss；要消灭的是 system / 注入块 / 旧 tool 的反复 resize。
+
 ### （在此追加下一次讨论）
