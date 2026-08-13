@@ -4,7 +4,7 @@
 >
 > **进度快照：2026-08-13，基线 `d2184e5`（PR #102 已合并）。**
 > 本文同时记录目标架构、已实现能力和剩余工作。
-> Wave 16 的 Steer/SetMode 已对齐；**Wave 14 已完成**（RuntimeScope + ToolPolicy/SessionPolicy + ToolCatalog；Subagent/主 Agent 共用 executors；Agent 退回 composition-root facade；actor 仍在 core）。
+> Wave 16 的 Steer/SetMode 已对齐；**Wave 14 已完成**；Agent-specific actor 已迁至 `zene-agent-runtime`（协议仍在 `zene-runtime`；Cloud 不依赖二者）。
 >
 > 本文基于当前 zene runtime 实现，描述如何将 `Agent`、`Turn`、`Step`、`Session`、Cloud `Run` 和 ACP transport 拉开，并给出渐进式迁移方案。
 >
@@ -31,7 +31,7 @@
 2. `Provider`、`ChatClient`、`ChatBackend` 仍存在相近但不统一的模型抽象；`zene-model-executor` 已可注入，但请求类型仍是 `zene-llm::ChatRequest`，Turn 还看不到中性 `ModelRequest`。
 3. ACP、Cloud event 和 Core `AgentEvent` 仍存在语义转换。Cloud `RuntimeCommand::Approval` 已与 core 同形（`request_id` + `ApprovalDecision`），但 Cloud 仍无 Steer/SetMode 等变体，也未依赖 `zene-runtime`。已分类 Cloud payload 已是产品字段；未识别帧仍为 ACP JSON。
 4. Session 可以恢复历史并在安全 model-boundary 上自动恢复未完成 execution；pending tool、approval 和 failure 仍必须 inspection/manual intervention。
-5. `RuntimeHandle` 已成为 active turn、prompt queue、cancel 的控制所有者，但 Agent-specific actor 仍在 `zene-core`，ACP 仍保留 transport 层 session bookkeeping。
+5. `RuntimeHandle` 已成为 active turn、prompt queue、cancel 的控制所有者；Agent-specific actor 在 `zene-agent-runtime`，ACP 仍保留 transport 层 session bookkeeping。
 6. 权限已拆成纯 `evaluate` + 异步 `ApprovalBroker`。ACP 监听 `ApprovalRequested` 再发 `RuntimeCommand::Approval`。Cloud JobRunner 经 `RuntimeClient::send(RuntimeCommand::Approval)` 回复；ACP jsonrpc id 与 option 列表只留在 adapter。Cloud 产品审批类型不再携带 `jsonrpc_id`。存库/API/Console/RuntimeCommand 共用 domain `ApprovalDecision`，并带 `ApprovalKind` / `ApprovalRisk`。已分类 Cloud payload 与审批表 payload 已是产品字段；未识别帧仍为 ACP JSON。API→worker `WorkerCommand.kind` 是 `Prompt` / `Cancel` 枚举。
 7. `ToolRegistry` 仍同时承担目录与执行；`ToolCatalog` 已抽出定义端口；主 Agent / Subagent 均经 `RuntimeScope`（含 `ToolPolicy` / `SessionPolicy`）注入。Agent 为 composition-root facade，step 算法在 prepare/model/tool-batch/turn_session 模块。
 
@@ -52,7 +52,7 @@
 Local CLI / ACP Server
         │ RuntimeCommand / RuntimeEvent
         ▼
-  RuntimeHandle (actor, 仍在 zene-core)
+  RuntimeHandle (actor in zene-agent-runtime)
         │ owns Agent + prompt queue + cancel
         ▼
   zene_core::Agent   ← composition root；step 编排正从 Agent 迁出
@@ -102,7 +102,7 @@ RuntimeHandle → Agent → TurnEngine
 | Context | `crates/context` | observe/commit/project；`SessionView` 驱动 event-backed projection |
 | Permission | `crates/permission` | `evaluate` 纯判定；`Ask` 走 `ApprovalBroker`。Runtime 挂 waiter，transport 发 `RuntimeCommand::Approval` |
 | Subagent | `crates/core/src/subagent.rs` | 经 `RuntimeScope`（含 ToolPolicy/SessionPolicy）注入；工具走 `DefaultToolExecutor`；模型走 `ModelExecutor`；`SessionPersistence::Ephemeral` |
-| Runtime | `crates/runtime` + `crates/core/src/agent_runtime.rs` | 公共 command/event 在 `zene-runtime`；Agent actor 仍在 core |
+| Runtime | `crates/runtime` + `crates/agent-runtime` | 公共 command/event 在 `zene-runtime`；Agent actor 在 `zene-agent-runtime` |
 | ACP | `apps/cli/src/acp/server.rs` | transport adapter；创建/加载 session，并把请求接入 `RuntimeHandle` |
 | Cloud Job | `cloud/apps/worker` + `cloud/crates/runtime-client` | Job 经 `RuntimeClient::send` 发 Prompt/Cancel/Approval/Shutdown；API→worker `WorkerCommand` 为 Prompt/Cancel；审批产品面（决策/kind/risk）从 DB 到 Console 到 RuntimeCommand 共用 domain 类型；ACP `optionId` 只在 adapter 内映射 |
 
@@ -925,7 +925,7 @@ crates/
 | 独立 `DefaultToolExecutor` | `crates/core/src/tool_executor.rs` | 已完成 |
 | `ToolBatchOutcome::Terminate` | `crates/turn`, `crates/core` | 已完成 |
 | `TurnEngine` ports | `crates/turn` | 已完成；默认路径必须消费 `PreparedContext` |
-| `RuntimeHandle` / `RuntimeCommand` actor | `crates/runtime`, `crates/core/src/agent_runtime.rs` | 协议在 runtime crate；Agent actor 仍位于 core |
+| `RuntimeHandle` / `RuntimeCommand` actor | `crates/runtime`, `crates/agent-runtime` | 协议在 runtime crate；Agent actor 在 `zene-agent-runtime` |
 | ACP 通过 Runtime control plane 工作 | `apps/cli/src/acp` | 已完成 |
 | Execution checkpoint、幂等 key、恢复快照 | `crates/session`, `crates/core` | 已完成（评估能力） |
 | ACP recovery metadata | `apps/cli/src/acp/server.rs` | 已完成，默认不自动 resume |
@@ -1134,7 +1134,7 @@ Wave 16  统一 transport command/event  ← 已完成（含 Steer/SetMode）
    - pending tool / approval 的任意副作用自动 replay：继续采用 inspection/manual intervention，避免重复写操作。
    - Subagent 仍用内存消息（`SessionPersistence::Ephemeral`）；未做 durable child session。
    - 本地与 Cloud 共用同一套 `RuntimeCommand` / `RuntimeEvent`（Cloud 已有 Prompt/Steer/Cancel/Approval/SetMode/Shutdown；API→worker 仍是 Prompt/Cancel；不依赖 `zene-runtime`）。`GetMode` / `ResumeSafeTurn` 仍仅本地。未识别 Cloud 帧仍为 ACP JSON。
-   - Agent-specific actor 从 `zene-core` 移入独立 runtime implementation crate（应在 ports/审批稳定之后；Wave 14 明确不搬）。
+   - Agent-specific actor 已迁入 `zene-agent-runtime`（协议仍在 `zene-runtime`；Cloud 不依赖）。后续可继续收缩 core 对 protocol 的 re-export。
    - 跨 VM outbox 的共享持久化实现；当前部署文档要求共享 POSIX volume 或后续 DB/object spool。
    - Turn 侧中性 `ModelRequest`（仍吃 `ChatRequest`）。
 
@@ -1169,9 +1169,9 @@ Wave 16  统一 transport command/event  ← 已完成（含 Steer/SetMode）
    - 已完成 Context 模型边界切片：`zene-context::ContextModel` 只暴露 `complete(ChatRequest)`，compaction、memory flush、prefire factory 和 `ContextDeps` 不再要求具体 `ChatClient`；
    - 已完成 Agent client 持有关系切片：Agent 仅保存 `Arc<dyn ContextModel>` 与 `Arc<dyn ModelExecutor>`，具体 `ChatClient` 只在 builder / model adapter 内部持有；
    - 已完成 Context water/usage 写回由 ContextEngine 统一计算，并对 event-backed projection 执行 strict 校验；
-   - 已完成公共 runtime command/state/response、`RuntimeControl` 和 recovery info 迁移到独立 `zene-runtime` crate；`zene-runtime::RuntimeCommandRouter` 统一拥有 command channel、reply、event broadcast 与 state watch；`zene-core::RuntimeHandle` 继续保留 Agent-specific actor、recovery 和兼容 facade；
+   - 已完成公共 runtime command/state/response、`RuntimeControl` 和 recovery info 迁移到独立 `zene-runtime` crate；`zene-runtime::RuntimeCommandRouter` 统一拥有 command channel、reply、event broadcast 与 state watch；Agent-specific actor 已迁至 `zene-agent-runtime`（`RuntimeHandle`）。
    - 已完成独立 `zene-model-executor` 的唯一实现收口，删除 core 内未使用的历史重复实现；
-   - 已完成 runtime protocol、公共 control contract、Runtime lifecycle publisher 与 Agent actor wiring 的依赖隔离；Agent-specific actor 仍保留在 core，待 generic driver contract 稳定后再迁移。
+   - 已完成 runtime protocol、公共 control contract、Runtime lifecycle publisher 与 Agent actor wiring 的依赖隔离；Agent-specific actor 在 `zene-agent-runtime`。
 
 4. **Wave 12：Execution resume 与 Cloud transport（P1）**
    - 已完成安全门控第一切片：`RecoveryPlan`、rewind execution boundary 和 ACP recovery metadata；
@@ -1234,11 +1234,11 @@ Wave 16  统一 transport command/event  ← 已完成（含 Steer/SetMode）
 
 | 选择 | Wave | 理由 |
 | --- | --- | --- |
-| 当前最大杠杆 | actor 搬迁 / ModelRequest | Wave 14 已完成；下一步是 runtime crate 边界或中性模型请求 |
-| 结构清理 | actor 出 core | ports/审批已稳定，可评估搬迁 |
-| 可选后续 | 整型 crate / GetMode | Cloud 仍不引入 `zene-runtime`；本地 GetMode/ResumeSafeTurn 仍仅本地 |
+| 当前最大杠杆 | ModelRequest / Cloud 协议统一 | actor 已出 core；下一步是中性模型请求或 Cloud 与本地 command 面进一步对齐 |
+| 结构清理 | protocol re-export 收缩 | core 仍 re-export 部分 `zene-runtime` 类型供兼容 |
+| 可选后续 | GetMode on Cloud | Cloud 仍不引入 `zene-runtime`；本地 GetMode/ResumeSafeTurn 仍仅本地 |
 
-推荐组合：**Wave 14 已收口**。下一步不要碎片化；若继续做结构清理，优先评估 Agent actor 出 core，或 Turn 侧 `ModelRequest`，不要先动 Console。
+推荐组合：**actor 已迁出 core**。下一步优先 Turn 侧 `ModelRequest`，或 Cloud 与本地 RuntimeCommand 对齐评估；不要碎片化。
 
 **不要一上来做** actor 全量重写、完整 Event Sourcing、或再抽一层没有调用方的 crate。
 
@@ -1498,3 +1498,10 @@ Wave 16  统一 transport command/event  ← 已完成（含 Steer/SetMode）
 - Agent / Subagent 构造器写入预设；prepare / tool-batch / Subagent 执行经 policy 接线。
 - 新增 `turn_session.rs`：prepare_turn / step usage / steer / incomplete-turn / step-started 抽出；`Agent` + `AgentTurnPorts` 为 composition-root facade。
 - **Wave 14 标记完成**。不搬 Agent actor。不做 Cloud。不引入 `ModelRequest`。不做 pending tool 自动 replay。
+
+### 2026-08-13 — Agent actor 迁出 core
+
+- 新增 `crates/agent-runtime`（`zene-agent-runtime`）：`RuntimeHandle` actor + `RuntimeOwnedBroker`。
+- `zene-core` 不再持有 actor；ACP 从 `zene_agent_runtime` 导入 `RuntimeHandle`。
+- 协议仍在 `zene-runtime`。Cloud 不依赖 `zene-runtime` / `zene-agent-runtime`。
+- 不引入 `ModelRequest`。不做 pending tool 自动 replay。不改 Console。

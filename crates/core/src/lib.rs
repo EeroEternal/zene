@@ -22,9 +22,7 @@ use zene_tools::{
 };
 
 mod agent_builder;
-mod agent_runtime;
 mod agent_turn;
-mod approval;
 mod context_config;
 pub use zene_model_executor as model_executor;
 mod context_events;
@@ -33,7 +31,6 @@ mod events;
 mod model_step;
 mod plan_mode;
 mod prepare_step;
-mod runtime;
 mod subagent;
 mod tool_batch;
 mod tool_dedup;
@@ -54,7 +51,6 @@ pub use agent_builder::AgentBuilder;
 pub use events::{emit_event, runtime_event_handler, AgentEvent, EventHandler};
 pub use plan_mode::PlanApprovalPrompter;
 use plan_mode::{tool_visible_in_definitions};
-pub use runtime::RuntimeHandle;
 pub use subagent::{run_subagent, CoreSubagentRunner};
 pub use tool_dedup::{append_reminder, ToolDedup};
 pub use tool_scheduler::{classify_tool_accesses, ToolScheduler};
@@ -111,9 +107,8 @@ pub struct Agent {
     session: SessionRecord,
     usage_accumulator: usage::UsageAccumulator,
     context: ContextEngine,
-    /// Set only for an explicit safe model-boundary resume; the original user
-    /// message is already present in the event-backed session projection.
-    pub(crate) resume_existing_turn: bool,
+    /// Set when resuming a safe model-boundary turn; cleared on prepare_turn.
+    resume_existing_turn: bool,
     active_turn: Option<TurnState>,
     steer_buffer: Arc<Mutex<SteerBuffer>>,
     system_prompt: String,
@@ -264,28 +259,17 @@ impl Agent {
             .collect()
     }
 
-    pub(crate) fn execution_record_writer(&self) -> AgentRecordWriter {
+    pub fn execution_record_writer(&self) -> AgentRecordWriter {
         self.record_writer.clone()
     }
 
-    pub(crate) async fn record_runtime_checkpoint(
-        writer: &AgentRecordWriter,
-        session_id: &str,
-        state: ExecutionCheckpointState,
-        detail: Option<&str>,
-    ) -> Result<()> {
-        let suffix = detail.unwrap_or("shutdown");
-        writer.append_execution_checkpoint(&RecordEntry::ExecutionCheckpoint {
-            turn_id: session_id.to_string(),
-            step_id: None,
-            tool_call_id: None,
-            state,
-            idempotency_key: format!("runtime/{session_id}/{suffix}"),
-            context_epoch: None,
-            model_request_hash: None,
-            ts: chrono::Utc::now(),
-        })?;
-        Ok(())
+    /// Mark the next prompt as a safe model-boundary resume (no new user message).
+    pub fn set_resume_existing_turn(&mut self, resume: bool) {
+        self.resume_existing_turn = resume;
+    }
+
+    pub fn runtime_approval_waiters(&self) -> bool {
+        self.runtime_approval_waiters
     }
 
     pub async fn shutdown(&mut self) -> Result<()> {
@@ -644,10 +628,6 @@ impl Agent {
     /// of injecting an ACP/Cloud-specific broker.
     pub fn enable_runtime_approval_waiters(&mut self) {
         self.runtime_approval_waiters = true;
-    }
-
-    pub(crate) fn runtime_approval_waiters(&self) -> bool {
-        self.runtime_approval_waiters
     }
 
     /// Replace the AskUserQuestion prompter (e.g. TUI modal).

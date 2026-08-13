@@ -21,8 +21,9 @@ serde_json.workspace = true
 uuid.workspace = true
 zene-config = { workspace = true }
 zene-core = { workspace = true }
+zene-agent-runtime = { workspace = true }
 zene-sandbox = { workspace = true }
 zene-session = { workspace = true }
 zene-llm = { workspace = true }
 zene-mcp = { workspace = true }
-zene-runtime = { version = "0.1.11", path = "../../crates/runtime" }
+zene-runtime = { workspace = true }
