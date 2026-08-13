@@ -2,7 +2,7 @@ use anyhow::{bail, Context, Result};
 use parking_lot::Mutex;
 use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
-use tracing::{debug, info, warn};
+use tracing::info;
 use zene_config::ZeneConfig;
 use zene_context::{ContextDeps, ContextEngine, PrefireClientFactory};
 use zene_llm::{ChatClient, Message, TokenUsage, ToolCall};
@@ -32,6 +32,7 @@ mod context_hooks;
 mod events;
 mod model_step;
 mod plan_mode;
+mod prepare_step;
 mod runtime;
 mod subagent;
 mod tool_dedup;
@@ -621,22 +622,6 @@ impl Agent {
         }))
     }
 
-    fn warn_if_near_context_limit(&self, estimated_tokens: usize) {
-        let window = self.config.compaction.context_window_tokens as f32;
-        if window <= 0.0 {
-            return;
-        }
-        let ratio = estimated_tokens as f32 / window;
-        if ratio >= 0.9 {
-            warn!(
-                estimated_context_tokens = estimated_tokens,
-                context_window_tokens = self.config.compaction.context_window_tokens,
-                usage_ratio = ratio,
-                "context estimate exceeds 90% of model window"
-            );
-        }
-    }
-
     /// Replace the permission gate (e.g. TUI custom prompter).
     ///
     /// Re-applies sandbox `auto_allow_bash` and config permission rules so a TUI
@@ -831,89 +816,25 @@ impl Agent {
         options: &PromptOptions,
         cancel: Option<&CancellationToken>,
     ) -> Result<zene_turn::PreparedContext> {
-        if Self::check_cancelled(cancel)? {
-            return Err(zene_turn::aborted_error());
-        }
-
-        self.sync_todos_to_session();
-        let tools = self.tool_definitions_for_llm();
-        let estimator = self.token_estimator();
-        let background_tasks = self.background.lock().list();
-        let hooks = context_hooks::ZeneContextHooks::new(
-            &self.session,
-            &background_tasks,
-            self.is_plan_mode_active(),
-        );
-        let compaction_config = context_config::context_compaction_config(&self.config.compaction);
-        let mut handler = context_events::AgentContextHandler::new(
-            self.context_model.as_ref(),
-            &self.config.model,
-            self.sandbox.workdir(),
-        );
-        let prefire_factory = self.prefire_client_factory();
-        let mut deps = make_context_deps(
-            &mut self.session,
-            &compaction_config,
-            &self.config.model,
-            self.context_model.as_ref(),
-            Some(&hooks),
-            &self.system_prompt,
-            &estimator,
-            &mut handler,
-            prefire_factory,
-        );
-        let prepared = self.context.prepare_step(&mut deps, &tools).await?;
-        if let Some(result) = &prepared.compaction {
-            self.record_compaction(result)?;
-        }
-        emit_event(
-            &options.event_handler,
-            AgentEvent::ProjectionReady {
-                source_message_count: prepared.explain.source_message_count,
-                projected_message_count: prepared.explain.projected_message_count,
-                source_event_count: prepared.explain.source_event_count,
-                active_event_count: prepared.explain.active_event_count,
-                cache_drift_detected: prepared.explain.cache_drift_detected,
-                used_materialized_fallback: prepared.explain.used_materialized_fallback,
-                fallback_reason: prepared.explain.fallback_reason.clone(),
-                active_branch_id: prepared.explain.active_branch_id.clone(),
-                active_path_start_sequence: prepared.explain.active_path_start_sequence,
-                injected: prepared.explain.injected.clone(),
-                retained_message_count: prepared.explain.retained_message_count,
-                retained_turn_count: prepared.explain.retained_turn_count,
-                dropped_event_count: prepared.explain.dropped_event_count,
-                truncated_message_count: prepared.explain.truncated_message_count,
-                compaction_event_ids: prepared.explain.compaction_event_ids.clone(),
-                tool_output_provenance: prepared.explain.tool_output_provenance.clone(),
-                retained_turn_ids: prepared.explain.retained_turn_ids.clone(),
-                injected_sources: prepared.explain.injected_sources.clone(),
-                delivery: prepared.explain.delivery.as_str().to_string(),
-                delivery_tail_start: prepared.explain.delivery_tail_start,
-                estimate_tokens: prepared.explain.estimate_tokens,
-                context_epoch: prepared.explain.context_epoch,
-                prefix_cache: prepared.explain.prefix_cache.clone(),
+        let plan_mode_active = self.is_plan_mode_active();
+        prepare_step::prepare_step_context(
+            prepare_step::PrepareStepDeps {
+                config: &self.config,
+                context_model: self.context_model.as_ref(),
+                context: &mut self.context,
+                session: &mut self.session,
+                system_prompt: &self.system_prompt,
+                workdir: self.sandbox.workdir(),
+                tools: self.tools.as_ref(),
+                background: &self.background,
+                todos: &self.todos,
+                plan_mode_active,
+                record_writer: &self.record_writer,
             },
-        );
-        let step = prepared.step;
-        debug!(
-            estimated_context_tokens = step.estimate_tokens,
-            effective_tokens = self.context.water().effective_tokens(),
-            usage_percent = self.context.water().usage_percent(),
-            message_count = step.messages.len(),
-            tool_count = tools.len(),
-            context_epoch = step.metadata.context_epoch,
-            source_event_count = prepared.explain.source_event_count,
-            projection_fallback = prepared.explain.used_materialized_fallback,
-            "llm request context water level"
-        );
-        self.warn_if_near_context_limit(step.estimate_tokens as usize);
-        Ok(zene_turn::PreparedContext {
-            messages: step.messages,
-            tools,
-            context_epoch: Some(step.metadata.context_epoch),
-            metadata: Some(step.metadata),
-            estimate_tokens: Some(step.estimate_tokens),
-        })
+            options,
+            cancel,
+        )
+        .await
     }
 
     pub(crate) async fn invoke_model(
@@ -942,10 +863,6 @@ impl Agent {
             cancel,
         )
         .await
-    }
-
-    fn check_cancelled(cancel: Option<&CancellationToken>) -> Result<bool> {
-        Ok(zene_turn::is_cancelled(cancel))
     }
 
     async fn run_tools(
