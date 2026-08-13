@@ -12,8 +12,8 @@ use tokio_stream::wrappers::ReceiverStream;
 use uuid::Uuid;
 use zene_cloud_domain::{
     ClaimedRun, CreateApprovalRequest, CreatePullRequestBody, CreateRepositoryRequest,
-    CreateRunRequest, DecideApprovalRequest, GithubBranchSummary, GithubMode,
-    GithubProviderConfigView,
+    CreateRunRequest, DecideApprovalRequest, GithubAccountType, GithubBranchSummary,
+    GithubInstallationStatus, GithubMode, GithubProviderConfigView,
     LlmAuthResponse, LlmSettingsView, LoginRequest, PostMessageRequest, QueueStats, RegisterRequest,
     MessageRole, RunStatus, UpdateGithubProviderConfigRequest, UpdateLlmSettingsRequest, UpdateRunRequest,
     WorkerCommandAckRequest, WorkerCommandsResponse, WorkerEventRequest, WorkerFence,
@@ -394,8 +394,8 @@ async fn github_install_callback(
             org.id,
             &remote.id,
             &remote.account_login,
-            &remote.account_type,
-            "active",
+            remote.account_type,
+            GithubInstallationStatus::Active,
         )
         .await?;
     if !github.is_mock() {
@@ -533,8 +533,8 @@ async fn github_mock_connect(
             org.id,
             "10001",
             "mock-org",
-            "Organization",
-            "active",
+            GithubAccountType::Organization,
+            GithubInstallationStatus::Active,
         )
         .await?;
     let listed = github
@@ -578,7 +578,7 @@ async fn github_sync(
             .await?;
         let installation = state
             .db
-            .upsert_installation(org.id, "10001", "mock-org", "Organization", "active")
+            .upsert_installation(org.id, "10001", "mock-org", GithubAccountType::Organization, GithubInstallationStatus::Active)
             .await?;
         let listed = github
             .list_installation_repos("10001")
@@ -615,8 +615,8 @@ async fn github_sync(
                     org.id,
                     &remote.id,
                     &remote.account_login,
-                    &remote.account_type,
-                    "active",
+                    remote.account_type,
+                    GithubInstallationStatus::Active,
                 )
                 .await?;
             synced_installations.push(installation);
@@ -651,7 +651,7 @@ async fn github_mock_install(
     let org = state.db.primary_org(user.id).await?;
     let installation = state
         .db
-        .upsert_installation(org.id, "10001", "mock-org", "Organization", "active")
+        .upsert_installation(org.id, "10001", "mock-org", GithubAccountType::Organization, GithubInstallationStatus::Active)
         .await?;
     Ok(Json(installation))
 }

@@ -3,7 +3,8 @@ use chrono::{Duration, Utc};
 use uuid::Uuid;
 use zene_cloud_domain::{
     ApprovalDecision, ApprovalRequest, AuditLog, GitOperation, GitOperationKind, GitOperationStatus,
-    GithubAccount, GithubInstallation, GithubRepoSummary, OauthState, PullRequest, Repository,
+    GithubAccount, GithubAccountType, GithubInstallation, GithubInstallationStatus, GithubRepoSummary,
+    OauthState, PullRequest, PullRequestState, Repository,
 };
 
 use crate::{parse_time, Db};
@@ -185,8 +186,8 @@ impl Db {
         organization_id: Uuid,
         installation_id: &str,
         account_login: &str,
-        account_type: &str,
-        status: &str,
+        account_type: GithubAccountType,
+        status: GithubInstallationStatus,
     ) -> Result<GithubInstallation> {
         let now = Utc::now();
         let existing: Option<(String, String)> = sqlx::query_as(
@@ -204,8 +205,8 @@ impl Db {
             )
             .bind(organization_id.to_string())
             .bind(account_login)
-            .bind(account_type)
-            .bind(status)
+            .bind(account_type.as_str())
+            .bind(status.as_str())
             .bind(now.to_rfc3339())
             .bind(&id)
             .execute(&self.pool)
@@ -223,8 +224,8 @@ impl Db {
             .bind(organization_id.to_string())
             .bind(installation_id)
             .bind(account_login)
-            .bind(account_type)
-            .bind(status)
+            .bind(account_type.as_str())
+            .bind(status.as_str())
             .bind(now.to_rfc3339())
             .bind(now.to_rfc3339())
             .execute(&self.pool)
@@ -236,8 +237,8 @@ impl Db {
             organization_id,
             installation_id: installation_id.into(),
             account_login: account_login.into(),
-            account_type: account_type.into(),
-            status: status.into(),
+            account_type,
+            status,
             created_at,
             updated_at: now,
         })
@@ -259,16 +260,7 @@ impl Db {
             .await?;
         Ok(rows
             .into_iter()
-            .map(|r| GithubInstallation {
-                id: Uuid::parse_str(&r.0).unwrap(),
-                organization_id: Uuid::parse_str(&r.1).unwrap(),
-                installation_id: r.2,
-                account_login: r.3,
-                account_type: r.4,
-                status: r.5,
-                created_at: parse_time(&r.6),
-                updated_at: parse_time(&r.7),
-            })
+            .map(installation_from_row)
             .collect())
     }
 
@@ -285,16 +277,7 @@ impl Db {
             .bind(installation_id)
             .fetch_optional(&self.pool)
             .await?;
-        Ok(row.map(|r| GithubInstallation {
-            id: Uuid::parse_str(&r.0).unwrap(),
-            organization_id: Uuid::parse_str(&r.1).unwrap(),
-            installation_id: r.2,
-            account_login: r.3,
-            account_type: r.4,
-            status: r.5,
-            created_at: parse_time(&r.6),
-            updated_at: parse_time(&r.7),
-        }))
+        Ok(row.map(installation_from_row))
     }
 
     /// Upsert repositories discovered from a GitHub installation listing.
@@ -599,7 +582,7 @@ impl Db {
         url: Option<&str>,
         base_sha: Option<&str>,
         head_sha: Option<&str>,
-        state: &str,
+        state: PullRequestState,
         draft: bool,
     ) -> Result<PullRequest> {
         let id = Uuid::new_v4();
@@ -619,7 +602,7 @@ impl Db {
         .bind(body)
         .bind(base_sha)
         .bind(head_sha)
-        .bind(state)
+        .bind(state.as_str())
         .bind(if draft { 1 } else { 0 })
         .bind(now.to_rfc3339())
         .execute(&self.pool)
@@ -634,7 +617,7 @@ impl Db {
             body: body.map(|s| s.into()),
             base_sha: base_sha.map(|s| s.into()),
             head_sha: head_sha.map(|s| s.into()),
-            state: state.into(),
+            state,
             draft,
             created_at: now,
         })
@@ -689,7 +672,7 @@ impl Db {
                         body,
                         base_sha,
                         head_sha,
-                        state,
+                        state: PullRequestState::parse(&state).unwrap_or(PullRequestState::Open),
                         draft: draft != 0,
                         created_at: parse_time(&created_at),
                     }
@@ -973,6 +956,22 @@ impl Db {
             .execute(&self.pool)
             .await?;
         Ok(())
+    }
+}
+
+fn installation_from_row(
+    row: (String, String, String, String, String, String, String, String),
+) -> GithubInstallation {
+    GithubInstallation {
+        id: Uuid::parse_str(&row.0).unwrap(),
+        organization_id: Uuid::parse_str(&row.1).unwrap(),
+        installation_id: row.2,
+        account_login: row.3,
+        account_type: GithubAccountType::parse(&row.4).unwrap_or(GithubAccountType::Organization),
+        status: GithubInstallationStatus::parse(&row.5)
+            .unwrap_or(GithubInstallationStatus::Active),
+        created_at: parse_time(&row.6),
+        updated_at: parse_time(&row.7),
     }
 }
 
