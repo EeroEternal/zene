@@ -18,8 +18,8 @@ use tracing_subscriber::EnvFilter;
 use uuid::Uuid;
 use zene_cloud_acp_bridge::{resolve_zene_bin, MockAgent, MockMsg, PermissionDecision};
 use zene_cloud_runtime_client::{
-    AcpRuntimeClient, ApprovalDecision, RuntimeClient, RuntimeCommand, RuntimeEvent,
-    RuntimeNotification, RuntimeRequest,
+    approval_payload, AcpRuntimeClient, ApprovalDecision, RuntimeClient, RuntimeCommand,
+    RuntimeEvent, RuntimeNotification, RuntimeRequest,
 };
 use zene_cloud_domain::{
     ApprovalRequest, ApprovalStatus, ClaimedRun, CloneAuthResponse, CreateApprovalRequest,
@@ -696,7 +696,7 @@ async fn run_with_mock(
                         &request_key,
                         None,
                         "tool",
-                        &params,
+                        &approval_payload(&params),
                     )
                     .await
                     {
