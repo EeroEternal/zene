@@ -30,8 +30,9 @@ import {
   modelsForPicker,
   saveSelectedModel,
 } from "@/lib/models";
-import { allowsDeny, allowsOnce, extraDecisions } from "@/lib/approval";
+import { allowsDeny, allowsOnce, approvalCardBody, extraDecisions } from "@/lib/approval";
 import type { Approval, ApprovalDecision, LlmSettingsView, Repo, Run, RunEvent, RunMessage } from "@/lib/types";
+import { platformEventFromPayload } from "@/lib/platformEvent";
 import { timelineProductFromEvent, timelineToolOutput, type TimelineProduct } from "@/lib/runtimeEvent";
 import { CodePanel, useCodePanelWidth } from "./CodePanel";
 import { Markdown } from "./Markdown";
@@ -262,13 +263,13 @@ function applyTimelineProductToDraft(draft: TimelineDraft, product: TimelineProd
 }
 
 function applyPlatformEventToDraft(draft: TimelineDraft, payload: NonNullable<RunEvent["payload"]>) {
-  if (payload.event === "run.created" && typeof (payload as { prompt?: string }).prompt === "string") {
-    draftAppendUser(draft, (payload as { prompt?: string }).prompt || "");
+  const platform = platformEventFromPayload(payload);
+  if (platform?.event === "run.created" && typeof platform.prompt === "string") {
+    draftAppendUser(draft, platform.prompt || "");
   }
-  if (payload.event === "message.created") {
-    const role = (payload as { role?: string }).role;
-    const text = (payload as { text?: string }).text || "";
-    if (bubbleRole(role) === "user" && text) draftAppendUser(draft, text);
+  if (platform?.event === "message.created") {
+    const text = platform.text || "";
+    if (bubbleRole(platform.role) === "user" && text) draftAppendUser(draft, text);
   }
 }
 
@@ -1173,24 +1174,24 @@ export function RunView({
 
   const handleEvent = useCallback(
     (event: RunEvent) => {
-      const payload = event.payload || {};
-      if (payload.event === "run.status" && payload.status) {
+      const platform = platformEventFromPayload(event.payload);
+      if (platform?.event === "run.status" && platform.status) {
         setRun((prev) => {
           if (!prev) return prev;
-          const next = { ...prev, status: payload.status! };
-          if (payload.headSha) next.headSha = payload.headSha;
+          const next = { ...prev, status: platform.status! };
+          if (platform.headSha) next.headSha = platform.headSha;
           return next;
         });
         onRunsChanged();
       }
-      if (payload.event === "run.title" && typeof payload.title === "string" && payload.title) {
-        lastKnownTitle.current = payload.title;
-        setRun((prev) => (prev ? { ...prev, title: payload.title! } : prev));
+      if (platform?.event === "run.title" && platform.title) {
+        lastKnownTitle.current = platform.title;
+        setRun((prev) => (prev ? { ...prev, title: platform.title! } : prev));
         onRunsChanged();
       }
 
-      if (payload.event === "run.created" && typeof (payload as { prompt?: string }).prompt === "string") {
-        const prompt = (payload as { prompt?: string }).prompt || "";
+      if (platform?.event === "run.created" && typeof platform.prompt === "string") {
+        const prompt = platform.prompt || "";
         if (prompt) {
           hasAssistantTail.current = false;
           setItems((prev) => {
@@ -1202,10 +1203,9 @@ export function RunView({
         }
       }
 
-      if (payload.event === "message.created") {
-        const role = (payload as { role?: string }).role;
-        const text = (payload as { text?: string }).text || "";
-        if (bubbleRole(role) === "user" && text) appendUserBubble(text);
+      if (platform?.event === "message.created") {
+        const text = platform.text || "";
+        if (bubbleRole(platform.role) === "user" && text) appendUserBubble(text);
       }
 
       const product = timelineProductFromEvent(event);
@@ -1299,17 +1299,17 @@ export function RunView({
         const draft = buildTimelineFromEvents(allEvents);
         let statusPatch: Partial<Run> | null = null;
         for (const e of allEvents) {
-          const payload = e.payload || {};
-          if (payload.event === "run.status" && payload.status) {
+          const platform = platformEventFromPayload(e.payload);
+          if (platform?.event === "run.status" && platform.status) {
             statusPatch = {
               ...(statusPatch || {}),
-              status: payload.status,
-              ...(payload.headSha ? { headSha: payload.headSha } : {}),
+              status: platform.status,
+              ...(platform.headSha ? { headSha: platform.headSha } : {}),
             };
           }
-          if (payload.event === "run.title" && typeof payload.title === "string" && payload.title) {
-            lastKnownTitle.current = payload.title;
-            statusPatch = { ...(statusPatch || {}), title: payload.title };
+          if (platform?.event === "run.title" && platform.title) {
+            lastKnownTitle.current = platform.title;
+            statusPatch = { ...(statusPatch || {}), title: platform.title };
           }
         }
         if (statusPatch) {
@@ -1900,10 +1900,7 @@ export function RunView({
                 const item = seg.item;
                 if (item.kind === "approval") {
                   const ap = item.approval;
-                  const summary =
-                    typeof ap.payload === "object"
-                      ? JSON.stringify(ap.payload, null, 2)
-                      : String(ap.payload || "");
+                  const summary = approvalCardBody(ap.payload);
                   const allowed = ap.allowedDecisions || ["allow-once", "reject-once"];
                   const extra = extraDecisions(allowed);
                   const decided = Boolean(item.decision);
