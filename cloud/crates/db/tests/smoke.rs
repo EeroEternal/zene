@@ -187,4 +187,25 @@ async fn register_create_run_and_claim() {
         .find(|item| item.seq == platform_event.seq)
         .expect("platform event without cursor should be replayed");
     assert_eq!(replayed_platform.cursor, None);
+
+    let post_cursor_platform = db
+        .append_event_fenced(
+            run.id,
+            &replacement_fence,
+            Some("post-cursor-platform-event"),
+            "platform",
+            serde_json::json!({"after_cursor": true}),
+        )
+        .await
+        .unwrap();
+    let resumed = db.events_after_cursor(run.id, 17).await.unwrap();
+    let resumed_seqs: Vec<i64> = resumed.iter().map(|item| item.seq).collect();
+    assert!(resumed_seqs.windows(2).all(|window| window[0] < window[1]));
+    assert!(resumed_seqs.contains(&post_cursor_platform.seq));
+    assert!(resumed.iter().any(|item| {
+        item.seq == post_cursor_platform.seq
+            && item.event_type == "platform"
+            && item.cursor.is_none()
+    }));
+    assert!(resumed.iter().all(|item| item.seq > event.seq));
 }
