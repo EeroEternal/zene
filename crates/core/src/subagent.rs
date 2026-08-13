@@ -11,13 +11,14 @@ use zene_tools::{
     RuntimeScope, SubagentEnv, SubagentProfile, SubagentRunner, ToolCatalog, ToolContext,
     ToolRegistry,
 };
+use crate::tool_executor::execute_subagent_tool_batch;
 
 use zene_context::{
     compact_message_list_with_chat, estimate_context, should_compact,
     subagent_compaction_config, TokenEstimator,
 };
 use crate::context_config;
-use zene_permission::{PermissionGate, SharedToolPermission};
+use zene_permission::SharedToolPermission;
 use zene_turn::{
     aborted_error, max_turns_notice, ContextAssemblerPort, EventSinkPort, ModelExecutorPort,
     PreparedContext, StepResult, ToolBatchOutcome, ToolExecutorPort, TurnEngine, TurnEnginePorts,
@@ -162,7 +163,7 @@ struct SubagentTurnRuntime<'a> {
     subagent_env: SubagentEnv,
     permission: Option<SharedToolPermission>,
     broker: Option<zene_permission::SharedApprovalBroker>,
-    tools: ToolRegistry,
+    tools: Arc<ToolRegistry>,
     messages: Vec<Message>,
     compaction_config: zene_context::CompactionConfig,
     active_turn: Option<TurnState>,
@@ -179,7 +180,7 @@ impl<'a> SubagentTurnRuntime<'a> {
         broker: Option<zene_permission::SharedApprovalBroker>,
     ) -> Self {
         let system_prompt = subagent_system_prompt(scope.profile, sandbox.workdir());
-        let tools = scope.tools();
+        let tools = Arc::new(scope.tools());
         Self {
             sandbox,
             config,
@@ -206,7 +207,7 @@ impl<'a> SubagentTurnRuntime<'a> {
         }
         maybe_compact_subagent_messages(
             &mut self.messages,
-            &self.tools,
+            self.tools.as_ref(),
             &self.compaction_config,
             &self.config.model,
             self.backend,
@@ -214,11 +215,37 @@ impl<'a> SubagentTurnRuntime<'a> {
         .await?;
         Ok(PreparedContext {
             messages: self.messages.clone(),
-            tools: ToolCatalog::definitions(&self.tools),
+            tools: ToolCatalog::definitions(self.tools.as_ref()),
             context_epoch: None,
             metadata: None,
             estimate_tokens: None,
         })
+    }
+
+    async fn execute_tools(
+        &mut self,
+        tool_calls: &[ToolCall],
+        cancel: Option<&CancellationToken>,
+    ) -> Result<ToolBatchOutcome> {
+        let batch = execute_subagent_tool_batch(
+            Arc::clone(&self.tools),
+            Arc::clone(&self.sandbox),
+            tool_calls,
+            cancel,
+            self.subagent_env.clone(),
+            self.permission.clone(),
+            self.broker.clone(),
+        )
+        .await?;
+        for message in batch.messages {
+            self.messages.push(Message::tool_result_with_error(
+                &message.call.id,
+                &message.call.name,
+                message.content,
+                message.is_error,
+            ));
+        }
+        Ok(batch.outcome)
     }
 
     async fn invoke_model(
@@ -341,18 +368,7 @@ impl ToolExecutorPort<()> for SubagentTurnRuntime<'_> {
         _options: &(),
         cancel: Option<&CancellationToken>,
     ) -> Result<ToolBatchOutcome> {
-        run_subagent_tools(
-            &self.tools,
-            tool_calls,
-            &self.sandbox,
-            cancel,
-            &self.subagent_env,
-            self.permission.clone(),
-            self.broker.clone(),
-            &mut self.messages,
-        )
-        .await?;
-        Ok(ToolBatchOutcome::Continue)
+        self.execute_tools(tool_calls, cancel).await
     }
 }
 
@@ -417,18 +433,7 @@ impl TurnRuntime for SubagentTurnRuntime<'_> {
         _options: &Self::Options,
         cancel: Option<&CancellationToken>,
     ) -> Result<ToolBatchOutcome> {
-        run_subagent_tools(
-            &self.tools,
-            tool_calls,
-            &self.sandbox,
-            cancel,
-            &self.subagent_env,
-            self.permission.clone(),
-            self.broker.clone(),
-            &mut self.messages,
-        )
-        .await?;
-        Ok(ToolBatchOutcome::Continue)
+        self.execute_tools(tool_calls, cancel).await
     }
 
     fn inject_steer(&mut self, _options: &Self::Options) -> Result<bool> {
@@ -458,84 +463,6 @@ impl TurnRuntime for SubagentTurnRuntime<'_> {
     async fn finish_turn(&mut self) -> Result<()> {
         Ok(())
     }
-}
-
-async fn run_subagent_tools(
-    tools: &ToolRegistry,
-    tool_calls: &[ToolCall],
-    sandbox: &Arc<dyn Sandbox>,
-    cancel: Option<&CancellationToken>,
-    subagent_env: &SubagentEnv,
-    permission: Option<SharedToolPermission>,
-    broker: Option<zene_permission::SharedApprovalBroker>,
-    messages: &mut Vec<Message>,
-) -> Result<()> {
-    let ctx = ToolContext {
-        sandbox: Arc::clone(sandbox),
-        cancel: cancel.cloned(),
-        subagent: Some(subagent_env.clone()),
-        permission: permission.clone(),
-        plan_mode: None,
-        todos: None,
-        ask_user: None,
-        background: None,
-    };
-
-    for call in tool_calls {
-        if check_cancelled(cancel)? {
-            return Err(aborted_error());
-        }
-
-        let allowed = if let Some(ref gate) = permission {
-            zene_permission::resolve_permission(
-                gate,
-                broker.as_ref(),
-                zene_permission::ApprovalRequest {
-                    request_id: call.id.clone(),
-                    tool_name: call.name.clone(),
-                    arguments: call.arguments.clone(),
-                    tool_call_id: Some(call.id.clone()),
-                },
-            )
-            .await?
-        } else {
-            true
-        };
-
-        let result = if !allowed {
-            zene_tools::ToolResult {
-                content: PermissionGate::denied_message(&call.name),
-                is_error: true,
-            }
-        } else {
-            tools
-                .execute(&call.name, &call.arguments, &ctx)
-                .await
-                .unwrap_or_else(|err| zene_tools::ToolResult {
-                    content: err.to_string(),
-                    is_error: true,
-                })
-        };
-
-        let content = if result.content.is_empty() {
-            if result.is_error {
-                "(tool returned empty error output)".to_string()
-            } else {
-                "(tool returned no output)".to_string()
-            }
-        } else {
-            result.content
-        };
-
-        messages.push(Message::tool_result_with_error(
-            &call.id,
-            &call.name,
-            content,
-            result.is_error,
-        ));
-    }
-
-    Ok(())
 }
 
 fn subagent_system_prompt(profile: SubagentProfile, workdir: &Path) -> String {

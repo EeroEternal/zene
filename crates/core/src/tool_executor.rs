@@ -3,13 +3,15 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use anyhow::Result;
+use parking_lot::Mutex;
 use tokio_util::sync::CancellationToken;
 use zene_llm::ToolCall;
-use zene_permission::PermissionGate;
+use zene_permission::{PermissionGate, PermissionMode, SharedApprovalBroker};
 use zene_tool_runtime::{apply_tool_bound_plan, plan_tool_output_bound, FsToolOutputStore};
 use zene_tools::{
+    default_ask_user_prompter, shared_background_tasks, shared_plan_mode, shared_todo_store,
     PlanModeState, SharedAskUserPrompter, SharedBackgroundTasks, SharedPlanMode, SharedTodoStore,
-    SubagentEnv, ToolContext, ToolRegistry,
+    SharedToolPermission, SubagentEnv, ToolContext, ToolRegistry,
 };
 use zene_turn::ToolBatchOutcome;
 
@@ -338,6 +340,62 @@ impl<'a> DefaultToolExecutor<'a> {
             messages,
         })
     }
+}
+
+/// Run one Subagent tool batch through the same executor as the main Agent.
+///
+/// Plan mode stays inactive; hooks are empty. Missing permission inherits
+/// bypass so Explore/Coder keep prior auto-allow behavior unless a gate is
+/// passed from the parent.
+pub(crate) async fn execute_subagent_tool_batch(
+    tools: Arc<ToolRegistry>,
+    sandbox: Arc<dyn Sandbox>,
+    tool_calls: &[ToolCall],
+    cancel: Option<&CancellationToken>,
+    subagent_env: SubagentEnv,
+    permission: Option<SharedToolPermission>,
+    broker: Option<SharedApprovalBroker>,
+) -> Result<ToolBatchResult> {
+    let permission = permission.unwrap_or_else(|| {
+        Arc::new(Mutex::new(PermissionGate::new(
+            PermissionMode::BypassPermissions,
+        )))
+    });
+    let plan_mode = shared_plan_mode();
+    let plan_approval: PlanApprovalPrompter = Arc::new(|_path, _body| Ok(false));
+    let todos = shared_todo_store();
+    let ask_user = default_ask_user_prompter();
+    let background = shared_background_tasks();
+    let hooks = HookRunner::with_bash(Vec::new(), sandbox.workdir().to_path_buf());
+    let options = PromptOptions {
+        stream: false,
+        quiet: true,
+        ..PromptOptions::default()
+    };
+    let mut dedup = ToolDedup::new();
+    let executor = DefaultToolExecutor::new(ToolExecutorDeps {
+        tools,
+        sandbox: Arc::clone(&sandbox),
+        permission,
+        approval_broker: broker,
+        plan_mode,
+        plan_approval: &plan_approval,
+        todos,
+        ask_user,
+        background,
+        subagent: Some(subagent_env),
+        hooks: &hooks,
+    });
+    executor
+        .execute(
+            tool_calls,
+            &options,
+            cancel,
+            "subagent",
+            sandbox.workdir(),
+            &mut dedup,
+        )
+        .await
 }
 
 fn outcome_for_batch(results: &[(bool, bool)]) -> ToolBatchOutcome {
