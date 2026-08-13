@@ -19,8 +19,8 @@ use zene_session::{
 pub use zene_session::{RecoveryDisposition, RecoveryExecution, RecoverySnapshot};
 pub use zene_tools::AskUserOption;
 use zene_tools::{
-    shared_todo_store_from, SharedAskUserPrompter, SharedBackgroundTasks, SharedPlanMode,
-    SharedTodoStore, SubagentEnv, ToolRegistry, DEFAULT_SUBAGENT_MAX_DEPTH,
+    shared_todo_store_from, RuntimeScope, SharedAskUserPrompter, SharedBackgroundTasks,
+    SharedPlanMode, SharedTodoStore, ToolCatalog, ToolRegistry,
 };
 
 mod agent_builder;
@@ -103,6 +103,8 @@ pub struct Agent {
     config: ZeneConfig,
     context_model: Arc<dyn zene_context::ContextModel>,
     model_executor: Arc<dyn ModelExecutor>,
+    /// Root capability scope (depth 0). Tools may be overridden after scope build.
+    runtime_scope: RuntimeScope,
     tools: Arc<ToolRegistry>,
     sandbox: Arc<dyn Sandbox>,
     session: SessionRecord,
@@ -255,8 +257,10 @@ impl Agent {
 
     fn tool_definitions_for_llm(&self) -> Vec<zene_llm::ToolDefinition> {
         let active = self.is_plan_mode_active();
-        self.tools
-            .filter_definitions(|name| tool_visible_in_definitions(name, active))
+        ToolCatalog::definitions(self.tools.as_ref())
+            .into_iter()
+            .filter(|def| tool_visible_in_definitions(&def.name, active))
+            .collect()
     }
 
     pub(crate) fn execution_record_writer(&self) -> AgentRecordWriter {
@@ -1164,11 +1168,7 @@ impl Agent {
                 todos: Arc::clone(&self.todos),
                 ask_user: Arc::clone(&self.ask_user),
                 background: Arc::clone(&self.background),
-                subagent: Some(SubagentEnv {
-                    depth: 0,
-                    max_depth: DEFAULT_SUBAGENT_MAX_DEPTH,
-                    runner: subagent_runner,
-                }),
+                subagent: Some(self.runtime_scope.env(subagent_runner)),
                 hooks: &self.hooks,
             });
             executor

@@ -16,7 +16,8 @@ use zene_sandbox::{LocalSandbox, Sandbox};
 use zene_session::{AgentRecordWriter, FileSessionStore, SessionRecord, SessionStore};
 use zene_tools::{
     default_ask_user_prompter, shared_background_tasks, shared_plan_mode, shared_todo_store_from,
-    SharedAskUserPrompter, SharedBackgroundTasks, SharedPlanMode, SharedTodoStore, ToolRegistry,
+    RuntimeScope, SharedAskUserPrompter, SharedBackgroundTasks, SharedPlanMode, SharedTodoStore,
+    ToolRegistry,
 };
 
 use crate::plan_mode::{default_plan_approval_prompter, PlanApprovalPrompter};
@@ -108,7 +109,7 @@ impl AgentBuilder {
         self
     }
 
-    /// Replace default `agent_tools` registry (MCP tools are not merged unless [`Self::mcp_auto`]).
+    /// Replace default `RuntimeScope::agent` registry (MCP tools are not merged unless [`Self::mcp_auto`]).
     pub fn tools(mut self, tools: ToolRegistry) -> Self {
         self.tools = Some(tools);
         self
@@ -255,11 +256,11 @@ impl AgentBuilder {
             None => AgentRecordWriter::for_session(&self.session.meta.id)?,
         };
 
+        let runtime_scope =
+            RuntimeScope::agent(self.config.agent_profile, self.config.web_search.clone());
         let mut tools = match self.tools {
             Some(tools) => tools,
-            None => {
-                zene_tools::agent_tools(self.config.agent_profile, self.config.web_search.clone())
-            }
+            None => runtime_scope.tools(),
         };
 
         let mcp = match self.mcp {
@@ -331,6 +332,7 @@ impl AgentBuilder {
                 )))
             }),
             context_model: client,
+            runtime_scope,
             tools: Arc::new(tools),
             sandbox,
             session: self.session,
