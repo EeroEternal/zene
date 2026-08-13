@@ -185,6 +185,21 @@ export interface RunEvent {
   };
 }
 
+export type PlatformEvent =
+  | { event: "run.created"; title?: string; prompt?: string }
+  | { event: "run.title"; title?: string }
+  | { event: "run.archived" }
+  | { event: "run.status"; status?: string; headSha?: string }
+  | { event: "message.created"; role?: string; text?: string }
+  | {
+      event: "approval.created";
+      approvalId?: string;
+      status?: string;
+      decision?: string;
+      kind?: string;
+    }
+  | { event: "approval.decided"; approvalId?: string; decision?: string };
+
 export type ApprovalDecision =
   | "allow-once"
   | "allow-always"

@@ -16,7 +16,7 @@ use uuid::Uuid;
 use zene_cloud_domain::{
     ApprovalDecision, ApprovalKind, ApprovalRequest, ApprovalRisk, ApprovalStatus, AuthResponse,
     CloneAuthResponse, CreateApprovalRequest, CreateRepositoryRequest, CreateRunRequest, LoginRequest, Organization,
-    QueueActive, QueueHold, QueueStats, RegisterRequest, Repository, Run, RunEvent, RunMessage,
+    PlatformEvent, QueueActive, QueueHold, QueueStats, RegisterRequest, Repository, Run, RunEvent, RunMessage,
     RunStatus, User, WorkerCommand, WorkerFence,
 };
 
@@ -476,10 +476,9 @@ impl Db {
             Some("platform.run.created"),
             None,
             "platform",
-            serde_json::json!({
-                "event": "run.created",
-                "title": run.title,
-                "prompt": run.prompt,
+            platform_payload(PlatformEvent::RunCreated {
+                title: run.title.clone(),
+                prompt: run.prompt.clone(),
             }),
         )
         .await?;
@@ -610,9 +609,8 @@ impl Db {
                 title_event_id.as_deref().or(Some("platform.run.title")), 
                 None,
                 "platform",
-                serde_json::json!({
-                    "event": "run.title",
-                    "title": updated.title,
+                platform_payload(PlatformEvent::RunTitle {
+                    title: updated.title.clone(),
                 }),
             )
             .await?;
@@ -625,7 +623,7 @@ impl Db {
                 Some("platform.run.archived"),
                 None,
                 "platform",
-                serde_json::json!({ "event": "run.archived" }),
+                platform_payload(PlatformEvent::RunArchived),
             )
             .await?;
         }
@@ -837,7 +835,7 @@ impl Db {
              WHERE id = ?",
         )
         .bind(status.as_str())
-        .bind(head_sha)
+        .bind(head_sha.clone())
         .bind(finished.clone())
         .bind(run_id.to_string())
         .execute(&mut *tx)
@@ -860,7 +858,7 @@ impl Db {
             Some(&format!("platform.status.{}", status.as_str())),
             None,
             "platform",
-            serde_json::json!({ "event": "run.status", "status": status.as_str() }),
+            run_status_payload(status, head_sha),
         )
         .await?;
         tx.commit().await?;
@@ -890,7 +888,7 @@ impl Db {
              WHERE id = ?",
         )
         .bind(status.as_str())
-        .bind(head_sha)
+        .bind(head_sha.clone())
         .bind(finished)
         .bind(run_id.to_string())
         .execute(&mut *tx)
@@ -913,7 +911,7 @@ impl Db {
             Some(&format!("platform.status.{}", status.as_str())),
             None,
             "platform",
-            serde_json::json!({ "event": "run.status", "status": status.as_str() }),
+            run_status_payload(status, head_sha),
         )
         .await?;
         let updated = sqlx::query_as::<_, RunRow>(&format!("SELECT {RUN_COLUMNS} FROM runs WHERE id = ?"))
@@ -1268,10 +1266,9 @@ impl Db {
             client_message_id,
             None,
             "platform",
-            serde_json::json!({
-                "event": "message.created",
-                "role": role,
-                "text": content,
+            platform_payload(PlatformEvent::MessageCreated {
+                role: role.to_string(),
+                text: content.to_string(),
             }),
         )
         .await?;
@@ -1308,7 +1305,7 @@ impl Db {
                 Some("platform.status.queued"),
                 None,
                 "platform",
-                serde_json::json!({ "event": "run.status", "status": RunStatus::Queued.as_str() }),
+                run_status_payload(RunStatus::Queued, None),
             )
             .await?;
         }
@@ -1624,12 +1621,11 @@ impl Db {
             0,
             Some(&format!("approval.{}", req.request_key)),
             "platform",
-            serde_json::json!({
-                "event": "approval.created",
-                "approvalId": id,
-                "status": status.as_str(),
-                "decision": decision.map(|d| d.as_str()),
-                "kind": req.kind.as_str(),
+            platform_payload(PlatformEvent::ApprovalCreated {
+                approval_id: id,
+                status,
+                decision,
+                kind: req.kind,
             }),
         )
         .await?;
@@ -1748,10 +1744,9 @@ impl Db {
             0,
             Some(&format!("approval.decided.{}", existing.request_key)),
             "platform",
-            serde_json::json!({
-                "event": "approval.decided",
-                "approvalId": approval_id,
-                "decision": decision.as_str(),
+            platform_payload(PlatformEvent::ApprovalDecided {
+                approval_id,
+                decision,
             }),
         )
         .await?;
@@ -2049,3 +2044,11 @@ pub(crate) fn map_approval_full_row(
 const RUN_COLUMNS: &str = "id, organization_id, repository_id, requested_by, status, status_version,
     title, prompt, base_ref, base_sha, head_branch, head_sha, model, permission_mode, max_turns,
     created_at, started_at, finished_at, archived_at";
+
+fn platform_payload(event: PlatformEvent) -> serde_json::Value {
+    serde_json::to_value(event).unwrap_or_else(|_| serde_json::json!({}))
+}
+
+fn run_status_payload(status: RunStatus, head_sha: Option<String>) -> serde_json::Value {
+    platform_payload(PlatformEvent::RunStatusChanged { status, head_sha })
+}

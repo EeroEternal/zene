@@ -324,6 +324,40 @@ pub struct ApprovalEventPayload {
     pub raw_input: Option<serde_json::Value>,
 }
 
+/// Product payload stored on `event_type = "platform"` rows.
+/// Wire JSON keeps the `event` discriminator and camelCase fields.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(tag = "event", rename_all_fields = "camelCase")]
+pub enum PlatformEvent {
+    #[serde(rename = "run.created")]
+    RunCreated { title: String, prompt: String },
+    #[serde(rename = "run.title")]
+    RunTitle { title: String },
+    #[serde(rename = "run.archived")]
+    RunArchived,
+    #[serde(rename = "run.status")]
+    RunStatusChanged {
+        status: RunStatus,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        head_sha: Option<String>,
+    },
+    #[serde(rename = "message.created")]
+    MessageCreated { role: String, text: String },
+    #[serde(rename = "approval.created")]
+    ApprovalCreated {
+        approval_id: Id,
+        status: ApprovalStatus,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        decision: Option<ApprovalDecision>,
+        kind: ApprovalKind,
+    },
+    #[serde(rename = "approval.decided")]
+    ApprovalDecided {
+        approval_id: Id,
+        decision: ApprovalDecision,
+    },
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RunEvent {
@@ -489,9 +523,10 @@ pub struct WorkerEventRequest {
 #[cfg(test)]
 mod tests {
     use super::{
-        ApprovalDecision, ApprovalEventPayload, ApprovalKind, ApprovalRisk, CloudEventKind,
-        CreateApprovalRequest, TextEventPayload, ToolCallPayload, WorkerCommand,
-        WorkerCommandAckRequest, WorkerCommandKind, WorkerEventRequest, WorkerFence,
+        ApprovalDecision, ApprovalEventPayload, ApprovalKind, ApprovalRisk, ApprovalStatus,
+        CloudEventKind, CreateApprovalRequest, PlatformEvent, RunStatus, TextEventPayload,
+        ToolCallPayload, WorkerCommand, WorkerCommandAckRequest, WorkerCommandKind,
+        WorkerEventRequest, WorkerFence,
     };
 
     #[test]
@@ -669,6 +704,37 @@ mod tests {
                 "title": "Write",
                 "kind": "edit",
                 "rawInput": { "path": "notes.md" }
+            })
+        );
+        let encoded = serde_json::to_value(PlatformEvent::RunStatusChanged {
+            status: RunStatus::Completed,
+            head_sha: Some("abc123".into()),
+        })
+        .expect("status");
+        assert_eq!(
+            encoded,
+            serde_json::json!({
+                "event": "run.status",
+                "status": "completed",
+                "headSha": "abc123"
+            })
+        );
+        let encoded = serde_json::to_value(PlatformEvent::RunArchived).expect("archived");
+        assert_eq!(encoded, serde_json::json!({ "event": "run.archived" }));
+        let encoded = serde_json::to_value(PlatformEvent::ApprovalCreated {
+            approval_id: uuid::Uuid::nil(),
+            status: ApprovalStatus::Pending,
+            decision: None,
+            kind: ApprovalKind::Tool,
+        })
+        .expect("approval created");
+        assert_eq!(
+            encoded,
+            serde_json::json!({
+                "event": "approval.created",
+                "approvalId": uuid::Uuid::nil(),
+                "status": "pending",
+                "kind": "tool"
             })
         );
     }

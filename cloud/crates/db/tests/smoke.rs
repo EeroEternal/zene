@@ -271,10 +271,11 @@ async fn run_state_mutations_have_matching_events() {
     assert!(updated.archived_at.is_some());
 
     let updated = db
-        .update_run_status(run.id, RunStatus::Completed, None, None)
+        .update_run_status(run.id, RunStatus::Completed, Some("abc123".into()), None)
         .await
         .unwrap();
     assert_eq!(updated.status, RunStatus::Completed);
+    assert_eq!(updated.head_sha.as_deref(), Some("abc123"));
     assert!(updated.finished_at.is_some());
 
     let message = db
@@ -292,7 +293,9 @@ async fn run_state_mutations_have_matching_events() {
         event.payload["event"] == "message.created" && event.payload["text"] == "follow-up"
     }));
     assert!(events.iter().any(|event| {
-        event.payload["event"] == "run.status" && event.payload["status"] == "completed"
+        event.payload["event"] == "run.status"
+            && event.payload["status"] == "completed"
+            && event.payload["headSha"] == "abc123"
     }));
     assert!(events.iter().any(|event| {
         event.payload["event"] == "run.status" && event.payload["status"] == "queued"
