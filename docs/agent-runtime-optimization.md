@@ -2,9 +2,9 @@
 
 > 状态：持续演进。Wave 0–12 把控制面/数据面的 **接口边界** 建起来了；Wave 13 起让默认执行路径真正走这些边界。
 >
-> **进度快照：2026-08-13，基线 `d2184e5`（PR #102 已合并）。**
+> **进度快照：2026-08-13，基线 `1e6c97f`（PR #105 已合并）。**
 > 本文同时记录目标架构、已实现能力和剩余工作。
-> Wave 16 的 Steer/SetMode 已对齐；**Wave 14 已完成**；Agent-specific actor 已迁至 `zene-agent-runtime`（协议仍在 `zene-runtime`；Cloud 不依赖二者）。
+> Wave 16 的 Steer/SetMode 已对齐；**Wave 14 已完成**；Agent-specific actor 已迁至 `zene-agent-runtime`（协议仍在 `zene-runtime`；Cloud 不依赖二者）；Turn 与 ContextModel 共用中性 `ModelRequest`。
 >
 > 本文基于当前 zene runtime 实现，描述如何将 `Agent`、`Turn`、`Step`、`Session`、Cloud `Run` 和 ACP transport 拉开，并给出渐进式迁移方案。
 >
@@ -28,7 +28,7 @@
 但当前 `Agent` 仍同时是 composition root 和 step orchestrator，开放度还不够：
 
 1. `TurnEngine` 已统一主 Agent 和 Subagent 的循环，ports 也已抽出；Wave 13 起默认路径必须真正把 `prepare_context` 的 `PreparedContext` 交给 `run_model`，而不是在 model 步骤里重新组装上下文。
-2. `Provider` / `ChatClient` 仍是 provider 面；Turn/runtime 经 `ModelExecutor` 看见中性 `ModelRequest` / `ModelResponse`，`ChatClientExecutor` 内部映射为 `ChatRequest`。
+2. `Provider` / `ChatClient` 仍是 provider 面；Turn/runtime 与 Context compaction/memory 经中性 `ModelRequest` / `ModelResponse`，`ChatClientExecutor` 与 `ContextModel` 对 `ChatClient` 的适配内部映射为 `ChatRequest`。
 3. ACP、Cloud event 和 Core `AgentEvent` 仍存在语义转换。Cloud `RuntimeCommand::Approval` 已与 core 同形（`request_id` + `ApprovalDecision`），但 Cloud 仍无 Steer/SetMode 等变体，也未依赖 `zene-runtime`。已分类 Cloud payload 已是产品字段；未识别帧仍为 ACP JSON。
 4. Session 可以恢复历史并在安全 model-boundary 上自动恢复未完成 execution；pending tool、approval 和 failure 仍必须 inspection/manual intervention。
 5. `RuntimeHandle` 已成为 active turn、prompt queue、cancel 的控制所有者；Agent-specific actor 在 `zene-agent-runtime`，ACP 仍保留 transport 层 session bookkeeping。
@@ -95,7 +95,7 @@ RuntimeHandle → Agent → TurnEngine
 | Turn 循环 | `crates/turn/src/turn_loop.rs` | 通用多步循环，已经是较好的抽象 |
 | Turn 适配 | `crates/core/src/agent_turn.rs` | `AgentTurnPorts` 直接实现 ports；`prepare_context` 产出 `PreparedContext`，`run_model` 消费它 |
 | Agent 状态 | `crates/core/src/lib.rs` | session、context、tools、permission 等仍集中在 `Agent`；目标是退回 wiring |
-| LLM 请求 | `crates/model-executor` + `crates/llm` | 可注入 `Arc<dyn ModelExecutor>`；请求类型仍是 `ChatRequest` |
+| LLM 请求 | `crates/model-executor` + `crates/llm` + `crates/context` | `ModelExecutor` / `ContextModel` 吃 `ModelRequest`；provider 侧仍映射 `ChatRequest` |
 | Tool 执行 | `crates/core/src/tool_executor.rs` + `crates/tools` | `DefaultToolExecutor` 已抽出；`ToolRegistry` 仍是目录+执行一体 |
 | Tool 并发 | `crates/core/src/tool_scheduler.rs` | 同一模型 step 内进行冲突感知并发 |
 | Session | `crates/session` | `SessionRecord` + `SessionStore`；events 优先，messages 为 materialized cache |
@@ -950,7 +950,7 @@ Wave 0–12 的价值是把 **所有权和语义** 分开：Runtime 控制面、
 
 1. **Turn ports 已是真入口（Wave 13，PR #60）**：`AgentTurnPorts.prepare_context` 产出 `PreparedContext`，`run_model` 只消费它；Subagent 直接实现 `TurnEnginePorts`。
 2. **`Agent` 仍是 God Object**：它同时持有 model、tools、sandbox、permission、hooks、MCP、todos、plan mode。下一步是把它变成 wiring，而不是继续实现 step。
-3. **模型抽象仍偏 provider**：`ModelExecutor` 吃 `ChatRequest`；Subagent 已共用 `ModelExecutor`。目标是 Turn 只看见 `PreparedContext` → `ModelRequest`。
+3. **模型抽象**：Turn 与 ContextModel 经 `PreparedContext` → `ModelRequest`；provider / `ChatClient` 仍用 `ChatRequest`。
 4. **审批 waiter 已打通（Wave 15）**：`PermissionGate::evaluate` 只做 allow/deny/ask；`Ask` 交给 `ApprovalBroker`。Runtime actor 持有 oneshot waiter，`RuntimeCommand::Approval` 唤醒 in-flight tool。ACP 只做事件适配。
 5. **Cloud 审批 command 已中性化（Wave 16）**：JobRunner 用 `send(RuntimeCommand::Approval { request_id, decision })` 回复审批。ACP jsonrpc id 与 `optionId` 只留在 adapter。Cloud 产品审批类型不再携带 `jsonrpc_id`。API→worker `WorkerCommand.kind` 是 Prompt/Cancel 枚举。存库/API/Console/RuntimeCommand 共用 domain `ApprovalDecision` / `ApprovalKind` / `ApprovalRisk`。Cloud 仍不是 `zene-runtime::RuntimeCommand`（无 Steer/SetMode，不引入该 crate）。
 6. **Cloud 事件产品面已接到 Console（Wave 16）**：domain `CloudEventKind` 是 RuntimeClient 分类结果；已分类 payload 存产品字段。平台事件 payload 是 domain `PlatformEvent`。写入路径 `event_type` 是 `RunEventKind`。Console 时间线按 `event_type` 渲染 `text_delta` / `thought_delta` / `user_message` / `tool_call` / `tool_result`（含 legacy `params.update` 回放）。plan/usage/projection 等不进时间线。未识别帧仍为 `acp`。
@@ -1136,7 +1136,7 @@ Wave 16  统一 transport command/event  ← 已完成（含 Steer/SetMode）
    - 本地与 Cloud 共用同一套 `RuntimeCommand` / `RuntimeEvent`（Cloud 已有 Prompt/Steer/Cancel/Approval/SetMode/Shutdown；API→worker 仍是 Prompt/Cancel；不依赖 `zene-runtime`）。`GetMode` / `ResumeSafeTurn` 仍仅本地。未识别 Cloud 帧仍为 ACP JSON。
    - Agent-specific actor 已迁入 `zene-agent-runtime`（协议仍在 `zene-runtime`；Cloud 不依赖）。后续可继续收缩 core 对 protocol 的 re-export。
    - 跨 VM outbox 的共享持久化实现；当前部署文档要求共享 POSIX volume 或后续 DB/object spool。
-   - Turn 侧中性 `ModelRequest`（仍吃 `ChatRequest`）。
+   - Provider / `ChatClient` 仍是 `ChatRequest` 面（Turn 与 ContextModel 已用 `ModelRequest`）。
 
 以上未完成项不是本轮测试覆盖的小修复；在没有明确协议、存储和迁移策略前，不应声称已经完成。
 
@@ -1234,11 +1234,11 @@ Wave 16  统一 transport command/event  ← 已完成（含 Steer/SetMode）
 
 | 选择 | Wave | 理由 |
 | --- | --- | --- |
-| 当前最大杠杆 | ModelRequest / Cloud 协议统一 | actor 已出 core；下一步是中性模型请求或 Cloud 与本地 command 面进一步对齐 |
+| 当前最大杠杆 | Cloud 协议对齐评估 | ContextModel 与 ModelExecutor 已共用 ModelRequest；下一步可评估 Cloud command 面 |
 | 结构清理 | protocol re-export 收缩 | core 仍 re-export 部分 `zene-runtime` 类型供兼容 |
 | 可选后续 | GetMode on Cloud | Cloud 仍不引入 `zene-runtime`；本地 GetMode/ResumeSafeTurn 仍仅本地 |
 
-推荐组合：**actor 已迁出 core**。下一步优先 Turn 侧 `ModelRequest`，或 Cloud 与本地 RuntimeCommand 对齐评估；不要碎片化。
+推荐组合：**ContextModel 中性化已落地**。下一步优先 Cloud 与本地 RuntimeCommand 对齐评估；不要碎片化。
 
 **不要一上来做** actor 全量重写、完整 Event Sourcing、或再抽一层没有调用方的 crate。
 
@@ -1511,4 +1511,11 @@ Wave 16  统一 transport command/event  ← 已完成（含 Steer/SetMode）
 - 新增 `ModelRequest` / `ModelResponse`；`ModelExecutor::complete/stream` 改为吃中性请求。
 - `ChatClientExecutor` 内部映射到 `ChatRequest` / `ChatResponse`；provider / `ContextModel` 不变。
 - 主 Agent `model_step` 与 Subagent 调用面改用 `ModelRequest`。
+- 不做 Cloud。不改 Console。不自动 replay pending tools。
+
+### 2026-08-13 — ContextModel uses ModelRequest
+
+- `ContextModel::complete` 改为吃 `ModelRequest` / 返回 `ModelResponse`；`ChatClient` 适配内部映射。
+- compaction / memory flush / `compact_message_list_with_chat` 回调面同步中性化；Subagent compaction 直接把 `ModelRequest` 交给 `ModelExecutor`。
+- `zene-context` 依赖 `zene-model-executor`（仅类型与边界，不引入 Turn/runtime）。
 - 不做 Cloud。不改 Console。不自动 replay pending tools。

@@ -9,7 +9,8 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use tracing::{info, warn};
-use zene_llm::{ChatRequest, Message, ToolDefinition};
+use zene_llm::{Message, ToolDefinition};
+use zene_model_executor::ModelRequest;
 
 use crate::model::ContextModel;
 
@@ -185,7 +186,7 @@ pub async fn run_memory_flush(
         return Ok(FlushResult::NothingToStore);
     }
 
-    let request = ChatRequest {
+    let request = ModelRequest {
         model: model.to_string(),
         messages: vec![
             Message::system(FLUSH_SYSTEM_PROMPT),
