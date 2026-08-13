@@ -15,7 +15,7 @@ use zene_cloud_domain::{
     CreateRunRequest, DecideApprovalRequest, GithubAccountType, GithubBranchSummary,
     GithubInstallationStatus, GithubMode, GithubProviderConfigView,
     LlmAuthResponse, LlmSettingsView, LoginRequest, PostMessageRequest, QueueStats, RegisterRequest,
-    MessageRole, RunStatus, UpdateGithubProviderConfigRequest, UpdateLlmSettingsRequest, UpdateRunRequest,
+    MessageRole, RunStatus, SetRunModeRequest, UpdateGithubProviderConfigRequest, UpdateLlmSettingsRequest, UpdateRunRequest,
     WorkerCommandAckRequest, WorkerCommandsResponse, WorkerEventRequest, WorkerFence,
     WorkerSessionRequest, WorkerClaimRequest, WorkerPullRequestRequest, WorkerPushRequest,
     WorkerStatusRequest, WorkerTitleRequest,
@@ -61,6 +61,7 @@ pub fn router(state: AppState) -> Router {
             "/api/v1/runs/{run_id}/messages",
             get(list_messages).post(post_message),
         )
+        .route("/api/v1/runs/{run_id}/mode", post(set_run_mode))
         .route("/api/v1/runs/{run_id}/events", get(list_events))
         .route("/api/v1/runs/{run_id}/events/stream", get(stream_events))
         .route("/api/v1/runs/{run_id}/cancel", post(cancel_run))
@@ -99,6 +100,8 @@ pub fn router(state: AppState) -> Router {
         .route("/internal/v1/runs/{run_id}/llm-auth", get(llm_auth))
         .route("/internal/v1/runs/{run_id}/commands", get(worker_commands))
         .route("/internal/v1/runs/{run_id}/commands/ack", post(worker_command_ack))
+        .route("/internal/v1/runs/{run_id}/mode", post(worker_set_pending_mode))
+        .route("/internal/v1/runs/{run_id}/mode/take", post(worker_take_pending_mode))
         .route(
             "/internal/v1/runs/{run_id}/approvals",
             post(create_approval),
@@ -829,6 +832,23 @@ async fn post_message(
     ))
 }
 
+async fn set_run_mode(
+    State(state): State<AppState>,
+    AuthUser(user): AuthUser,
+    Path(run_id): Path<Uuid>,
+    Json(req): Json<SetRunModeRequest>,
+) -> Result<impl IntoResponse, AppError> {
+    let run = authorize_run(&state, user.id, run_id).await?;
+    if !run.status.accepts_messages() {
+        return Err(AppError::conflict(format!(
+            "run status {} does not accept mode changes",
+            run.status.as_str()
+        )));
+    }
+    state.db.set_pending_mode(run_id, &req.mode_id).await?;
+    Ok(Json(serde_json::json!({ "ok": true, "modeId": req.mode_id.trim() })))
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct EventsQuery {
@@ -1276,9 +1296,28 @@ async fn worker_commands(
     Path(run_id): Path<Uuid>,
     Query(req): Query<WorkerFence>,
 ) -> Result<impl IntoResponse, AppError> {
-    Ok(Json(WorkerCommandsResponse {
-        commands: state.db.poll_worker_commands_fenced(run_id, &req).await?,
-    }))
+    let commands = state.db.poll_worker_commands_fenced(run_id, &req).await?;
+    let mode_id = state.db.take_pending_mode(run_id).await?;
+    Ok(Json(WorkerCommandsResponse { commands, mode_id }))
+}
+
+async fn worker_set_pending_mode(
+    State(state): State<AppState>,
+    _worker: WorkerAuth,
+    Path(run_id): Path<Uuid>,
+    Json(req): Json<SetRunModeRequest>,
+) -> Result<impl IntoResponse, AppError> {
+    state.db.set_pending_mode(run_id, &req.mode_id).await?;
+    Ok(Json(serde_json::json!({ "ok": true })))
+}
+
+async fn worker_take_pending_mode(
+    State(state): State<AppState>,
+    _worker: WorkerAuth,
+    Path(run_id): Path<Uuid>,
+) -> Result<impl IntoResponse, AppError> {
+    let mode_id = state.db.take_pending_mode(run_id).await?;
+    Ok(Json(serde_json::json!({ "modeId": mode_id })))
 }
 
 async fn worker_command_ack(
@@ -1554,6 +1593,7 @@ mod reconnect_replay_tests {
                     model: "default".into(),
                     permission_mode: PermissionMode::Default,
                     max_turns: 10,
+                    mode_id: None,
                 }),
             )
             .await

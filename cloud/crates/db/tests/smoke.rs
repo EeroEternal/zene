@@ -46,6 +46,7 @@ async fn register_create_run_and_claim() {
                 model: "default".into(),
                 permission_mode: PermissionMode::Default,
                 max_turns: 50,
+                mode_id: None,
             },
         )
         .await
@@ -251,6 +252,7 @@ async fn run_state_mutations_have_matching_events() {
                 model: "default".into(),
                 permission_mode: PermissionMode::Default,
                 max_turns: 10,
+                mode_id: None,
             },
         )
         .await
@@ -337,6 +339,7 @@ async fn approval_test_run(permission_mode: PermissionMode) -> (Db, Uuid) {
                 model: "default".into(),
                 permission_mode,
                 max_turns: 10,
+                mode_id: None,
             },
         )
         .await
@@ -440,7 +443,7 @@ async fn worker_command_is_retried_until_fenced_ack() {
         .unwrap();
     let run = db.create_run(auth.organization.id, auth.user.id, CreateRunRequest {
         repository_id: repo.id, prompt: "initial".into(), base_ref: None, model: "default".into(),
-        permission_mode: PermissionMode::Default, max_turns: 10,
+        permission_mode: PermissionMode::Default, max_turns: 10, mode_id: None,
     }).await.unwrap();
     let claimed = db.claim_next_run("worker-delivery", std::path::Path::new("/tmp/zc-workspaces"))
         .await.unwrap().unwrap();
@@ -479,7 +482,7 @@ async fn stale_waiting_for_user_attempt_is_requeued_but_approval_holds_are_not()
         }).await.unwrap();
         let run = db.create_run(auth.organization.id, auth.user.id, CreateRunRequest {
             repository_id: repo.id, prompt: suffix.into(), base_ref: None, model: "default".into(),
-            permission_mode: PermissionMode::Default, max_turns: 10,
+            permission_mode: PermissionMode::Default, max_turns: 10, mode_id: None,
         }).await.unwrap();
         let claimed = db.claim_next_run("stale-policy-worker", std::path::Path::new("/tmp/zc-workspaces"))
             .await.unwrap().unwrap();
@@ -542,6 +545,7 @@ async fn worker_title_is_fenced_and_retry_idempotent() {
                 model: "default".into(),
                 permission_mode: PermissionMode::Default,
                 max_turns: 10,
+                mode_id: None,
             },
         )
         .await
@@ -633,4 +637,52 @@ async fn event_cursor_migration_retries_after_partial_ddl() {
     drop(pool);
 
     db.migrate().await.unwrap();
+}
+
+
+#[tokio::test]
+async fn pending_mode_is_queued_and_taken_once() {
+    let db = Db::connect("sqlite::memory:").await.unwrap();
+    db.migrate().await.unwrap();
+    let auth = db
+        .register(RegisterRequest {
+            email: "mode@example.com".into(),
+            password: "password1".into(),
+            display_name: "Mode".into(),
+        })
+        .await
+        .unwrap();
+    let repo = db
+        .create_repository(
+            auth.organization.id,
+            CreateRepositoryRequest {
+                owner: "acme".into(),
+                name: "app".into(),
+                default_branch: "main".into(),
+                clone_url: None,
+            },
+        )
+        .await
+        .unwrap();
+    let run = db
+        .create_run(
+            auth.organization.id,
+            auth.user.id,
+            CreateRunRequest {
+                repository_id: repo.id,
+                prompt: "plan first".into(),
+                base_ref: Some("main".into()),
+                model: "default".into(),
+                permission_mode: PermissionMode::Default,
+                max_turns: 10,
+                mode_id: Some("plan".into()),
+            },
+        )
+        .await
+        .unwrap();
+    let taken = db.take_pending_mode(run.id).await.unwrap();
+    assert_eq!(taken.as_deref(), Some("plan"));
+    assert_eq!(db.take_pending_mode(run.id).await.unwrap(), None);
+    db.set_pending_mode(run.id, "default").await.unwrap();
+    assert_eq!(db.take_pending_mode(run.id).await.unwrap().as_deref(), Some("default"));
 }

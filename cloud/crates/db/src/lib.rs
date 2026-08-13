@@ -99,6 +99,10 @@ impl Db {
                 "011_worker_command_leases",
                 include_str!("../../../migrations/011_worker_command_leases.sql"),
             ),
+            (
+                "012_run_pending_mode",
+                include_str!("../../../migrations/012_run_pending_mode.sql"),
+            ),
         ];
 
         for (version, sql) in migrations {
@@ -115,7 +119,8 @@ impl Db {
                 || version.starts_with("003")
                 || version.starts_with("007")
                 || version.starts_with("010")
-                || version.starts_with("011");
+                || version.starts_with("011")
+                || version.starts_with("012");
             for statement in split_sql_statements(sql) {
                 match sqlx::query(&statement).execute(&self.pool).await {
                     Ok(_) => {}
@@ -428,8 +433,8 @@ impl Db {
             "INSERT INTO runs
              (id, organization_id, repository_id, requested_by, status, status_version, title,
               prompt, base_ref, base_sha, head_branch, head_sha, model, permission_mode, max_turns,
-              created_at, started_at, finished_at, archived_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+              created_at, started_at, finished_at, archived_at, pending_mode_id)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(run.id.to_string())
         .bind(run.organization_id.to_string())
@@ -450,6 +455,12 @@ impl Db {
         .bind(Option::<String>::None)
         .bind(Option::<String>::None)
         .bind(Option::<String>::None)
+        .bind(
+            req.mode_id
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty()),
+        )
         .execute(&mut *tx)
         .await?;
 
@@ -1470,6 +1481,48 @@ impl Db {
         }
         tx.commit().await?;
         Ok(commands)
+    }
+
+    /// Queue an ACP session mode for the worker to apply via SetMode.
+    pub async fn set_pending_mode(&self, run_id: Uuid, mode_id: &str) -> Result<()> {
+        let mode_id = mode_id.trim();
+        if mode_id.is_empty() {
+            bail!("mode_id cannot be empty");
+        }
+        let updated = sqlx::query("UPDATE runs SET pending_mode_id = ? WHERE id = ?")
+            .bind(mode_id)
+            .bind(run_id.to_string())
+            .execute(&self.pool)
+            .await?;
+        if updated.rows_affected() != 1 {
+            bail!("run not found");
+        }
+        Ok(())
+    }
+
+    /// Take and clear a pending ACP session mode, if any.
+    pub async fn take_pending_mode(&self, run_id: Uuid) -> Result<Option<String>> {
+        let mut tx = self.pool.begin().await?;
+        let row: Option<(Option<String>,)> =
+            sqlx::query_as("SELECT pending_mode_id FROM runs WHERE id = ?")
+                .bind(run_id.to_string())
+                .fetch_optional(&mut *tx)
+                .await?;
+        let Some((Some(mode_id),)) = row else {
+            tx.commit().await?;
+            return Ok(None);
+        };
+        let mode_id = mode_id.trim().to_string();
+        if mode_id.is_empty() {
+            tx.commit().await?;
+            return Ok(None);
+        }
+        sqlx::query("UPDATE runs SET pending_mode_id = NULL WHERE id = ?")
+            .bind(run_id.to_string())
+            .execute(&mut *tx)
+            .await?;
+        tx.commit().await?;
+        Ok(Some(mode_id))
     }
 
     pub async fn ack_worker_command_fenced(
