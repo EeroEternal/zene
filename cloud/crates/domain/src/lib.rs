@@ -314,7 +314,22 @@ pub struct WorkerEventRequest {
 
 #[cfg(test)]
 mod tests {
-    use super::WorkerEventRequest;
+    use super::{WorkerCommandAckRequest, WorkerEventRequest, WorkerFence};
+
+    #[test]
+    fn worker_command_ack_round_trips_fence() {
+        let request = WorkerCommandAckRequest {
+            message_id: uuid::Uuid::nil(),
+            fence: WorkerFence {
+                attempt_id: uuid::Uuid::nil(),
+                generation: 2,
+                worker_id: "worker-1".into(),
+            },
+        };
+        let encoded = serde_json::to_value(request).expect("ack should serialize");
+        assert_eq!(encoded["messageId"], uuid::Uuid::nil().to_string());
+        assert_eq!(encoded["generation"], 2);
+    }
 
     #[test]
     fn worker_event_request_without_cursor_remains_compatible() {
@@ -391,6 +406,14 @@ pub struct WorkerCommand {
 #[serde(rename_all = "camelCase")]
 pub struct WorkerCommandsResponse {
     pub commands: Vec<WorkerCommand>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkerCommandAckRequest {
+    pub message_id: Id,
+    #[serde(flatten)]
+    pub fence: WorkerFence,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -3,7 +3,7 @@ use uuid::Uuid;
 use zene_cloud_db::Db;
 use zene_cloud_domain::{
     ApprovalStatus, CreateApprovalRequest, CreateRepositoryRequest, CreateRunRequest,
-    RegisterRequest, WorkerFence,
+    RegisterRequest, RunStatus, WorkerFence,
 };
 
 #[tokio::test]
@@ -321,6 +321,92 @@ async fn concurrent_approval_decisions_have_one_winner_event() {
             .count(),
         1
     );
+}
+
+#[tokio::test]
+async fn worker_command_is_retried_until_fenced_ack() {
+    let db = Db::connect("sqlite::memory:").await.unwrap();
+    db.migrate().await.unwrap();
+    let auth = db
+        .register(RegisterRequest {
+            email: format!("{}@example.com", Uuid::new_v4()),
+            password: "password123".into(),
+            display_name: "Delivery test".into(),
+        })
+        .await
+        .unwrap();
+    let repo = db
+        .create_repository(auth.organization.id, CreateRepositoryRequest {
+            owner: "test".into(), name: "delivery".into(), default_branch: "main".into(), clone_url: None,
+        })
+        .await
+        .unwrap();
+    let run = db.create_run(auth.organization.id, auth.user.id, CreateRunRequest {
+        repository_id: repo.id, prompt: "initial".into(), base_ref: None, model: "default".into(),
+        permission_mode: "default".into(), max_turns: 10,
+    }).await.unwrap();
+    let claimed = db.claim_next_run("worker-delivery", std::path::Path::new("/tmp/zc-workspaces"))
+        .await.unwrap().unwrap();
+    let fence = WorkerFence { attempt_id: claimed.1, generation: claimed.2, worker_id: "worker-delivery".into() };
+    let message = db.add_message(run.id, Some(auth.user.id), "user", "follow-up", None).await.unwrap();
+    let commands = db.poll_worker_commands_fenced(run.id, &fence).await.unwrap();
+    assert_eq!(commands.iter().filter_map(|command| command.message_id).collect::<Vec<_>>(), vec![message.id]);
+    assert!(db.poll_worker_commands_fenced(run.id, &fence).await.unwrap().iter().all(|command| command.message_id != Some(message.id)));
+    let mut stale_fence = fence.clone();
+    stale_fence.generation += 1;
+    assert!(db.ack_worker_command_fenced(run.id, &stale_fence, message.id).await.unwrap_err().to_string().contains("stale_attempt"));
+    db.ack_worker_command_fenced(run.id, &fence, message.id).await.unwrap();
+    assert!(db.poll_worker_commands_fenced(run.id, &fence).await.unwrap().iter().all(|command| command.message_id != Some(message.id)));
+
+    let message = db.add_message(run.id, Some(auth.user.id), "user", "retry me", None).await.unwrap();
+    let first_claim = chrono::Utc::now();
+    let _ = db.poll_worker_commands_fenced_at(run.id, &fence, first_claim).await.unwrap();
+    let retry = db.poll_worker_commands_fenced_at(
+        run.id,
+        &fence,
+        first_claim + chrono::Duration::seconds(61),
+    ).await.unwrap();
+    assert!(retry.iter().any(|command| command.message_id == Some(message.id)));
+}
+
+#[tokio::test]
+async fn stale_waiting_for_user_attempt_is_requeued_but_approval_holds_are_not() {
+    async fn make_run(db: &Db, suffix: &str) -> (zene_cloud_domain::Run, WorkerFence) {
+        let auth = db.register(RegisterRequest {
+            email: format!("{}-{}@example.com", suffix, Uuid::new_v4()),
+            password: "password123".into(), display_name: suffix.into(),
+        }).await.unwrap();
+        let repo = db.create_repository(auth.organization.id, CreateRepositoryRequest {
+            owner: suffix.into(), name: suffix.into(), default_branch: "main".into(), clone_url: None,
+        }).await.unwrap();
+        let run = db.create_run(auth.organization.id, auth.user.id, CreateRunRequest {
+            repository_id: repo.id, prompt: suffix.into(), base_ref: None, model: "default".into(),
+            permission_mode: "default".into(), max_turns: 10,
+        }).await.unwrap();
+        let claimed = db.claim_next_run("stale-policy-worker", std::path::Path::new("/tmp/zc-workspaces"))
+            .await.unwrap().unwrap();
+        let fence = WorkerFence { attempt_id: claimed.1, generation: claimed.2, worker_id: "stale-policy-worker".into() };
+        (run, fence)
+    }
+
+    let db = Db::connect("sqlite::memory:").await.unwrap();
+    db.migrate().await.unwrap();
+    let (user_run, user_fence) = make_run(&db, "user-hold").await;
+    db.update_run_status_fenced(user_run.id, &user_fence, RunStatus::WaitingForUser, None, None).await.unwrap();
+    let (approval_run, approval_fence) = make_run(&db, "approval-hold").await;
+    db.update_run_status_fenced(approval_run.id, &approval_fence, RunStatus::WaitingForApproval, None, None).await.unwrap();
+
+    // Both attempts use the normal 60-second claim lease. Reclamation is
+    // evaluated in the future to make expiry deterministic without sleeping.
+    assert_eq!(
+        db.reclaim_stale_runs_at(chrono::Utc::now() + chrono::Duration::seconds(61))
+            .await
+            .unwrap(),
+        1
+    );
+    assert_eq!(db.get_run(user_run.id).await.unwrap().unwrap().status, RunStatus::Queued);
+    assert_eq!(db.get_run(approval_run.id).await.unwrap().unwrap().status, RunStatus::WaitingForApproval);
+    // Approval lifecycle remains deliberately outside this durability slice.
 }
 
 #[tokio::test]
