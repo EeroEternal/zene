@@ -2,9 +2,9 @@
 
 > 状态：持续演进。Wave 0–12 把控制面/数据面的 **接口边界** 建起来了；Wave 13 起让默认执行路径真正走这些边界。
 >
-> **进度快照：2026-08-13，基线 `4f32021`（PR #90 已合并）。**
+> **进度快照：2026-08-13，基线 `0736667`（PR #91 已合并）。**
 > 本文同时记录目标架构、已实现能力和剩余工作。
-> Wave 16 当前工作是 Cloud `permission_mode` 使用 `PermissionMode`；Steer/SetMode 与整型 crate 仍未做。
+> Wave 16 当前工作是 Cloud 消息 `role` 使用 `MessageRole`；Steer/SetMode 与整型 crate 仍未做。
 >
 > 本文基于当前 zene runtime 实现，描述如何将 `Agent`、`Turn`、`Step`、`Session`、Cloud `Run` 和 ACP transport 拉开，并给出渐进式迁移方案。
 >
@@ -1070,7 +1070,8 @@ Wave 16  统一 transport command/event  ← 当前工作
          审批写入 payload 使用 ApprovalEventPayload
          projection_ready payload 使用 ProjectionPayload
          Console Run.status 使用 RunStatus
-         Cloud permission_mode 使用 PermissionMode（本轮）
+         Cloud permission_mode 使用 PermissionMode
+         Cloud 消息 role 使用 MessageRole（本轮）
          Cloud payload 不再以 ACP JSON 为产品语义
          本地与 Cloud 共用同一套 RuntimeCommand / RuntimeEvent
 ```
@@ -1095,13 +1096,13 @@ Wave 16  统一 transport command/event  ← 当前工作
 | Wave 13 | 已完成 | 默认 Agent/Subagent 路径消费 `PreparedContext`；PR #60 |
 | Wave 14 | 未开始 | RuntimeScope、ToolCatalog 拆分、Agent 退回 wiring |
 | Wave 15 | 已完成 | `evaluate` + `ApprovalBroker` + runtime-owned waiter；PR #61 / #62 |
-| Wave 16 | 进行中 | Cloud `permission_mode` 已是 `PermissionMode`；Steer/SetMode 与整型 crate 仍待统一 |
+| Wave 16 | 进行中 | Cloud 消息 `role` 已是 `MessageRole`；Steer/SetMode 与整型 crate 仍待统一 |
 
 ### 当前收口状态与剩余边界
 
 本轮已完成仓库内可以安全验证的主要优化，并保持旧协议兼容。当前剩余项分为三类：
 
-- **本轮已完成的审批/事件收口**：runtime-owned waiter 与 Cloud `RuntimeCommand::Approval`；已分类 Cloud payload 与审批表 payload 已是产品字段（domain 结构体）；平台事件 payload 同样是 domain `PlatformEvent`（`run.status` 带 `headSha`）；写入路径 `event_type` 是 domain `RunEventKind`（`RunEvent` 读出仍为字符串）；`RuntimeRequest::Approval.allowed_decisions` 来自 ACP options，JobRunner 不再写死三按钮；API→worker `WorkerCommand` 为 Prompt/Cancel；Cloud 审批产品面（决策/kind/risk）从 DB 到 Console 到 RuntimeCommand 共用 domain 类型；产品审批类型不再携带 `jsonrpc_id`；domain `CloudEventKind` 与 Console 时间线共用分类结果；JobRunner mock 与真实 ACP 共用同一条 runtime session（event / command / hold）；worker 内部控制 HTTP 使用 domain 请求类型，产品 runtime session 写入 `acp_session_id` 列；`RuntimeNotification.payload` 与 `RuntimeRequest` 审批 context 在内存中是 domain 结构体；`CreateApprovalRequest.payload` 是 `ApprovalEventPayload`，`ApprovalRequest.payload` 读出仍为 JSON；`projection_ready` 写入 `ProjectionPayload`；Console `Run.status` 与 `PlatformEvent["run.status"]` 使用 `RunStatus`；Cloud `Run.permission_mode` 与 `CreateRunRequest.permission_mode` 使用 `PermissionMode`；未识别帧仍为 ACP JSON。
+- **本轮已完成的审批/事件收口**：runtime-owned waiter 与 Cloud `RuntimeCommand::Approval`；已分类 Cloud payload 与审批表 payload 已是产品字段（domain 结构体）；平台事件 payload 同样是 domain `PlatformEvent`（`run.status` 带 `headSha`）；写入路径 `event_type` 是 domain `RunEventKind`（`RunEvent` 读出仍为字符串）；`RuntimeRequest::Approval.allowed_decisions` 来自 ACP options，JobRunner 不再写死三按钮；API→worker `WorkerCommand` 为 Prompt/Cancel；Cloud 审批产品面（决策/kind/risk）从 DB 到 Console 到 RuntimeCommand 共用 domain 类型；产品审批类型不再携带 `jsonrpc_id`；domain `CloudEventKind` 与 Console 时间线共用分类结果；JobRunner mock 与真实 ACP 共用同一条 runtime session（event / command / hold）；worker 内部控制 HTTP 使用 domain 请求类型，产品 runtime session 写入 `acp_session_id` 列；`RuntimeNotification.payload` 与 `RuntimeRequest` 审批 context 在内存中是 domain 结构体；`CreateApprovalRequest.payload` 是 `ApprovalEventPayload`，`ApprovalRequest.payload` 读出仍为 JSON；`projection_ready` 写入 `ProjectionPayload`；Console `Run.status` 与 `PlatformEvent["run.status"]` 使用 `RunStatus`；Cloud `Run.permission_mode` 与 `CreateRunRequest.permission_mode` 使用 `PermissionMode`；`RunMessage.role` 与 `PlatformEvent::MessageCreated.role` 使用 `MessageRole`；未识别帧仍为 ACP JSON。
 - **可继续做但需要协议的产品面解耦**：本地/Cloud 统一 `RuntimeCommand`/`RuntimeEvent`、`RuntimeScope`。这些改动跨 transport，不应通过局部兼容代码伪装完成。
 - **需要部署基础设施决策**：本地 EventOutbox 不能单独提供跨 VM durability。跨 VM replacement 必须使用共享 POSIX 持久卷，或实现 DB/object-backed spool。
 
@@ -1203,6 +1204,7 @@ Wave 16  统一 transport command/event  ← 当前工作
    - JobRunner mock 与真实 ACP 共用 `run_runtime_session`：同一条 event pump、command poller 与 idle hold。只发送 `RuntimeCommand`，只消费 `RuntimeEvent` / `RuntimeRequest`。`RuntimeNotification.event_type` 是 `CloudEventKind`；`RuntimeNotification.payload` 是 `RuntimePayload`（分类 kind 持有 domain 结构体，含 `ProjectionPayload`；未识别/提取失败为 `Json`）。审批请求 `context` 是 `ApprovalEventPayload`。`CreateApprovalRequest.payload` 同样是 `ApprovalEventPayload`；JobRunner 不再先转成 `Value`。`ApprovalRequest.payload` 与 `RunEvent.payload` 读出仍为 JSON。worker 内部控制 HTTP 使用 domain 请求类型；产品 runtime session 仍写入 `acp_session_id` 列。ACP `MockMsg` 与 `optionId` 只留在 adapter。
    - Console `Run.status` 与 `PlatformEvent["run.status"]` 使用 `RunStatus`；审批平台事件的 `status` / `decision` / `kind` 使用已有产品枚举。`eventKind()` 返回 `RunEventType`，未知历史 kind 回落 `"acp"`。`RunEvent.event_type` 读出仍为字符串。不改 pill 文案/颜色，不改 Sidebar 过滤。
    - Cloud `Run.permission_mode` 与 `CreateRunRequest.permission_mode` 使用 `PermissionMode`（`default` / `accept_edits` / `yolo` / 历史 `auto`）。`default` / `yolo` / `auto` 仍自动 resolve 审批；未知历史值读成 `accept_edits`（不自动批准、不启用 `--yolo`）。不补 SetMode。
+   - `RunMessage.role` 与 `PlatformEvent::MessageCreated.role` 使用 `MessageRole`（`user` / `assistant`）。未知历史值读成 `assistant`，与 Console `bubbleRole` 一致。
    - 未做：Cloud 补齐 Steer/SetMode 并与 `zene-runtime` 合成一套类型。
 
 8. **持续质量门槛**
@@ -1417,4 +1419,10 @@ Wave 16  统一 transport command/event  ← 当前工作
 - domain `PermissionMode` 用于 `Run.permission_mode` 与 `CreateRunRequest.permission_mode`。Console `Run.permissionMode` 对齐；composer 选择器仍只提供 `default` / `accept_edits` / `yolo`。
 - `default` / `yolo` / `auto` 仍自动 resolve 审批；worker 仅 `yolo` 传 `--yolo`。未知历史值读成 `accept_edits`。
 - 不补 SetMode。不把 `zene-runtime` 引入 Cloud。不改 CLI config 的 `permission_mode`。
+
+### 2026-08-13 — Cloud 消息 role
+
+- domain `MessageRole` 用于 `RunMessage.role`、`PlatformEvent::MessageCreated.role` 与 `add_message`。Console `RunMessage.role` 对齐。
+- 未知历史值读成 `assistant`，与 Console `bubbleRole` 一致。不改气泡布局。
+- 不补 Steer/SetMode。不把 `zene-runtime` 引入 Cloud。
 

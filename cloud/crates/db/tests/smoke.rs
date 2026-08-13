@@ -3,7 +3,7 @@ use uuid::Uuid;
 use zene_cloud_db::Db;
 use zene_cloud_domain::{
     ApprovalDecision, ApprovalEventPayload, ApprovalKind, ApprovalRisk, ApprovalStatus,
-    CreateApprovalRequest, CreateRepositoryRequest, CreateRunRequest, PermissionMode,
+    CreateApprovalRequest, CreateRepositoryRequest, CreateRunRequest, MessageRole, PermissionMode,
     RegisterRequest, RunEventKind, RunStatus, WorkerCommandKind, WorkerFence,
 };
 
@@ -279,7 +279,7 @@ async fn run_state_mutations_have_matching_events() {
     assert!(updated.finished_at.is_some());
 
     let message = db
-        .add_message(run.id, Some(auth.user.id), "user", "follow-up", None)
+        .add_message(run.id, Some(auth.user.id), MessageRole::User, "follow-up", None)
         .await
         .unwrap();
     assert_eq!(db.get_run(run.id).await.unwrap().unwrap().status, RunStatus::Queued);
@@ -445,7 +445,7 @@ async fn worker_command_is_retried_until_fenced_ack() {
     let claimed = db.claim_next_run("worker-delivery", std::path::Path::new("/tmp/zc-workspaces"))
         .await.unwrap().unwrap();
     let fence = WorkerFence { attempt_id: claimed.1, generation: claimed.2, worker_id: "worker-delivery".into() };
-    let message = db.add_message(run.id, Some(auth.user.id), "user", "follow-up", None).await.unwrap();
+    let message = db.add_message(run.id, Some(auth.user.id), MessageRole::User, "follow-up", None).await.unwrap();
     let commands = db.poll_worker_commands_fenced(run.id, &fence).await.unwrap();
     assert_eq!(commands.iter().filter_map(|command| command.message_id).collect::<Vec<_>>(), vec![message.id]);
     assert!(commands.iter().all(|command| command.kind == WorkerCommandKind::Prompt));
@@ -456,7 +456,7 @@ async fn worker_command_is_retried_until_fenced_ack() {
     db.ack_worker_command_fenced(run.id, &fence, message.id).await.unwrap();
     assert!(db.poll_worker_commands_fenced(run.id, &fence).await.unwrap().iter().all(|command| command.message_id != Some(message.id)));
 
-    let message = db.add_message(run.id, Some(auth.user.id), "user", "retry me", None).await.unwrap();
+    let message = db.add_message(run.id, Some(auth.user.id), MessageRole::User, "retry me", None).await.unwrap();
     let first_claim = chrono::Utc::now();
     let _ = db.poll_worker_commands_fenced_at(run.id, &fence, first_claim).await.unwrap();
     let retry = db.poll_worker_commands_fenced_at(

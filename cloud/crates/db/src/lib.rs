@@ -17,7 +17,7 @@ use zene_cloud_domain::{
     ApprovalDecision, ApprovalKind, ApprovalRequest, ApprovalRisk, ApprovalStatus, AuthResponse,
     CloneAuthResponse, CreateApprovalRequest, CreateRepositoryRequest, CreateRunRequest, LoginRequest, Organization,
     PlatformEvent, QueueActive, QueueHold, QueueStats, RegisterRequest, Repository, Run, RunEvent, RunEventKind, RunMessage,
-    RunStatus, PermissionMode, User, WorkerCommand, WorkerFence,
+    RunStatus, PermissionMode, MessageRole, User, WorkerCommand, WorkerFence,
 };
 
 #[derive(Clone)]
@@ -463,7 +463,7 @@ impl Db {
         .bind(msg_id.to_string())
         .bind(run.id.to_string())
         .bind(user_id.to_string())
-        .bind("user")
+        .bind(MessageRole::User.as_str())
         .bind(&req.prompt)
         .bind(now.to_rfc3339())
         .execute(&mut *tx)
@@ -1238,7 +1238,7 @@ impl Db {
         &self,
         run_id: Uuid,
         author_id: Option<Uuid>,
-        role: &str,
+        role: MessageRole,
         content: &str,
         client_message_id: Option<&str>,
     ) -> Result<RunMessage> {
@@ -1253,7 +1253,7 @@ impl Db {
         .bind(id.to_string())
         .bind(run_id.to_string())
         .bind(author_id.map(|v| v.to_string()))
-        .bind(role)
+        .bind(role.as_str())
         .bind(content)
         .bind(client_message_id)
         .bind(now.to_rfc3339())
@@ -1267,7 +1267,7 @@ impl Db {
             None,
             RunEventKind::Platform,
             platform_payload(PlatformEvent::MessageCreated {
-                role: role.to_string(),
+                role,
                 text: content.to_string(),
             }),
         )
@@ -1314,7 +1314,7 @@ impl Db {
             id,
             run_id,
             author_id,
-            role: role.into(),
+            role,
             content: content.into(),
             created_at: now,
         })
@@ -1334,7 +1334,7 @@ impl Db {
                 id: Uuid::parse_str(&id).unwrap(),
                 run_id: Uuid::parse_str(&run_id).unwrap(),
                 author_id: author_id.and_then(|v| Uuid::parse_str(&v).ok()),
-                role,
+                role: MessageRole::parse(&role).unwrap_or(MessageRole::Assistant),
                 content,
                 created_at: parse_time(&created_at),
             })

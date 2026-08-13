@@ -59,6 +59,9 @@ export type RunStatus =
 /** Stored run permission mode. `auto` is historical; the composer picker does not offer it. */
 export type PermissionMode = "default" | "accept_edits" | "yolo" | "auto";
 
+/** Stored chat turn author. Matches domain `MessageRole`. */
+export type MessageRole = "user" | "assistant";
+
 export interface Run {
   id: string;
   title: string;
@@ -78,7 +81,7 @@ export interface Run {
 }
 
 export interface RunMessage {
-  role: string;
+  role: MessageRole;
   content: string;
   createdAt: string;
 }
@@ -217,7 +220,7 @@ export type PlatformEvent =
   | { event: "run.title"; title?: string }
   | { event: "run.archived" }
   | { event: "run.status"; status?: RunStatus; headSha?: string }
-  | { event: "message.created"; role?: string; text?: string }
+  | { event: "message.created"; role?: MessageRole; text?: string }
   | {
       event: "approval.created";
       approvalId?: string;
