@@ -184,6 +184,7 @@ fn terminal_lifecycle(
     match result {
         Ok(_) if !cancelled => RuntimeLifecycle::Completed,
         Ok(_) | Err(_) if cancelled => RuntimeLifecycle::Cancelled,
+        Ok(_) => RuntimeLifecycle::Completed,
         Err(err) if err.to_string().contains("aborted") => RuntimeLifecycle::Cancelled,
         Err(err) => RuntimeLifecycle::Failed {
             message: err.to_string(),
@@ -372,6 +373,10 @@ async fn run_actor(
                             (RuntimeLifecycle::Completed, Err(_))
                             | (RuntimeLifecycle::Failed { .. }, Ok(_)) => {
                                 unreachable!("terminal lifecycle must match prompt result")
+                            }
+                            (RuntimeLifecycle::Shutdown, _) => {
+                                publisher.publish_lifecycle(RuntimeLifecycle::Shutdown);
+                                Err("runtime shutdown".into())
                             }
                         };
                         let _ = current.reply.send(response);
