@@ -56,6 +56,9 @@ export type RunStatus =
   | "timed_out"
   | "cancelled";
 
+/** Stored run permission mode. `auto` is historical; the composer picker does not offer it. */
+export type PermissionMode = "default" | "accept_edits" | "yolo" | "auto";
+
 export interface Run {
   id: string;
   title: string;
@@ -64,7 +67,7 @@ export interface Run {
   headBranch?: string;
   baseRef?: string;
   model?: string;
-  permissionMode?: string;
+  permissionMode?: PermissionMode;
   /** Agent step budget; `0` = unlimited. */
   maxTurns?: number;
   headSha?: string;
@@ -309,7 +312,6 @@ export interface Skill {
 
 export type ListGroup = "project" | "date" | "status" | "none";
 export type ListFilter = "none" | "running" | "completed" | "failed" | "project";
-export type PermissionMode = "default" | "accept_edits" | "yolo";
 export type View = "new" | "settings" | "run";
 
 export interface LlmSettingsView {

@@ -1,6 +1,6 @@
 use zene_cloud_db::Db;
 use zene_cloud_domain::{
-    CreatePullRequestBody, CreateRunRequest, GithubRepoSummary, RegisterRequest,
+    CreatePullRequestBody, CreateRunRequest, GithubRepoSummary, PermissionMode, RegisterRequest,
 };
 use zene_cloud_git_broker::GitBroker;
 
@@ -45,7 +45,7 @@ async fn mock_clone_push_and_draft_pr() {
                 prompt: "add feature".into(),
                 base_ref: Some("main".into()),
                 model: "default".into(),
-                permission_mode: "default".into(),
+                permission_mode: PermissionMode::Default,
                 max_turns: 50,
             },
         )

@@ -17,7 +17,7 @@ use zene_cloud_domain::{
     ApprovalDecision, ApprovalKind, ApprovalRequest, ApprovalRisk, ApprovalStatus, AuthResponse,
     CloneAuthResponse, CreateApprovalRequest, CreateRepositoryRequest, CreateRunRequest, LoginRequest, Organization,
     PlatformEvent, QueueActive, QueueHold, QueueStats, RegisterRequest, Repository, Run, RunEvent, RunEventKind, RunMessage,
-    RunStatus, User, WorkerCommand, WorkerFence,
+    RunStatus, PermissionMode, User, WorkerCommand, WorkerFence,
 };
 
 #[derive(Clone)]
@@ -444,7 +444,7 @@ impl Db {
         .bind(&run.head_branch)
         .bind(&run.head_sha)
         .bind(&run.model)
-        .bind(&run.permission_mode)
+        .bind(run.permission_mode.as_str())
         .bind(run.max_turns as i64)
         .bind(run.created_at.to_rfc3339())
         .bind(Option::<String>::None)
@@ -1557,10 +1557,7 @@ impl Db {
 
         let id = Uuid::new_v4();
         let now = Utc::now();
-        let auto = matches!(
-            run.permission_mode.as_str(),
-            "yolo" | "auto" | "default"
-        );
+        let auto = run.permission_mode.auto_resolves_approvals();
         let status = if auto {
             ApprovalStatus::Resolved
         } else {
@@ -1894,7 +1891,8 @@ impl RunRow {
             head_branch: self.head_branch,
             head_sha: self.head_sha,
             model: self.model,
-            permission_mode: self.permission_mode,
+            permission_mode: PermissionMode::parse(&self.permission_mode)
+                .unwrap_or(PermissionMode::AcceptEdits),
             max_turns: self.max_turns.max(0) as u32,
             created_at: parse_time(&self.created_at),
             started_at: self.started_at.as_deref().map(parse_time),

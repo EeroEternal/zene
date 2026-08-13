@@ -1424,9 +1424,9 @@ mod reconnect_replay_tests {
     use uuid::Uuid;
     use zene_cloud_db::Db;
     use zene_cloud_domain::{
-        AuthResponse, ClaimedRun, CreateRepositoryRequest, CreateRunRequest, RegisterRequest,
-        Repository, Run, RunEvent, RunEventKind, RunStatus, UpdateLlmSettingsRequest, WorkerEventRequest,
-        WorkerFence, WorkerTitleRequest,
+        AuthResponse, ClaimedRun, CreateRepositoryRequest, CreateRunRequest, PermissionMode,
+        RegisterRequest, Repository, Run, RunEvent, RunEventKind, RunStatus, UpdateLlmSettingsRequest,
+        WorkerEventRequest, WorkerFence,
     };
     use zene_cloud_github::{GithubClient, GithubConfig};
 
@@ -1551,7 +1551,7 @@ mod reconnect_replay_tests {
                     prompt: "replay integration".into(),
                     base_ref: Some("main".into()),
                     model: "default".into(),
-                    permission_mode: "default".into(),
+                    permission_mode: PermissionMode::Default,
                     max_turns: 10,
                 }),
             )

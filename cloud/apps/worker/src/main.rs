@@ -23,8 +23,8 @@ use zene_cloud_runtime_client::{
 use zene_cloud_domain::{
     ApprovalDecision, ApprovalEventPayload, ApprovalKind, ApprovalRequest, ApprovalRisk,
     ApprovalStatus, ClaimedRun, CloneAuthResponse, CreateApprovalRequest, LlmAuthResponse,
-    RunStatus, WorkerClaimRequest, WorkerCommand, WorkerCommandAckRequest, WorkerCommandKind,
-    WorkerCommandsResponse, WorkerEventRequest, WorkerFence, WorkerPullRequestRequest,
+    PermissionMode, RunStatus, WorkerClaimRequest, WorkerCommand, WorkerCommandAckRequest,
+    WorkerCommandKind, WorkerCommandsResponse, WorkerEventRequest, WorkerFence, WorkerPullRequestRequest,
     WorkerPushRequest, WorkerSessionRequest, WorkerStatusRequest, WorkerTitleRequest,
 };
 
@@ -1029,7 +1029,7 @@ async fn run_with_real_acp(
         .await
         .context("flush recovered event outbox")?;
     let yolo = cli.acp_yolo
-        || claimed.run.permission_mode == "yolo"
+        || claimed.run.permission_mode == PermissionMode::Yolo
         || std::env::var("ZENE_YOLO").ok().as_deref() == Some("1");
 
     let mut llm_env = match fetch_llm_auth(client, cli, run_id).await {
@@ -1868,8 +1868,8 @@ mod title_tests {
         use zene_cloud_api::{router, AppState};
         use zene_cloud_db::Db;
         use zene_cloud_domain::{
-            CreateRepositoryRequest, CreateRunRequest, RegisterRequest, RunEvent, RunStatus,
-            UpdateLlmSettingsRequest, WorkerClaimRequest,
+            CreateRepositoryRequest, CreateRunRequest, PermissionMode, RegisterRequest, RunEvent,
+            RunStatus, UpdateLlmSettingsRequest, WorkerClaimRequest,
         };
         use zene_cloud_github::{GithubClient, GithubConfig};
 
@@ -1947,7 +1947,7 @@ mod title_tests {
                 prompt: "worker reconnect".into(),
                 base_ref: Some("main".into()),
                 model: "default".into(),
-                permission_mode: "default".into(),
+                permission_mode: PermissionMode::Default,
                 max_turns: 10,
             })
             .send()
