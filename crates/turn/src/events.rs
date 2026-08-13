@@ -110,6 +110,16 @@ pub enum RuntimeEventKind {
     StateChanged {
         state: String,
     },
+    ApprovalRequested {
+        request_id: String,
+        tool_name: String,
+        arguments: String,
+        tool_call_id: Option<String>,
+    },
+    ApprovalResolved {
+        request_id: String,
+        allowed: bool,
+    },
 }
 
 pub type RuntimeEventHandler = Arc<dyn Fn(RuntimeEvent) + Send + Sync>;

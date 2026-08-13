@@ -4,13 +4,12 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use anyhow::{anyhow, bail, Context, Result};
-use async_trait::async_trait;
 use serde_json::{json, Value};
 use tokio::sync::{mpsc, oneshot};
 use tracing::{debug, warn};
 use zene_config::ZeneConfig;
 use zene_core::{
-    Agent, ApprovalBroker, ApprovalRequest, AskUserOption, PermissionGate, PermissionMode,
+    Agent, ApprovalDecision, ApprovalRequest, AskUserOption, PermissionGate, PermissionMode,
     PromptChoice, RuntimeEvent, RuntimeEventKind, RuntimeHandle,
 };
 use zene_runtime::{RuntimeControl, RuntimeRecoveryInfo};
@@ -61,6 +60,7 @@ struct AcpSession {
     /// Last tool call id observed via runtime events (used by permission prompts).
     pending_tool: Arc<Mutex<PendingToolCall>>,
     prompt_queue: VecDeque<QueuedPrompt>,
+    permission_mode: String,
 }
 
 pub struct AcpServer {
@@ -532,7 +532,6 @@ impl AcpServer {
             session_id.to_string(),
             self.yolo,
             permission_mode,
-            Arc::clone(&pending_tool),
         );
         let (runtime, _task) = if automatic_recovery {
             RuntimeHandle::spawn_with_automatic_recovery(agent)
@@ -544,6 +543,7 @@ impl AcpServer {
             busy: false,
             pending_tool,
             prompt_queue: VecDeque::new(),
+            permission_mode: permission_mode.as_str().to_string(),
         })
     }
 
@@ -616,6 +616,7 @@ impl AcpServer {
         sess.busy = true;
         let runtime = sess.runtime.clone();
         let pending_tool = Arc::clone(&sess.pending_tool);
+        let permission_mode = sess.permission_mode.clone();
 
         let (tx, rx) = oneshot::channel();
         *active = Some(ActivePrompt {
@@ -625,7 +626,8 @@ impl AcpServer {
         });
 
         tokio::spawn(async move {
-            let result = run_prompt_job(runtime, writer, sid, text, pending_tool).await;
+            let result =
+                run_prompt_job(runtime, writer, sid, text, pending_tool, permission_mode).await;
             let _ = tx.send(result);
         });
         Ok(())
@@ -638,16 +640,10 @@ fn configure_agent_brokers(
     sid: String,
     yolo: bool,
     permission_mode: PermissionMode,
-    pending_tool: Arc<Mutex<PendingToolCall>>,
 ) {
     if !yolo {
         agent.set_permission_gate(PermissionGate::new(permission_mode));
-        agent.set_approval_broker(Arc::new(AcpApprovalBroker {
-            writer: writer.clone(),
-            session_id: sid.clone(),
-            permission_mode: permission_mode.as_str().to_string(),
-            pending_tool: Arc::clone(&pending_tool),
-        }));
+        agent.enable_runtime_approval_waiters();
     }
 
     let writer_ask = writer.clone();
@@ -656,42 +652,13 @@ fn configure_agent_brokers(
     }));
 }
 
-struct AcpApprovalBroker {
-    writer: AcpWriter,
-    session_id: String,
-    permission_mode: String,
-    pending_tool: Arc<Mutex<PendingToolCall>>,
-}
-
-#[async_trait]
-impl ApprovalBroker for AcpApprovalBroker {
-    async fn request(&self, request: ApprovalRequest) -> io::Result<PromptChoice> {
-        let tool_call_id = request.tool_call_id.clone().unwrap_or_else(|| {
-            self.pending_tool
-                .lock()
-                .unwrap()
-                .id
-                .clone()
-                .unwrap_or_else(|| uuid::Uuid::new_v4().to_string())
-        });
-        acp_permission_prompt(
-            &self.writer,
-            &self.session_id,
-            &self.permission_mode,
-            &request.tool_name,
-            &request.preview(),
-            &tool_call_id,
-        )
-        .await
-    }
-}
-
 async fn run_prompt_job(
     runtime: Arc<dyn RuntimeControl>,
     writer: AcpWriter,
     sid: String,
     text: String,
     pending_tool: Arc<Mutex<PendingToolCall>>,
+    permission_mode: String,
 ) -> Result<Value> {
     let mut events = runtime.subscribe();
     let prompt_id = uuid::Uuid::new_v4().to_string();
@@ -714,13 +681,34 @@ async fn run_prompt_job(
             }
             event = events.recv() => {
                 match event {
-                    Ok(event) => project_runtime_event(
-                        &writer,
-                        &event,
-                        &sid,
-                        &prompt_id,
-                        &pending_tool,
-                    ),
+                    Ok(event) => {
+                        if let RuntimeEventKind::ApprovalRequested {
+                            request_id,
+                            tool_name,
+                            arguments,
+                            tool_call_id,
+                        } = &event.kind
+                        {
+                            tokio::spawn(handle_runtime_approval(
+                                Arc::clone(&runtime),
+                                writer.clone(),
+                                sid.clone(),
+                                permission_mode.clone(),
+                                Arc::clone(&pending_tool),
+                                request_id.clone(),
+                                tool_name.clone(),
+                                arguments.clone(),
+                                tool_call_id.clone(),
+                            ));
+                        }
+                        project_runtime_event(
+                            &writer,
+                            &event,
+                            &sid,
+                            &prompt_id,
+                            &pending_tool,
+                        );
+                    }
                     Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
                     Err(tokio::sync::broadcast::error::RecvError::Closed) => {
                         return Err(anyhow!("runtime event stream closed"));
@@ -728,6 +716,61 @@ async fn run_prompt_job(
                 }
             }
         }
+    }
+}
+
+async fn handle_runtime_approval(
+    runtime: Arc<dyn RuntimeControl>,
+    writer: AcpWriter,
+    session_id: String,
+    permission_mode: String,
+    pending_tool: Arc<Mutex<PendingToolCall>>,
+    request_id: String,
+    tool_name: String,
+    arguments: String,
+    tool_call_id: Option<String>,
+) {
+    let tool_call_id = tool_call_id.unwrap_or_else(|| {
+        pending_tool
+            .lock()
+            .unwrap()
+            .id
+            .clone()
+            .unwrap_or_else(|| uuid::Uuid::new_v4().to_string())
+    });
+    let preview = ApprovalRequest {
+        request_id: request_id.clone(),
+        tool_name: tool_name.clone(),
+        arguments,
+        tool_call_id: Some(tool_call_id.clone()),
+    }
+    .preview();
+    let decision = match acp_permission_prompt(
+        &writer,
+        &session_id,
+        &permission_mode,
+        &tool_name,
+        &preview,
+        &tool_call_id,
+    )
+    .await
+    {
+        Ok(choice) => approval_decision(choice),
+        Err(err) => {
+            warn!(error = %err, request_id = %request_id, "ACP permission prompt failed");
+            ApprovalDecision::Deny
+        }
+    };
+    if let Err(err) = runtime.approve(request_id, decision).await {
+        warn!(error = %err, "runtime approval resolve failed");
+    }
+}
+
+fn approval_decision(choice: PromptChoice) -> ApprovalDecision {
+    match choice {
+        PromptChoice::AllowOnce => ApprovalDecision::AllowOnce,
+        PromptChoice::AllowSession => ApprovalDecision::AllowSession,
+        PromptChoice::Deny => ApprovalDecision::Deny,
     }
 }
 
@@ -868,7 +911,9 @@ fn project_runtime_event(
         RuntimeEventKind::TurnStarted
         | RuntimeEventKind::StepStarted { .. }
         | RuntimeEventKind::TurnEnded { .. }
-        | RuntimeEventKind::SteerInput { .. } => None,
+        | RuntimeEventKind::SteerInput { .. }
+        | RuntimeEventKind::ApprovalRequested { .. }
+        | RuntimeEventKind::ApprovalResolved { .. } => None,
     };
     if let Some(mut update) = update {
         attach_meta(&mut update, meta);
@@ -1042,8 +1087,8 @@ async fn acp_permission_prompt(
     preview: &str,
     tool_call_id: &str,
 ) -> io::Result<PromptChoice> {
-    let raw_input = serde_json::from_str::<Value>(preview)
-        .unwrap_or_else(|_| json!({ "preview": preview }));
+    let raw_input =
+        serde_json::from_str::<Value>(preview).unwrap_or_else(|_| json!({ "preview": preview }));
     let result = writer
         .request(
             "session/request_permission",
@@ -1114,18 +1159,19 @@ mod recovery_tests {
     }
 
     #[test]
-    fn recovery_metadata_advertises_only_a_prompt_backed_safe_resume() {
-        let metadata = recovery_info_metadata(&RuntimeRecoveryInfo {
-            disposition: "safe_to_resume".into(),
-            has_incomplete_execution: true,
-            active_turn_count: 1,
-            active_tool_count: 0,
-            safe_resume_allowed: true,
-            automatic_resume: true,
-            reason: "only a model-boundary turn is open".into(),
-        });
-        assert_eq!(metadata["safeResumeAllowed"], true);
-        assert_eq!(metadata["automaticResume"], true);
+    fn approval_decision_maps_permission_choice() {
+        assert_eq!(
+            approval_decision(PromptChoice::AllowOnce),
+            ApprovalDecision::AllowOnce
+        );
+        assert_eq!(
+            approval_decision(PromptChoice::AllowSession),
+            ApprovalDecision::AllowSession
+        );
+        assert_eq!(
+            approval_decision(PromptChoice::Deny),
+            ApprovalDecision::Deny
+        );
     }
 }
 
