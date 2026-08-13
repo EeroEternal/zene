@@ -14,7 +14,7 @@ use zene_cloud_domain::{
     ClaimedRun, CreateApprovalRequest, CreatePullRequestBody, CreateRepositoryRequest,
     CreateRunRequest, DecideApprovalRequest, GithubBranchSummary, GithubProviderConfigView,
     LlmAuthResponse, LlmSettingsView, LoginRequest, PostMessageRequest, QueueStats, RegisterRequest,
-    RunStatus, UpdateGithubProviderConfigRequest, UpdateLlmSettingsRequest, UpdateRunRequest,
+    MessageRole, RunStatus, UpdateGithubProviderConfigRequest, UpdateLlmSettingsRequest, UpdateRunRequest,
     WorkerCommandAckRequest, WorkerCommandsResponse, WorkerEventRequest, WorkerFence,
     WorkerSessionRequest, WorkerClaimRequest, WorkerPullRequestRequest, WorkerPushRequest,
     WorkerStatusRequest, WorkerTitleRequest,
@@ -820,7 +820,7 @@ async fn post_message(
             .add_message(
                 run_id,
                 Some(user.id),
-                "user",
+                MessageRole::User,
                 &req.text,
                 req.client_message_id.as_deref(),
             )

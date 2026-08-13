@@ -154,6 +154,31 @@ impl PermissionMode {
     }
 }
 
+/// Stored chat turn author. Matches Console bubble roles.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MessageRole {
+    User,
+    Assistant,
+}
+
+impl MessageRole {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::User => "user",
+            Self::Assistant => "assistant",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        Some(match value {
+            "user" => Self::User,
+            "assistant" => Self::Assistant,
+            _ => return None,
+        })
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Run {
@@ -471,7 +496,7 @@ pub enum PlatformEvent {
         head_sha: Option<String>,
     },
     #[serde(rename = "message.created")]
-    MessageCreated { role: String, text: String },
+    MessageCreated { role: MessageRole, text: String },
     #[serde(rename = "approval.created")]
     ApprovalCreated {
         approval_id: Id,
@@ -505,7 +530,7 @@ pub struct RunMessage {
     pub id: Id,
     pub run_id: Id,
     pub author_id: Option<Id>,
-    pub role: String,
+    pub role: MessageRole,
     pub content: String,
     pub created_at: DateTime<Utc>,
 }
@@ -656,7 +681,8 @@ pub struct WorkerEventRequest {
 mod tests {
     use super::{
         ApprovalDecision, ApprovalEventPayload, ApprovalKind, ApprovalRisk, ApprovalStatus,
-        CloudEventKind, CreateApprovalRequest, PlatformEvent, PermissionMode, ProjectionPayload,
+        CloudEventKind, CreateApprovalRequest, MessageRole, PlatformEvent, PermissionMode,
+        ProjectionPayload,
         RunEventKind, RunStatus, TextEventPayload, ToolCallPayload, WorkerCommand,
         WorkerCommandAckRequest, WorkerCommandKind, WorkerEventRequest, WorkerFence,
         WorkerClaimRequest, WorkerPushRequest, WorkerSessionRequest,
@@ -833,6 +859,29 @@ mod tests {
         assert!(PermissionMode::Auto.auto_resolves_approvals());
         assert!(!PermissionMode::AcceptEdits.auto_resolves_approvals());
         assert_eq!(PermissionMode::parse("manual"), None);
+    }
+
+    #[test]
+    fn message_role_round_trips_snake_case() {
+        for role in [MessageRole::User, MessageRole::Assistant] {
+            let encoded = serde_json::to_value(role).expect("serialize");
+            assert_eq!(encoded, serde_json::json!(role.as_str()));
+            assert_eq!(MessageRole::parse(role.as_str()), Some(role));
+        }
+        assert_eq!(MessageRole::parse("system"), None);
+        let encoded = serde_json::to_value(PlatformEvent::MessageCreated {
+            role: MessageRole::User,
+            text: "follow-up".into(),
+        })
+        .expect("message");
+        assert_eq!(
+            encoded,
+            serde_json::json!({
+                "event": "message.created",
+                "role": "user",
+                "text": "follow-up"
+            })
+        );
     }
 
     #[test]

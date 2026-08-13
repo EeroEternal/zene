@@ -35,6 +35,7 @@ import type {
   Approval,
   ApprovalDecision,
   LlmSettingsView,
+  MessageRole,
   Repo,
   Run,
   RunEvent,
@@ -126,7 +127,7 @@ type TimelineItem =
     }
   | { kind: "approval"; id: number; approval: Approval; decision?: ApprovalDecision };
 
-function bubbleRole(role?: string): "user" | "assistant" {
+function bubbleRole(role?: MessageRole | string): MessageRole {
   return (role || "").toLowerCase() === "user" ? "user" : "assistant";
 }
 
@@ -957,7 +958,7 @@ export function RunView({
   }, []);
 
   const appendBubble = useCallback(
-    (role: string, text: string) => {
+    (role: MessageRole, text: string) => {
       const r = bubbleRole(role);
       setItems((prev) => [...prev, { kind: "bubble", id: nextId.current++, role: r, text }]);
       hasAssistantTail.current = r === "assistant";
