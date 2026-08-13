@@ -101,7 +101,7 @@ RuntimeHandle → Agent → TurnEngine
 | Session | `crates/session` | `SessionRecord` + `SessionStore`；events 优先，messages 为 materialized cache |
 | Context | `crates/context` | observe/commit/project；`SessionView` 驱动 event-backed projection |
 | Permission | `crates/permission` | `evaluate` 纯判定；`Ask` 走 `ApprovalBroker`。Runtime 挂 waiter，transport 发 `RuntimeCommand::Approval` |
-| Subagent | `crates/core/src/subagent.rs` | 直接实现 `TurnEnginePorts`；仍用独立 `ChatBackend` 和内存消息，尚未 `RuntimeScope` |
+| Subagent | `crates/core/src/subagent.rs` | 经 `RuntimeScope` 注入工具目录；工具执行走 `DefaultToolExecutor`；仍用独立 `ChatBackend` 与内存消息 |
 | Runtime | `crates/runtime` + `crates/core/src/agent_runtime.rs` | 公共 command/event 在 `zene-runtime`；Agent actor 仍在 core |
 | ACP | `apps/cli/src/acp/server.rs` | transport adapter；创建/加载 session，并把请求接入 `RuntimeHandle` |
 | Cloud Job | `cloud/apps/worker` + `cloud/crates/runtime-client` | Job 经 `RuntimeClient::send` 发 Prompt/Cancel/Approval/Shutdown；API→worker `WorkerCommand` 为 Prompt/Cancel；审批产品面（决策/kind/risk）从 DB 到 Console 到 RuntimeCommand 共用 domain 类型；ACP `optionId` 只在 adapter 内映射 |
