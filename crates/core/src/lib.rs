@@ -60,7 +60,9 @@ pub use zene_permission::{
     approve_tool_call, policy_denied, PermissionGate, PermissionMode, PermissionPrompter,
     PermissionRule, PromptChoice, RuleAction, SharedToolPermission, ToolPermission,
 };
-pub use zene_runtime::{ApprovalDecision, ExecutionState, RuntimeCommand, RuntimeResponse};
+pub use zene_runtime::{
+    ApprovalDecision, ExecutionState, RuntimeCommand, RuntimeLifecycle, RuntimeResponse,
+};
 pub use zene_turn::{
     aborted_error, begin_turn, end_turn, max_turns_notice, steer_requires_active_turn,
     EventSequence, RuntimeEvent, RuntimeEventHandler, RuntimeEventKind, SessionId, SteerBuffer,
