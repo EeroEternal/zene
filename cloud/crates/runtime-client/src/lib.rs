@@ -793,11 +793,10 @@ impl MockRuntimeClient {
                 source_event_id: format!("mock-session-{session_id}"),
                 cursor: None,
                 event_type: CloudEventKind::SessionStarted,
-                payload: RuntimePayload::SessionStarted(SessionStartedPayload {
-                    session_id: Some(session_id.clone()),
-                    resumed: None,
-                    ..Default::default()
-                }),
+                payload: RuntimePayload::SessionStarted(mock_session_started_payload(
+                    &session_id,
+                    false,
+                )),
             },
         });
         tokio::spawn(async move {
@@ -844,6 +843,35 @@ impl MockRuntimeClient {
             prompt_lock: Mutex::new(()),
             alive: AtomicBool::new(true),
         }
+    }
+}
+
+fn mock_session_started_payload(session_id: &str, resumed: bool) -> SessionStartedPayload {
+    SessionStartedPayload {
+        session_id: Some(session_id.to_string()),
+        resumed: resumed.then_some(true),
+        current_mode_id: Some("default".into()),
+        available_modes: Some(serde_json::json!([
+            {
+                "id": "default",
+                "name": "Default",
+                "description": "Full tool access with permission prompts for gated tools"
+            },
+            {
+                "id": "plan",
+                "name": "Plan",
+                "description": "Read-only exploration; ExitPlanMode required before edits"
+            }
+        ])),
+        recovery: Some(SessionRecoveryPayload {
+            disposition: Some("clean".into()),
+            has_incomplete_execution: Some(false),
+            active_turn_count: Some(0),
+            active_tool_count: Some(0),
+            safe_resume_allowed: Some(false),
+            automatic_resume: Some(false),
+            reason: Some("no incomplete execution".into()),
+        }),
     }
 }
 
@@ -1613,10 +1641,35 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn mock_session_started_includes_modes_and_clean_recovery() {
+        let dir = std::env::temp_dir().join(format!("zene-mock-started-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let client = MockRuntimeClient::connect(&dir);
+        let session_id = client.session_id().await.expect("session id");
+        let event = client.next_event().await.expect("initialized");
+        match event {
+            RuntimeEvent::Initialized { event, .. } => {
+                assert_eq!(
+                    event.payload,
+                    RuntimePayload::SessionStarted(mock_session_started_payload(&session_id, false))
+                );
+                let value = event.payload.to_value();
+                assert_eq!(value["currentModeId"], "default");
+                assert_eq!(value["recovery"]["automaticResume"], false);
+                assert_eq!(value["recovery"]["disposition"], "clean");
+            }
+            other => panic!("expected Initialized, got {other:?}"),
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
     async fn mock_runtime_client_emits_product_events_and_tool_approval() {
         let dir = std::env::temp_dir().join(format!("zene-mock-runtime-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).expect("temp dir");
         let client = Arc::new(MockRuntimeClient::connect(&dir));
+        let session_id = client.session_id().await.expect("session id");
+        let expected_started = mock_session_started_payload(&session_id, false);
         let pump = client.clone();
         let pump_task = tokio::spawn(async move {
             let mut saw_text = false;
@@ -1625,6 +1678,10 @@ mod tests {
                 match event {
                     RuntimeEvent::Initialized { event, .. } => {
                         assert_eq!(event.event_type, CloudEventKind::SessionStarted);
+                        assert_eq!(
+                            event.payload,
+                            RuntimePayload::SessionStarted(expected_started.clone())
+                        );
                     }
                     RuntimeEvent::Notification(event) => {
                         if event.event_type == CloudEventKind::TextDelta {

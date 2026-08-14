@@ -2,9 +2,11 @@
 
 > 状态：持续演进。Wave 0–12 把控制面/数据面的 **接口边界** 建起来了；Wave 13 起让默认执行路径真正走这些边界。
 >
-> **进度快照：2026-08-14，基线 `ef6cba9`（PR #110 已合并）。**
+> **进度快照：2026-08-14，基线 `f27eae9`（PR #111 已合并）。**
 > 本文同时记录目标架构、已实现能力和剩余工作。
-> Wave 16 的 Steer/SetMode 已对齐；**Wave 14 已完成**；Agent-specific actor 已迁至 `zene-agent-runtime`（协议仍在 `zene-runtime`；Cloud 不依赖二者）；Turn 与 ContextModel 共用中性 `ModelRequest`。Cloud/本地共享 `RuntimeCommand` 变体已评估为字段对齐；`GetMode` / `ResumeSafeTurn` 仍仅本地。ACP `initialize` / unsupported / turn/step/error 已产品化；`session_started` 携带 modes + recovery（inspect-only）；未知 `session/update` 存 residual 产品字段。`zene-core` 不再 re-export turn/runtime protocol 类型。
+> Wave 16 的 Steer/SetMode 已对齐；**Wave 14 已完成**；Agent-specific actor 已迁至 `zene-agent-runtime`（协议仍在 `zene-runtime`；Cloud 不依赖二者）；Turn 与 ContextModel 共用中性 `ModelRequest`。Cloud/本地共享 `RuntimeCommand` 变体已评估为字段对齐；`GetMode` / `ResumeSafeTurn` 仍仅本地。ACP `initialize` / unsupported / turn/step/error 已产品化；`session_started` 携带 modes + recovery（inspect-only；mock 路径同形）；未知 `session/update` 存 residual 产品字段。`zene-core` 不再 re-export turn/runtime protocol 类型。
+>
+> **停线点：** 非协议控制/事件产品化与 ownership 收缩已收口。下一高杠杆项是 reply-shaped Cloud 控制（GetMode），需产品协议后再做；在此之前不要碎片化。
 >
 > 本文基于当前 zene runtime 实现，描述如何将 `Agent`、`Turn`、`Step`、`Session`、Cloud `Run` 和 ACP transport 拉开，并给出渐进式迁移方案。
 >
@@ -1238,7 +1240,7 @@ Wave 16  统一 transport command/event  ← 已完成（含 Steer/SetMode）
 | 结构清理 | （已完成）core protocol / turn event re-export 收缩 | protocol 在 `zene-runtime`/`zene-agent-runtime`；事件在 `zene-turn` |
 | 可选后续 | Agent holdings 继续退回 wiring | Wave 14 step 算法已抽出；剩余 composition-root 持有 |
 
-推荐组合：**非协议结构清理已收口**。高杠杆剩余工作需 reply-shaped 协议（GetMode）；在此之前不要再碎片化。
+推荐组合：**非协议主线已收口**（含 mock `session_started` 与真实路径 modes/recovery 对齐）。停线等待 GetMode / reply-shaped 产品协议；不要再碎片化。
 
 **不要一上来做** actor 全量重写、完整 Event Sourcing、或再抽一层没有调用方的 crate。
 
@@ -1554,3 +1556,9 @@ Wave 16  统一 transport command/event  ← 已完成（含 Steer/SetMode）
 - ACP 直接从 `zene_turn` 导入事件类型，并显式依赖该 crate。
 - 对齐 #107 的 ownership：protocol → `zene-runtime`/`zene-agent-runtime`；事件 → `zene-turn`。
 - 不做 GetMode。不改 Cloud。不自动 replay pending tools。
+
+### 2026-08-14 — Mock session_started modes/recovery parity
+
+- `MockRuntimeClient` 的 `session_started` 与真实 ACP 路径同形：默认 `currentModeId` / `availableModes` + clean inspect-only `recovery`。
+- 文档标明：非协议控制/事件产品化主线停线；下一高杠杆项需 GetMode 产品协议。
+- 不做 GetMode。不改 Console。不自动 replay pending tools。
