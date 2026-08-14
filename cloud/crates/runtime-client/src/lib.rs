@@ -80,8 +80,9 @@ fn map_session_update(update: &str) -> CloudEventKind {
 ///
 /// Variant names match `zene_runtime::RuntimeCommand` where Cloud has a
 /// counterpart. Cloud does not depend on `zene-runtime`. ACP JSON-RPC ids
-/// stay inside this adapter. `ResumeSafeTurn` / `GetMode` stay local-only
-/// until Cloud has a reply-shaped control channel.
+/// stay inside this adapter. `ResumeSafeTurn` stays local-only. Session mode
+/// on Cloud is push-sourced (`session_started` / `state_changed`); there is
+/// no Cloud `GetMode` / `session/get_mode`.
 #[derive(Debug, Clone)]
 pub enum RuntimeCommand {
     Prompt { text: String },

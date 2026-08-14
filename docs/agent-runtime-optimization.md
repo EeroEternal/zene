@@ -2,11 +2,11 @@
 
 > 状态：持续演进。Wave 0–12 把控制面/数据面的 **接口边界** 建起来了；Wave 13 起让默认执行路径真正走这些边界。
 >
-> **进度快照：2026-08-14，基线 `f27eae9`（PR #111 已合并）。**
+> **进度快照：2026-08-14，基线 `4a3443d`（PR #112 已合并）。**
 > 本文同时记录目标架构、已实现能力和剩余工作。
-> Wave 16 的 Steer/SetMode 已对齐；**Wave 14 已完成**；Agent-specific actor 已迁至 `zene-agent-runtime`（协议仍在 `zene-runtime`；Cloud 不依赖二者）；Turn 与 ContextModel 共用中性 `ModelRequest`。Cloud/本地共享 `RuntimeCommand` 变体已评估为字段对齐；`GetMode` / `ResumeSafeTurn` 仍仅本地。ACP `initialize` / unsupported / turn/step/error 已产品化；`session_started` 携带 modes + recovery（inspect-only；mock 路径同形）；未知 `session/update` 存 residual 产品字段。`zene-core` 不再 re-export turn/runtime protocol 类型。
+> Wave 16 的 Steer/SetMode 已对齐；**Wave 14 已完成**；Agent-specific actor 已迁至 `zene-agent-runtime`（协议仍在 `zene-runtime`；Cloud 不依赖二者）；Turn 与 ContextModel 共用中性 `ModelRequest`。Cloud/本地共享 `RuntimeCommand` 变体已评估为字段对齐。**Cloud session mode（`default`/`plan`）以推送为准**：`session_started` + `current_mode_update`→`state_changed`；**不做 Cloud GetMode**。`ResumeSafeTurn` 仍仅本地。ACP `initialize` / unsupported / turn/step/error 已产品化；`session_started` 携带 modes + recovery（inspect-only；mock 路径同形）；未知 `session/update` 存 residual 产品字段。`zene-core` 不再 re-export turn/runtime protocol 类型。
 >
-> **停线点：** 非协议控制/事件产品化与 ownership 收缩已收口。下一高杠杆项是 reply-shaped Cloud 控制（GetMode），需产品协议后再做；在此之前不要碎片化。
+> **停线点：** 非协议控制/事件产品化与 ownership 收缩已收口。Cloud mode 真相源已定为事件推送，GetMode 不再是本线下一步。后续高杠杆项（若有）需新的产品目标，不要为 GetMode 碎片化。
 >
 > 本文基于当前 zene runtime 实现，描述如何将 `Agent`、`Turn`、`Step`、`Session`、Cloud `Run` 和 ACP transport 拉开，并给出渐进式迁移方案。
 >
@@ -31,7 +31,7 @@
 
 1. `TurnEngine` 已统一主 Agent 和 Subagent 的循环，ports 也已抽出；Wave 13 起默认路径必须真正把 `prepare_context` 的 `PreparedContext` 交给 `run_model`，而不是在 model 步骤里重新组装上下文。
 2. `Provider` / `ChatClient` 仍是 provider 面；Turn/runtime 与 Context compaction/memory 经中性 `ModelRequest` / `ModelResponse`，`ChatClientExecutor` 与 `ContextModel` 对 `ChatClient` 的适配内部映射为 `ChatRequest`。
-3. ACP、Cloud event 和 Core `AgentEvent` 仍存在语义转换。Cloud `RuntimeCommand` 已与本地共享变体字段对齐（Prompt/Steer/Cancel/Approval/SetMode/Shutdown），仍不依赖 `zene-runtime`；`GetMode` / `ResumeSafeTurn` 仍仅本地。已分类 Cloud payload 已是产品字段（含 `initialized` / `unsupported_request` / `turn_started` / `step_started` / `turn_ended` / `error`；未知 `session/update` 为 residual）。历史 `acp` 行与提取失败仍可能保留原始 JSON。
+3. ACP、Cloud event 和 Core `AgentEvent` 仍存在语义转换。Cloud `RuntimeCommand` 已与本地共享变体字段对齐（Prompt/Steer/Cancel/Approval/SetMode/Shutdown），仍不依赖 `zene-runtime`。Cloud session mode（`default`/`plan`）以推送事件为真相源（`session_started` / `state_changed`）；`GetMode` 仅本地，Cloud 不做。`ResumeSafeTurn` 仍仅本地。已分类 Cloud payload 已是产品字段（含 `initialized` / `unsupported_request` / `turn_started` / `step_started` / `turn_ended` / `error`；未知 `session/update` 为 residual）。历史 `acp` 行与提取失败仍可能保留原始 JSON。
 4. Session 可以恢复历史并在安全 model-boundary 上自动恢复未完成 execution；pending tool、approval 和 failure 仍必须 inspection/manual intervention。
 5. `RuntimeHandle` 已成为 active turn、prompt queue、cancel 的控制所有者；Agent-specific actor 在 `zene-agent-runtime`，ACP 仍保留 transport 层 session bookkeeping。
 6. 权限已拆成纯 `evaluate` + 异步 `ApprovalBroker`。ACP 监听 `ApprovalRequested` 再发 `RuntimeCommand::Approval`。Cloud JobRunner 经 `RuntimeClient::send(RuntimeCommand::Approval)` 回复；ACP jsonrpc id 与 option 列表只留在 adapter。Cloud 产品审批类型不再携带 `jsonrpc_id`。存库/API/Console/RuntimeCommand 共用 domain `ApprovalDecision`，并带 `ApprovalKind` / `ApprovalRisk`。已分类 Cloud payload 与审批表 payload 已是产品字段；未识别帧仍为 ACP JSON。API→worker `WorkerCommand.kind` 是 `Prompt` / `Cancel` 枚举。
@@ -1135,7 +1135,7 @@ Wave 16  统一 transport command/event  ← 已完成（含 Steer/SetMode）
 4. **仍明确未自动完成的项目**
    - pending tool / approval 的任意副作用自动 replay：继续采用 inspection/manual intervention，避免重复写操作。
    - Subagent 仍用内存消息（`SessionPersistence::Ephemeral`）；未做 durable child session。
-   - 本地与 Cloud 共享 `RuntimeCommand` 变体已字段对齐（Prompt/Steer/Cancel/Approval/SetMode/Shutdown；API→worker 仍是 Prompt/Cancel；不依赖 `zene-runtime`）。`GetMode` / `ResumeSafeTurn` 仍仅本地（Cloud `send` 为 fire-and-forget，尚无 reply-shaped 控制面）。ACP `initialize` → `initialized`，unsupported reverse request → `unsupported_request`；turn/step/error → 对应产品 kind；未知 `session/update` 仍为 `acp` 但存 residual 产品字段。历史行与提取失败仍可能是原始 JSON。本地与 Cloud 的 `RuntimeEvent` 信封不同（turn 流 vs ACP session adapter），不合并为同一类型。
+   - 本地与 Cloud 共享 `RuntimeCommand` 变体已字段对齐（Prompt/Steer/Cancel/Approval/SetMode/Shutdown；API→worker 仍是 Prompt/Cancel；不依赖 `zene-runtime`）。Cloud session mode 以推送为准（`session_started.currentModeId` + `current_mode_update`→`state_changed`）；**明确不做 Cloud GetMode / `session/get_mode`**。`ResumeSafeTurn` 仍仅本地。ACP `initialize` → `initialized`，unsupported reverse request → `unsupported_request`；turn/step/error → 对应产品 kind；未知 `session/update` 仍为 `acp` 但存 residual 产品字段。历史行与提取失败仍可能是原始 JSON。本地与 Cloud 的 `RuntimeEvent` 信封不同（turn 流 vs ACP session adapter），不合并为同一类型。
    - Agent-specific actor 已迁入 `zene-agent-runtime`（协议仍在 `zene-runtime`；Cloud 不依赖）。`zene-core` 不再 re-export runtime protocol 或 turn `RuntimeEvent` 类型；ACP 从 `zene_agent_runtime` / `zene_runtime` / `zene_turn` 取类型。
    - 跨 VM outbox 的共享持久化实现；当前部署文档要求共享 POSIX volume 或后续 DB/object spool。
    - Provider / `ChatClient` 仍是 `ChatRequest` 面（Turn 与 ContextModel 已用 `ModelRequest`）。
@@ -1211,7 +1211,7 @@ Wave 16  统一 transport command/event  ← 已完成（含 Steer/SetMode）
    - `RunMessage.role` 与 `PlatformEvent::MessageCreated.role` 使用 `MessageRole`（`user` / `assistant`）。未知历史值读成 `assistant`，与 Console `bubbleRole` 一致。
    - `CloneTokenResponse.mode`、API `githubMode` / GitHub status `mode` 与 Console `GithubStatus.mode` 使用已有 `GithubMode`。不再用 Debug 格式拼 wire 字符串。
    - `QueueActive.status` 使用 `RunStatus`。`PullRequest.state` 使用 `PullRequestState`（含 mock `draft`）。installation `account_type` / `status` 使用 `GithubAccountType`（`User` / `Organization`）与 `GithubInstallationStatus`。未知历史值分别读成 `failed` / `open` / `Organization` / `active`。
-   - Cloud `RuntimeCommand` 补齐 `Steer` / `SetMode`，字段与本地 `zene-runtime` 同形，但不依赖该 crate。ACP 增加 `session/steer`；`session/set_mode` 经 bridge 可达。JobRunner：turn 进行中的 follow-up 发 `Steer`，空闲发 `Prompt`；`pending_mode_id` + `POST /runs/{id}/mode` 在空闲时发 `SetMode`。`GetMode` / `ResumeSafeTurn` 仍仅本地。
+   - Cloud `RuntimeCommand` 补齐 `Steer` / `SetMode`，字段与本地 `zene-runtime` 同形，但不依赖该 crate。ACP 增加 `session/steer`；`session/set_mode` 经 bridge 可达。JobRunner：turn 进行中的 follow-up 发 `Steer`，空闲发 `Prompt`；`pending_mode_id` + `POST /runs/{id}/mode` 在空闲时发 `SetMode`。Cloud mode 以推送事件为 SoT；`GetMode` / `ResumeSafeTurn` 仍仅本地（Cloud 明确不做 GetMode）。
 
 8. **持续质量门槛**
    - 每个 wave 保持 `cargo test --workspace --locked`；
@@ -1236,11 +1236,11 @@ Wave 16  统一 transport command/event  ← 已完成（含 Steer/SetMode）
 
 | 选择 | Wave | 理由 |
 | --- | --- | --- |
-| 当前最大杠杆 | GetMode / reply-shaped Cloud 控制（需协议） | 控制/事件产品化与 core re-export 收缩已收口 |
+| 当前最大杠杆 | （本线已收口） | Cloud mode 定为推送 SoT；不做 GetMode |
 | 结构清理 | （已完成）core protocol / turn event re-export 收缩 | protocol 在 `zene-runtime`/`zene-agent-runtime`；事件在 `zene-turn` |
 | 可选后续 | Agent holdings 继续退回 wiring | Wave 14 step 算法已抽出；剩余 composition-root 持有 |
 
-推荐组合：**非协议主线已收口**（含 mock `session_started` 与真实路径 modes/recovery 对齐）。停线等待 GetMode / reply-shaped 产品协议；不要再碎片化。
+推荐组合：**控制/事件产品化主线已收口**。Cloud session mode 以事件推送为真相源；本地保留 GetMode，Cloud 不引入。后续勿为 GetMode / reply-shaped 控制碎片化，除非出现新的产品调用方需求（且不是读 mode）。
 
 **不要一上来做** actor 全量重写、完整 Event Sourcing、或再抽一层没有调用方的 crate。
 
@@ -1562,3 +1562,10 @@ Wave 16  统一 transport command/event  ← 已完成（含 Steer/SetMode）
 - `MockRuntimeClient` 的 `session_started` 与真实 ACP 路径同形：默认 `currentModeId` / `availableModes` + clean inspect-only `recovery`。
 - 文档标明：非协议控制/事件产品化主线停线；下一高杠杆项需 GetMode 产品协议。
 - 不做 GetMode。不改 Console。不自动 replay pending tools。
+
+### 2026-08-14 — Cloud session mode SoT = push events
+
+- **产品决定**：Cloud 上的 session mode（`default` / `plan`）以推送事件为真相源——`session_started` 的 `currentModeId` / `availableModes`，以及后续 `current_mode_update`→`state_changed`。
+- **明确不做**：Cloud `GetMode`、ACP `session/get_mode`、为读 mode 引入 reply-shaped `RuntimeClient` API。本地 `GetMode` 仍供 ACP session new/load/resume 填 `modes` 使用。
+- JobRunner 继续用 `pending_mode_id` + idle `SetMode` + 本地 `turn_busy`；不依赖拉取校验。
+- 不改 Console。不自动 replay pending tools。
