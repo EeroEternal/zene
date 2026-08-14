@@ -52,3 +52,40 @@ pub const HEADER_CONTEXT_EPOCH: &str = "X-Zene-Context-Epoch";
 pub const HEADER_CONTEXT_DELIVERY: &str = "X-Zene-Context-Delivery";
 pub const HEADER_TAIL_START: &str = "X-Zene-Tail-Start";
 pub const HEADER_PREFIX_HASH: &str = "X-Zene-Prefix-Hash";
+
+/// SmartGate upstream headers (mapped by `apps/inference-gateway` on outbound).
+pub const SMARTGATE_HEADER_SESSION_ID: &str = "X-SmartGate-Session-Id";
+pub const SMARTGATE_HEADER_CONTEXT_EPOCH: &str = "X-SmartGate-Context-Epoch";
+pub const SMARTGATE_HEADER_CONTEXT_DELIVERY: &str = "X-SmartGate-Context-Delivery";
+pub const SMARTGATE_HEADER_PREFIX_HASH: &str = "X-SmartGate-Prefix-Hash";
+
+/// SmartGate session id: 1–128 chars, `[A-Za-z0-9._:-]` only.
+pub fn sanitize_smartgate_session_id(id: &str) -> String {
+    let sanitized: String = id
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | ':' | '-'))
+        .take(128)
+        .collect();
+    if sanitized.is_empty() {
+        "zene".to_string()
+    } else {
+        sanitized
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sanitize_smartgate_session_id_strips_invalid_chars() {
+        assert_eq!(
+            sanitize_smartgate_session_id("run-abc_123:1"),
+            "run-abc_123:1"
+        );
+        assert_eq!(
+            sanitize_smartgate_session_id("bad chars!@#"),
+            "badchars"
+        );
+    }
+}

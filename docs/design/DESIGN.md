@@ -32,6 +32,8 @@ spacing:
   xs: 4
 ---
 
+**Superseded.** Console visual spec is root [`DESIGN.md`](../../DESIGN.md) and [`docs/Designs.md`](../Designs.md). Do not follow the tokens or “Cursor-style” guidance in this file.
+
 ## Brand & Style
 
 采用“浅色规范文档 + 深色工作台样板”的双层表达：页面基底严格使用参考图的 #F9F9F9 与 #FFFFFF，主文字与关键操作使用 #242938；规范内容以极细分隔线、紧凑 4px 间距、8px 小圆角和几乎无阴影的模块化编排呈现。深色 IDE 样板作为内容区域内的重点展示，以深墨面板、低饱和语义状态色、等宽代码与三栏结构说明 Cursor 风格工作区；拒绝渐变、玻璃拟态、大面积圆角卡片和装饰插画。

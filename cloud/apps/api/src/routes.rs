@@ -65,6 +65,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/v1/runs/{run_id}/events", get(list_events))
         .route("/api/v1/runs/{run_id}/events/stream", get(stream_events))
         .route("/api/v1/runs/{run_id}/cancel", post(cancel_run))
+        .route("/api/v1/runs/{run_id}/retry", post(retry_run))
         .route("/api/v1/runs/{run_id}/approvals", get(list_approvals))
         .route(
             "/api/v1/runs/{run_id}/approvals/{approval_id}/decide",
@@ -949,6 +950,44 @@ async fn cancel_run(
     ))
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RetryRunRequest {
+    text: Option<String>,
+}
+
+async fn retry_run(
+    State(state): State<AppState>,
+    AuthUser(user): AuthUser,
+    Path(run_id): Path<Uuid>,
+    Json(req): Json<RetryRunRequest>,
+) -> Result<impl IntoResponse, AppError> {
+    let run = authorize_run(&state, user.id, run_id).await?;
+    if !matches!(
+        run.status,
+        RunStatus::Failed | RunStatus::TimedOut | RunStatus::Cancelled
+    ) {
+        return Err(AppError::conflict(format!(
+            "run status {} cannot be retried",
+            run.status.as_str()
+        )));
+    }
+    let follow_up = req.text.as_deref().map(str::trim).filter(|s| !s.is_empty());
+    if let Some(text) = follow_up {
+        state
+            .db
+            .add_message(run_id, Some(user.id), MessageRole::User, text, None)
+            .await?;
+    }
+    Ok(Json(
+        state
+            .db
+            .user_retry_run(run_id, follow_up)
+            .await
+            .map_err(AppError::from)?,
+    ))
+}
+
 async fn list_approvals(
     State(state): State<AppState>,
     AuthUser(user): AuthUser,
@@ -1151,12 +1190,14 @@ async fn claim_run(
         .db
         .claim_next_run(&req.worker_id, std::path::Path::new(&req.workspace_root))
         .await?;
-    Ok(Json(claimed.map(|(run, attempt_id, generation, resume_session_id, workspace_dir)| {
+    Ok(Json(claimed.map(
+        |(run, attempt_id, generation, resume_session_id, workspace_dir, resume_without_prompt)| {
         ClaimedRun {
             run,
             attempt_id,
             generation,
             resume_session_id,
+            resume_without_prompt,
             workspace_dir,
         }
     })))
@@ -1271,6 +1312,9 @@ async fn clone_auth(
         .get_run(run_id)
         .await?
         .ok_or_else(|| AppError::not_found("run not found"))?;
+    if let Some(cached) = state.db.get_cached_clone_credentials(run_id).await? {
+        return Ok(Json(cached));
+    }
     let git_broker = state.git_broker().await;
     let token = git_broker
         .issue_read_clone_token(&run)
@@ -1278,7 +1322,7 @@ async fn clone_auth(
         .map_err(AppError::from)?;
     let github = state.github_client().await;
     let mock = token.mode == GithubMode::Mock || github.is_mock();
-    Ok(Json(zene_cloud_domain::CloneAuthResponse {
+    let response = zene_cloud_domain::CloneAuthResponse {
         run_id: run.id,
         repository_id: run.repository_id,
         clone_url: token.clone_url,
@@ -1287,7 +1331,9 @@ async fn clone_auth(
         base_ref: run.base_ref,
         head_branch: run.head_branch,
         mock,
-    }))
+    };
+    state.db.store_clone_credentials(&response).await?;
+    Ok(Json(response))
 }
 
 async fn worker_commands(

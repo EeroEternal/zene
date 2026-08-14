@@ -65,12 +65,12 @@ const MAX_TURNS_STORAGE_KEY = "zc.maxTurns";
 function loadMaxTurns(): number {
   try {
     const raw = localStorage.getItem(MAX_TURNS_STORAGE_KEY);
-    if (raw == null) return 50;
+    if (raw == null) return 100;
     const n = Number(raw);
-    if (!Number.isFinite(n) || n < 0) return 50;
+    if (!Number.isFinite(n) || n < 0) return 100;
     return Math.floor(n);
   } catch {
-    return 50;
+    return 100;
   }
 }
 
@@ -137,7 +137,7 @@ export function NewAgent(props: NewAgentProps) {
   const [attachPanel, setAttachPanel] = useState<"skills" | "mcp" | "permission" | "maxTurns" | null>(
     null,
   );
-  const [maxTurns, setMaxTurns] = useState(50);
+  const [maxTurns, setMaxTurns] = useState(100);
   const [projectQuery, setProjectQuery] = useState("");
   const [branchQuery, setBranchQuery] = useState("");
   const [modelQuery, setModelQuery] = useState("");
@@ -425,7 +425,7 @@ export function NewAgent(props: NewAgentProps) {
   }, [openMenu]);
 
   return (
-    <div className="grid h-full place-items-center overflow-auto bg-canvas px-5 pb-12 pt-8">
+    <div className="grid h-full place-items-center overflow-auto bg-canvas-bg px-5 pb-12 pt-8">
       <div ref={shellRef} className="relative w-[min(720px,100%)]" onClick={(e) => e.stopPropagation()}>
         <div className="mb-2 flex flex-wrap items-center gap-0.5 px-0.5">
           <button
@@ -457,7 +457,7 @@ export function NewAgent(props: NewAgentProps) {
               <IconChevronDown className="h-3 w-3 opacity-70" />
             </button>
             {openMenu === "branch" && (
-              <div className="absolute left-0 top-8 z-40 w-[min(320px,calc(100vw-48px))] rounded-xl border border-line bg-canvas shadow-menu" role="menu">
+              <div className="absolute left-0 top-8 z-40 w-[min(320px,calc(100vw-48px))] rounded-md border border-line bg-canvas shadow-menu" role="menu">
                 <div className="flex items-center gap-2 border-b border-line px-3 py-2.5">
                   <IconSearch className="h-3.5 w-3.5 shrink-0 text-placeholder" />
                   <input
@@ -521,7 +521,7 @@ export function NewAgent(props: NewAgentProps) {
         </div>
 
         {openMenu === "project" && (
-          <div className="absolute left-0 top-9 z-40 w-[min(320px,calc(100vw-48px))] rounded-xl border border-line bg-canvas shadow-menu" role="menu">
+          <div className="absolute left-0 top-9 z-40 w-[min(320px,calc(100vw-48px))] rounded-md border border-line bg-canvas shadow-menu" role="menu">
             <div className="flex items-center gap-2 border-b border-line px-3 py-2.5">
               <IconSearch className="h-3.5 w-3.5 shrink-0 text-placeholder" />
               <input
@@ -623,11 +623,11 @@ export function NewAgent(props: NewAgentProps) {
           </div>
         )}
 
-        <div className="rounded-md border border-line-strong bg-canvas p-3 pb-2.5 shadow-card focus-within:border-primary focus-within:shadow-[0_0_0_3px_#E6F4FE]">
+        <div className="rounded-md bg-canvas p-3 pb-2.5 shadow-card focus-within:shadow-[0_0_0_2px_#EAF2FF]">
           <textarea
             ref={promptRef}
             className="block max-h-[200px] min-h-[72px] w-full resize-none border-0 bg-transparent px-1 pb-2.5 pt-0.5 text-sm leading-normal text-ink outline-none"
-            placeholder="Plan, Build, / for skills, @ for context"
+            placeholder="Describe the task. / for skills, @ for context"
             aria-label="Task prompt"
             value={prompt}
             onChange={(e) => {
@@ -652,7 +652,7 @@ export function NewAgent(props: NewAgentProps) {
               <div className="relative">
                 <button
                   type="button"
-                  className={`inline-flex h-7 w-7 items-center justify-center rounded-full ${
+                  className={`inline-flex h-7 w-7 items-center justify-center rounded-sm ${
                     openMenu === "attach" ? "bg-active text-ink" : "bg-secondary text-muted hover:bg-active hover:text-ink"
                   }`}
                   title="Add"
@@ -672,7 +672,7 @@ export function NewAgent(props: NewAgentProps) {
                   <IconPlus className="h-3.5 w-3.5" />
                 </button>
                 {openMenu === "attach" && (
-                  <div className="absolute bottom-[calc(100%+8px)] left-0 z-[45] w-[200px] rounded-xl border border-line bg-canvas p-1.5 shadow-menu" role="menu" aria-label="Add">
+                  <div className="absolute bottom-[calc(100%+8px)] left-0 z-[45] w-[200px] rounded-md border border-line bg-canvas p-1.5 shadow-menu" role="menu" aria-label="Add">
                     <button
                       type="button"
                       className="menu-item"
@@ -723,7 +723,7 @@ export function NewAgent(props: NewAgentProps) {
                       <IconChevronRight className="h-3.5 w-3.5 shrink-0 text-muted" />
                     </button>
                     {attachPanel === "skills" && (
-                      <div className="absolute bottom-0 left-[calc(100%+6px)] z-[46] w-[280px] overflow-hidden rounded-xl border border-line bg-canvas shadow-menu max-[720px]:bottom-[calc(100%+6px)] max-[720px]:left-0 max-[720px]:w-[min(280px,calc(100vw-48px))]" role="menu">
+                      <div className="absolute bottom-0 left-[calc(100%+6px)] z-[46] w-[280px] overflow-hidden rounded-md border border-line bg-canvas shadow-menu max-[720px]:bottom-[calc(100%+6px)] max-[720px]:left-0 max-[720px]:w-[min(280px,calc(100vw-48px))]" role="menu">
                         <div className="max-h-[260px] overflow-auto p-1.5">
                           {SKILLS.map((s) => (
                             <button
@@ -743,7 +743,7 @@ export function NewAgent(props: NewAgentProps) {
                       </div>
                     )}
                     {attachPanel === "mcp" && (
-                      <div className="absolute bottom-0 left-[calc(100%+6px)] z-[46] w-[280px] overflow-hidden rounded-xl border border-line bg-canvas shadow-menu max-[720px]:bottom-[calc(100%+6px)] max-[720px]:left-0 max-[720px]:w-[min(280px,calc(100vw-48px))]" role="menu">
+                      <div className="absolute bottom-0 left-[calc(100%+6px)] z-[46] w-[280px] overflow-hidden rounded-md border border-line bg-canvas shadow-menu max-[720px]:bottom-[calc(100%+6px)] max-[720px]:left-0 max-[720px]:w-[min(280px,calc(100vw-48px))]" role="menu">
                         <div className="flex items-center gap-2 border-b border-line px-3 py-2.5">
                           <IconSearch className="h-3.5 w-3.5 shrink-0 text-placeholder" />
                           <input
@@ -819,7 +819,7 @@ export function NewAgent(props: NewAgentProps) {
                       </div>
                     )}
                     {attachPanel === "permission" && (
-                      <div className="absolute bottom-0 left-[calc(100%+6px)] z-[46] w-[220px] overflow-hidden rounded-xl border border-line bg-canvas shadow-menu max-[720px]:bottom-[calc(100%+6px)] max-[720px]:left-0 max-[720px]:w-[min(220px,calc(100vw-48px))]" role="menu">
+                      <div className="absolute bottom-0 left-[calc(100%+6px)] z-[46] w-[220px] overflow-hidden rounded-md border border-line bg-canvas shadow-menu max-[720px]:bottom-[calc(100%+6px)] max-[720px]:left-0 max-[720px]:w-[min(220px,calc(100vw-48px))]" role="menu">
                         <div className="p-1.5">
                           {PERMISSION_MODES.map((mode) => (
                             <button
@@ -842,7 +842,7 @@ export function NewAgent(props: NewAgentProps) {
                       </div>
                     )}
                     {attachPanel === "maxTurns" && (
-                      <div className="absolute bottom-0 left-[calc(100%+6px)] z-[46] w-[220px] overflow-hidden rounded-xl border border-line bg-canvas shadow-menu max-[720px]:bottom-[calc(100%+6px)] max-[720px]:left-0 max-[720px]:w-[min(220px,calc(100vw-48px))]" role="menu">
+                      <div className="absolute bottom-0 left-[calc(100%+6px)] z-[46] w-[220px] overflow-hidden rounded-md border border-line bg-canvas shadow-menu max-[720px]:bottom-[calc(100%+6px)] max-[720px]:left-0 max-[720px]:w-[min(220px,calc(100vw-48px))]" role="menu">
                         <div className="border-b border-line px-3 py-2">
                           <p className="m-0 text-[11px] leading-snug text-muted">
                             Steps per turn before the agent pauses for a follow-up.
@@ -920,7 +920,7 @@ export function NewAgent(props: NewAgentProps) {
                 </button>
                 {openMenu === "model" && modelMenuPos && (
                   <div
-                    className="fixed z-[45] flex w-[min(280px,calc(100vw-48px))] flex-col overflow-hidden rounded-xl border border-line bg-canvas shadow-menu"
+                    className="fixed z-[45] flex w-[min(280px,calc(100vw-48px))] flex-col overflow-hidden rounded-md border border-line bg-canvas shadow-menu"
                     style={{
                       left: modelMenuPos.left,
                       bottom: modelMenuPos.bottom,
@@ -1012,7 +1012,7 @@ export function NewAgent(props: NewAgentProps) {
             </button>
           </div>
         </div>
-        <div className="mt-2.5 min-h-[18px] text-xs text-danger">{error}</div>
+        <div className="mt-2.5 text-xs text-danger">{error}</div>
       </div>
     </div>
   );

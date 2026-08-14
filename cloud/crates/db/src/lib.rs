@@ -20,6 +20,13 @@ use zene_cloud_domain::{
     RunStatus, PermissionMode, MessageRole, User, WorkerCommand, WorkerFence,
 };
 
+/// Worker attempt lease renewed by heartbeat (seconds).
+const WORKER_LEASE_SECS: i64 = 180;
+/// Extended lease while holding for follow-ups (`waiting_for_user`).
+const WORKER_HOLD_LEASE_SECS: i64 = 900;
+/// Only reclaim after lease has been expired for this long (seconds).
+const RECLAIM_GRACE_SECS: i64 = 60;
+
 #[derive(Clone)]
 pub struct Db {
     pool: SqlitePool,
@@ -186,7 +193,6 @@ impl Db {
         let org_id = Uuid::new_v4();
         let now = Utc::now();
         let password_hash = hash_password(&req.password)?;
-        let slug = slugify(&req.display_name);
 
         let mut tx = self.pool.begin().await?;
         sqlx::query(
@@ -202,10 +208,11 @@ impl Db {
         .await
         .context("email may already exist")?;
 
+        let slug = org_id.to_string();
         sqlx::query(
             "INSERT INTO organizations (id, slug, name, created_at) VALUES (?, ?, ?, ?)",
         )
-        .bind(org_id.to_string())
+        .bind(&slug)
         .bind(&slug)
         .bind(format!("{}'s Workspace", req.display_name))
         .bind(now.to_rfc3339())
@@ -669,7 +676,10 @@ impl Db {
     }
 
     pub async fn reclaim_stale_runs_at(&self, now: chrono::DateTime<Utc>) -> Result<u64> {
-        let now = now.to_rfc3339();
+        let now_str = now.to_rfc3339();
+        // Require the lease to have been expired for RECLAIM_GRACE_SECS so a
+        // briefly unreachable API does not steal a run from a live worker.
+        let reclaim_cutoff = (now - Duration::seconds(RECLAIM_GRACE_SECS)).to_rfc3339();
         let mut tx = self.pool.begin().await?;
         // Explicit hold policy: a stale waiting_for_user session can be
         // safely replaced and its unacked inbox commands retried. Approval
@@ -682,7 +692,7 @@ impl Db {
                AND a.lease_expires_at < ?
                AND r.status IN ('provisioning','starting','cloning','running','waiting_for_user')",
         )
-        .bind(&now)
+        .bind(&reclaim_cutoff)
         .fetch_all(&mut *tx)
         .await?;
         if stale.is_empty() {
@@ -695,20 +705,12 @@ impl Db {
                  SET status = 'expired', finished_at = ?, failure_code = 'lease_expired'
                  WHERE run_id = ? AND finished_at IS NULL",
             )
-            .bind(&now)
+            .bind(&now_str)
             .bind(run_id)
             .execute(&mut *tx)
             .await?;
-            // A replacement worker should not wait for the old command lease
-            // after the attempt itself has been declared stale.
-            sqlx::query(
-                "UPDATE run_messages
-                 SET delivery_claimed_at = NULL, delivery_claim_attempt_id = NULL
-                 WHERE run_id = ? AND COALESCE(delivered_to_worker, 0) = 0",
-            )
-            .bind(run_id)
-            .execute(&mut *tx)
-            .await?;
+            self.reset_undelivered_message_claims_tx(&mut tx, run_id)
+                .await?;
             sqlx::query(
                 "UPDATE runs
                  SET status = 'queued', status_version = status_version + 1,
@@ -724,11 +726,27 @@ impl Db {
         Ok(stale.len() as u64)
     }
 
+    async fn reset_undelivered_message_claims_tx(
+        &self,
+        tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+        run_id: &str,
+    ) -> Result<()> {
+        sqlx::query(
+            "UPDATE run_messages
+             SET delivery_claimed_at = NULL, delivery_claim_attempt_id = NULL
+             WHERE run_id = ? AND COALESCE(delivered_to_worker, 0) = 0",
+        )
+        .bind(run_id)
+        .execute(&mut **tx)
+        .await?;
+        Ok(())
+    }
+
     pub async fn claim_next_run(
         &self,
         worker_id: &str,
         workspace_root: &Path,
-    ) -> Result<Option<(Run, Uuid, i64, Option<String>, String)>> {
+    ) -> Result<Option<(Run, Uuid, i64, Option<String>, String, bool)>> {
         // Recover runs left mid-flight when a worker dies (common during long git clones).
         let _ = self.reclaim_stale_runs().await;
 
@@ -744,6 +762,11 @@ impl Db {
         let Some(row) = row else {
             return Ok(None);
         };
+        let run_id = row.id.clone();
+        let last_error: Option<String> = sqlx::query_scalar("SELECT last_error FROM runs WHERE id = ?")
+            .bind(&run_id)
+            .fetch_optional(&mut *tx)
+            .await?;
         let run = row.into_run();
         let attempt_id = Uuid::new_v4();
         let attempt = sqlx::query_scalar::<_, i64>(
@@ -763,7 +786,7 @@ impl Db {
         .flatten();
         let generation = attempt;
         let now = Utc::now();
-        let lease = now + Duration::seconds(60);
+        let lease = now + Duration::seconds(WORKER_LEASE_SECS);
         sqlx::query(
             "UPDATE runs SET status = ?, status_version = status_version + 1, started_at = COALESCE(started_at, ?)
              WHERE id = ? AND status = 'queued'",
@@ -788,6 +811,12 @@ impl Db {
         .bind(now.to_rfc3339())
         .execute(&mut *tx)
         .await?;
+        let resume_without_prompt =
+            last_error.as_deref() == Some("user_retry") && resume_session_id.is_some();
+        sqlx::query("UPDATE runs SET last_error = NULL WHERE id = ?")
+            .bind(run.id.to_string())
+            .execute(&mut *tx)
+            .await?;
         tx.commit().await?;
 
         let workspace_dir = workspace_root
@@ -796,7 +825,85 @@ impl Db {
             .to_string();
         let mut run = self.get_run(run.id).await?.context("run missing after claim")?;
         run.status = RunStatus::Provisioning;
-        Ok(Some((run, attempt_id, generation, resume_session_id, workspace_dir)))
+        Ok(Some((
+            run,
+            attempt_id,
+            generation,
+            resume_session_id,
+            workspace_dir,
+            resume_without_prompt,
+        )))
+    }
+
+    /// Re-queue a terminal run so the user can continue in the same thread.
+    pub async fn user_retry_run(
+        &self,
+        run_id: Uuid,
+        follow_up: Option<&str>,
+    ) -> Result<Run> {
+        let run = self
+            .get_run(run_id)
+            .await?
+            .context("run not found")?;
+        if !matches!(
+            run.status,
+            RunStatus::Failed | RunStatus::TimedOut | RunStatus::Cancelled
+        ) {
+            bail!(
+                "run status {} cannot be retried",
+                run.status.as_str()
+            );
+        }
+        let now = Utc::now().to_rfc3339();
+        let mut tx = self.pool.begin().await?;
+        if let Some(text) = follow_up.map(str::trim).filter(|s| !s.is_empty()) {
+            sqlx::query("UPDATE runs SET prompt = ? WHERE id = ?")
+                .bind(text)
+                .bind(run_id.to_string())
+                .execute(&mut *tx)
+                .await?;
+        }
+        sqlx::query(
+            "UPDATE run_attempts
+             SET status = 'superseded', finished_at = ?, failure_code = 'user_retry'
+             WHERE run_id = ? AND finished_at IS NULL",
+        )
+        .bind(&now)
+        .bind(run_id.to_string())
+        .execute(&mut *tx)
+        .await?;
+        self.reset_undelivered_message_claims_tx(&mut tx, &run_id.to_string())
+            .await?;
+        let retry_marker = if follow_up.map(str::trim).filter(|s| !s.is_empty()).is_some() {
+            "user_retry_follow_up"
+        } else {
+            "user_retry"
+        };
+        sqlx::query(
+            "UPDATE runs
+             SET status = ?, status_version = status_version + 1,
+                 finished_at = NULL, last_error = ?
+             WHERE id = ?",
+        )
+        .bind(RunStatus::Queued.as_str())
+        .bind(retry_marker)
+        .bind(run_id.to_string())
+        .execute(&mut *tx)
+        .await?;
+        self.append_event_tx(
+            &mut tx,
+            run_id,
+            0,
+            Some("platform.status.queued"),
+            None,
+            RunEventKind::Platform,
+            run_status_payload(RunStatus::Queued, None),
+        )
+        .await?;
+        tx.commit().await?;
+        self.get_run(run_id)
+            .await?
+            .context("run missing after retry")
     }
 
     pub async fn set_runtime_session_id_fenced(
@@ -834,34 +941,62 @@ impl Db {
         let mut tx = self.pool.begin().await?;
         self.validate_worker_fence(&mut tx, run_id, fence).await?;
         let now = Utc::now();
-        let finished = if status.is_terminal() || matches!(status, RunStatus::Completed) {
-            Some(now.to_rfc3339())
+        let now_str = now.to_rfc3339();
+        if matches!(status, RunStatus::Queued) {
+            sqlx::query(
+                "UPDATE runs
+                 SET status = ?, status_version = status_version + 1,
+                     finished_at = NULL, last_error = COALESCE(?, last_error)
+                 WHERE id = ?",
+            )
+            .bind(status.as_str())
+            .bind(failure_code.as_deref())
+            .bind(run_id.to_string())
+            .execute(&mut *tx)
+            .await?;
+            sqlx::query(
+                "UPDATE run_attempts
+                 SET status = 'requeued', failure_code = COALESCE(?, failure_code), finished_at = ?
+                 WHERE id = ? AND run_id = ? AND finished_at IS NULL",
+            )
+            .bind(failure_code.as_deref())
+            .bind(&now_str)
+            .bind(fence.attempt_id.to_string())
+            .bind(run_id.to_string())
+            .execute(&mut *tx)
+            .await?;
+            self.reset_undelivered_message_claims_tx(&mut tx, &run_id.to_string())
+                .await?;
         } else {
-            None
-        };
-        sqlx::query(
-            "UPDATE runs
-             SET status = ?, status_version = status_version + 1, head_sha = COALESCE(?, head_sha),
-                 finished_at = COALESCE(?, finished_at)
-             WHERE id = ?",
-        )
-        .bind(status.as_str())
-        .bind(head_sha.clone())
-        .bind(finished.clone())
-        .bind(run_id.to_string())
-        .execute(&mut *tx)
-        .await?;
-        sqlx::query(
-            "UPDATE run_attempts SET status = ?, failure_code = COALESCE(?, failure_code), finished_at = COALESCE(?, finished_at)
-             WHERE id = ? AND run_id = ? AND finished_at IS NULL",
-        )
-        .bind(status.as_str())
-        .bind(failure_code)
-        .bind(finished)
-        .bind(fence.attempt_id.to_string())
-        .bind(run_id.to_string())
-        .execute(&mut *tx)
-        .await?;
+            let finished = if status.is_terminal() || matches!(status, RunStatus::Completed) {
+                Some(now_str.clone())
+            } else {
+                None
+            };
+            sqlx::query(
+                "UPDATE runs
+                 SET status = ?, status_version = status_version + 1, head_sha = COALESCE(?, head_sha),
+                     finished_at = COALESCE(?, finished_at)
+                 WHERE id = ?",
+            )
+            .bind(status.as_str())
+            .bind(head_sha.clone())
+            .bind(finished.clone())
+            .bind(run_id.to_string())
+            .execute(&mut *tx)
+            .await?;
+            sqlx::query(
+                "UPDATE run_attempts SET status = ?, failure_code = COALESCE(?, failure_code), finished_at = COALESCE(?, finished_at)
+                 WHERE id = ? AND run_id = ? AND finished_at IS NULL",
+            )
+            .bind(status.as_str())
+            .bind(failure_code.as_deref())
+            .bind(finished)
+            .bind(fence.attempt_id.to_string())
+            .bind(run_id.to_string())
+            .execute(&mut *tx)
+            .await?;
+        }
         self.append_event_tx(
             &mut tx,
             run_id,
@@ -936,7 +1071,16 @@ impl Db {
     }
 
     pub async fn heartbeat_fenced(&self, run_id: Uuid, fence: &WorkerFence) -> Result<()> {
-        let lease = Utc::now() + Duration::seconds(60);
+        let status: Option<String> = sqlx::query_scalar("SELECT status FROM runs WHERE id = ?")
+            .bind(run_id.to_string())
+            .fetch_optional(&self.pool)
+            .await?;
+        let lease_secs = if status.as_deref() == Some(RunStatus::WaitingForUser.as_str()) {
+            WORKER_HOLD_LEASE_SECS
+        } else {
+            WORKER_LEASE_SECS
+        };
+        let lease = Utc::now() + Duration::seconds(lease_secs);
         let result = sqlx::query(
             "UPDATE run_attempts SET lease_expires_at = ?
              WHERE id = ? AND run_id = ? AND generation = ? AND worker_id = ? AND finished_at IS NULL",
@@ -955,7 +1099,7 @@ impl Db {
     }
 
     pub async fn heartbeat(&self, run_id: Uuid, worker_id: &str) -> Result<()> {
-        let lease = Utc::now() + Duration::seconds(60);
+        let lease = Utc::now() + Duration::seconds(WORKER_LEASE_SECS);
         sqlx::query(
             "UPDATE run_attempts SET lease_expires_at = ?
              WHERE run_id = ? AND worker_id = ? AND finished_at IS NULL",
@@ -1411,6 +1555,66 @@ impl Db {
             head_branch: run.head_branch,
             mock,
         })
+    }
+
+    /// Return cached clone credentials when still fresh (re-claim fast path).
+    pub async fn get_cached_clone_credentials(
+        &self,
+        run_id: Uuid,
+    ) -> Result<Option<CloneAuthResponse>> {
+        let run = match self.get_run(run_id).await? {
+            Some(run) => run,
+            None => return Ok(None),
+        };
+        let repo = self
+            .get_repository(run.repository_id)
+            .await?
+            .context("repository not found")?;
+        let cached: Option<(String, Option<String>, Option<String>, i64, String)> = sqlx::query_as(
+            "SELECT clone_url, token_enc, username, mock, created_at
+             FROM run_clone_credentials WHERE run_id = ?",
+        )
+        .bind(run_id.to_string())
+        .fetch_optional(&self.pool)
+        .await?;
+        let Some((clone_url, token, username, mock, created_at)) = cached else {
+            return Ok(None);
+        };
+        if token.is_none() && mock == 0 {
+            return Ok(None);
+        }
+        let created = parse_time(&created_at);
+        if Utc::now() - created > Duration::minutes(25) {
+            return Ok(None);
+        }
+        Ok(Some(CloneAuthResponse {
+            run_id,
+            repository_id: repo.id,
+            clone_url,
+            username,
+            token,
+            base_ref: run.base_ref,
+            head_branch: run.head_branch,
+            mock: mock != 0,
+        }))
+    }
+
+    pub async fn store_clone_credentials(&self, auth: &CloneAuthResponse) -> Result<()> {
+        let now = Utc::now();
+        sqlx::query(
+            "INSERT OR REPLACE INTO run_clone_credentials
+             (run_id, clone_url, token_enc, username, mock, created_at)
+             VALUES (?, ?, ?, ?, ?, ?)",
+        )
+        .bind(auth.run_id.to_string())
+        .bind(&auth.clone_url)
+        .bind(auth.token.as_deref())
+        .bind(auth.username.as_deref())
+        .bind(if auth.mock { 1 } else { 0 })
+        .bind(now.to_rfc3339())
+        .execute(&self.pool)
+        .await?;
+        Ok(())
     }
 
     pub async fn poll_worker_commands_fenced(

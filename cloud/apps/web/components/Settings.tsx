@@ -19,6 +19,7 @@ import type {
   User,
 } from "@/lib/types";
 import { filterLabelText } from "./Sidebar";
+import { useToast } from "./Toast";
 
 export type SettingsSection = "account" | "models" | "github" | "agents";
 
@@ -92,8 +93,11 @@ function FieldLabel({ children }: { children: React.ReactNode }) {
   );
 }
 
+const INPUT_CLASS =
+  "w-full rounded-sm border border-line-strong bg-canvas px-3 py-2 font-mono text-[13px] text-ink outline-none focus:border-primary";
+
 function SectionCard({ children }: { children: React.ReactNode }) {
-  return <div className="rounded-lg border border-line bg-canvas px-[18px] py-4">{children}</div>;
+  return <div className="rounded-md bg-canvas px-[18px] py-4 shadow-card">{children}</div>;
 }
 
 export function Settings(props: SettingsProps) {
@@ -111,12 +115,10 @@ export function Settings(props: SettingsProps) {
     focusSection,
   } = props;
   const [section, setSection] = useState<SettingsSection>(focusSection || "account");
-  const [ghError, setGhError] = useState("");
+  const toast = useToast();
 
   const [llmLoading, setLlmLoading] = useState(true);
   const [llmSaving, setLlmSaving] = useState(false);
-  const [llmError, setLlmError] = useState("");
-  const [llmOk, setLlmOk] = useState("");
   const [providerId, setProviderId] = useState("deepseek");
   const [baseUrl, setBaseUrl] = useState("");
   const [defaultModel, setDefaultModel] = useState("");
@@ -143,12 +145,11 @@ export function Settings(props: SettingsProps) {
     let cancelled = false;
     (async () => {
       setLlmLoading(true);
-      setLlmError("");
       try {
         const view = await api<LlmSettingsView>("/api/v1/settings/llm");
         if (!cancelled) applyLlmView(view);
       } catch (err) {
-        if (!cancelled) setLlmError(err instanceof Error ? err.message : String(err));
+        if (!cancelled) toast(err instanceof Error ? err.message : String(err), "error");
       } finally {
         if (!cancelled) setLlmLoading(false);
       }
@@ -156,24 +157,18 @@ export function Settings(props: SettingsProps) {
     return () => {
       cancelled = true;
     };
-  }, [applyLlmView]);
+  }, [applyLlmView, toast]);
 
   const selectPreset = (id: string) => {
     const preset = findPreset(id);
     setProviderId(preset.id);
-    if (preset.baseUrl) setBaseUrl(preset.baseUrl);
-    if (!defaultModel && preset.suggestedModels[0]) {
-      setDefaultModel(preset.suggestedModels[0]);
-    }
-    if (!modelsText.trim() && preset.suggestedModels.length) {
-      setModelsText(preset.suggestedModels.join("\n"));
-    }
+    setBaseUrl(preset.baseUrl);
+    setDefaultModel(preset.suggestedModels[0] || "");
+    setModelsText(preset.suggestedModels.join("\n"));
   };
 
   const saveLlm = async () => {
     setLlmSaving(true);
-    setLlmError("");
-    setLlmOk("");
     try {
       const models = modelsText
         .split(/\r?\n/)
@@ -191,9 +186,9 @@ export function Settings(props: SettingsProps) {
         body: JSON.stringify(body),
       });
       applyLlmView(view);
-      setLlmOk("Models settings saved");
+      toast("Models settings saved", "ok");
     } catch (err) {
-      setLlmError(err instanceof Error ? err.message : String(err));
+      toast(err instanceof Error ? err.message : String(err), "error");
     } finally {
       setLlmSaving(false);
     }
@@ -205,9 +200,9 @@ export function Settings(props: SettingsProps) {
   const activeNav = NAV.find((n) => n.id === section) || NAV[0];
 
   return (
-    <div className="flex h-full min-h-0">
+    <div className="flex h-full min-h-0 bg-canvas-bg">
       <nav
-        className="flex w-[200px] shrink-0 flex-col gap-0.5 border-r border-line bg-secondary px-2.5 py-4"
+        className="flex w-[200px] shrink-0 flex-col gap-0.5 bg-nav px-2.5 py-4"
         aria-label="Settings sections"
       >
         {NAV.map((item) => {
@@ -217,10 +212,10 @@ export function Settings(props: SettingsProps) {
             <button
               key={item.id}
               type="button"
-              className={`flex h-8 w-full items-center gap-2 rounded-md px-2.5 text-left text-[13px] transition-colors ${
+              className={`flex h-8 w-full items-center gap-2 rounded-sm px-2.5 text-left text-[13px] transition-colors duration-150 ${
                 active
-                  ? "bg-canvas font-medium text-ink shadow-[0_1px_2px_rgba(0,0,0,.05)]"
-                  : "text-muted hover:bg-canvas/70 hover:text-ink"
+                  ? "bg-active font-medium text-ink"
+                  : "text-muted hover:bg-canvas/60 hover:text-ink"
               }`}
               aria-current={active ? "page" : undefined}
               onClick={() => setSection(item.id)}
@@ -234,7 +229,7 @@ export function Settings(props: SettingsProps) {
 
       <div className="min-w-0 flex-1 overflow-auto">
         <div className="mx-auto max-w-[640px] px-6 pb-10 pt-6">
-          <h2 className="mb-5 text-xl font-bold tracking-[-0.02em]">{activeNav.label}</h2>
+          <h2 className="mb-5 text-[22px] font-semibold tracking-[-0.02em]">{activeNav.label}</h2>
 
           {section === "account" && (
             <div className="flex flex-col gap-4">
@@ -261,28 +256,25 @@ export function Settings(props: SettingsProps) {
                   <p className="m-0 text-xs text-muted">Loading…</p>
                 ) : (
                   <>
-                    <FieldLabel>Provider</FieldLabel>
-                    <div className="mb-3 flex flex-wrap gap-1.5">
-                      {LLM_PRESETS.map((p) => (
-                        <button
-                          key={p.id}
-                          type="button"
-                          className={`h-7 rounded-md px-2.5 text-[12.5px] font-medium transition-colors ${
-                            providerId === p.id
-                              ? "bg-primary text-white"
-                              : "bg-secondary text-muted hover:bg-active hover:text-ink"
-                          }`}
-                          onClick={() => selectPreset(p.id)}
-                        >
-                          {p.label}
-                        </button>
-                      ))}
+                    <div className="mb-3">
+                      <FieldLabel>Provider preset</FieldLabel>
+                      <select
+                        className={`${INPUT_CLASS} cursor-pointer`}
+                        value={providerId}
+                        onChange={(e) => selectPreset(e.target.value)}
+                      >
+                        {LLM_PRESETS.map((p) => (
+                          <option key={p.id} value={p.id}>
+                            {p.label}
+                          </option>
+                        ))}
+                      </select>
                     </div>
 
                     <div className="mb-3">
                       <FieldLabel>API Key</FieldLabel>
                       <input
-                        className="w-full rounded-md border border-line-strong bg-canvas px-3 py-2 font-mono text-[13px] text-ink outline-none focus:border-ink"
+                        className={INPUT_CLASS}
                         type="password"
                         autoComplete="off"
                         placeholder={
@@ -298,7 +290,7 @@ export function Settings(props: SettingsProps) {
                     <div className="mb-3">
                       <FieldLabel>Base URL</FieldLabel>
                       <input
-                        className="w-full rounded-md border border-line-strong bg-canvas px-3 py-2 font-mono text-[13px] text-ink outline-none focus:border-ink"
+                        className={INPUT_CLASS}
                         type="url"
                         autoComplete="off"
                         placeholder={preset.baseUrl || "https://api.example.com/v1"}
@@ -310,7 +302,7 @@ export function Settings(props: SettingsProps) {
                     <div className="mb-3">
                       <FieldLabel>Default model</FieldLabel>
                       <input
-                        className="w-full rounded-md border border-line-strong bg-canvas px-3 py-2 font-mono text-[13px] text-ink outline-none focus:border-ink"
+                        className={INPUT_CLASS}
                         type="text"
                         autoComplete="off"
                         placeholder={preset.suggestedModels[0] || "model-id"}
@@ -322,7 +314,7 @@ export function Settings(props: SettingsProps) {
                     <div className="mb-3">
                       <FieldLabel>Models (one per line)</FieldLabel>
                       <textarea
-                        className="min-h-[96px] w-full resize-y rounded-md border border-line-strong bg-canvas px-3 py-2 font-mono text-[13px] text-ink outline-none focus:border-ink"
+                        className={`${INPUT_CLASS} min-h-[96px] resize-y`}
                         placeholder={
                           preset.suggestedModels.length
                             ? preset.suggestedModels.join("\n")
@@ -348,8 +340,6 @@ export function Settings(props: SettingsProps) {
                         </span>
                       )}
                     </div>
-                    <div className="mt-2.5 min-h-[18px] text-[13px] leading-snug text-danger">{llmError}</div>
-                    <div className="min-h-[18px] text-[13px] leading-snug text-ok">{llmOk}</div>
                   </>
                 )}
               </SectionCard>
@@ -382,9 +372,8 @@ export function Settings(props: SettingsProps) {
                     type="button"
                     className="btn btn-primary btn-sm"
                     onClick={async () => {
-                      setGhError("");
                       const msg = await props.onConnectGithub();
-                      if (msg) setGhError(msg);
+                      if (msg) toast(msg, "error");
                     }}
                   >
                     {githubConnected ? "Manage on GitHub" : "Connect GitHub"}
@@ -394,11 +383,10 @@ export function Settings(props: SettingsProps) {
                       type="button"
                       className="btn btn-sm"
                       onClick={async () => {
-                        setGhError("");
                         try {
                           await props.onSyncRepos();
                         } catch (err) {
-                          setGhError(err instanceof Error ? err.message : String(err));
+                          toast(err instanceof Error ? err.message : String(err), "error");
                         }
                       }}
                     >
@@ -406,7 +394,6 @@ export function Settings(props: SettingsProps) {
                     </button>
                   )}
                 </div>
-                <div className="mt-2.5 min-h-[18px] text-[13px] leading-snug text-danger">{ghError}</div>
               </SectionCard>
             </div>
           )}

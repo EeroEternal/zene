@@ -190,6 +190,18 @@ async fn run_executor(cli: Cli) -> Result<()> {
                 {
                     if err.to_string().contains("stale_attempt") {
                         warn!(error = %err, run_id = %claimed.run.id, "run lost attempt fence; stopping without overwriting replacement");
+                    } else if is_recoverable_worker_error(&err, &claimed) {
+                        warn!(error = %err, run_id = %claimed.run.id, "recoverable worker error; re-queuing run");
+                        let _ = set_status(
+                            &client,
+                            &cli,
+                            claimed.run.id,
+                            &worker_fence(&claimed, &worker_id),
+                            RunStatus::Queued,
+                            None,
+                            Some(err.to_string()),
+                        )
+                        .await;
                     } else {
                         error!(error = %err, run_id = %claimed.run.id, "run failed");
                         let _ = set_status(
@@ -221,7 +233,7 @@ async fn run_executor(cli: Cli) -> Result<()> {
     Ok(())
 }
 
-fn spawn_shutdown_listener(shutdown: Arc<AtomicBool>) {
+pub(crate) fn spawn_shutdown_listener(shutdown: Arc<AtomicBool>) {
     tokio::spawn(async move {
         #[cfg(unix)]
         {
@@ -264,7 +276,7 @@ fn spawn_shutdown_listener(shutdown: Arc<AtomicBool>) {
     });
 }
 
-async fn sleep_interruptible(total: Duration, shutdown: &AtomicBool) {
+pub(crate) async fn sleep_interruptible(total: Duration, shutdown: &AtomicBool) {
     let step = Duration::from_millis(200);
     let mut left = total;
     while left > Duration::ZERO {
@@ -326,14 +338,16 @@ async fn execute_run(
         fence.clone(),
     );
 
-    // a) clone credentials
-    let clone_auth = fetch_clone_auth(client, cli, run_id).await?;
-
-    // b) clone or mock workspace
-    set_status(client, cli, run_id, &fence, RunStatus::Cloning, None, None).await?;
-    prepare_workspace(&cli.workspace_root, &workspace, &clone_auth).await?;
-
-    set_status(client, cli, run_id, &fence, RunStatus::Running, None, None).await?;
+    let workspace_exists = workspace_ready(&workspace).await;
+    if workspace_exists {
+        info!(path = %workspace.display(), "workspace ready; skipping clone-auth");
+        set_status(client, cli, run_id, &fence, RunStatus::Running, None, None).await?;
+    } else {
+        let clone_auth = fetch_clone_auth(client, cli, run_id).await?;
+        set_status(client, cli, run_id, &fence, RunStatus::Cloning, None, None).await?;
+        prepare_workspace(&cli.workspace_root, &workspace, &clone_auth).await?;
+        set_status(client, cli, run_id, &fence, RunStatus::Running, None, None).await?;
+    }
 
     let result = if let Some(bin) = zene_bin {
         info!(run_id = %run_id, agent_mode = "real", "starting agent");
@@ -415,17 +429,51 @@ async fn fetch_clone_auth(
     cli: &Cli,
     run_id: Uuid,
 ) -> Result<CloneAuthResponse> {
-    let response = client
-        .get(format!(
-            "{}/internal/v1/runs/{run_id}/clone-auth",
-            cli.api_url
-        ))
-        .bearer_auth(&cli.worker_token)
-        .send()
-        .await?
-        .error_for_status()
-        .context("clone-auth")?;
-    Ok(response.json().await?)
+    const MAX_ATTEMPTS: u32 = 4;
+    let url = format!("{}/internal/v1/runs/{run_id}/clone-auth", cli.api_url);
+    let mut last_err: Option<anyhow::Error> = None;
+    for attempt in 0..MAX_ATTEMPTS {
+        if attempt > 0 {
+            let backoff = Duration::from_secs(1_u64 << attempt.min(3));
+            tokio::time::sleep(backoff).await;
+        }
+        match client
+            .get(&url)
+            .bearer_auth(&cli.worker_token)
+            .send()
+            .await
+        {
+            Ok(response) if response.status().is_success() => {
+                return Ok(response.json().await.context("decode clone-auth")?);
+            }
+            Ok(response) => {
+                last_err = Some(anyhow::anyhow!(
+                    "clone-auth HTTP {}: {}",
+                    response.status(),
+                    response.text().await.unwrap_or_default()
+                ));
+            }
+            Err(err) => {
+                last_err = Some(err.into());
+            }
+        }
+    }
+    Err(last_err.unwrap_or_else(|| anyhow::anyhow!("clone-auth failed"))).context("clone-auth")
+}
+
+fn is_recoverable_worker_error(err: &anyhow::Error, claimed: &ClaimedRun) -> bool {
+    let msg = err.to_string();
+    let setup_error = msg.contains("clone-auth")
+        || msg.contains("git clone")
+        || msg.contains("git bare clone")
+        || msg.contains("prepare mock git workspace");
+    if !setup_error {
+        return false;
+    }
+    claimed.resume_session_id.is_some()
+        || std::path::Path::new(&claimed.workspace_dir)
+            .join(".git")
+            .exists()
 }
 
 async fn workspace_ready(workspace: &Path) -> bool {
@@ -882,6 +930,7 @@ async fn run_runtime_session<R: RuntimeClient + 'static>(
     idle: Duration,
     llm_env: Option<&HashMap<String, String>>,
     persist_session: bool,
+    resume_without_prompt: bool,
 ) -> Result<RunOutcome> {
     let run_id = claimed.run.id;
     if persist_session {
@@ -919,33 +968,39 @@ async fn run_runtime_session<R: RuntimeClient + 'static>(
             .context("runtime set_mode")?;
     }
 
-    turn_busy.store(true, Ordering::SeqCst);
-    let prompt_result = runtime
-        .send(RuntimeCommand::Prompt {
-            text: claimed.run.prompt.clone(),
-        })
-        .await
-        .context("runtime prompt");
-    turn_busy.store(false, Ordering::SeqCst);
-    prompt_result?;
-    {
-        let mut ts = last_activity.lock().await;
-        *ts = tokio::time::Instant::now();
+    if resume_without_prompt {
+        info!(run_id = %run_id, "resuming session without initial prompt");
+    } else {
+        turn_busy.store(true, Ordering::SeqCst);
+        let prompt_result = runtime
+            .send(RuntimeCommand::Prompt {
+                text: claimed.run.prompt.clone(),
+            })
+            .await
+            .context("runtime prompt");
+        turn_busy.store(false, Ordering::SeqCst);
+        prompt_result?;
+        {
+            let mut ts = last_activity.lock().await;
+            *ts = tokio::time::Instant::now();
+        }
     }
     if !cancelled.load(Ordering::SeqCst) {
         set_status(client, cli, run_id, fence, RunStatus::WaitingForUser, None, None).await?;
-        if let Some(llm_env) = llm_env {
-            if let Err(err) = maybe_refresh_run_title(
-                client,
-                cli,
-                run_id,
-                fence,
-                &claimed.run.prompt,
-                llm_env,
-            )
-            .await
-            {
-                warn!(run_id = %run_id, error = %err, "run title refresh failed");
+        if !resume_without_prompt {
+            if let Some(llm_env) = llm_env {
+                if let Err(err) = maybe_refresh_run_title(
+                    client,
+                    cli,
+                    run_id,
+                    fence,
+                    &claimed.run.prompt,
+                    llm_env,
+                )
+                .await
+                {
+                    warn!(run_id = %run_id, error = %err, "run title refresh failed");
+                }
             }
         }
     }
@@ -1019,6 +1074,7 @@ async fn run_with_mock(
         MOCK_HOLD_IDLE,
         None,
         false,
+        claimed.resume_without_prompt,
     )
     .await
 }
@@ -1172,6 +1228,7 @@ async fn run_with_real_acp(
         Duration::from_secs(cli.acp_idle_secs.max(1)),
         Some(&llm_env),
         true,
+        claimed.resume_without_prompt,
     )
     .await
 }
@@ -1357,13 +1414,23 @@ fn heartbeat_loop(
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         loop {
-            let _ = client
-                .post(format!("{api_url}/internal/v1/runs/{run_id}/heartbeat"))
-                .bearer_auth(&token)
-                .json(&fence)
-                .send()
-                .await;
-            tokio::time::sleep(Duration::from_secs(20)).await;
+            for attempt in 0..3_u32 {
+                let ok = client
+                    .post(format!("{api_url}/internal/v1/runs/{run_id}/heartbeat"))
+                    .bearer_auth(&token)
+                    .json(&fence)
+                    .send()
+                    .await
+                    .map(|response| response.status().is_success())
+                    .unwrap_or(false);
+                if ok {
+                    break;
+                }
+                if attempt < 2 {
+                    tokio::time::sleep(Duration::from_secs(2)).await;
+                }
+            }
+            tokio::time::sleep(Duration::from_secs(15)).await;
         }
     })
 }

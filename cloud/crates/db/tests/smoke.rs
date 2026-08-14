@@ -3,8 +3,9 @@ use uuid::Uuid;
 use zene_cloud_db::Db;
 use zene_cloud_domain::{
     ApprovalDecision, ApprovalEventPayload, ApprovalKind, ApprovalRisk, ApprovalStatus,
-    CreateApprovalRequest, CreateRepositoryRequest, CreateRunRequest, MessageRole, PermissionMode,
-    RegisterRequest, RunEventKind, RunStatus, WorkerCommandKind, WorkerFence,
+    CloneAuthResponse, CreateApprovalRequest, CreateRepositoryRequest, CreateRunRequest,
+    MessageRole, PermissionMode, RegisterRequest, RunEventKind, RunStatus, WorkerCommandKind,
+    WorkerFence,
 };
 
 #[tokio::test]
@@ -497,10 +498,11 @@ async fn stale_waiting_for_user_attempt_is_requeued_but_approval_holds_are_not()
     let (approval_run, approval_fence) = make_run(&db, "approval-hold").await;
     db.update_run_status_fenced(approval_run.id, &approval_fence, RunStatus::WaitingForApproval, None, None).await.unwrap();
 
-    // Both attempts use the normal 60-second claim lease. Reclamation is
-    // evaluated in the future to make expiry deterministic without sleeping.
+    // Lease is WORKER_LEASE_SECS with RECLAIM_GRACE_SECS grace before reclaim.
     assert_eq!(
-        db.reclaim_stale_runs_at(chrono::Utc::now() + chrono::Duration::seconds(61))
+        db.reclaim_stale_runs_at(
+            chrono::Utc::now() + chrono::Duration::seconds(180 + 60 + 1)
+        )
             .await
             .unwrap(),
         1
@@ -641,6 +643,31 @@ async fn event_cursor_migration_retries_after_partial_ddl() {
 
 
 #[tokio::test]
+async fn register_same_display_name_gets_unique_org_slug() {
+    let db = Db::connect("sqlite::memory:").await.unwrap();
+    db.migrate().await.unwrap();
+    let first = db
+        .register(RegisterRequest {
+            email: "a@example.com".into(),
+            password: "password123".into(),
+            display_name: "lipi".into(),
+        })
+        .await
+        .unwrap();
+    let second = db
+        .register(RegisterRequest {
+            email: "b@example.com".into(),
+            password: "password123".into(),
+            display_name: "lipi".into(),
+        })
+        .await
+        .unwrap();
+    assert_eq!(first.organization.slug, first.organization.id.to_string());
+    assert_eq!(second.organization.slug, second.organization.id.to_string());
+    assert_ne!(first.organization.slug, second.organization.slug);
+}
+
+#[tokio::test]
 async fn pending_mode_is_queued_and_taken_once() {
     let db = Db::connect("sqlite::memory:").await.unwrap();
     db.migrate().await.unwrap();
@@ -685,4 +712,203 @@ async fn pending_mode_is_queued_and_taken_once() {
     assert_eq!(db.take_pending_mode(run.id).await.unwrap(), None);
     db.set_pending_mode(run.id, "default").await.unwrap();
     assert_eq!(db.take_pending_mode(run.id).await.unwrap().as_deref(), Some("default"));
+}
+
+#[tokio::test]
+async fn worker_requeue_clears_terminal_state_and_preserves_history() {
+    let db = Db::connect("sqlite::memory:").await.unwrap();
+    db.migrate().await.unwrap();
+    let auth = db
+        .register(RegisterRequest {
+            email: format!("requeue-{}@example.com", Uuid::new_v4()),
+            password: "password123".into(),
+            display_name: "Requeue".into(),
+        })
+        .await
+        .unwrap();
+    let repo = db
+        .create_repository(
+            auth.organization.id,
+            CreateRepositoryRequest {
+                owner: "requeue".into(),
+                name: "test".into(),
+                default_branch: "main".into(),
+                clone_url: None,
+            },
+        )
+        .await
+        .unwrap();
+    let run = db
+        .create_run(
+            auth.organization.id,
+            auth.user.id,
+            CreateRunRequest {
+                repository_id: repo.id,
+                prompt: "hello".into(),
+                base_ref: None,
+                model: "default".into(),
+                permission_mode: PermissionMode::Default,
+                max_turns: 10,
+                mode_id: None,
+            },
+        )
+        .await
+        .unwrap();
+    let claimed = db
+        .claim_next_run("requeue-worker", std::path::Path::new("/tmp/zc-workspaces"))
+        .await
+        .unwrap()
+        .unwrap();
+    let fence = WorkerFence {
+        attempt_id: claimed.1,
+        generation: claimed.2,
+        worker_id: "requeue-worker".into(),
+    };
+    db.add_message(run.id, Some(auth.user.id), MessageRole::User, "follow-up", None)
+        .await
+        .unwrap();
+    db.append_event(
+        run.id,
+        fence.generation,
+        Some("evt-1"),
+        RunEventKind::Platform,
+        serde_json::json!({"event": "message.created", "role": "assistant", "text": "prior answer"}),
+    )
+    .await
+    .unwrap();
+    db.update_run_status_fenced(
+        run.id,
+        &fence,
+        RunStatus::Queued,
+        None,
+        Some("clone-auth failed".into()),
+    )
+    .await
+    .unwrap();
+    let updated = db.get_run(run.id).await.unwrap().unwrap();
+    assert_eq!(updated.status, RunStatus::Queued);
+    assert!(db.list_messages(run.id).await.unwrap().len() >= 2);
+    assert!(db.events_after(run.id, 0).await.unwrap().len() >= 2);
+}
+
+#[tokio::test]
+async fn clone_credentials_are_cached_for_reclaim() {
+    let db = Db::connect("sqlite::memory:").await.unwrap();
+    db.migrate().await.unwrap();
+    let auth = db
+        .register(RegisterRequest {
+            email: format!("clone-cache-{}@example.com", Uuid::new_v4()),
+            password: "password123".into(),
+            display_name: "Clone cache".into(),
+        })
+        .await
+        .unwrap();
+    let repo = db
+        .create_repository(
+            auth.organization.id,
+            CreateRepositoryRequest {
+                owner: "cache".into(),
+                name: "repo".into(),
+                default_branch: "main".into(),
+                clone_url: Some("https://github.com/example/repo.git".into()),
+            },
+        )
+        .await
+        .unwrap();
+    let run = db
+        .create_run(
+            auth.organization.id,
+            auth.user.id,
+            CreateRunRequest {
+                repository_id: repo.id,
+                prompt: "hello".into(),
+                base_ref: None,
+                model: "default".into(),
+                permission_mode: PermissionMode::Default,
+                max_turns: 10,
+                mode_id: None,
+            },
+        )
+        .await
+        .unwrap();
+    let auth_response = CloneAuthResponse {
+        run_id: run.id,
+        repository_id: repo.id,
+        clone_url: repo.clone_url.clone(),
+        username: Some("x-access-token".into()),
+        token: Some("ghs_cached".into()),
+        base_ref: run.base_ref.clone(),
+        head_branch: run.head_branch.clone(),
+        mock: false,
+    };
+    db.store_clone_credentials(&auth_response).await.unwrap();
+    let cached = db.get_cached_clone_credentials(run.id).await.unwrap().unwrap();
+    assert_eq!(cached.token.as_deref(), Some("ghs_cached"));
+}
+
+#[tokio::test]
+async fn user_retry_requeues_failed_run_and_resumes_without_prompt() {
+    let db = Db::connect("sqlite::memory:").await.unwrap();
+    db.migrate().await.unwrap();
+    let auth = db
+        .register(RegisterRequest {
+            email: format!("user-retry-{}@example.com", Uuid::new_v4()),
+            password: "password123".into(),
+            display_name: "User retry".into(),
+        })
+        .await
+        .unwrap();
+    let repo = db
+        .create_repository(
+            auth.organization.id,
+            CreateRepositoryRequest {
+                owner: "retry".into(),
+                name: "repo".into(),
+                default_branch: "main".into(),
+                clone_url: None,
+            },
+        )
+        .await
+        .unwrap();
+    let run = db
+        .create_run(
+            auth.organization.id,
+            auth.user.id,
+            CreateRunRequest {
+                repository_id: repo.id,
+                prompt: "hello".into(),
+                base_ref: None,
+                model: "default".into(),
+                permission_mode: PermissionMode::Default,
+                max_turns: 10,
+                mode_id: None,
+            },
+        )
+        .await
+        .unwrap();
+    let claimed = db
+        .claim_next_run("retry-worker", std::path::Path::new("/tmp/zc-workspaces"))
+        .await
+        .unwrap()
+        .unwrap();
+    let fence = WorkerFence {
+        attempt_id: claimed.1,
+        generation: claimed.2,
+        worker_id: "retry-worker".into(),
+    };
+    db.set_runtime_session_id_fenced(run.id, &fence, "runtime-session-retry")
+        .await
+        .unwrap();
+    db.update_run_status(run.id, RunStatus::Failed, None, Some("clone-auth".into()))
+        .await
+        .unwrap();
+    db.user_retry_run(run.id, None).await.unwrap();
+    let replacement = db
+        .claim_next_run("retry-worker-2", std::path::Path::new("/tmp/zc-workspaces"))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(replacement.0.status, RunStatus::Provisioning);
+    assert_eq!(replacement.3.as_deref(), Some("runtime-session-retry"));
+    assert!(replacement.5);
 }

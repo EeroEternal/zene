@@ -2,6 +2,7 @@ import {
   Archive,
   ArrowUp,
   Check,
+  Copy,
   ChevronDown,
   ChevronRight,
   ChevronUp,
@@ -13,16 +14,21 @@ import {
   ExternalLink,
   Eye,
   File,
+  FileDiff,
   Folder,
   FolderGit2,
   FolderOpen,
   GitBranch,
   HelpCircle,
+  History,
+  Home,
+  LayoutDashboard,
   LayoutList,
   ListFilter,
   Loader2,
   LogOut,
   Maximize2,
+  MessageSquare,
   Minimize2,
   PanelLeft,
   PanelLeftClose,
@@ -35,8 +41,12 @@ import {
   RefreshCw,
   Search,
   Settings,
+  Shield,
   Sparkles,
   Square,
+  SquarePen,
+  ThumbsDown,
+  ThumbsUp,
   Trash2,
   User,
   type LucideIcon,
@@ -88,6 +98,7 @@ export const IconArchive = lucideIcon(Archive);
 export const IconArrowUp = lucideIcon(ArrowUp);
 export const IconBranch = lucideIcon(GitBranch);
 export const IconCheck = lucideIcon(Check);
+export const IconCopy = lucideIcon(Copy);
 export const IconCode = lucideIcon(Code2);
 export const IconChevronDown = lucideIcon(ChevronDown);
 export const IconChevronRight = lucideIcon(ChevronRight);
@@ -99,14 +110,19 @@ export const IconDots = lucideIcon(Ellipsis);
 export const IconExternal = lucideIcon(ExternalLink);
 export const IconEye = lucideIcon(Eye);
 export const IconFile = lucideIcon(File);
+export const IconFileDiff = lucideIcon(FileDiff);
 export const IconFilter = lucideIcon(ListFilter);
 export const IconFolder = lucideIcon(Folder);
 export const IconFolderOpen = lucideIcon(FolderOpen);
 export const IconHelp = lucideIcon(HelpCircle);
+export const IconHistory = lucideIcon(History);
+export const IconHome = lucideIcon(Home);
+export const IconLayoutDashboard = lucideIcon(LayoutDashboard);
 export const IconLayoutList = lucideIcon(LayoutList);
 export const IconLoader = lucideIcon(Loader2);
 export const IconLogout = lucideIcon(LogOut);
 export const IconMaximize = lucideIcon(Maximize2);
+export const IconMessage = lucideIcon(MessageSquare);
 export const IconMinimize = lucideIcon(Minimize2);
 export const IconPanelLeft = lucideIcon(PanelLeft);
 export const IconPanelLeftClose = lucideIcon(PanelLeftClose);
@@ -120,7 +136,11 @@ export const IconRefresh = lucideIcon(RefreshCw);
 export const IconRepo = lucideIcon(FolderGit2);
 export const IconSearch = lucideIcon(Search);
 export const IconSettings = lucideIcon(Settings);
+export const IconShield = lucideIcon(Shield);
 export const IconSkills = lucideIcon(Sparkles);
 export const IconStop = lucideIcon(Square);
+export const IconSquarePen = lucideIcon(SquarePen);
+export const IconThumbsDown = lucideIcon(ThumbsDown);
+export const IconThumbsUp = lucideIcon(ThumbsUp);
 export const IconTrash = lucideIcon(Trash2);
 export const IconUser = lucideIcon(User);

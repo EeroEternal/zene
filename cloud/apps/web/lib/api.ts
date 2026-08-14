@@ -46,21 +46,22 @@ export function statusClass(status?: RunStatus | string): string {
     .replace(/\s+/g, "_");
 }
 
-const OK_STATUSES = [
+const RUN_STATUSES = [
   "running",
   "starting",
   "cloning",
   "provisioning",
   "queued",
-  "completed",
 ] as const satisfies readonly RunStatus[];
+const OK_STATUSES = ["completed"] as const satisfies readonly RunStatus[];
 const DANGER_STATUSES = ["failed", "timed_out", "cancelled"] as const satisfies readonly RunStatus[];
 const WARN_STATUSES = ["waiting_for_approval"] as const satisfies readonly RunStatus[];
 /** `ready` is the display alias for `waiting_for_user`, not a stored RunStatus. */
-const IDLE_STATUSES = ["waiting_for_user", "ready"] as const;
+const IDLE_STATUSES = ["waiting_for_user", "ready", "created", "stopping"] as const;
 
-export function statusTone(status?: RunStatus | string): "ok" | "warn" | "danger" | "idle" {
+export function statusTone(status?: RunStatus | string): "ok" | "warn" | "danger" | "idle" | "run" {
   const s = statusClass(status);
+  if ((RUN_STATUSES as readonly string[]).includes(s)) return "run";
   if ((OK_STATUSES as readonly string[]).includes(s)) return "ok";
   if ((DANGER_STATUSES as readonly string[]).includes(s)) return "danger";
   if ((WARN_STATUSES as readonly string[]).includes(s)) return "warn";
@@ -68,11 +69,12 @@ export function statusTone(status?: RunStatus | string): "ok" | "warn" | "danger
   return "idle";
 }
 
-/** Human-readable run status for pills / lists. */
+/** Human-readable run status for pills / lists. Always pair with color. */
 export function statusLabel(status?: RunStatus | string): string {
   const s = statusClass(status);
-  if (s === "waiting_for_user") return "ready";
-  if (s === "waiting_for_approval") return "waiting";
-  if (s === "timed_out") return "timed out";
-  return s.replace(/_/g, " ") || "idle";
+  if (s === "waiting_for_user") return "Waiting for user";
+  if (s === "waiting_for_approval") return "Waiting for approval";
+  if (s === "timed_out") return "Timed out";
+  if (!s) return "Idle";
+  return s.replace(/_/g, " ").replace(/^\w/, (c) => c.toUpperCase());
 }
