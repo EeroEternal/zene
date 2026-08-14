@@ -27,3 +27,4 @@ zene-session = { workspace = true }
 zene-llm = { workspace = true }
 zene-mcp = { workspace = true }
 zene-runtime = { workspace = true }
+zene-turn = { workspace = true }

@@ -61,10 +61,8 @@ pub use zene_permission::{
     PolicyDecision, PromptChoice, RuleAction, SharedApprovalBroker, SharedToolPermission,
     TerminalApprovalBroker, ToolPermission,
 };
-pub use zene_turn::{
-    aborted_error, begin_turn, end_turn, max_turns_notice, steer_requires_active_turn,
-    EventSequence, RuntimeEvent, RuntimeEventHandler, RuntimeEventKind, SessionId, SteerBuffer,
-    StepId, ToolCallId, TurnId, TurnState,
+use zene_turn::{
+    RuntimeEventHandler, SessionId, SteerBuffer, StepId, TurnId, TurnState,
 };
 pub use zene_workspace::{build_system_prompt, FsWorkspaceProvider, WorkspaceProvider};
 
