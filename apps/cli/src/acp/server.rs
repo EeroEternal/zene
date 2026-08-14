@@ -11,9 +11,9 @@ use zene_agent_runtime::{ApprovalDecision, RuntimeHandle};
 use zene_config::ZeneConfig;
 use zene_core::{
     Agent, ApprovalRequest, AskUserOption, PermissionGate, PermissionMode, PromptChoice,
-    RuntimeEvent, RuntimeEventKind,
 };
 use zene_runtime::{RuntimeControl, RuntimeRecoveryInfo};
+use zene_turn::{RuntimeEvent, RuntimeEventKind};
 use zene_sandbox::LocalSandbox;
 use zene_session::{list_sessions_for_workdir, SessionRecord};
 

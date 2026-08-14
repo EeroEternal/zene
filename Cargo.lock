@@ -4100,6 +4100,7 @@ dependencies = [
  "zene-runtime",
  "zene-sandbox",
  "zene-session",
+ "zene-turn",
 ]
 
 [[package]]
