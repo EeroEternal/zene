@@ -14,6 +14,8 @@ cd cloud && ./scripts/dev.sh
 
 See [`cloud/README.md`](cloud/README.md) for env vars and demo path. Production: [https://zene.run](https://zene.run) — deploy notes in [`cloud/deploy/README.md`](cloud/deploy/README.md).
 
+Control-plane / event productization line is closed; wrap-up and optional next goals: [`docs/agent-runtime-next-goals.md`](docs/agent-runtime-next-goals.md).
+
 ## Install `zene` (ACP binary)
 
 Needed for Cloud workers / editors. From the repo:
