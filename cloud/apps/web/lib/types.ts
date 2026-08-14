@@ -161,6 +161,20 @@ export interface ToolResultPayload {
 export interface SessionStartedPayload {
   sessionId?: string;
   resumed?: boolean;
+  currentModeId?: string;
+  availableModes?: unknown;
+  /** Inspect-only; never used to auto-resume or replay pending tools. */
+  recovery?: SessionRecoveryPayload;
+}
+
+export interface SessionRecoveryPayload {
+  disposition?: string;
+  hasIncompleteExecution?: boolean;
+  activeTurnCount?: number;
+  activeToolCount?: number;
+  safeResumeAllowed?: boolean;
+  automaticResume?: boolean;
+  reason?: string;
 }
 
 export interface InitializedPayload {

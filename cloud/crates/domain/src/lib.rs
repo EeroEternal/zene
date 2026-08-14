@@ -440,6 +440,34 @@ pub struct SessionStartedPayload {
     pub session_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub resumed: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub current_mode_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub available_modes: Option<serde_json::Value>,
+    /// Inspect-only recovery snapshot from ACP `_meta.recovery`.
+    /// Never used to auto-resume or auto-replay pending tools.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recovery: Option<SessionRecoveryPayload>,
+}
+
+/// Product recovery fields lifted from ACP session new/load/resume `_meta`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionRecoveryPayload {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub disposition: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub has_incomplete_execution: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub active_turn_count: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub active_tool_count: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub safe_resume_allowed: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub automatic_resume: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
 }
 
 /// Product payload for ACP `initialize` results.

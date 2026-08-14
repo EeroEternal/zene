@@ -2,9 +2,9 @@
 
 > 状态：持续演进。Wave 0–12 把控制面/数据面的 **接口边界** 建起来了；Wave 13 起让默认执行路径真正走这些边界。
 >
-> **进度快照：2026-08-13，基线 `15a41a4`（PR #108 已合并）。**
+> **进度快照：2026-08-13，基线 `e7ea2fb`（PR #109 已合并）。**
 > 本文同时记录目标架构、已实现能力和剩余工作。
-> Wave 16 的 Steer/SetMode 已对齐；**Wave 14 已完成**；Agent-specific actor 已迁至 `zene-agent-runtime`（协议仍在 `zene-runtime`；Cloud 不依赖二者）；Turn 与 ContextModel 共用中性 `ModelRequest`。Cloud/本地共享 `RuntimeCommand` 变体已评估为字段对齐；`GetMode` / `ResumeSafeTurn` 仍仅本地。ACP `initialize` / unsupported / turn/step/error 已产品化；未知 `session/update` 存 residual 产品字段。
+> Wave 16 的 Steer/SetMode 已对齐；**Wave 14 已完成**；Agent-specific actor 已迁至 `zene-agent-runtime`（协议仍在 `zene-runtime`；Cloud 不依赖二者）；Turn 与 ContextModel 共用中性 `ModelRequest`。Cloud/本地共享 `RuntimeCommand` 变体已评估为字段对齐；`GetMode` / `ResumeSafeTurn` 仍仅本地。ACP `initialize` / unsupported / turn/step/error 已产品化；`session_started` 携带 modes + recovery（inspect-only）；未知 `session/update` 存 residual 产品字段。
 >
 > 本文基于当前 zene runtime 实现，描述如何将 `Agent`、`Turn`、`Step`、`Session`、Cloud `Run` 和 ACP transport 拉开，并给出渐进式迁移方案。
 >
@@ -1234,11 +1234,11 @@ Wave 16  统一 transport command/event  ← 已完成（含 Steer/SetMode）
 
 | 选择 | Wave | 理由 |
 | --- | --- | --- |
-| 当前最大杠杆 | GetMode / reply-shaped Cloud 控制（需协议） | turn/step/error 已产品化；事件信封仍分本地/Cloud 两套 |
+| 当前最大杠杆 | GetMode / reply-shaped Cloud 控制（需协议） | session_started 已带 modes/recovery；事件信封仍分本地/Cloud 两套 |
 | 结构清理 | （已完成）core protocol re-export 收缩 | protocol 由 `zene-runtime` / `zene-agent-runtime` 拥有 |
 | 可选后续 | Agent holdings 继续退回 wiring | Wave 14 step 算法已抽出；剩余 composition-root 持有 |
 
-推荐组合：**turn/step/error Cloud 事件已落地**。控制/事件产品化主线基本收口；下一步等有明确协议再做 GetMode，或做低杠杆结构清理；不要碎片化。
+推荐组合：**控制/事件产品化主线已收口**（含 session_started modes/recovery）。下一步等有明确协议再做 GetMode；低杠杆结构清理可择机做；不要碎片化。
 
 **不要一上来做** actor 全量重写、完整 Event Sourcing、或再抽一层没有调用方的 crate。
 
@@ -1540,3 +1540,10 @@ Wave 16  统一 transport command/event  ← 已完成（含 Steer/SetMode）
 - Cloud 分类为对应产品 kind + payload（`turnId` / `step` / `steps` / `message`）。
 - Console 仅扩展 kind 类型镜像；不进时间线，不改 chrome。
 - 不做 GetMode。不迁移历史假 `[error]` text_delta 行。不自动 replay pending tools。
+
+### 2026-08-13 — Enrich Cloud session_started with modes/recovery
+
+- ACP bridge 透传 `session/new` / `session/resume` 完整 result（不再只伪造 `sessionId`）。
+- `SessionStartedPayload` 增加 `currentModeId` / `availableModes` / `recovery`（inspect-only；不触发 auto-resume / pending-tool replay）。
+- Console 仅扩展类型镜像；不改 chrome。
+- 不做 GetMode。不自动 replay pending tools。

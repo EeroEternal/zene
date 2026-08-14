@@ -244,33 +244,32 @@ impl AcpBridge {
         .await
     }
 
-    pub async fn session_new(&self, cwd: &Path) -> Result<String> {
-        let session = self
-            .request(
-                "session/new",
-                json!({
-                    "cwd": cwd.display().to_string(),
-                    "mcpServers": []
-                }),
-            )
-            .await?;
-        session
-            .get("sessionId")
-            .and_then(|v| v.as_str())
-            .map(|s| s.to_string())
-            .context("sessionId missing")
+    pub async fn session_new(&self, cwd: &Path) -> Result<Value> {
+        self.request(
+            "session/new",
+            json!({
+                "cwd": cwd.display().to_string(),
+                "mcpServers": []
+            }),
+        )
+        .await
     }
 
     pub async fn initialize_and_new_session(&self, cwd: &Path) -> Result<(String, Vec<AcpEvent>)> {
         let mut events = self.initialize_events().await?;
-        let session_id = self.session_new(cwd).await?;
+        let result = self.session_new(cwd).await?;
+        let session_id = result
+            .get("sessionId")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string())
+            .context("sessionId missing")?;
         events.push(AcpEvent {
             source_event_id: format!("session-new-{session_id}"),
             cursor: None,
             event_type: "acp".into(),
             payload: json!({
                 "method": "session/new",
-                "result": { "sessionId": session_id }
+                "result": result
             }),
         });
         Ok((session_id, events))
@@ -282,22 +281,19 @@ impl AcpBridge {
         session_id: &str,
     ) -> Result<(String, Vec<AcpEvent>)> {
         let mut events = self.initialize_events().await?;
-        self.request(
-            "session/resume",
-            json!({
-                "sessionId": session_id,
-                "cwd": cwd.display().to_string(),
-            }),
-        )
-        .await?;
+        let params = json!({
+            "sessionId": session_id,
+            "cwd": cwd.display().to_string(),
+        });
+        let result = self.request("session/resume", params.clone()).await?;
         events.push(AcpEvent {
             source_event_id: format!("session-resume-{session_id}"),
             cursor: None,
             event_type: "acp".into(),
             payload: json!({
                 "method": "session/resume",
-                "params": { "sessionId": session_id, "cwd": cwd.display().to_string() },
-                "result": { "sessionId": session_id }
+                "params": params,
+                "result": result
             }),
         });
         Ok((session_id.to_string(), events))

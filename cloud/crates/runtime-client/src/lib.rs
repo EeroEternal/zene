@@ -15,9 +15,9 @@ use zene_cloud_acp_bridge::{
 pub use zene_cloud_domain::{
     AcpResidualPayload, ApprovalDecision, ApprovalEventPayload, ApprovalKind,
     AvailableCommandsPayload, CloudEventKind, ErrorPayload, InitializedPayload, PlanPayload,
-    ProjectionPayload, SessionStartedPayload, StateChangedPayload, StepStartedPayload,
-    TextEventPayload, ToolCallPayload, ToolResultPayload, TurnEndedPayload, TurnStartedPayload,
-    UnsupportedRequestPayload, UsagePayload,
+    ProjectionPayload, SessionRecoveryPayload, SessionStartedPayload, StateChangedPayload,
+    StepStartedPayload, TextEventPayload, ToolCallPayload, ToolResultPayload, TurnEndedPayload,
+    TurnStartedPayload, UnsupportedRequestPayload, UsagePayload,
 };
 
 /// ACP `optionId` mapping stays inside this adapter.
@@ -337,21 +337,59 @@ fn approval_product(raw: &Value) -> RuntimePayload {
 }
 
 fn session_started_product(raw: &Value) -> RuntimePayload {
-    let session_id = raw
-        .pointer("/result/sessionId")
+    let result = raw.get("result").unwrap_or(&Value::Null);
+    let session_id = result
+        .get("sessionId")
         .or_else(|| raw.pointer("/params/sessionId"))
         .and_then(Value::as_str)
         .map(str::to_string);
     let resumed = (raw.get("method").and_then(Value::as_str) == Some("session/resume"))
         .then_some(true);
+    let modes = result.get("modes");
+    let recovery = result
+        .pointer("/_meta/recovery")
+        .and_then(session_recovery_payload);
     let payload = SessionStartedPayload {
         session_id,
         resumed,
+        current_mode_id: modes
+            .and_then(|value| value.get("currentModeId"))
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        available_modes: modes
+            .and_then(|value| value.get("availableModes"))
+            .cloned(),
+        recovery,
     };
-    if payload.session_id.is_none() && payload.resumed.is_none() {
+    if payload.session_id.is_none()
+        && payload.resumed.is_none()
+        && payload.current_mode_id.is_none()
+        && payload.available_modes.is_none()
+        && payload.recovery.is_none()
+    {
         return RuntimePayload::Json(raw.clone());
     }
     RuntimePayload::SessionStarted(payload)
+}
+
+fn session_recovery_payload(raw: &Value) -> Option<SessionRecoveryPayload> {
+    let payload = SessionRecoveryPayload {
+        disposition: raw
+            .get("disposition")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        has_incomplete_execution: raw.get("hasIncompleteExecution").and_then(Value::as_bool),
+        active_turn_count: raw.get("activeTurnCount").and_then(Value::as_u64),
+        active_tool_count: raw.get("activeToolCount").and_then(Value::as_u64),
+        safe_resume_allowed: raw.get("safeResumeAllowed").and_then(Value::as_bool),
+        automatic_resume: raw.get("automaticResume").and_then(Value::as_bool),
+        reason: raw.get("reason").and_then(Value::as_str).map(str::to_string),
+    };
+    if payload == SessionRecoveryPayload::default() {
+        None
+    } else {
+        Some(payload)
+    }
 }
 
 fn initialized_product(raw: &Value) -> RuntimePayload {
@@ -758,6 +796,7 @@ impl MockRuntimeClient {
                 payload: RuntimePayload::SessionStarted(SessionStartedPayload {
                     session_id: Some(session_id.clone()),
                     resumed: None,
+                    ..Default::default()
                 }),
             },
         });
@@ -1324,6 +1363,60 @@ mod tests {
     }
 
     #[test]
+    fn session_started_lifts_modes_and_recovery_meta() {
+        let event = runtime_notification(AcpEvent {
+            source_event_id: "session-new-2".into(),
+            cursor: None,
+            event_type: "acp".into(),
+            payload: serde_json::json!({
+                "method": "session/new",
+                "result": {
+                    "sessionId": "session-2",
+                    "modes": {
+                        "currentModeId": "default",
+                        "availableModes": [
+                            { "id": "default", "name": "Default" },
+                            { "id": "plan", "name": "Plan" }
+                        ]
+                    },
+                    "_meta": {
+                        "recovery": {
+                            "disposition": "clean",
+                            "hasIncompleteExecution": false,
+                            "activeTurnCount": 0,
+                            "activeToolCount": 0,
+                            "safeResumeAllowed": false,
+                            "automaticResume": false,
+                            "reason": "no incomplete execution"
+                        }
+                    }
+                }
+            }),
+        });
+        assert_eq!(event.event_type.as_event_type(), "session_started");
+        assert_eq!(
+            event.payload,
+            serde_json::json!({
+                "sessionId": "session-2",
+                "currentModeId": "default",
+                "availableModes": [
+                    { "id": "default", "name": "Default" },
+                    { "id": "plan", "name": "Plan" }
+                ],
+                "recovery": {
+                    "disposition": "clean",
+                    "hasIncompleteExecution": false,
+                    "activeTurnCount": 0,
+                    "activeToolCount": 0,
+                    "safeResumeAllowed": false,
+                    "automaticResume": false,
+                    "reason": "no incomplete execution"
+                }
+            })
+        );
+    }
+
+    #[test]
     fn session_resume_marks_resumed() {
         let event = runtime_notification(AcpEvent {
             source_event_id: "session-resume-1".into(),
@@ -1332,13 +1425,41 @@ mod tests {
             payload: serde_json::json!({
                 "method": "session/resume",
                 "params": { "sessionId": "session-1", "cwd": "/tmp" },
-                "result": { "sessionId": "session-1" }
+                "result": {
+                    "sessionId": "session-1",
+                    "modes": { "currentModeId": "plan", "availableModes": [] },
+                    "_meta": {
+                        "recovery": {
+                            "disposition": "inspect",
+                            "hasIncompleteExecution": true,
+                            "activeTurnCount": 1,
+                            "activeToolCount": 1,
+                            "safeResumeAllowed": false,
+                            "automaticResume": false,
+                            "reason": "pending tool requires inspection"
+                        }
+                    }
+                }
             }),
         });
         assert_eq!(event.event_type.as_event_type(), "session_started");
         assert_eq!(
             event.payload,
-            serde_json::json!({ "sessionId": "session-1", "resumed": true })
+            serde_json::json!({
+                "sessionId": "session-1",
+                "resumed": true,
+                "currentModeId": "plan",
+                "availableModes": [],
+                "recovery": {
+                    "disposition": "inspect",
+                    "hasIncompleteExecution": true,
+                    "activeTurnCount": 1,
+                    "activeToolCount": 1,
+                    "safeResumeAllowed": false,
+                    "automaticResume": false,
+                    "reason": "pending tool requires inspection"
+                }
+            })
         );
     }
 
