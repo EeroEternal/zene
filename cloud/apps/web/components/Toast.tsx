@@ -48,7 +48,7 @@ export function ToastProvider({ children }: { children: React.ReactNode }) {
             key={t.id}
             role="status"
             className={[
-              "fixed left-1/2 top-4 z-50 max-w-[min(360px,calc(100vw-40px))] -translate-x-1/2 rounded-lg border px-3.5 py-2.5 text-[13px] shadow-card transition-all duration-200",
+              "fixed left-1/2 top-4 z-50 max-w-[min(360px,calc(100vw-40px))] -translate-x-1/2 rounded-md border px-3.5 py-2.5 text-[13px] shadow-card transition-all duration-150",
               t.kind === "error"
                 ? "border-danger-line bg-danger-soft text-danger"
                 : t.kind === "ok"

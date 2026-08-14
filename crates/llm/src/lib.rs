@@ -11,9 +11,10 @@ mod usage;
 
 pub use client::{provider_from_config, selected_provider_kind, ChatClient};
 pub use context::{
-    ContextDelivery, ContextMetadata, BODY_ZENE_CONTEXT, HEADER_CONTEXT_DELIVERY,
-    HEADER_CONTEXT_EPOCH, HEADER_PREFIX_HASH, HEADER_SESSION_ID, HEADER_TAIL_START,
-    SESSION_GATEWAY_FIELD,
+    sanitize_smartgate_session_id, ContextDelivery, ContextMetadata, BODY_ZENE_CONTEXT,
+    HEADER_CONTEXT_DELIVERY, HEADER_CONTEXT_EPOCH, HEADER_PREFIX_HASH, HEADER_SESSION_ID,
+    HEADER_TAIL_START, SESSION_GATEWAY_FIELD, SMARTGATE_HEADER_CONTEXT_DELIVERY,
+    SMARTGATE_HEADER_CONTEXT_EPOCH, SMARTGATE_HEADER_PREFIX_HASH, SMARTGATE_HEADER_SESSION_ID,
 };
 pub use message::{ContentPart, Message, MessageKind, Role, ToolCall};
 pub use models::context_window_for_model;

@@ -1,5 +1,6 @@
 pub mod session_config;
 pub mod session_http;
+pub mod smartgate;
 
 pub use session_config::SessionRuntimeConfig;
 
@@ -35,6 +36,7 @@ use unigateway_sdk::protocol::{
 use unigateway_session::{
     DeltaAssemblyMiddleware, SessionHttpConfig, SessionKey,
 };
+use smartgate::{apply_smartgate_upstream_metadata, resolve_upstream_kind, UpstreamKind};
 use zene_llm::{
     BODY_ZENE_CONTEXT, HEADER_CONTEXT_DELIVERY, HEADER_CONTEXT_EPOCH, HEADER_PREFIX_HASH,
     HEADER_SESSION_ID, HEADER_TAIL_START, SESSION_GATEWAY_FIELD,
@@ -50,6 +52,7 @@ pub struct GatewayState {
     pub default_model: String,
     pub pool_host: Arc<StaticPoolHost>,
     pub middleware: Arc<HostMiddleware>,
+    pub upstream_kind: UpstreamKind,
 }
 
 pub struct StaticPoolHost {
@@ -98,6 +101,13 @@ pub async fn build_gateway(options: GatewayOptions) -> anyhow::Result<Router> {
         .build()
         .context("build UniGatewayEngine")?;
 
+    let upstream_kind = resolve_upstream_kind(&options.upstream_url).await;
+    tracing::info!(?upstream_kind, upstream = %options.upstream_url, "resolved upstream kind");
+    let forward_metadata_as_headers = match upstream_kind {
+        UpstreamKind::SmartGate => Some(smartgate::smartgate_forward_headers()),
+        UpstreamKind::Generic => None,
+    };
+
     let endpoint = Endpoint {
         endpoint_id: "zene-upstream".to_string(),
         provider_name: Some("upstream".to_string()),
@@ -115,7 +125,7 @@ pub async fn build_gateway(options: GatewayOptions) -> anyhow::Result<Router> {
         max_concurrency: None,
         capabilities: EndpointCapabilities::default(),
         metadata: HashMap::new(),
-        forward_metadata_as_headers: None,
+        forward_metadata_as_headers: forward_metadata_as_headers.clone(),
     };
 
     let pool = ProviderPool {
@@ -124,7 +134,7 @@ pub async fn build_gateway(options: GatewayOptions) -> anyhow::Result<Router> {
         load_balancing: LoadBalancingStrategy::RoundRobin,
         retry_policy: Default::default(),
         metadata: HashMap::new(),
-        forward_metadata_as_headers: None,
+        forward_metadata_as_headers,
     };
 
     engine.upsert_pool(pool.clone()).await?;
@@ -149,6 +159,7 @@ pub async fn build_gateway(options: GatewayOptions) -> anyhow::Result<Router> {
         pool,
         default_model: options.default_model,
         middleware,
+        upstream_kind,
     };
 
     let sessions = session_routes(
@@ -182,6 +193,9 @@ pub async fn chat_completions(
     let mut request =
         openai_payload_to_chat_request(&body, &state.default_model).map_err(GatewayError::parse)?;
     inject_session_context_from_headers(&headers, &mut request);
+    if state.upstream_kind == UpstreamKind::SmartGate {
+        apply_smartgate_upstream_metadata(&mut request);
+    }
 
     let mut pool = state.pool.clone();
     apply_client_authorization(&headers, &mut pool);

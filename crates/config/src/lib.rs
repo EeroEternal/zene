@@ -374,7 +374,7 @@ fn default_base_url() -> String {
 }
 
 fn default_max_turns() -> u32 {
-    50
+    100
 }
 
 fn default_chars_per_token() -> f32 {

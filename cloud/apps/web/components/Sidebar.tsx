@@ -9,12 +9,15 @@ import {
   IconFilter,
   IconHelp,
   IconLogout,
-  IconPanelLeftClose,
   IconPencil,
   IconSettings,
+  IconShield,
+  IconSquarePen,
   IconTrash,
 } from "@/lib/icons";
-import type { ListFilter, ListGroup, Organization, Repo, Run, User } from "@/lib/types";
+import { statusLabel } from "@/lib/api";
+import type { ListFilter, ListGroup, Organization, Repo, Run, User, View } from "@/lib/types";
+import { SidebarPanelToggle } from "./PanelToggleButton";
 import { StatusDot } from "./StatusPill";
 
 function runTimestamp(run: Run): number {
@@ -95,7 +98,7 @@ interface SidebarProps {
   runs: Run[];
   repos: Repo[];
   currentRunId: string | null;
-  newAgentActive?: boolean;
+  view: View;
   selectedRepoId: string;
   listGroup: ListGroup;
   listFilter: ListFilter;
@@ -118,6 +121,30 @@ interface SidebarProps {
 
 type CtxMenu = { runId: string; x: number; y: number };
 
+function NavItem({
+  label,
+  active,
+  onClick,
+  icon: Icon,
+}: {
+  label: string;
+  active?: boolean;
+  onClick: () => void;
+  icon: React.ComponentType<{ className?: string }>;
+}) {
+  return (
+    <button
+      type="button"
+      className={`nav-item ${active ? "nav-item-active" : ""}`}
+      aria-current={active ? "page" : undefined}
+      onClick={onClick}
+    >
+      <Icon className={`h-3.5 w-3.5 shrink-0 ${active ? "text-primary" : "text-muted"}`} />
+      <span className="min-w-0 flex-1 truncate">{label}</span>
+    </button>
+  );
+}
+
 export function Sidebar(props: SidebarProps) {
   const {
     user,
@@ -125,7 +152,7 @@ export function Sidebar(props: SidebarProps) {
     runs,
     repos,
     currentRunId,
-    newAgentActive = false,
+    view,
     selectedRepoId,
     listGroup,
     listFilter,
@@ -202,41 +229,31 @@ export function Sidebar(props: SidebarProps) {
   return (
     <aside
       className={[
-        "flex min-h-0 w-[272px] select-none flex-col border-r border-line bg-secondary",
-        "max-[980px]:fixed max-[980px]:bottom-0 max-[980px]:left-0 max-[980px]:top-0 max-[980px]:z-40 max-[980px]:shadow-card max-[980px]:transition-transform",
+        "flex min-h-0 w-[232px] select-none flex-col border-r border-line bg-nav",
+        "max-[980px]:fixed max-[980px]:bottom-0 max-[980px]:left-[52px] max-[980px]:top-0 max-[980px]:z-40 max-[980px]:border-r-0 max-[980px]:shadow-card max-[980px]:transition-transform",
         drawerOpen ? "max-[980px]:translate-x-0" : "max-[980px]:-translate-x-[105%]",
         collapsed ? "min-[981px]:hidden" : "",
       ].join(" ")}
     >
-      <div className="px-2.5 pb-1 pt-3">
-        <div className="mb-3 flex items-center gap-2.5 px-1.5">
-          <div className="grid h-7 w-7 shrink-0 place-items-center rounded-md bg-ink text-[13px] font-bold text-white">Z</div>
-          <div className="min-w-0 flex-1">
-            <strong className="block truncate text-sm tracking-[-0.01em] text-ink">Zene Cloud</strong>
-          </div>
-          <button
-            type="button"
-            className="hidden h-7 w-7 shrink-0 items-center justify-center rounded-md text-muted hover:bg-active hover:text-ink min-[981px]:inline-flex"
-            title="Hide sidebar"
-            aria-label="Hide sidebar"
-            onClick={props.onCollapse}
-          >
-            <IconPanelLeftClose className="h-4 w-4" />
-          </button>
+      <div className="px-2 pb-1 pt-2">
+        <div className="mb-2 hidden items-center gap-1 px-1 min-[981px]:flex">
+          <div className="min-w-0 flex-1 truncate text-[13px] font-semibold text-ink">Zene</div>
+          <SidebarPanelToggle expanded onClick={() => props.onCollapse?.()} />
         </div>
-        <button
-          type="button"
-          className={[
-            "w-full px-2.5 py-2 text-left text-[13px] font-medium transition-colors",
-            newAgentActive ? "text-ink" : "text-ink hover:text-primary",
-          ].join(" ")}
-          onClick={props.onNewAgent}
-        >
-          New Agent
-        </button>
+        <div className="flex flex-col gap-px">
+          <NavItem
+            icon={IconSquarePen}
+            label="New task"
+            active={view === "new"}
+            onClick={props.onNewAgent}
+          />
+        </div>
       </div>
 
-      <div className="min-h-0 flex-1 overflow-auto px-2.5 pb-2 pt-2">
+      <div className="min-h-0 flex-1 overflow-auto px-2 pb-2 pt-1">
+        <div className="mb-1.5 px-2 text-[11px] font-medium tracking-[0.01em] text-placeholder">
+          Task history
+        </div>
         {!filtered.length && runs.length > 0 && (
           <div className="px-2.5 py-3 text-[12.5px] leading-normal text-placeholder">
             No matching agents
@@ -259,12 +276,10 @@ export function Sidebar(props: SidebarProps) {
                     <div
                       key={run.id}
                       className={[
-                        "group flex w-full items-center gap-1.5 rounded-lg text-left text-[12.5px] text-ink transition-colors",
+                        "group flex w-full items-center gap-1.5 rounded-sm text-left text-[12.5px] text-ink transition-colors duration-150",
                         indented ? "ml-1 pl-2" : "",
-                        listCompact ? "px-2 py-1" : "px-2.5 py-1.5",
-                        active
-                          ? "bg-canvas font-medium shadow-[0_0_0_1px_rgba(0,0,0,0.04)]"
-                          : "hover:bg-canvas/70",
+                        listCompact ? "px-2 py-1" : "px-2 py-1.5",
+                        active ? "nav-item-active" : "hover:bg-canvas/60",
                       ].join(" ")}
                       onContextMenu={(e) => {
                         e.preventDefault();
@@ -305,6 +320,9 @@ export function Sidebar(props: SidebarProps) {
                           <StatusDot status={run.status} />
                           <span className="min-w-0 flex-1 overflow-hidden text-ellipsis whitespace-nowrap">
                             {run.title || "Untitled"}
+                          </span>
+                          <span className="max-w-[72px] shrink-0 truncate text-[11px] text-muted">
+                            {statusLabel(run.status)}
                           </span>
                         </button>
                       )}
@@ -368,7 +386,19 @@ export function Sidebar(props: SidebarProps) {
           </button>
         </div>
       )}
-      <div ref={footRef} className="relative px-2.5 pb-2.5 pt-1" onClick={(e) => e.stopPropagation()}>
+      <div className="px-2 pb-1">
+        <div className="mx-1 mb-1.5 h-px bg-line" />
+        <div className="mb-1 px-2 text-[11px] font-medium tracking-[0.01em] text-placeholder">
+          Context
+        </div>
+        <NavItem
+          icon={IconShield}
+          label="Tools & permissions"
+          active={view === "settings"}
+          onClick={() => props.onSettings()}
+        />
+      </div>
+      <div ref={footRef} className="relative px-2 pb-2.5 pt-1" onClick={(e) => e.stopPropagation()}>
         <div
           className="flex w-full cursor-pointer items-center gap-2 rounded-lg px-1.5 py-1.5 text-left hover:bg-canvas/80"
           onClick={(e) => {

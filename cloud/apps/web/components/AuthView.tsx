@@ -58,17 +58,19 @@ export function AuthView({
   };
 
   return (
-    <div className="grid min-h-full place-items-center overflow-auto bg-secondary px-[18px] py-7">
-      <div className="flex w-[min(384px,100%)] flex-col rounded-lg border border-line bg-canvas px-7 pb-6 pt-8 shadow-card">
-        <div className="mb-[18px] flex flex-col items-center justify-center gap-3 text-center">
-          <div className="grid h-10 w-10 place-items-center rounded-[10px] bg-ink text-base font-bold text-white">Z</div>
-          <strong className="text-[15px] font-semibold">Zene Cloud</strong>
+    <div className="grid min-h-full place-items-center overflow-auto bg-canvas-bg px-[18px] py-7">
+      <div className="flex w-[min(384px,100%)] flex-col rounded-md bg-canvas px-7 pb-6 pt-8 shadow-card">
+        <div className="mb-4 flex flex-col items-center justify-center gap-2 text-center">
+          <div className="grid h-8 w-8 place-items-center rounded-sm bg-chip text-[13px] font-semibold text-ink">
+            Z
+          </div>
+          <strong className="text-[13px] font-semibold text-ink">Zene</strong>
         </div>
-        <h1 className="mb-1.5 text-center text-xl font-bold tracking-[-0.02em] text-ink">
-          {isLogin ? "Welcome back" : "Create account"}
+        <h1 className="mb-1 text-center text-[22px] font-semibold tracking-[-0.02em] text-ink">
+          {isLogin ? "Sign in" : "Create account"}
         </h1>
         <p className="mb-5 text-center text-[13px] leading-normal text-muted">
-          Sign in to manage cloud agents that clone your repo and stream every step back.
+          {isLogin ? "Continue to Cloud Console." : "Register to run agents against your repositories."}
         </p>
         <div className="mb-2 flex gap-2">
           <button

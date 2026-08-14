@@ -16,13 +16,13 @@ import {
   IconChevronDown,
   IconChevronRight,
   IconLoader,
-  IconPanelLeft,
-  IconPanelRight,
   IconPlus,
+  IconRefresh,
   IconSearch,
   IconSkills,
   IconStop,
 } from "@/lib/icons";
+import { CodePanelToggle, SidebarPanelToggle } from "./PanelToggleButton";
 import {
   DEFAULT_MODEL_ID,
   loadSelectedModel,
@@ -47,8 +47,10 @@ import { timelineProductFromEvent, timelineToolOutput, type TimelineProduct } fr
 import { CodePanel, useCodePanelWidth } from "./CodePanel";
 import { Markdown } from "./Markdown";
 import { repoLabel } from "./Sidebar";
-import { StatusDot } from "./StatusPill";
+import { StatusPill } from "./StatusPill";
+import { TurnActions } from "./TurnActions";
 import { useToast } from "./Toast";
+import { buildConversationTurns, buildForkPrompt } from "@/lib/turnActions";
 
 /** Show Stop — agent/session is in progress (includes setup). */
 const BUSY_STATUSES: ReadonlySet<string> = new Set<RunStatus>([
@@ -66,6 +68,12 @@ const SEND_BLOCKED_STATUSES: ReadonlySet<string> = new Set<RunStatus>([
   "running",
   "waiting_for_approval",
   "stopping",
+]);
+
+const RETRYABLE_STATUSES: ReadonlySet<string> = new Set<RunStatus>([
+  "failed",
+  "timed_out",
+  "cancelled",
 ]);
 
 const SETUP_STATUSES: ReadonlySet<string> = new Set<RunStatus>([
@@ -889,18 +897,20 @@ interface RunViewProps {
   onMeta: (title: string, status: string) => void;
   onRename?: (title: string) => Promise<void> | void;
   onRunsChanged: () => void;
+  onRunStarted?: (runId: string) => void;
 }
 
 export function RunView({
   runId,
   repos,
-  codePanelOpen = true,
+  codePanelOpen = false,
   onToggleCodePanel,
   sidebarCollapsed = false,
   onOpenMenu,
   onMeta,
   onRename,
   onRunsChanged,
+  onRunStarted,
 }: RunViewProps) {
   const toast = useToast();
   const { width: codeWidth, setWidth: setCodeWidth } = useCodePanelWidth();
@@ -929,6 +939,9 @@ export function RunView({
   const [titleDraft, setTitleDraft] = useState("");
   const [nowTick, setNowTick] = useState(() => Date.now());
   const [setupStartedAt, setSetupStartedAt] = useState<number | null>(null);
+  const [runMessages, setRunMessages] = useState<RunMessage[]>([]);
+  const [forkingTurn, setForkingTurn] = useState<number | null>(null);
+  const [retrying, setRetrying] = useState(false);
   const titleInputRef = useRef<HTMLInputElement>(null);
 
   const nextId = useRef(1);
@@ -1170,6 +1183,29 @@ export function RunView({
   }, []);
 
   const segments = useMemo(() => groupTimeline(items), [items]);
+  const conversationTurns = useMemo(
+    () => buildConversationTurns(items, runMessages),
+    [items, runMessages],
+  );
+  const lastAssistantBubbleId = useMemo(() => {
+    for (let i = items.length - 1; i >= 0; i--) {
+      const it = items[i];
+      if (it.kind === "bubble" && it.role === "assistant") return it.id;
+    }
+    return null;
+  }, [items]);
+  const turnIndexByAssistantId = useMemo(() => {
+    const map = new Map<number, number>();
+    let turnIdx = -1;
+    for (const item of items) {
+      if (item.kind === "bubble" && item.role === "user") {
+        turnIdx += 1;
+      } else if (item.kind === "bubble" && item.role === "assistant" && turnIdx >= 0) {
+        map.set(item.id, turnIdx);
+      }
+    }
+    return map;
+  }, [items]);
   const hasLiveMeta = useMemo(() => segments.some((s) => s.type === "activity" && s.live), [segments]);
 
   useEffect(() => {
@@ -1338,6 +1374,7 @@ export function RunView({
         // Fallback: if events missed the initial user prompt, seed from messages.
         const msgs = (await api<RunMessage[]>(`/api/v1/runs/${runId}/messages`)) || [];
         if (stopped) return;
+        setRunMessages(msgs);
         if (!draft.items.some((it) => it.kind === "bubble" && it.role === "user")) {
           const users = msgs.filter((m) => bubbleRole(m.role) === "user");
           if (users.length) {
@@ -1497,7 +1534,8 @@ export function RunView({
   const sendBlocked = SEND_BLOCKED_STATUSES.has(statusKey);
   const isSetup = SETUP_STATUSES.has(statusKey);
   const setupCopy = isSetup ? setupStatusCopy(statusKey, repoName) : null;
-  const canSend = Boolean(followUp.trim()) && !sending && !sendBlocked;
+  const canRetry = RETRYABLE_STATUSES.has(statusKey);
+  const canSend = Boolean(followUp.trim()) && !sending && !sendBlocked && !canRetry;
 
   const autosize = useCallback(() => {
     const el = promptRef.current;
@@ -1528,6 +1566,32 @@ export function RunView({
       setSending(false);
     }
   }, [followUp, runId, appendBubble, toast, sealOpenMeta, scrollMessages]);
+
+  const retryRun = useCallback(async () => {
+    const text = followUp.trim();
+    setRetrying(true);
+    try {
+      if (text) {
+        setItems((prev) => sealOpenMeta(prev));
+        hasAssistantTail.current = false;
+        stickToBottom.current = true;
+        appendBubble("user", text);
+        scrollMessages(true);
+        setFollowUp("");
+      }
+      const r = await api<Run>(`/api/v1/runs/${runId}/retry`, {
+        method: "POST",
+        body: JSON.stringify(text ? { text } : {}),
+      });
+      setRun(r);
+      onRunsChanged();
+      toast(text ? "Retrying with follow-up…" : "Retrying agent…", "ok");
+    } catch (err) {
+      toast(err instanceof Error ? err.message : String(err), "error");
+    } finally {
+      setRetrying(false);
+    }
+  }, [followUp, runId, appendBubble, toast, sealOpenMeta, scrollMessages, onRunsChanged]);
 
   const cancelRun = useCallback(async () => {
     setCancelling(true);
@@ -1561,6 +1625,38 @@ export function RunView({
     [runId, toast],
   );
 
+  const forkTurn = useCallback(
+    async (turnIndex: number) => {
+      if (!run || !onRunStarted) return;
+      const turns = buildConversationTurns(items, runMessages);
+      const turn = turns[turnIndex];
+      if (!turn?.assistantText.trim()) return;
+      setForkingTurn(turnIndex);
+      try {
+        const prompt = buildForkPrompt(turns, turnIndex);
+        const newRun = await api<Run>("/api/v1/runs", {
+          method: "POST",
+          body: JSON.stringify({
+            repositoryId: run.repositoryId,
+            prompt,
+            baseRef: run.baseRef,
+            model: run.model || selectedModel,
+            permissionMode: run.permissionMode || "default",
+            maxTurns: run.maxTurns ?? 100,
+          }),
+        });
+        onRunStarted(newRun.id);
+        onRunsChanged();
+        toast("Forked to new agent", "ok");
+      } catch (err) {
+        toast(err instanceof Error ? err.message : String(err), "error");
+      } finally {
+        setForkingTurn(null);
+      }
+    },
+    [run, onRunStarted, items, runMessages, selectedModel, onRunsChanged, toast],
+  );
+
   return (
     <div
       className={[
@@ -1568,7 +1664,6 @@ export function RunView({
         codePanelOpen
           ? [
               "grid-rows-[minmax(0,1fr)_minmax(0,38vh)] min-[981px]:grid-rows-1",
-              // Sidebar collapsed: chat = prompt max width (720 + px-4); Files/Git fills the rest.
               sidebarCollapsed
                 ? "min-[981px]:grid-cols-[calc(720px+2rem)_minmax(0,1fr)]"
                 : "min-[981px]:grid-cols-[minmax(0,1fr)_var(--code-panel-w)]",
@@ -1577,21 +1672,16 @@ export function RunView({
       ].join(" ")}
       style={{ ["--code-panel-w" as string]: `${codeWidth}px` } as CSSProperties}
     >
-        <div className="grid min-h-0 min-w-0 grid-rows-[36px_minmax(0,1fr)_auto] overflow-hidden bg-canvas">
-          <header className="px-4 pt-1">
-            <div className="mx-auto flex h-9 w-full max-w-[720px] items-center gap-2.5 px-3.5">
-              <button
-                type="button"
+      <div className="grid min-h-0 min-w-0 grid-rows-[36px_minmax(0,1fr)_auto] overflow-hidden bg-canvas-bg">
+          <header className="grid h-9 grid-cols-[minmax(0,1fr)_auto] items-center gap-2 px-4 pt-1">
+            <div className="mx-auto flex w-full max-w-[720px] items-center gap-2.5 px-3.5">
+              <SidebarPanelToggle
+                expanded={false}
                 className={[
-                  "h-7 w-7 shrink-0 items-center justify-center rounded-md text-muted hover:bg-secondary hover:text-ink",
                   sidebarCollapsed ? "inline-flex" : "hidden max-[980px]:inline-flex",
                 ].join(" ")}
-                title="Show sidebar"
-                aria-label="Show sidebar"
-                onClick={onOpenMenu}
-              >
-                <IconPanelLeft className="h-3.5 w-3.5" />
-              </button>
+                onClick={() => onOpenMenu?.()}
+              />
               {editingTitle ? (
                 <input
                   ref={titleInputRef}
@@ -1630,25 +1720,15 @@ export function RunView({
                   {repoName}
                 </span>
               )}
-              {run?.status && (
-                <span className="inline-flex items-center" title={run.status} aria-label={run.status}>
-                  <StatusDot status={run.status} />
-                </span>
-              )}
-              <div className={`flex shrink-0 items-center gap-1 ${repoName && repoName !== "—" ? "" : "ml-auto"}`}>
-                {!codePanelOpen && (
-                  <button
-                    type="button"
-                    className="hidden h-7 w-7 items-center justify-center rounded-md text-muted hover:bg-secondary hover:text-ink min-[981px]:inline-flex"
-                    title="Show panel"
-                    aria-label="Show panel"
-                    onClick={onToggleCodePanel}
-                  >
-                    <IconPanelRight className="h-3.5 w-3.5" />
-                  </button>
-                )}
-              </div>
+              {run?.status && <StatusPill status={run.status} />}
             </div>
+            {!codePanelOpen && onToggleCodePanel && (
+              <CodePanelToggle
+                open={false}
+                onClick={onToggleCodePanel}
+                className="hidden min-[981px]:inline-flex"
+              />
+            )}
           </header>
           <div
             ref={messagesRef}
@@ -1659,7 +1739,7 @@ export function RunView({
             <div className="mx-auto flex w-full max-w-[720px] flex-col gap-3 px-3.5">
               {setupCopy && (
                 <div
-                  className="-mx-3.5 flex items-start gap-3 self-stretch rounded-xl border border-line bg-tertiary px-3.5 py-3"
+                  className="-mx-3.5 flex items-start gap-3 self-stretch rounded-md bg-canvas px-3.5 py-3 shadow-card"
                   role="status"
                   aria-live="polite"
                 >
@@ -1926,7 +2006,7 @@ export function RunView({
                   return (
                     <div
                       key={item.id}
-                      className={`self-stretch rounded-lg border border-[#E8D5A8] bg-warn-soft p-3.5 min-[981px]:ml-9 ${decided ? "opacity-[.65]" : ""}`}
+                      className={`self-stretch rounded-md border-l-2 border-warn bg-warn-soft p-3.5 min-[981px]:ml-9 ${decided ? "opacity-[.65]" : ""}`}
                     >
                       <h4 className="mb-1.5 text-[13px] font-semibold text-warn-ink">
                         Permission · {ap.kind || "tool"} · {ap.risk || ""}
@@ -1976,7 +2056,7 @@ export function RunView({
                   return (
                     <div
                       key={item.id}
-                      className="-mx-3.5 min-w-0 self-stretch whitespace-pre-wrap break-words rounded-2xl border border-line bg-secondary px-3.5 py-2.5 text-[13.5px] leading-[1.55] text-ink [overflow-wrap:anywhere]"
+                      className="-mx-3.5 min-w-0 self-stretch whitespace-pre-wrap break-words rounded-md bg-tertiary px-3.5 py-2.5 text-[13.5px] leading-[1.55] text-ink [overflow-wrap:anywhere]"
                     >
                       {item.text}
                     </div>
@@ -1984,12 +2064,29 @@ export function RunView({
                 }
 
                 if (item.kind === "bubble") {
+                  const turnIndex = turnIndexByAssistantId.get(item.id);
+                  const turn =
+                    turnIndex != null ? conversationTurns[turnIndex] : undefined;
+                  const isLiveAssistant =
+                    item.id === lastAssistantBubbleId &&
+                    (run?.status === "running" ||
+                      run?.status === "waiting_for_approval" ||
+                      hasLiveMeta);
                   return (
                     <div
                       key={item.id}
                       className="min-w-0 w-full self-stretch text-[13.5px] leading-[1.55] text-ink"
                     >
                       <Markdown text={item.text} />
+                      {turn && (
+                        <TurnActions
+                          runId={runId}
+                          turn={turn}
+                          visible={!isLiveAssistant}
+                          forking={forkingTurn === turn.index}
+                          onFork={onRunStarted ? () => void forkTurn(turn.index) : undefined}
+                        />
+                      )}
                     </div>
                   );
                 }
@@ -1998,9 +2095,9 @@ export function RunView({
               })}
             </div>
           </div>
-          <div ref={composerRef} className="bg-canvas px-4 pb-3 pt-1">
+          <div ref={composerRef} className="bg-canvas-bg px-4 pb-3 pt-1">
             <div className="mx-auto w-full max-w-[720px] px-3.5">
-              <div className="-mx-3.5 rounded-2xl border border-line bg-secondary px-3.5 pb-2 pt-2.5 focus-within:border-line-strong focus-within:bg-canvas">
+              <div className="-mx-3.5 rounded-md bg-canvas px-3.5 pb-2 pt-2.5 shadow-card focus-within:shadow-[0_0_0_2px_#EAF2FF]">
                 <textarea
                   ref={promptRef}
                   className="block max-h-32 min-h-[32px] w-full resize-none border-0 bg-transparent px-0 pb-1 pt-0 text-[13px] leading-normal text-ink outline-none"
@@ -2008,9 +2105,11 @@ export function RunView({
                   placeholder={
                     sendBlocked
                       ? "Agent is working…"
-                      : isSetup
-                        ? "Waiting for worker… you can still queue a follow-up"
-                        : "Send follow-up…"
+                      : canRetry
+                        ? "Optional follow-up, then Retry…"
+                        : isSetup
+                          ? "Waiting for worker… you can still queue a follow-up"
+                          : "Send follow-up…"
                   }
                   aria-label="Follow-up"
                   value={followUp}
@@ -2029,7 +2128,7 @@ export function RunView({
                   <div className="flex min-w-0 items-center gap-1">
                     <button
                       type="button"
-                      className="inline-flex h-6 w-6 items-center justify-center rounded-full bg-secondary text-muted hover:bg-active hover:text-ink"
+                      className="inline-flex h-6 w-6 items-center justify-center rounded-sm bg-chip text-muted hover:bg-line-strong hover:text-ink"
                       title="Add"
                       aria-label="Add"
                       onClick={() => toast("Attachments coming soon", "ok")}
@@ -2056,7 +2155,7 @@ export function RunView({
                       </button>
                       {modelMenuOpen && modelMenuPos && (
                         <div
-                          className="fixed z-[45] flex w-[min(280px,calc(100vw-48px))] flex-col overflow-hidden rounded-xl border border-line bg-canvas shadow-menu"
+                          className="fixed z-[45] flex w-[min(280px,calc(100vw-48px))] flex-col overflow-hidden rounded-md border border-line bg-canvas shadow-menu"
                           style={{
                             left: modelMenuPos.left,
                             bottom: modelMenuPos.bottom,
@@ -2120,16 +2219,30 @@ export function RunView({
                         <IconStop className="h-2.5 w-2.5 fill-current" />
                       </button>
                     )}
-                    <button
-                      type="button"
-                      className="inline-flex h-6 w-6 items-center justify-center rounded-sm bg-primary text-white hover:bg-primary-hover disabled:opacity-35 disabled:hover:bg-primary"
-                      title="Send"
-                      aria-label="Send"
-                      disabled={!canSend}
-                      onClick={sendFollowUp}
-                    >
-                      <IconArrowUp className="h-3.5 w-3.5" />
-                    </button>
+                    {canRetry ? (
+                      <button
+                        type="button"
+                        className="inline-flex h-6 items-center gap-1 rounded-sm bg-primary px-2 text-[12px] font-medium text-white hover:bg-primary-hover disabled:opacity-35 disabled:hover:bg-primary"
+                        title="Retry agent on this run"
+                        aria-label="Retry agent"
+                        disabled={retrying}
+                        onClick={() => void retryRun()}
+                      >
+                        <IconRefresh className="h-3 w-3" />
+                        Retry
+                      </button>
+                    ) : (
+                      <button
+                        type="button"
+                        className="inline-flex h-6 w-6 items-center justify-center rounded-sm bg-primary text-white hover:bg-primary-hover disabled:opacity-35 disabled:hover:bg-primary"
+                        title="Send"
+                        aria-label="Send"
+                        disabled={!canSend}
+                        onClick={sendFollowUp}
+                      >
+                        <IconArrowUp className="h-3.5 w-3.5" />
+                      </button>
+                    )}
                   </div>
                 </div>
               </div>
@@ -2137,18 +2250,18 @@ export function RunView({
           </div>
         </div>
 
-        {codePanelOpen && (
-          <CodePanel
-            runId={runId}
-            defaultPrTitle={run?.title}
-            defaultBaseRef={run?.baseRef}
-            headBranch={run?.headBranch}
-            width={codeWidth}
-            onWidthChange={setCodeWidth}
-            onCollapse={onToggleCodePanel}
-            equalSplit={sidebarCollapsed}
-          />
-        )}
+      {codePanelOpen && (
+        <CodePanel
+          runId={runId}
+          defaultPrTitle={run?.title}
+          defaultBaseRef={run?.baseRef}
+          headBranch={run?.headBranch}
+          width={codeWidth}
+          onWidthChange={setCodeWidth}
+          onCollapse={onToggleCodePanel}
+          equalSplit={sidebarCollapsed}
+        />
+      )}
     </div>
   );
 }

@@ -685,7 +685,7 @@ pub struct CreateRunRequest {
     pub model: String,
     #[serde(default)]
     pub permission_mode: PermissionMode,
-    /// Agent step budget; `0` = unlimited. Defaults to 50.
+    /// Agent step budget; `0` = unlimited. Defaults to 100.
     #[serde(default = "default_max_turns")]
     pub max_turns: u32,
     /// Optional ACP session mode (`plan` / `default` / …). Applied via
@@ -704,7 +704,7 @@ fn default_model() -> String {
 }
 
 fn default_max_turns() -> u32 {
-    50
+    100
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -772,6 +772,8 @@ pub struct ClaimedRun {
     /// Existing runtime session to resume after a worker replacement, if available.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub resume_session_id: Option<String>,
+    #[serde(default)]
+    pub resume_without_prompt: bool,
     pub workspace_dir: String,
 }
 

@@ -1,5 +1,7 @@
 use std::collections::HashSet;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
@@ -8,7 +10,7 @@ use tracing::{info, warn};
 use uuid::Uuid;
 use zene_cloud_domain::QueueStats;
 
-use crate::Cli;
+use crate::{sleep_interruptible, spawn_shutdown_listener, Cli};
 
 pub async fn run_supervisor(cli: Cli) -> Result<()> {
     let client = reqwest::Client::builder()
@@ -17,6 +19,8 @@ pub async fn run_supervisor(cli: Cli) -> Result<()> {
         .context("build HTTP client")?;
     let exe = std::env::current_exe().context("current_exe")?;
     let mut children: Vec<ChildSlot> = Vec::new();
+    let shutdown = Arc::new(AtomicBool::new(false));
+    spawn_shutdown_listener(shutdown.clone());
 
     info!(
         api = %cli.api_url,
@@ -28,16 +32,28 @@ pub async fn run_supervisor(cli: Cli) -> Result<()> {
     );
 
     loop {
+        if shutdown.load(Ordering::SeqCst) {
+            break;
+        }
+
         reap_finished(&mut children);
 
         let stats = match fetch_queue_stats(&client, &cli).await {
             Ok(s) => s,
             Err(err) => {
                 warn!(error = %err, "queue stats failed");
-                tokio::time::sleep(Duration::from_millis(cli.scale_interval_ms.max(200))).await;
+                sleep_interruptible(
+                    Duration::from_millis(cli.scale_interval_ms.max(200)),
+                    &shutdown,
+                )
+                .await;
                 continue;
             }
         };
+
+        if shutdown.load(Ordering::SeqCst) {
+            break;
+        }
 
         terminate_excess_holds(&mut children, &stats, cli.max_hold);
 
@@ -47,6 +63,9 @@ pub async fn run_supervisor(cli: Cli) -> Result<()> {
         if current < desired_total {
             let to_spawn = desired_total - current;
             for _ in 0..to_spawn {
+                if shutdown.load(Ordering::SeqCst) {
+                    break;
+                }
                 match spawn_executor(&exe, &cli) {
                     Ok(slot) => {
                         info!(worker_id = %slot.worker_id, pid = slot.pid, "spawned executor");
@@ -60,8 +79,16 @@ pub async fn run_supervisor(cli: Cli) -> Result<()> {
             scale_down_idle(&mut children, &stats, excess);
         }
 
-        tokio::time::sleep(Duration::from_millis(cli.scale_interval_ms.max(200))).await;
+        sleep_interruptible(
+            Duration::from_millis(cli.scale_interval_ms.max(200)),
+            &shutdown,
+        )
+        .await;
     }
+
+    shutdown_all_executors(&mut children).await;
+    info!("zene-cloud-worker supervisor stopped");
+    Ok(())
 }
 
 struct ChildSlot {
@@ -159,6 +186,34 @@ fn scale_down_idle(children: &mut Vec<ChildSlot>, stats: &QueueStats, excess: us
         );
         send_sigterm(slot);
         killed += 1;
+    }
+}
+
+async fn shutdown_all_executors(children: &mut Vec<ChildSlot>) {
+    if children.is_empty() {
+        return;
+    }
+    info!(count = children.len(), "supervisor shutting down executors");
+    for slot in children.iter_mut() {
+        send_sigterm(slot);
+    }
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(15);
+    loop {
+        reap_finished(children);
+        if children.is_empty() {
+            return;
+        }
+        if tokio::time::Instant::now() >= deadline {
+            warn!(
+                remaining = children.len(),
+                "executors did not exit in time; force killing"
+            );
+            for mut slot in children.drain(..) {
+                let _ = slot.child.start_kill();
+            }
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
     }
 }
 

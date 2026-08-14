@@ -1,20 +1,21 @@
 "use client";
 
-import { useState } from "react";
+import { useCallback, useState } from "react";
 import type { PullRequestState } from "@/lib/types";
+import { readSessionUi, writeSessionUi, type SessionGitSubTab } from "@/lib/sessionUi";
 import { ChangesPanel } from "./ChangesPanel";
 import { CommitsPanel } from "./CommitsPanel";
 import { ReviewPanel } from "./ReviewPanel";
 
-export type GitSubTab = "diff" | "review" | "commits";
+export type GitSubTab = SessionGitSubTab;
 
 function prStateClass(state?: PullRequestState | string): string {
   const s = (state || "").toLowerCase();
   if (s === "merged") return "bg-active text-ink";
-  if (s === "open") return "bg-[#e6ffec] text-[#1a7f37]";
-  if (s === "draft") return "bg-secondary text-muted";
-  if (s === "closed") return "bg-[#ffebe9] text-[#cf222e]";
-  return "bg-secondary text-ink";
+  if (s === "open") return "bg-ok-soft text-ok";
+  if (s === "draft") return "bg-tertiary text-muted";
+  if (s === "closed") return "bg-danger-soft text-danger";
+  return "bg-tertiary text-ink";
 }
 
 export function GitPanel({
@@ -32,13 +33,23 @@ export function GitPanel({
   prUrl?: string;
   prState?: PullRequestState;
 }) {
-  const [subTab, setSubTab] = useState<GitSubTab>("diff");
+  const [subTab, setSubTabState] = useState<GitSubTab>(() => {
+    const saved = readSessionUi(runId).gitSubTab;
+    return saved === "review" || saved === "commits" || saved === "diff" ? saved : "diff";
+  });
+  const setSubTab = useCallback(
+    (next: GitSubTab) => {
+      setSubTabState(next);
+      writeSessionUi(runId, { gitSubTab: next });
+    },
+    [runId],
+  );
   const title = defaultTitle || "Changes";
   const base = defaultBaseRef || "main";
 
   return (
     <div className="grid h-full min-h-0 grid-rows-[auto_auto_minmax(0,1fr)]">
-      <div className="border-b border-line bg-canvas px-3 py-2.5">
+      <div className="bg-canvas px-3 py-2.5">
         <div className="min-w-0">
           {prUrl ? (
             <a

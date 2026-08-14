@@ -3,15 +3,27 @@
 @tailwind utilities;
 
 :root {
-  --color-primary: #0090ff;
-  --color-primary-hover: #0588f0;
-  --color-ink: #1c2024;
-  --color-muted: #60646c;
-  --color-bg: #fcfcfd;
-  --color-surface: #f9f9fb;
-  --color-tint: #e6f4fe;
-  --color-line: #e6e8eb;
-  --sidebar-w: 272px;
+  --color-bg: #f6f5f4;
+  --color-nav: #ebe9e7;
+  --color-surface: #ffffff;
+  --color-ink: #2e3436;
+  --color-muted: #687174;
+  --color-primary: #3584e4;
+  --color-primary-hover: #1c71d8;
+  --color-accent: #e5a50a;
+  --color-warning-bg: #fff5d6;
+  --color-success: #287a46;
+  --color-success-bg: #eaf4ec;
+  --color-error: #c01c28;
+  --color-error-bg: #fcebec;
+  --color-primary-soft: #eaf2ff;
+  --color-chip: #e4e2e0;
+  --color-line: #dddcd9;
+  --radius-sm: 4px;
+  --radius-md: 6px;
+  --radius-lg: 8px;
+  --toolbar-w: 52px;
+  --sidebar-w: 232px;
 }
 
 @layer base {
@@ -21,7 +33,7 @@
     margin: 0;
   }
   body {
-    @apply overflow-hidden bg-canvas font-sans text-sm text-ink antialiased;
+    @apply overflow-hidden bg-canvas-bg font-sans text-sm text-ink antialiased;
   }
   button {
     cursor: pointer;
@@ -29,23 +41,34 @@
   button:disabled {
     cursor: not-allowed;
   }
+  /* JetBrains Mono ligatures turn `://` into a gap that looks like a missing character. */
+  .font-mono {
+    font-variant-ligatures: none;
+    font-feature-settings: "liga" 0, "calt" 0;
+  }
 }
 
 @layer components {
   .btn {
-    @apply rounded-sm border border-line-strong bg-canvas px-3 py-2 font-semibold text-ink transition-colors hover:bg-secondary disabled:opacity-40 disabled:hover:bg-canvas;
+    @apply inline-flex h-8 items-center justify-center rounded-[5px] bg-chip px-3 text-[13px] font-medium text-ink transition-colors duration-150 hover:bg-line-strong disabled:opacity-40 disabled:hover:bg-chip;
   }
   .btn-primary {
-    @apply border-primary bg-primary text-white hover:border-primary-hover hover:bg-primary-hover disabled:hover:border-primary disabled:hover:bg-primary;
+    @apply bg-primary text-white hover:bg-primary-hover disabled:hover:bg-primary;
   }
   .btn-danger {
-    @apply border-danger-line text-danger hover:bg-danger-soft disabled:hover:bg-canvas;
+    @apply bg-transparent text-danger hover:bg-danger-soft disabled:hover:bg-transparent;
   }
   .btn-sm {
-    @apply px-2.5 py-1.5 text-xs;
+    @apply h-7 px-2.5 text-xs;
   }
   .field-input {
-    @apply w-full rounded-sm border border-line-strong bg-canvas px-3 py-[9px] text-ink outline-none transition-colors focus:border-primary focus:shadow-[0_0_0_3px_#E6F4FE];
+    @apply w-full rounded-sm border border-line-strong bg-canvas px-3 py-[9px] text-ink outline-none transition-colors duration-150 focus:border-primary focus:shadow-[0_0_0_2px_#EAF2FF];
+  }
+  .nav-item {
+    @apply flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-left text-[12.5px] text-ink hover:bg-canvas/60;
+  }
+  .nav-item-active {
+    @apply bg-active font-medium text-ink;
   }
   .field-label {
     @apply mb-1.5 mt-3 block text-[11px] font-semibold tracking-[.02em] text-muted;
@@ -181,5 +204,50 @@
   }
   .md-body th {
     @apply bg-tertiary font-semibold;
+  }
+
+  /* IDE code viewer (highlight.js) — light theme aligned with Console tokens */
+  .code-viewer .hljs {
+    @apply bg-transparent text-ink;
+  }
+  .code-viewer .hljs-comment,
+  .code-viewer .hljs-quote {
+    @apply text-placeholder italic;
+  }
+  .code-viewer .hljs-keyword,
+  .code-viewer .hljs-selector-tag,
+  .code-viewer .hljs-built_in,
+  .code-viewer .hljs-type {
+    @apply text-[#8250df];
+  }
+  .code-viewer .hljs-string,
+  .code-viewer .hljs-regexp,
+  .code-viewer .hljs-addition {
+    @apply text-[#0a7f56];
+  }
+  .code-viewer .hljs-number,
+  .code-viewer .hljs-literal,
+  .code-viewer .hljs-symbol,
+  .code-viewer .hljs-bullet {
+    @apply text-[#0550ae];
+  }
+  .code-viewer .hljs-title,
+  .code-viewer .hljs-section,
+  .code-viewer .hljs-attribute,
+  .code-viewer .hljs-name,
+  .code-viewer .hljs-function .hljs-title {
+    @apply text-[#953800];
+  }
+  .code-viewer .hljs-variable,
+  .code-viewer .hljs-template-variable,
+  .code-viewer .hljs-params {
+    @apply text-ink;
+  }
+  .code-viewer .hljs-meta,
+  .code-viewer .hljs-link {
+    @apply text-muted;
+  }
+  .code-viewer .hljs-deletion {
+    @apply text-danger;
   }
 }

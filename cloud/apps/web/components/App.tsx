@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api, loadToken, setToken } from "@/lib/api";
+import { removeSessionUi } from "@/lib/sessionUi";
 import type {
   GithubStatus,
   ListFilter,
@@ -13,14 +14,16 @@ import type {
   User,
   View,
 } from "@/lib/types";
-import { IconPanelLeft } from "@/lib/icons";
 import { AuthView } from "./AuthView";
 import { useCodePanelOpen } from "./CodePanel";
+import { ConfirmDialog } from "./ConfirmDialog";
 import { NewAgent } from "./NewAgent";
 import { RunView } from "./RunView";
 import { Settings, type SettingsSection } from "./Settings";
 import { Sidebar } from "./Sidebar";
 import { ToastProvider, useToast } from "./Toast";
+import { SidebarPanelToggle } from "./PanelToggleButton";
+import { Toolbar } from "./Toolbar";
 
 function readPref(key: string, fallback: string): string {
   if (typeof window === "undefined") return fallback;
@@ -47,12 +50,13 @@ function AppInner() {
 
   const [view, setView] = useState<View>("new");
   const [currentRunId, setCurrentRunId] = useState<string | null>(null);
-  const [runTitle, setRunTitle] = useState("New Agent");
+  const [runTitle, setRunTitle] = useState("New task");
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [sidebarCollapsed, setSidebarCollapsedState] = useState(false);
   const [openProjectMenuSignal, setOpenProjectMenuSignal] = useState(0);
   const [settingsSection, setSettingsSection] = useState<SettingsSection | null>(null);
-  const { open: codePanelOpen, toggle: toggleCodePanel } = useCodePanelOpen();
+  const [deleteRunId, setDeleteRunId] = useState<string | null>(null);
+  const { open: codePanelOpen, toggle: toggleCodePanel } = useCodePanelOpen(currentRunId);
 
   const githubConnected = useMemo(() => {
     if (github.connected) return true;
@@ -264,7 +268,7 @@ function AppInner() {
   const showNewAgent = useCallback(() => {
     setCurrentRunId(null);
     setView("new");
-    setRunTitle("New Agent");
+    setRunTitle("New task");
     setDrawerOpen(false);
     refreshRuns();
     refreshGithub();
@@ -284,14 +288,11 @@ function AppInner() {
     [refreshGithub, refreshRepos],
   );
 
-  const openRun = useCallback(
-    (runId: string) => {
-      setCurrentRunId(runId);
-      setView("run");
-      setDrawerOpen(false);
-    },
-    [],
-  );
+  const openRun = useCallback((runId: string) => {
+    setCurrentRunId(runId);
+    setView("run");
+    setDrawerOpen(false);
+  }, []);
 
   const renameRun = useCallback(
     async (runId: string, title: string) => {
@@ -329,9 +330,9 @@ function AppInner() {
 
   const deleteRun = useCallback(
     async (runId: string) => {
-      if (!window.confirm("Delete this agent session permanently?")) return;
       try {
         await api(`/api/v1/runs/${runId}`, { method: "DELETE" });
+        removeSessionUi(runId);
         setRuns((prev) => prev.filter((r) => r.id !== runId));
         if (currentRunId === runId) showNewAgent();
         toast("Deleted", "ok");
@@ -416,71 +417,63 @@ function AppInner() {
   }
 
   return (
-    <div
-      className={[
-        "grid h-full grid-cols-1 bg-canvas",
-        sidebarCollapsed
-          ? "min-[981px]:grid-cols-1"
-          : "min-[981px]:grid-cols-[272px_minmax(0,1fr)]",
-      ].join(" ")}
-    >
-      {drawerOpen && (
-        <div className="fixed inset-0 z-30 bg-black/50 min-[981px]:hidden" onClick={() => setDrawerOpen(false)} />
-      )}
-      <Sidebar
-        user={user}
-        org={org}
-        runs={runs}
-        repos={repos}
-        currentRunId={currentRunId}
-        newAgentActive={view === "new"}
-        selectedRepoId={selectedRepoId}
-        listGroup={listGroup}
-        listFilter={listFilter}
-        listRepoFilter={listRepoFilter}
-        listCompact={listCompact}
-        drawerOpen={drawerOpen}
-        collapsed={sidebarCollapsed}
-        onCollapse={() => setSidebarCollapsed(true)}
-        onSetListGroup={setListGroup}
-        onSetListFilter={setListFilter}
-        onSetListCompact={setListCompact}
-        onNewAgent={showNewAgent}
-        onOpenRun={openRun}
-        onRenameRun={renameRun}
-        onArchiveRun={archiveRun}
-        onDeleteRun={deleteRun}
-        onSettings={showSettings}
-        onLogout={doLogout}
+    <div className="flex h-full bg-canvas-bg">
+      <Toolbar
+        view={view}
+        sidebarCollapsed={sidebarCollapsed}
+        onNewTask={showNewAgent}
+        onHistory={() => {
+          setSidebarCollapsed(false);
+          setDrawerOpen(true);
+        }}
+        onSettings={() => showSettings()}
       />
-      <section
+      <div
         className={[
-          "grid min-h-0 min-w-0 bg-canvas",
-          view === "run" ? "grid-rows-1" : "grid-rows-[48px_minmax(0,1fr)]",
+          "grid min-h-0 min-w-0 flex-1 grid-cols-1",
+          sidebarCollapsed ? "" : "min-[981px]:grid-cols-[232px_minmax(0,1fr)]",
         ].join(" ")}
       >
-        {view !== "run" && (
-          <div className="flex h-12 items-center justify-between gap-2 border-b border-line bg-canvas px-5">
-            <div className="flex min-w-0 items-center gap-2.5">
-              <button
-                type="button"
-                className={[
-                  "h-8 w-8 items-center justify-center rounded-md text-muted hover:bg-secondary hover:text-ink",
-                  sidebarCollapsed ? "inline-flex" : "hidden max-[980px]:inline-flex",
-                ].join(" ")}
-                title="Show sidebar"
-                aria-label="Show sidebar"
-                onClick={openSidebar}
-              >
-                <IconPanelLeft className="h-4 w-4" />
-              </button>
-              <div className="overflow-hidden text-ellipsis whitespace-nowrap text-[15px] font-semibold text-ink">
-                {runTitle}
-              </div>
-            </div>
-          </div>
+        {drawerOpen && (
+          <div
+            className="fixed inset-0 z-30 bg-[rgba(46,52,54,0.45)] min-[981px]:hidden"
+            onClick={() => setDrawerOpen(false)}
+          />
         )}
-        <div className="min-h-0 overflow-hidden bg-canvas">
+        <Sidebar
+          user={user}
+          org={org}
+          runs={runs}
+          repos={repos}
+          currentRunId={currentRunId}
+          view={view}
+          selectedRepoId={selectedRepoId}
+          listGroup={listGroup}
+          listFilter={listFilter}
+          listRepoFilter={listRepoFilter}
+          listCompact={listCompact}
+          drawerOpen={drawerOpen}
+          collapsed={sidebarCollapsed}
+          onCollapse={() => setSidebarCollapsed(true)}
+          onSetListGroup={setListGroup}
+          onSetListFilter={setListFilter}
+          onSetListCompact={setListCompact}
+          onNewAgent={showNewAgent}
+          onOpenRun={openRun}
+          onRenameRun={renameRun}
+          onArchiveRun={archiveRun}
+          onDeleteRun={(runId) => setDeleteRunId(runId)}
+          onSettings={showSettings}
+          onLogout={doLogout}
+        />
+        <section className="relative min-h-0 min-w-0 overflow-hidden bg-canvas-bg">
+          {sidebarCollapsed && view !== "run" && (
+            <SidebarPanelToggle
+              expanded={false}
+              className="absolute left-3 top-3 z-10 hidden min-[981px]:inline-flex"
+              onClick={() => setSidebarCollapsed(false)}
+            />
+          )}
           {view === "new" && (
             <NewAgent
               repos={repos}
@@ -543,10 +536,24 @@ function AppInner() {
               }}
               onRename={(title) => (currentRunId ? renameRun(currentRunId, title) : undefined)}
               onRunsChanged={refreshRuns}
+              onRunStarted={openRun}
             />
           )}
-        </div>
-      </section>
+        </section>
+      </div>
+      <ConfirmDialog
+        open={!!deleteRunId}
+        title="Delete this session?"
+        body="This permanently deletes the agent session and its conversation. This cannot be undone."
+        confirmLabel="Delete session"
+        danger
+        onCancel={() => setDeleteRunId(null)}
+        onConfirm={() => {
+          const id = deleteRunId;
+          setDeleteRunId(null);
+          if (id) void deleteRun(id);
+        }}
+      />
     </div>
   );
 }

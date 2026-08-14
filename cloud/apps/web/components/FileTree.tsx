@@ -1,7 +1,9 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { WorkspaceFile } from "@/lib/types";
+import { ancestorDirPaths } from "@/lib/codeLanguage";
+import { readSessionUi, writeSessionUi } from "@/lib/sessionUi";
 import { IconChevronDown, IconChevronRight, IconFile, IconFolder, IconFolderOpen } from "@/lib/icons";
 
 interface TreeNode {
@@ -147,42 +149,77 @@ export function FileTree({
   files,
   selected,
   onSelect,
+  revealPath = null,
+  resetKey,
+  persistKey,
   expandAllSignal = 0,
   collapseAllSignal = 0,
 }: {
   files: WorkspaceFile[];
   selected: string | null;
   onSelect: (path: string) => void;
+  /** Expand ancestor folders so this path is visible (does not expand unrelated branches). */
+  revealPath?: string | null;
+  /** When this changes, collapse the tree and forget the last reveal (e.g. new run). */
+  resetKey?: string;
+  /** Persist expanded folders per session. */
+  persistKey?: string;
   expandAllSignal?: number;
   collapseAllSignal?: number;
 }) {
   const tree = useMemo(() => buildTree(files), [files]);
-  const [expanded, setExpanded] = useState<Set<string>>(() => new Set());
+  const [expanded, setExpanded] = useState<Set<string>>(
+    () => new Set(persistKey ? readSessionUi(persistKey).expandedDirs || [] : []),
+  );
+  const lastReveal = useRef<string | null>(null);
+
+  const persistExpanded = useCallback(
+    (next: Set<string>) => {
+      if (persistKey) writeSessionUi(persistKey, { expandedDirs: Array.from(next) });
+    },
+    [persistKey],
+  );
 
   useEffect(() => {
+    if (resetKey == null) return;
+    lastReveal.current = null;
+    setExpanded(new Set(persistKey ? readSessionUi(persistKey).expandedDirs || [] : []));
+  }, [resetKey, persistKey]);
+
+  useEffect(() => {
+    if (!revealPath) return;
+    if (revealPath === lastReveal.current) return;
+    lastReveal.current = revealPath;
+    const dirs = ancestorDirPaths(revealPath);
+    if (!dirs.length) return;
     setExpanded((prev) => {
-      if (prev.size > 0) return prev;
-      const next = new Set<string>();
-      for (const n of tree) if (n.kind === "dir") next.add(n.path);
-      return next.size ? next : prev;
+      const next = new Set(prev);
+      for (const d of dirs) next.add(d);
+      return next;
     });
-  }, [tree]);
+  }, [revealPath]);
 
   useEffect(() => {
     if (!expandAllSignal) return;
-    setExpanded(new Set(allDirPaths(tree)));
-  }, [expandAllSignal, tree]);
+    const next = new Set(allDirPaths(tree));
+    setExpanded(next);
+    persistExpanded(next);
+  }, [expandAllSignal, tree, persistExpanded]);
 
   useEffect(() => {
     if (!collapseAllSignal) return;
-    setExpanded(new Set());
-  }, [collapseAllSignal]);
+    lastReveal.current = null;
+    const next = new Set<string>();
+    setExpanded(next);
+    persistExpanded(next);
+  }, [collapseAllSignal, persistExpanded]);
 
   const toggle = (path: string) => {
     setExpanded((prev) => {
       const next = new Set(prev);
       if (next.has(path)) next.delete(path);
       else next.add(path);
+      persistExpanded(next);
       return next;
     });
   };
