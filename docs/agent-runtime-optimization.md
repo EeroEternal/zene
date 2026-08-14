@@ -1,12 +1,12 @@
 # Agent Runtime 架构优化设计
 
-> 状态：持续演进。Wave 0–12 把控制面/数据面的 **接口边界** 建起来了；Wave 13 起让默认执行路径真正走这些边界。
+> 状态：**控制面 / 事件产品化主线已收口**（结项说明与后续目标见 [agent-runtime-next-goals.md](./agent-runtime-next-goals.md)）。
 >
-> **进度快照：2026-08-14，基线 `4a3443d`（PR #112 已合并）。**
-> 本文同时记录目标架构、已实现能力和剩余工作。
+> **进度快照：2026-08-14，基线 `8c56fd2`（PR #113 已合并）。**
+> 本文同时记录目标架构、已实现能力和本线历程。
 > Wave 16 的 Steer/SetMode 已对齐；**Wave 14 已完成**；Agent-specific actor 已迁至 `zene-agent-runtime`（协议仍在 `zene-runtime`；Cloud 不依赖二者）；Turn 与 ContextModel 共用中性 `ModelRequest`。Cloud/本地共享 `RuntimeCommand` 变体已评估为字段对齐。**Cloud session mode（`default`/`plan`）以推送为准**：`session_started` + `current_mode_update`→`state_changed`；**不做 Cloud GetMode**。`ResumeSafeTurn` 仍仅本地。ACP `initialize` / unsupported / turn/step/error 已产品化；`session_started` 携带 modes + recovery（inspect-only；mock 路径同形）；未知 `session/update` 存 residual 产品字段。`zene-core` 不再 re-export turn/runtime protocol 类型。
 >
-> **停线点：** 非协议控制/事件产品化与 ownership 收缩已收口。Cloud mode 真相源已定为事件推送，GetMode 不再是本线下一步。后续高杠杆项（若有）需新的产品目标，不要为 GetMode 碎片化。
+> **停线点：** 本线已结项。后续可选目标见 [agent-runtime-next-goals.md](./agent-runtime-next-goals.md)；不要为 GetMode 碎片化。
 >
 > 本文基于当前 zene runtime 实现，描述如何将 `Agent`、`Turn`、`Step`、`Session`、Cloud `Run` 和 ACP transport 拉开，并给出渐进式迁移方案。
 >
@@ -1240,7 +1240,7 @@ Wave 16  统一 transport command/event  ← 已完成（含 Steer/SetMode）
 | 结构清理 | （已完成）core protocol / turn event re-export 收缩 | protocol 在 `zene-runtime`/`zene-agent-runtime`；事件在 `zene-turn` |
 | 可选后续 | Agent holdings 继续退回 wiring | Wave 14 step 算法已抽出；剩余 composition-root 持有 |
 
-推荐组合：**控制/事件产品化主线已收口**。Cloud session mode 以事件推送为真相源；本地保留 GetMode，Cloud 不引入。后续勿为 GetMode / reply-shaped 控制碎片化，除非出现新的产品调用方需求（且不是读 mode）。
+推荐组合：**控制/事件产品化主线已收口**（结项与后续目标：[agent-runtime-next-goals.md](./agent-runtime-next-goals.md)）。Cloud session mode 以事件推送为真相源；本地保留 GetMode，Cloud 不引入。
 
 **不要一上来做** actor 全量重写、完整 Event Sourcing、或再抽一层没有调用方的 crate。
 
@@ -1264,6 +1264,7 @@ Wave 16  统一 transport command/event  ← 已完成（含 Steer/SetMode）
 
 ## 相关文档
 
+- [agent-runtime-next-goals.md](./agent-runtime-next-goals.md) — **本线结项与后续可选目标**
 - [session-as-source-of-truth.md](./session-as-source-of-truth.md) — Session 事实 vs Context 投影
 - [context-engine.md](./context-engine.md) — ContextEngine（投影、prefix cache、epoch/delta、索引 Select）
 - [pi-agent-harness-lessons.md](./pi-agent-harness-lessons.md) — Pi Harness 对照
@@ -1569,3 +1570,8 @@ Wave 16  统一 transport command/event  ← 已完成（含 Steer/SetMode）
 - **明确不做**：Cloud `GetMode`、ACP `session/get_mode`、为读 mode 引入 reply-shaped `RuntimeClient` API。本地 `GetMode` 仍供 ACP session new/load/resume 填 `modes` 使用。
 - JobRunner 继续用 `pending_mode_id` + idle `SetMode` + 本地 `turn_busy`；不依赖拉取校验。
 - 不改 Console。不自动 replay pending tools。
+
+### 2026-08-14 — Runtime optimization line wrap-up
+
+- 新增 [agent-runtime-next-goals.md](./agent-runtime-next-goals.md)：本线结项、刻意非目标、后续可选产品线（durable subagent、跨 VM outbox、ResumeSafeTurn、Agent wiring 等）。
+- 本文标记控制面/事件产品化主线 **已收口**；体验路径见 next-goals §4。
