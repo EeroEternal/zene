@@ -352,17 +352,6 @@ function AppInner() {
     setView("new");
   }, []);
 
-  const onAuthenticated = useCallback(
-    async (auth: { user: User; organization: Organization }) => {
-      setUser(auth.user);
-      setOrg(auth.organization);
-      setAuthed(true);
-      await Promise.all([refreshGithub(), refreshRepos().catch(() => {}), refreshRuns()]);
-      showNewAgent();
-    },
-    [refreshGithub, refreshRepos, refreshRuns, showNewAgent],
-  );
-
   const bootstrapped = useRef(false);
   useEffect(() => {
     if (bootstrapped.current) return;
@@ -375,6 +364,17 @@ function AppInner() {
     setSelectedRepoIdState(readPref("zc.repoId", ""));
 
     (async () => {
+      const params = new URLSearchParams(window.location.search);
+      const auth = params.get("auth");
+      const authError = params.get("auth_error");
+      if (auth || authError) {
+        params.delete("auth");
+        params.delete("auth_error");
+        const next = params.toString();
+        history.replaceState({}, "", next ? `${location.pathname}?${next}` : location.pathname);
+      }
+      if (authError) toast("This sign-in link is invalid or expired", "error");
+      if (auth) setToken(auth);
       const token = loadToken();
       if (!token) {
         setReady(true);
@@ -392,7 +392,7 @@ function AppInner() {
         setReady(true);
       }
     })();
-  }, [refreshGithub, refreshRepos, refreshRuns]);
+  }, [refreshGithub, refreshRepos, refreshRuns, toast]);
 
   // Deep-link after OAuth redirect
   useEffect(() => {
@@ -413,7 +413,7 @@ function AppInner() {
   if (!ready) return null;
 
   if (!authed) {
-    return <AuthView onAuthenticated={onAuthenticated} />;
+    return <AuthView />;
   }
 
   return (

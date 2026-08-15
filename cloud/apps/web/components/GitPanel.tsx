@@ -6,6 +6,7 @@ import { readSessionUi, writeSessionUi, type SessionGitSubTab } from "@/lib/sess
 import { ChangesPanel } from "./ChangesPanel";
 import { CommitsPanel } from "./CommitsPanel";
 import { ReviewPanel } from "./ReviewPanel";
+import { IconUpload } from "@/lib/icons";
 
 export type GitSubTab = SessionGitSubTab;
 
@@ -25,6 +26,9 @@ export function GitPanel({
   headBranch,
   prUrl,
   prState,
+  onPush,
+  pushBusy,
+  onCreatePr,
 }: {
   runId: string;
   defaultTitle?: string;
@@ -32,6 +36,9 @@ export function GitPanel({
   headBranch?: string;
   prUrl?: string;
   prState?: PullRequestState;
+  onPush?: () => void | Promise<void>;
+  pushBusy?: boolean;
+  onCreatePr?: () => void;
 }) {
   const [subTab, setSubTabState] = useState<GitSubTab>(() => {
     const saved = readSessionUi(runId).gitSubTab;
@@ -84,28 +91,48 @@ export function GitPanel({
           </div>
         </div>
       </div>
-      <div className="flex h-8 items-center gap-0.5 border-b border-line bg-canvas px-2">
-        {(
-          [
-            { id: "diff" as const, label: "Diff" },
-            { id: "review" as const, label: "Review" },
-            { id: "commits" as const, label: "Commits" },
-          ] as const
-        ).map((t) => (
-          <button
-            key={t.id}
-            type="button"
-            className={[
-              "-mb-px border-b-2 px-2.5 py-1.5 text-[12px] font-medium",
-              subTab === t.id
-                ? "border-ink text-ink"
-                : "border-transparent text-muted hover:text-ink",
-            ].join(" ")}
-            onClick={() => setSubTab(t.id)}
-          >
-            {t.label}
-          </button>
-        ))}
+      <div className="flex h-8 items-center justify-between gap-2 border-b border-line bg-canvas px-2">
+        <div className="flex min-w-0 items-center gap-0.5">
+          {(
+            [
+              { id: "diff" as const, label: "Diff" },
+              { id: "review" as const, label: "Review" },
+              { id: "commits" as const, label: "Commits" },
+            ] as const
+          ).map((t) => (
+            <button
+              key={t.id}
+              type="button"
+              className={[
+                "-mb-px border-b-2 px-2.5 py-1.5 text-[12px] font-medium",
+                subTab === t.id
+                  ? "border-ink text-ink"
+                  : "border-transparent text-muted hover:text-ink",
+              ].join(" ")}
+              onClick={() => setSubTab(t.id)}
+            >
+              {t.label}
+            </button>
+          ))}
+        </div>
+        <div className="flex shrink-0 items-center gap-1">
+          {onCreatePr ? (
+            <button type="button" className="btn btn-sm hidden min-[641px]:inline-flex" onClick={onCreatePr}>
+              Create PR
+            </button>
+          ) : null}
+          {onPush ? (
+            <button
+              type="button"
+              className="btn btn-primary btn-sm inline-flex items-center gap-1"
+              disabled={pushBusy}
+              onClick={() => void onPush()}
+            >
+              <IconUpload className="h-3.5 w-3.5" />
+              {pushBusy ? "Pushing…" : "Push"}
+            </button>
+          ) : null}
+        </div>
       </div>
       <div className="min-h-0 overflow-hidden">
         {subTab === "diff" && <ChangesPanel runId={runId} baseRef={defaultBaseRef} />}

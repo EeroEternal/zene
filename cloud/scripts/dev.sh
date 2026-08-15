@@ -15,6 +15,14 @@ if [[ -f "$ROOT/github.env" ]]; then
   set +a
 fi
 
+# Optional Resend credentials for email sign-in.
+if [[ -f "$ROOT/email.env" ]]; then
+  set -a
+  # shellcheck disable=SC1091
+  source "$ROOT/email.env"
+  set +a
+fi
+
 export ZENE_CLOUD_DATABASE_URL="${ZENE_CLOUD_DATABASE_URL:-sqlite:$ROOT/data/zene-cloud.db}"
 export ZENE_CLOUD_WORKER_TOKEN="${ZENE_CLOUD_WORKER_TOKEN:-dev-worker-token}"
 export ZENE_CLOUD_WEB_DIR="${ZENE_CLOUD_WEB_DIR:-$ROOT/apps/web/dist}"

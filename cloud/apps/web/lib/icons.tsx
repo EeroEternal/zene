@@ -48,6 +48,7 @@ import {
   ThumbsDown,
   ThumbsUp,
   Trash2,
+  Upload,
   User,
   type LucideIcon,
   type LucideProps,
@@ -143,4 +144,5 @@ export const IconSquarePen = lucideIcon(SquarePen);
 export const IconThumbsDown = lucideIcon(ThumbsDown);
 export const IconThumbsUp = lucideIcon(ThumbsUp);
 export const IconTrash = lucideIcon(Trash2);
+export const IconUpload = lucideIcon(Upload);
 export const IconUser = lucideIcon(User);

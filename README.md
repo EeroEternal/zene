@@ -7,7 +7,7 @@ Zene is a coding-agent product. The product UI is **Cloud Console** (`cloud/`); 
 ```bash
 cd cloud && ./scripts/dev.sh
 # open http://127.0.0.1:8788/
-# Register → Settings (LLM BYOK) → Connect GitHub → New Agent
+# Email sign-in → Settings (LLM BYOK) → Connect GitHub → New Agent
 ```
 
 `dev.sh` builds or locates the repo-root `zene` binary and starts the API + worker with real ACP.

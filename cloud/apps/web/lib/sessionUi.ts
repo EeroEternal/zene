@@ -10,6 +10,8 @@ export type SessionUi = {
   selectedFile?: string | null;
   mdPreview?: boolean;
   expandedDirs?: string[];
+  /** User dismissed the chat push prompt for the current head. */
+  pushPromptDismissedHead?: string | null;
 };
 
 const KEY = "zc.sessionUi";

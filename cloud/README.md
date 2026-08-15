@@ -4,7 +4,7 @@
 
 ## 当前能力（可本地完整演示）
 
-- 用户注册 / 登录与组织
+- 邮箱登录链接（Resend）与组织
 - GitHub 集成（默认 **live**；凭证可在 Settings 页面配置，也可用 env 覆盖）
 - Repository 同步 / 选择
 - Run 生命周期：创建、消息、取消、事件
@@ -45,7 +45,7 @@ cd cloud/apps/web && npm run dev
 
 推荐演示路径：
 
-1. 注册账号
+1. 用工作邮箱接收登录链接并进入 Console
 2. **Settings** 配置 LLM（API key + base URL，如 DeepSeek / Custom）
 3. Connect GitHub
 4. New Agent 选择仓库，输入任务并 Start
@@ -66,6 +66,8 @@ cd cloud/apps/web && npm run dev
 | `ZENE_CLOUD_WORKER_MAX_HOLD` | `8` | 同时 waiting_for_user/approval 暖持上限 |
 | `ZENE_CLOUD_WORKER_SCALE_INTERVAL_MS` | `1000` | supervisor 调谐周期 |
 | `ZENE_CLOUD_PUSH_PR` | `1` | 完成后自动 push + draft PR |
+| `RESEND_API_KEY` | — | 邮箱登录邮件（[Resend](https://resend.com)） |
+| `RESEND_FROM` | `Zene <noreply@zene.run>` | 发件人，需在 Resend 验证域名 |
 | `GITHUB_CLIENT_ID/SECRET` | — | live OAuth |
 | `GITHUB_APP_ID` / `GITHUB_APP_PRIVATE_KEY_PATH` | — | live App |
 | 用户 Settings LLM / `ZENE_API_KEY` | — | 真实 ACP 需要 LLM（优先 per-user BYOK） |

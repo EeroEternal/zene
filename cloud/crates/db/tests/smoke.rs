@@ -12,7 +12,9 @@ use zene_cloud_domain::{
 async fn register_create_run_and_claim() {
     let db = Db::connect("sqlite::memory:").await.unwrap();
     db.migrate().await.unwrap();
-    db.ensure_dev_worker_token("dev-worker-token").await.unwrap();
+    db.ensure_dev_worker_token("dev-worker-token")
+        .await
+        .unwrap();
 
     let auth = db
         .register(RegisterRequest {
@@ -118,14 +120,24 @@ async fn register_create_run_and_claim() {
 
     let mut stale = fence.clone();
     stale.generation += 1;
-    assert!(db.heartbeat_fenced(run.id, &stale).await.unwrap_err().to_string().contains("stale_attempt"));
-    assert!(db.append_event_fenced(
-        run.id,
-        &stale,
-        Some("stale-event"),
-        RunEventKind::Runtime,
-        serde_json::json!({}),
-    ).await.unwrap_err().to_string().contains("stale_attempt"));
+    assert!(db
+        .heartbeat_fenced(run.id, &stale)
+        .await
+        .unwrap_err()
+        .to_string()
+        .contains("stale_attempt"));
+    assert!(db
+        .append_event_fenced(
+            run.id,
+            &stale,
+            Some("stale-event"),
+            RunEventKind::Runtime,
+            serde_json::json!({}),
+        )
+        .await
+        .unwrap_err()
+        .to_string()
+        .contains("stale_attempt"));
     assert!(db
         .set_runtime_session_id_fenced(run.id, &stale, "stale-session")
         .await
@@ -142,14 +154,9 @@ async fn register_create_run_and_claim() {
     )
     .await
     .unwrap();
-    db.update_run_status(
-        run.id,
-        zene_cloud_domain::RunStatus::Queued,
-        None,
-        None,
-    )
-    .await
-    .unwrap();
+    db.update_run_status(run.id, zene_cloud_domain::RunStatus::Queued, None, None)
+        .await
+        .unwrap();
     let reclaimed = db
         .claim_next_run("worker-2", std::path::Path::new("/tmp/zc-workspaces"))
         .await
@@ -282,16 +289,27 @@ async fn run_state_mutations_have_matching_events() {
     assert!(updated.finished_at.is_some());
 
     let message = db
-        .add_message(run.id, Some(auth.user.id), MessageRole::User, "follow-up", None)
+        .add_message(
+            run.id,
+            Some(auth.user.id),
+            MessageRole::User,
+            "follow-up",
+            None,
+        )
         .await
         .unwrap();
-    assert_eq!(db.get_run(run.id).await.unwrap().unwrap().status, RunStatus::Queued);
+    assert_eq!(
+        db.get_run(run.id).await.unwrap().unwrap().status,
+        RunStatus::Queued
+    );
 
     let events = db.events_after(run.id, 0).await.unwrap();
     assert!(events.iter().any(|event| {
         event.payload["event"] == "run.title" && event.payload["title"] == "Renamed"
     }));
-    assert!(events.iter().any(|event| event.payload["event"] == "run.archived"));
+    assert!(events
+        .iter()
+        .any(|event| event.payload["event"] == "run.archived"));
     assert!(events.iter().any(|event| {
         event.payload["event"] == "message.created" && event.payload["text"] == "follow-up"
     }));
@@ -413,7 +431,10 @@ async fn concurrent_approval_decisions_have_one_winner_event() {
 
     assert_eq!(left.status, right.status);
     assert_eq!(left.decision, right.decision);
-    assert!(matches!(left.status, ApprovalStatus::Approved | ApprovalStatus::Denied));
+    assert!(matches!(
+        left.status,
+        ApprovalStatus::Approved | ApprovalStatus::Denied
+    ));
     let events = db.events_after(run_id, 0).await.unwrap();
     assert_eq!(
         events
@@ -437,78 +458,211 @@ async fn worker_command_is_retried_until_fenced_ack() {
         .await
         .unwrap();
     let repo = db
-        .create_repository(auth.organization.id, CreateRepositoryRequest {
-            owner: "test".into(), name: "delivery".into(), default_branch: "main".into(), clone_url: None,
-        })
+        .create_repository(
+            auth.organization.id,
+            CreateRepositoryRequest {
+                owner: "test".into(),
+                name: "delivery".into(),
+                default_branch: "main".into(),
+                clone_url: None,
+            },
+        )
         .await
         .unwrap();
-    let run = db.create_run(auth.organization.id, auth.user.id, CreateRunRequest {
-        repository_id: repo.id, prompt: "initial".into(), base_ref: None, model: "default".into(),
-        permission_mode: PermissionMode::Default, max_turns: 10, mode_id: None,
-    }).await.unwrap();
-    let claimed = db.claim_next_run("worker-delivery", std::path::Path::new("/tmp/zc-workspaces"))
-        .await.unwrap().unwrap();
-    let fence = WorkerFence { attempt_id: claimed.1, generation: claimed.2, worker_id: "worker-delivery".into() };
-    let message = db.add_message(run.id, Some(auth.user.id), MessageRole::User, "follow-up", None).await.unwrap();
-    let commands = db.poll_worker_commands_fenced(run.id, &fence).await.unwrap();
-    assert_eq!(commands.iter().filter_map(|command| command.message_id).collect::<Vec<_>>(), vec![message.id]);
-    assert!(commands.iter().all(|command| command.kind == WorkerCommandKind::Prompt));
-    assert!(db.poll_worker_commands_fenced(run.id, &fence).await.unwrap().iter().all(|command| command.message_id != Some(message.id)));
+    let run = db
+        .create_run(
+            auth.organization.id,
+            auth.user.id,
+            CreateRunRequest {
+                repository_id: repo.id,
+                prompt: "initial".into(),
+                base_ref: None,
+                model: "default".into(),
+                permission_mode: PermissionMode::Default,
+                max_turns: 10,
+                mode_id: None,
+            },
+        )
+        .await
+        .unwrap();
+    let claimed = db
+        .claim_next_run(
+            "worker-delivery",
+            std::path::Path::new("/tmp/zc-workspaces"),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    let fence = WorkerFence {
+        attempt_id: claimed.1,
+        generation: claimed.2,
+        worker_id: "worker-delivery".into(),
+    };
+    let message = db
+        .add_message(
+            run.id,
+            Some(auth.user.id),
+            MessageRole::User,
+            "follow-up",
+            None,
+        )
+        .await
+        .unwrap();
+    let commands = db
+        .poll_worker_commands_fenced(run.id, &fence)
+        .await
+        .unwrap();
+    assert_eq!(
+        commands
+            .iter()
+            .filter_map(|command| command.message_id)
+            .collect::<Vec<_>>(),
+        vec![message.id]
+    );
+    assert!(commands
+        .iter()
+        .all(|command| command.kind == WorkerCommandKind::Prompt));
+    assert!(db
+        .poll_worker_commands_fenced(run.id, &fence)
+        .await
+        .unwrap()
+        .iter()
+        .all(|command| command.message_id != Some(message.id)));
     let mut stale_fence = fence.clone();
     stale_fence.generation += 1;
-    assert!(db.ack_worker_command_fenced(run.id, &stale_fence, message.id).await.unwrap_err().to_string().contains("stale_attempt"));
-    db.ack_worker_command_fenced(run.id, &fence, message.id).await.unwrap();
-    assert!(db.poll_worker_commands_fenced(run.id, &fence).await.unwrap().iter().all(|command| command.message_id != Some(message.id)));
+    assert!(db
+        .ack_worker_command_fenced(run.id, &stale_fence, message.id)
+        .await
+        .unwrap_err()
+        .to_string()
+        .contains("stale_attempt"));
+    db.ack_worker_command_fenced(run.id, &fence, message.id)
+        .await
+        .unwrap();
+    assert!(db
+        .poll_worker_commands_fenced(run.id, &fence)
+        .await
+        .unwrap()
+        .iter()
+        .all(|command| command.message_id != Some(message.id)));
 
-    let message = db.add_message(run.id, Some(auth.user.id), MessageRole::User, "retry me", None).await.unwrap();
+    let message = db
+        .add_message(
+            run.id,
+            Some(auth.user.id),
+            MessageRole::User,
+            "retry me",
+            None,
+        )
+        .await
+        .unwrap();
     let first_claim = chrono::Utc::now();
-    let _ = db.poll_worker_commands_fenced_at(run.id, &fence, first_claim).await.unwrap();
-    let retry = db.poll_worker_commands_fenced_at(
-        run.id,
-        &fence,
-        first_claim + chrono::Duration::seconds(61),
-    ).await.unwrap();
-    assert!(retry.iter().any(|command| command.message_id == Some(message.id)));
+    let _ = db
+        .poll_worker_commands_fenced_at(run.id, &fence, first_claim)
+        .await
+        .unwrap();
+    let retry = db
+        .poll_worker_commands_fenced_at(run.id, &fence, first_claim + chrono::Duration::seconds(61))
+        .await
+        .unwrap();
+    assert!(retry
+        .iter()
+        .any(|command| command.message_id == Some(message.id)));
 }
 
 #[tokio::test]
 async fn stale_waiting_for_user_attempt_is_requeued_but_approval_holds_are_not() {
     async fn make_run(db: &Db, suffix: &str) -> (zene_cloud_domain::Run, WorkerFence) {
-        let auth = db.register(RegisterRequest {
-            email: format!("{}-{}@example.com", suffix, Uuid::new_v4()),
-            password: "password123".into(), display_name: suffix.into(),
-        }).await.unwrap();
-        let repo = db.create_repository(auth.organization.id, CreateRepositoryRequest {
-            owner: suffix.into(), name: suffix.into(), default_branch: "main".into(), clone_url: None,
-        }).await.unwrap();
-        let run = db.create_run(auth.organization.id, auth.user.id, CreateRunRequest {
-            repository_id: repo.id, prompt: suffix.into(), base_ref: None, model: "default".into(),
-            permission_mode: PermissionMode::Default, max_turns: 10, mode_id: None,
-        }).await.unwrap();
-        let claimed = db.claim_next_run("stale-policy-worker", std::path::Path::new("/tmp/zc-workspaces"))
-            .await.unwrap().unwrap();
-        let fence = WorkerFence { attempt_id: claimed.1, generation: claimed.2, worker_id: "stale-policy-worker".into() };
+        let auth = db
+            .register(RegisterRequest {
+                email: format!("{}-{}@example.com", suffix, Uuid::new_v4()),
+                password: "password123".into(),
+                display_name: suffix.into(),
+            })
+            .await
+            .unwrap();
+        let repo = db
+            .create_repository(
+                auth.organization.id,
+                CreateRepositoryRequest {
+                    owner: suffix.into(),
+                    name: suffix.into(),
+                    default_branch: "main".into(),
+                    clone_url: None,
+                },
+            )
+            .await
+            .unwrap();
+        let run = db
+            .create_run(
+                auth.organization.id,
+                auth.user.id,
+                CreateRunRequest {
+                    repository_id: repo.id,
+                    prompt: suffix.into(),
+                    base_ref: None,
+                    model: "default".into(),
+                    permission_mode: PermissionMode::Default,
+                    max_turns: 10,
+                    mode_id: None,
+                },
+            )
+            .await
+            .unwrap();
+        let claimed = db
+            .claim_next_run(
+                "stale-policy-worker",
+                std::path::Path::new("/tmp/zc-workspaces"),
+            )
+            .await
+            .unwrap()
+            .unwrap();
+        let fence = WorkerFence {
+            attempt_id: claimed.1,
+            generation: claimed.2,
+            worker_id: "stale-policy-worker".into(),
+        };
         (run, fence)
     }
 
     let db = Db::connect("sqlite::memory:").await.unwrap();
     db.migrate().await.unwrap();
     let (user_run, user_fence) = make_run(&db, "user-hold").await;
-    db.update_run_status_fenced(user_run.id, &user_fence, RunStatus::WaitingForUser, None, None).await.unwrap();
+    db.update_run_status_fenced(
+        user_run.id,
+        &user_fence,
+        RunStatus::WaitingForUser,
+        None,
+        None,
+    )
+    .await
+    .unwrap();
     let (approval_run, approval_fence) = make_run(&db, "approval-hold").await;
-    db.update_run_status_fenced(approval_run.id, &approval_fence, RunStatus::WaitingForApproval, None, None).await.unwrap();
+    db.update_run_status_fenced(
+        approval_run.id,
+        &approval_fence,
+        RunStatus::WaitingForApproval,
+        None,
+        None,
+    )
+    .await
+    .unwrap();
 
     // Lease is WORKER_LEASE_SECS with RECLAIM_GRACE_SECS grace before reclaim.
     assert_eq!(
-        db.reclaim_stale_runs_at(
-            chrono::Utc::now() + chrono::Duration::seconds(180 + 60 + 1)
-        )
+        db.reclaim_stale_runs_at(chrono::Utc::now() + chrono::Duration::seconds(180 + 60 + 1))
             .await
             .unwrap(),
         1
     );
-    assert_eq!(db.get_run(user_run.id).await.unwrap().unwrap().status, RunStatus::Queued);
-    assert_eq!(db.get_run(approval_run.id).await.unwrap().unwrap().status, RunStatus::WaitingForApproval);
+    assert_eq!(
+        db.get_run(user_run.id).await.unwrap().unwrap().status,
+        RunStatus::Queued
+    );
+    assert_eq!(
+        db.get_run(approval_run.id).await.unwrap().unwrap().status,
+        RunStatus::WaitingForApproval
+    );
     // Approval lifecycle remains deliberately outside this durability slice.
 }
 
@@ -609,7 +763,10 @@ async fn worker_title_is_fenced_and_retry_idempotent() {
     db.update_run_title_fenced(run.id, &second_fence, "Replacement title")
         .await
         .unwrap();
-    assert_eq!(db.get_run(run.id).await.unwrap().unwrap().title, "Replacement title");
+    assert_eq!(
+        db.get_run(run.id).await.unwrap().unwrap().title,
+        "Replacement title"
+    );
 }
 
 #[tokio::test]
@@ -640,7 +797,6 @@ async fn event_cursor_migration_retries_after_partial_ddl() {
 
     db.migrate().await.unwrap();
 }
-
 
 #[tokio::test]
 async fn register_same_display_name_gets_unique_org_slug() {
@@ -711,7 +867,10 @@ async fn pending_mode_is_queued_and_taken_once() {
     assert_eq!(taken.as_deref(), Some("plan"));
     assert_eq!(db.take_pending_mode(run.id).await.unwrap(), None);
     db.set_pending_mode(run.id, "default").await.unwrap();
-    assert_eq!(db.take_pending_mode(run.id).await.unwrap().as_deref(), Some("default"));
+    assert_eq!(
+        db.take_pending_mode(run.id).await.unwrap().as_deref(),
+        Some("default")
+    );
 }
 
 #[tokio::test]
@@ -764,9 +923,15 @@ async fn worker_requeue_clears_terminal_state_and_preserves_history() {
         generation: claimed.2,
         worker_id: "requeue-worker".into(),
     };
-    db.add_message(run.id, Some(auth.user.id), MessageRole::User, "follow-up", None)
-        .await
-        .unwrap();
+    db.add_message(
+        run.id,
+        Some(auth.user.id),
+        MessageRole::User,
+        "follow-up",
+        None,
+    )
+    .await
+    .unwrap();
     db.append_event(
         run.id,
         fence.generation,
@@ -842,7 +1007,11 @@ async fn clone_credentials_are_cached_for_reclaim() {
         mock: false,
     };
     db.store_clone_credentials(&auth_response).await.unwrap();
-    let cached = db.get_cached_clone_credentials(run.id).await.unwrap().unwrap();
+    let cached = db
+        .get_cached_clone_credentials(run.id)
+        .await
+        .unwrap()
+        .unwrap();
     assert_eq!(cached.token.as_deref(), Some("ghs_cached"));
 }
 
@@ -911,4 +1080,31 @@ async fn user_retry_requeues_failed_run_and_resumes_without_prompt() {
     assert_eq!(replacement.0.status, RunStatus::Provisioning);
     assert_eq!(replacement.3.as_deref(), Some("runtime-session-retry"));
     assert!(replacement.5);
+}
+
+#[tokio::test]
+async fn email_login_creates_user_then_signs_in_existing() {
+    let db = Db::connect("sqlite::memory:").await.unwrap();
+    db.migrate().await.unwrap();
+    let email = format!("email-login-{}@example.com", Uuid::new_v4());
+
+    let token = db.create_email_login_token(&email).await.unwrap();
+    let auth = db.consume_email_login_token(&token).await.unwrap();
+    assert_eq!(auth.user.email, email);
+    assert!(db.consume_email_login_token(&token).await.is_err());
+
+    let token2 = db.create_email_login_token(&email).await.unwrap();
+    let auth2 = db.consume_email_login_token(&token2).await.unwrap();
+    assert_eq!(auth2.user.id, auth.user.id);
+    assert_eq!(auth2.organization.id, auth.organization.id);
+}
+
+#[tokio::test]
+async fn email_login_rejects_invalid_and_rate_limits() {
+    let db = Db::connect("sqlite::memory:").await.unwrap();
+    db.migrate().await.unwrap();
+    assert!(db.create_email_login_token("not-an-email").await.is_err());
+    let email = format!("rate-{}@example.com", Uuid::new_v4());
+    db.create_email_login_token(&email).await.unwrap();
+    assert!(db.create_email_login_token(&email).await.is_err());
 }

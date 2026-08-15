@@ -83,6 +83,12 @@ impl From<anyhow::Error> for AppError {
         if msg.contains("invalid credentials") || msg.contains("password") {
             return Self::unauthorized(msg);
         }
+        if msg.contains("invalid or expired sign-in") {
+            return Self::unauthorized(msg);
+        }
+        if msg.contains("wait a moment") || msg.contains("invalid email") {
+            return Self::bad_request(msg);
+        }
         if msg.contains("not found") {
             return Self::not_found(msg);
         }
