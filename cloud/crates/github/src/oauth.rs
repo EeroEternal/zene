@@ -19,11 +19,11 @@ impl OauthConfig {
         let client_id = cfg
             .client_id
             .clone()
-            .unwrap_or_else(|| "mock-client-id".into());
+            .ok_or_else(|| anyhow::anyhow!("GitHub OAuth client_id is not configured"))?;
         let client_secret = cfg
             .client_secret
             .clone()
-            .unwrap_or_else(|| "mock-client-secret".into());
+            .ok_or_else(|| anyhow::anyhow!("GitHub OAuth client_secret is not configured"))?;
         Ok(Self {
             client_id,
             client_secret,
@@ -65,22 +65,13 @@ pub fn new_oauth_state() -> String {
 }
 
 /// Exchange an authorization code for tokens.
-/// In mock mode, accepts any non-empty code and returns a fake token.
 pub async fn exchange_code(
     cfg: &OauthConfig,
     http: &reqwest::Client,
     code: &str,
-    mock: bool,
 ) -> Result<OauthTokens> {
     if code.trim().is_empty() {
         bail!("oauth code is empty");
-    }
-    if mock {
-        return Ok(OauthTokens {
-            access_token: format!("mock_oauth_{}", &code[..code.len().min(8)]),
-            token_type: "bearer".into(),
-            scope: Some(cfg.scopes.join(",")),
-        });
     }
 
     #[derive(Serialize)]

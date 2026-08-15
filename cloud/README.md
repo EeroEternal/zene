@@ -5,13 +5,13 @@
 ## 当前能力（可本地完整演示）
 
 - 邮箱登录链接（Resend）与组织
-- GitHub 集成（默认 **live**；凭证可在 Settings 页面配置，也可用 env 覆盖）
+- GitHub 集成（OAuth + GitHub App，凭证可在 Settings 页面配置，也可用 env 覆盖）
 - Repository 同步 / 选择
 - Run 生命周期：创建、消息、取消、事件
-- Worker：clone（mock workspace 或真实 git）、默认真实 `zene acp`（缺二进制且 `ZENE_CLOUD_ALLOW_MOCK=1` 时才 MockAgent）
+- Worker：真实 git clone、默认真实 `zene acp`（缺二进制且 `ZENE_CLOUD_ALLOW_MOCK=1` 时才 MockAgent）
 - 用户 BYOK LLM（Settings → 注入 `zene acp` 环境变量）
 - Permission / AskUser 审批
-- Files / Diff / Push / Draft PR（Git Broker，mock 或 live）
+- Files / Diff / Push / Draft PR（Git Broker）
 - Cursor 风格 Web UI
 
 ## 快速启动
@@ -87,8 +87,6 @@ export GITHUB_APP_SLUG=your-app-slug
 GitHub App 的 **Setup URL** 设为：本地 `http://127.0.0.1:8788/api/v1/github/install/callback`；生产 `https://zene.run/api/v1/github/install/callback`。
 
 生产部署见 [`deploy/README.md`](deploy/README.md)。
-
-强制 mock：`export ZENE_CLOUD_GITHUB_MODE=mock`
 
 ## 目录
 

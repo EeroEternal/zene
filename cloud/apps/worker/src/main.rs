@@ -2066,7 +2066,7 @@ mod title_tests {
         let state = AppState::new(
             db.clone(),
             worker_token.into(),
-            GithubClient::new(GithubConfig::mock()),
+            GithubClient::new(GithubConfig::live_default()),
             workspace_root.clone(),
             "http://127.0.0.1".into(),
         );

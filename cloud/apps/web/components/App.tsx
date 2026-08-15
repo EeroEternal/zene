@@ -61,8 +61,7 @@ function AppInner() {
   const githubConnected = useMemo(() => {
     if (github.connected) return true;
     const installations = github.installations || [];
-    if (github.mode === "mock") return installations.length > 0 || !!github.account;
-    return installations.some((i) => i.accountLogin && i.accountLogin !== "mock-org");
+    return installations.length > 0 || !!github.account;
   }, [github]);
 
   const githubDisplayLogin = useMemo(() => {
@@ -70,7 +69,6 @@ function AppInner() {
     return (
       github.displayLogin ||
       github.account?.login ||
-      installations.find((i) => i.accountLogin && i.accountLogin !== "mock-org")?.accountLogin ||
       installations[0]?.accountLogin ||
       null
     );
@@ -160,13 +158,11 @@ function AppInner() {
       const st = await api<GithubStatus>("/api/v1/github/status");
       setGithub(st);
       const installations = st.installations || [];
-      const hasLiveInstall =
-        !!st.connected ||
-        installations.some((i) => i.accountLogin && i.accountLogin !== "mock-org");
+      const hasInstall = !!st.connected || installations.length > 0;
       // Connected but empty picker: load DB list, then sync from GitHub if still empty.
-      if (st.mode === "live" && hasLiveInstall) {
+      if (hasInstall) {
         const list = await refreshRepos().catch(() => [] as Repo[]);
-        if (!list.some((r) => r.owner && r.owner !== "mock-org")) {
+        if (!list.length) {
           await syncGithubRepos({ silent: true }).catch(() => {});
         }
       }
@@ -180,9 +176,7 @@ function AppInner() {
   const finishGithubConnect = useCallback(async () => {
     const st = await refreshGithub();
     const installations = st?.installations || [];
-    const connected =
-      !!st?.connected ||
-      installations.some((i) => i.accountLogin && i.accountLogin !== "mock-org");
+    const connected = !!st?.connected || installations.length > 0;
     if (!connected) {
       toast(
         "GitHub connection did not complete. Re-open Connect GitHub and finish the App install.",
@@ -198,7 +192,7 @@ function AppInner() {
     const login =
       st?.displayLogin ||
       st?.account?.login ||
-      installations.find((i) => i.accountLogin && i.accountLogin !== "mock-org")?.accountLogin;
+      installations[0]?.accountLogin;
     toast(`GitHub connected${login ? ` · @${login}` : ""}`, "ok");
     if (view !== "settings") setOpenProjectMenuSignal((n) => n + 1);
   }, [refreshGithub, refreshRepos, syncGithubRepos, toast, view]);
@@ -240,18 +234,6 @@ function AppInner() {
 
   const connectGithub = useCallback(async (): Promise<string> => {
     try {
-      if (github.mode === "mock") {
-        const res = await api<{ account?: { login?: string }; repositories?: Repo[] }>(
-          "/api/v1/github/mock/connect",
-          { method: "POST", body: "{}" },
-        );
-        if (res.repositories) setRepos(res.repositories);
-        toast(`Connected as @${res.account?.login || "github"} (mock)`, "ok");
-        await refreshGithub();
-        await refreshRepos();
-        if (view !== "settings") setOpenProjectMenuSignal((n) => n + 1);
-        return "";
-      }
       const start = await api<{ installUrl?: string; hint?: string }>("/api/v1/github/connect/start");
       if (start.installUrl) {
         openGithubConnectPopup(start.installUrl, finishGithubConnect);
@@ -263,7 +245,7 @@ function AppInner() {
       toast(msg, "error");
       return msg;
     }
-  }, [github.mode, refreshGithub, refreshRepos, toast, view, openGithubConnectPopup, finishGithubConnect]);
+  }, [toast, openGithubConnectPopup, finishGithubConnect]);
 
   const showNewAgent = useCallback(() => {
     setCurrentRunId(null);
