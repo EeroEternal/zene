@@ -4061,7 +4061,7 @@ dependencies = [
 
 [[package]]
 name = "zene-agent-runtime"
-version = "0.1.11"
+version = "0.1.12"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -4081,7 +4081,7 @@ dependencies = [
 
 [[package]]
 name = "zene-cli"
-version = "0.1.11"
+version = "0.1.12"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -4105,7 +4105,7 @@ dependencies = [
 
 [[package]]
 name = "zene-config"
-version = "0.1.11"
+version = "0.1.12"
 dependencies = [
  "anyhow",
  "dirs",
@@ -4118,7 +4118,7 @@ dependencies = [
 
 [[package]]
 name = "zene-context"
-version = "0.1.11"
+version = "0.1.12"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -4138,7 +4138,7 @@ dependencies = [
 
 [[package]]
 name = "zene-core"
-version = "0.1.11"
+version = "0.1.12"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -4170,7 +4170,7 @@ dependencies = [
 
 [[package]]
 name = "zene-hooks"
-version = "0.1.11"
+version = "0.1.12"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -4183,7 +4183,7 @@ dependencies = [
 
 [[package]]
 name = "zene-index"
-version = "0.1.11"
+version = "0.1.12"
 dependencies = [
  "anyhow",
  "ignore",
@@ -4201,7 +4201,7 @@ dependencies = [
 
 [[package]]
 name = "zene-inference-gateway"
-version = "0.1.11"
+version = "0.1.12"
 dependencies = [
  "anyhow",
  "axum",
@@ -4223,7 +4223,7 @@ dependencies = [
 
 [[package]]
 name = "zene-llm"
-version = "0.1.11"
+version = "0.1.12"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -4241,7 +4241,7 @@ dependencies = [
 
 [[package]]
 name = "zene-mcp"
-version = "0.1.11"
+version = "0.1.12"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -4260,7 +4260,7 @@ dependencies = [
 
 [[package]]
 name = "zene-model-executor"
-version = "0.1.11"
+version = "0.1.12"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -4271,7 +4271,7 @@ dependencies = [
 
 [[package]]
 name = "zene-permission"
-version = "0.1.11"
+version = "0.1.12"
 dependencies = [
  "async-trait",
  "parking_lot",
@@ -4281,7 +4281,7 @@ dependencies = [
 
 [[package]]
 name = "zene-runtime"
-version = "0.1.11"
+version = "0.1.12"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -4291,7 +4291,7 @@ dependencies = [
 
 [[package]]
 name = "zene-sandbox"
-version = "0.1.11"
+version = "0.1.12"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -4309,7 +4309,7 @@ dependencies = [
 
 [[package]]
 name = "zene-session"
-version = "0.1.11"
+version = "0.1.12"
 dependencies = [
  "anyhow",
  "chrono",
@@ -4325,7 +4325,7 @@ dependencies = [
 
 [[package]]
 name = "zene-tool-runtime"
-version = "0.1.11"
+version = "0.1.12"
 dependencies = [
  "tempfile",
  "tracing",
@@ -4333,7 +4333,7 @@ dependencies = [
 
 [[package]]
 name = "zene-tools"
-version = "0.1.11"
+version = "0.1.12"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -4358,7 +4358,7 @@ dependencies = [
 
 [[package]]
 name = "zene-turn"
-version = "0.1.11"
+version = "0.1.12"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -4370,7 +4370,7 @@ dependencies = [
 
 [[package]]
 name = "zene-workspace"
-version = "0.1.11"
+version = "0.1.12"
 dependencies = [
  "tempfile",
  "tracing",
