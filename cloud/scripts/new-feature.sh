@@ -39,8 +39,10 @@ ROUTES_RS="$ROOT/cloud/apps/api/src/routes.rs"
 CLOUD_INDEX="$ROOT/cloud/apps/web/lib/cloud/index.ts"
 HOOKS_INDEX="$ROOT/cloud/apps/web/lib/hooks/index.ts"
 TYPES_TS="$ROOT/cloud/apps/web/lib/types.ts"
+CAP_TS="$ROOT/cloud/apps/web/lib/cap/${KEBAB}.ts"
+CAPS_TS="$ROOT/cloud/apps/web/lib/capabilities.ts"
 
-for f in "$FEATURE_RS" "$CLIENT_TS" "$HOOK_TS"; do
+for f in "$FEATURE_RS" "$CLIENT_TS" "$HOOK_TS" "$CAP_TS"; do
   if [[ -e "$f" ]]; then
     echo "already exists: $f" >&2
     exit 1
@@ -112,6 +114,13 @@ export function use${PASCAL}() {
 }
 EOF
 
+cat > "$CAP_TS" << EOF
+"use client";
+
+export { ${CAMEL}Api } from "../cloud/${NAME}";
+export { use${PASCAL} } from "../hooks/use${PASCAL}";
+EOF
+
 python3 - << PY
 from pathlib import Path
 
@@ -156,13 +165,36 @@ export interface ${PASCAL} {
 """
 if "export interface ${PASCAL} " not in tt:
     types.write_text(tt.rstrip() + block)
+
+caps = Path("$CAPS_TS")
+ctext = caps.read_text()
+entry = '''  "${KEBAB}": {
+    use: "TODO",
+    symbols: ["${CAMEL}Api", "use${PASCAL}"],
+    files: [
+      "cloud/apps/api/src/features/${NAME}.rs",
+      "cloud/apps/web/lib/cloud/${NAME}.ts",
+      "cloud/apps/web/lib/hooks/use${PASCAL}.ts",
+    ],
+  },
+'''
+# unquoted key when kebab has no hyphen
+if "-" not in "${KEBAB}":
+    entry = entry.replace('"${KEBAB}":', "${KEBAB}:", 1)
+if "${KEBAB}" not in ctext.split("as const")[0]:
+    marker = "} as const;"
+    if marker not in ctext:
+        raise SystemExit("capabilities.ts: missing } as const;")
+    caps.write_text(ctext.replace(marker, entry + marker, 1))
 PY
 
 echo "created:"
 echo "  $FEATURE_RS"
 echo "  $CLIENT_TS"
 echo "  $HOOK_TS"
-echo "wired features/mod.rs, routes.rs, lib/cloud/index.ts, lib/hooks/index.ts, lib/types.ts"
+echo "  $CAP_TS"
+echo "wired features/mod.rs, routes.rs, lib/cloud/index.ts, lib/hooks/index.ts, lib/types.ts, lib/capabilities.ts"
+echo "reuse: ./cloud/scripts/use-capability.sh ${KEBAB}"
 echo "next: domain struct + Db + real handlers (docs/agents/console-feature.md)"
 echo "then: cd cloud/apps/web && npx tsc --noEmit && npm test"
 echo "      cargo test -p zene-cloud-api --locked"

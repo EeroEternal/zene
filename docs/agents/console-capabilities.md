@@ -1,7 +1,7 @@
 # Console capabilities
 
-Capabilities are **named importable modules**, not a single mega-component. A Cursor skill (`.cursor/skills/console-capability/SKILL.md`) is only the index: look up an id, import those symbols.
+Import one ability: `import { … } from "@/cap/<id>"`. Mix ids in the same file. List ids / print import lines with `./cloud/scripts/use-capability.sh` (optionally pass `llm composer project-picker`).
 
-Source of truth: [`cloud/apps/web/lib/capabilities.ts`](../../cloud/apps/web/lib/capabilities.ts).
+Catalog: [`cloud/apps/web/lib/capabilities.ts`](../../cloud/apps/web/lib/capabilities.ts). Barrels: `cloud/apps/web/lib/cap/<id>.ts`. Skill: `.cursor/skills/console-capability/SKILL.md`.
 
-To reuse one ability when rebuilding a page, pick an id (`llm`, `composer`, `project-picker`, …) and paste its `import` lines. Do not clone `NewAgent.tsx`. To add an ability that is missing, ship a [feature slice](console-feature.md) then append a row to the catalog.
+Do not clone `NewAgent.tsx`. Missing ability: [feature slice](console-feature.md) then `use-capability.sh <id>`.

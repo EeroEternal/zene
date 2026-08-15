@@ -16,6 +16,6 @@ Primary toolchain is Cargo (Rust workspace). `cloud/apps/web/` uses npm. Rust >=
 
 - [Repository layout](docs/agents/layout.md) — where scripts belong
 - [Console UI](docs/agents/console-ui.md) — when changing `cloud/apps/web/`
-- [Console capabilities](docs/agents/console-capabilities.md) — reuse one named ability (`lib/capabilities.ts`); skill `.cursor/skills/console-capability/`
+- [Console capabilities](docs/agents/console-capabilities.md) — `import { … } from "@/cap/<id>"`; `./cloud/scripts/use-capability.sh`
 - [Console feature slice](docs/agents/console-feature.md) — add a UI+API capability (`cloud/scripts/new-feature.sh`)
 - [Cloud runtime](docs/agents/cloud.md) — ACP, workers, BYOK, local HMR, deploy

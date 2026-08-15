@@ -1,12 +1,8 @@
-/** Named Console capabilities. Import these modules; do not copy them into a new page. */
+/** Named Console capabilities. Import from `@/cap/<id>`; do not copy into a new page. */
 export const capabilities = {
   llm: {
     use: "BYOK LLM settings, readiness, model list",
-    import: [
-      'import { isLlmReady, llmApi } from "@/lib/cloud";',
-      'import { useLlmSettings } from "@/lib/hooks";',
-      'import { ModelPicker } from "@/components/pickers";',
-    ],
+    symbols: ["isLlmReady", "llmApi", "useLlmSettings", "ModelPicker"],
     files: [
       "cloud/apps/api/src/features/llm.rs",
       "cloud/apps/web/lib/cloud/llm.ts",
@@ -16,11 +12,7 @@ export const capabilities = {
   },
   repositories: {
     use: "org repos and branches",
-    import: [
-      'import { repositoriesApi } from "@/lib/cloud";',
-      'import { useRepoBranches } from "@/lib/hooks";',
-      'import { BranchPicker, ProjectPicker } from "@/components/pickers";',
-    ],
+    symbols: ["repositoriesApi", "useRepoBranches", "BranchPicker", "ProjectPicker"],
     files: [
       "cloud/apps/api/src/features/repositories.rs",
       "cloud/apps/web/lib/cloud/repositories.ts",
@@ -31,7 +23,7 @@ export const capabilities = {
   },
   github: {
     use: "GitHub connect, status, repo sync",
-    import: ['import { githubApi } from "@/lib/cloud";'],
+    symbols: ["githubApi"],
     files: [
       "cloud/apps/api/src/features/github.rs",
       "cloud/apps/web/lib/cloud/github.ts",
@@ -39,20 +31,17 @@ export const capabilities = {
   },
   session: {
     use: "current user and email sign-in",
-    import: ['import { authApi, meApi } from "@/lib/cloud";'],
+    symbols: ["authApi", "meApi"],
     files: ["cloud/apps/web/lib/cloud/session.ts"],
   },
   runs: {
     use: "create/list/follow/cancel a run, git publish",
-    import: ['import { runsApi } from "@/lib/cloud";'],
+    symbols: ["runsApi"],
     files: ["cloud/apps/web/lib/cloud/runs.ts"],
   },
   composer: {
     use: "task / follow-up prompt with / skills and @ files",
-    import: [
-      'import { useComposerText } from "@/lib/hooks";',
-      'import { Composer } from "@/components/composer";',
-    ],
+    symbols: ["Composer", "useComposerText"],
     files: [
       "cloud/apps/web/lib/hooks/useComposerText.ts",
       "cloud/apps/web/components/composer/Composer.tsx",
@@ -60,32 +49,27 @@ export const capabilities = {
   },
   "project-picker": {
     use: "choose a connected GitHub repo",
-    import: ['import { ProjectPicker } from "@/components/pickers";'],
+    symbols: ["ProjectPicker"],
     files: ["cloud/apps/web/components/pickers/ProjectPicker.tsx"],
   },
   "branch-picker": {
     use: "choose a repo branch",
-    import: ['import { BranchPicker } from "@/components/pickers";'],
+    symbols: ["BranchPicker"],
     files: ["cloud/apps/web/components/pickers/BranchPicker.tsx"],
   },
   "model-picker": {
     use: "choose the run model (needs useLlmSettings)",
-    import: [
-      'import { useLlmSettings } from "@/lib/hooks";',
-      'import { ModelPicker } from "@/components/pickers";',
-    ],
+    symbols: ["ModelPicker", "useLlmSettings"],
     files: ["cloud/apps/web/components/pickers/ModelPicker.tsx"],
   },
   "attach-menu": {
     use: "attach files, skills, MCP, permission, max turns",
-    import: ['import { AttachMenu } from "@/components/pickers";'],
+    symbols: ["AttachMenu"],
     files: ["cloud/apps/web/components/pickers/AttachMenu.tsx"],
   },
   picker: {
     use: "any new searchable list or field select",
-    import: [
-      'import { FieldSelect, SearchablePicker } from "@/components/ui";',
-    ],
+    symbols: ["FieldSelect", "SearchablePicker"],
     files: [
       "cloud/apps/web/components/ui/Picker.tsx",
       "cloud/apps/web/components/ui/FieldSelect.tsx",
@@ -93,7 +77,7 @@ export const capabilities = {
   },
   menu: {
     use: "anchored action menu",
-    import: ['import { Menu, MenuItem, MenuSep, useDismiss } from "@/components/ui";'],
+    symbols: ["Menu", "MenuItem", "MenuSep", "useDismiss"],
     files: [
       "cloud/apps/web/components/ui/Menu.tsx",
       "cloud/apps/web/components/ui/useDismiss.ts",
@@ -101,10 +85,7 @@ export const capabilities = {
   },
   dialogs: {
     use: "confirm, prompt, toast (never window.alert/confirm/prompt)",
-    import: [
-      'import { ConfirmDialog, PromptDialog } from "@/components/ui";',
-      'import { useToast } from "@/components/Toast";',
-    ],
+    symbols: ["ConfirmDialog", "PromptDialog", "useToast"],
     files: [
       "cloud/apps/web/components/ui/ConfirmDialog.tsx",
       "cloud/apps/web/components/ui/PromptDialog.tsx",
@@ -113,7 +94,7 @@ export const capabilities = {
   },
   http: {
     use: "new typed Cloud client method",
-    import: ['import { getJson, postJson, putJson, patchJson, deleteJson } from "@/lib/cloud";'],
+    symbols: ["deleteJson", "getJson", "patchJson", "postJson", "putJson"],
     files: ["cloud/apps/web/lib/cloud/http.ts"],
   },
 } as const;
@@ -122,4 +103,10 @@ export type CapabilityId = keyof typeof capabilities;
 
 export function capability(id: CapabilityId) {
   return capabilities[id];
+}
+
+/** One import for a capability. Mix ids: `./cloud/scripts/use-capability.sh llm composer`. */
+export function capImport(id: CapabilityId): string {
+  const { symbols } = capabilities[id];
+  return `import { ${symbols.join(", ")} } from "@/cap/${id}";`;
 }

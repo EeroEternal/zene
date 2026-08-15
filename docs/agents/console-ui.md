@@ -10,7 +10,7 @@ Do not use `window.alert` / `window.confirm` / `window.prompt` or equivalent blo
 
 Do not use native HTML `<select>` / `<option>`. All option-picking UI must use in-app popup panels (button trigger + `shadow-menu` picker with `picker-item` rows). Reuse `components/ui` (`SearchablePicker` / `FieldSelect` / `Menu`) and `components/pickers`. New Agent / follow-up input uses `components/composer`. Backdrop click, Esc, or choosing an item closes the panel.
 
-New Console capabilities follow the [feature slice](console-feature.md): domain type → db → `apps/api/src/features/<name>.rs` → `lib/cloud/<name>.ts` → hook → UI. Reuse an existing ability by id in [`lib/capabilities.ts`](../../cloud/apps/web/lib/capabilities.ts) ([catalog](console-capabilities.md)). Do not call `fetch` / `api()` with path strings from pages.
+New Console capabilities follow the [feature slice](console-feature.md): domain type → db → `apps/api/src/features/<name>.rs` → `lib/cloud/<name>.ts` → hook → UI. Reuse an existing ability with `import { … } from "@/cap/<id>"` ([catalog](console-capabilities.md), `./cloud/scripts/use-capability.sh`). Do not call `fetch` / `api()` with path strings from pages.
 
 ## Toasts
 
