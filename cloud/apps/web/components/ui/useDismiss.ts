@@ -7,7 +7,9 @@ export function useDismiss(
   open: boolean,
   onClose: () => void,
   rootRef: RefObject<HTMLElement | null>,
+  opts?: { event?: "click" | "mousedown" },
 ) {
+  const event = opts?.event ?? "click";
   useEffect(() => {
     if (!open) return;
     const onDoc = (e: MouseEvent) => {
@@ -19,11 +21,11 @@ export function useDismiss(
         onClose();
       }
     };
-    document.addEventListener("click", onDoc);
+    document.addEventListener(event, onDoc);
     document.addEventListener("keydown", onKey);
     return () => {
-      document.removeEventListener("click", onDoc);
+      document.removeEventListener(event, onDoc);
       document.removeEventListener("keydown", onKey);
     };
-  }, [open, onClose, rootRef]);
+  }, [open, onClose, rootRef, event]);
 }

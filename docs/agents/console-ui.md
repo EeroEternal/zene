@@ -8,7 +8,9 @@ Do not use `window.alert` / `window.confirm` / `window.prompt` or equivalent blo
 
 ## Dropdowns / pickers
 
-Do not use native HTML `<select>` / `<option>`. All option-picking UI must use in-app popup panels (button trigger + `shadow-menu` picker with `picker-item` rows). See `NewAgent.tsx` (project / branch / model) and `RunView.tsx` (model). Backdrop click, Esc, or choosing an item closes the panel.
+Do not use native HTML `<select>` / `<option>`. All option-picking UI must use in-app popup panels (button trigger + `shadow-menu` picker with `picker-item` rows). Reuse `components/ui` (`SearchablePicker` / `FieldSelect` / `Menu`) and `components/pickers`. New Agent / follow-up input uses `components/composer`. Backdrop click, Esc, or choosing an item closes the panel.
+
+New Console capabilities follow the [feature slice](console-feature.md): domain type → db → `apps/api/src/features/<name>.rs` → `lib/cloud/<name>.ts` → hook → UI. Do not call `fetch` / `api()` with path strings from pages.
 
 ## Toasts
 

@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { api } from "@/lib/api";
+import { runsApi } from "@/lib/cloud";
 import type { PullRequest, WorkspaceFile } from "@/lib/types";
 import {
   IconChevronsCollapse,
@@ -20,7 +20,7 @@ import { Markdown } from "./Markdown";
 import { CodePanelToggle } from "./PanelToggleButton";
 import { PrPanel } from "./PrPanel";
 import { useToast } from "./Toast";
-import { Menu, MenuItem } from "./ui";
+import { Menu, MenuItem, useDismiss } from "./ui";
 
 function isMarkdownPath(path: string): boolean {
   return /\.(md|markdown|mdx)$/i.test(path);
@@ -213,9 +213,7 @@ export function CodePanel({
       setSelectedFile(path);
       writeSessionUi(runId, { selectedFile: path });
       try {
-        const data = await api<{ path: string; content?: string; truncated?: boolean }>(
-          `/api/v1/runs/${runId}/file?path=${encodeURIComponent(path)}`,
-        );
+        const data = await runsApi.file(runId, path);
         setFileView({ path: data.path, content: data.content || "", truncated: data.truncated });
       } catch (err) {
         toast(err instanceof Error ? err.message : String(err), "error");
@@ -226,7 +224,7 @@ export function CodePanel({
 
   const loadFiles = useCallback(async () => {
     try {
-      const list = (await api<WorkspaceFile[]>(`/api/v1/runs/${runId}/files`)) || [];
+      const list = (await runsApi.files(runId)) || [];
       setFiles(list);
       setFilesError("");
       if (!autoOpenedRef.current) {
@@ -271,14 +269,7 @@ export function CodePanel({
     if (tab === "git") loadPrs();
   }, [tab, loadFiles, loadPrs]);
 
-  useEffect(() => {
-    if (!menuOpen) return;
-    const onDoc = (e: MouseEvent) => {
-      if (menuRef.current && !menuRef.current.contains(e.target as Node)) setMenuOpen(false);
-    };
-    document.addEventListener("mousedown", onDoc);
-    return () => document.removeEventListener("mousedown", onDoc);
-  }, [menuOpen]);
+  useDismiss(menuOpen, () => setMenuOpen(false), menuRef, { event: "mousedown" });
 
   const pushBranch = async () => {
     setMenuOpen(false);

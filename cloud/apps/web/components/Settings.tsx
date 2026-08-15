@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { api } from "@/lib/api";
+import { llmApi } from "@/lib/cloud";
 import { findPreset, LLM_PRESETS } from "@/lib/llmPresets";
 import {
   IconCpu,
@@ -147,7 +147,7 @@ export function Settings(props: SettingsProps) {
     (async () => {
       setLlmLoading(true);
       try {
-        const view = await api<LlmSettingsView>("/api/v1/settings/llm");
+        const view = await llmApi.get();
         if (!cancelled) applyLlmView(view);
       } catch (err) {
         if (!cancelled) toast(err instanceof Error ? err.message : String(err), "error");
@@ -182,10 +182,7 @@ export function Settings(props: SettingsProps) {
         models,
       };
       if (apiKey.trim()) body.apiKey = apiKey.trim();
-      const view = await api<LlmSettingsView>("/api/v1/settings/llm", {
-        method: "PUT",
-        body: JSON.stringify(body),
-      });
+      const view = await llmApi.update(body);
       applyLlmView(view);
       toast("Models settings saved", "ok");
     } catch (err) {

@@ -8,7 +8,8 @@ import {
   useState,
   type CSSProperties,
 } from "react";
-import { api } from "@/lib/api";
+import { runsApi } from "@/lib/cloud";
+import { useComposerText, useLlmSettings } from "@/lib/hooks";
 import {
   IconArrowUp,
   IconChevronDown,
@@ -19,13 +20,11 @@ import {
   IconStop,
 } from "@/lib/icons";
 import { CodePanelToggle, SidebarPanelToggle } from "./PanelToggleButton";
-import { DEFAULT_MODEL_ID, loadSelectedModel, saveSelectedModel } from "@/lib/models";
 import { allowsDeny, allowsOnce, approvalCardBody, extraDecisions } from "@/lib/approval";
 import type {
   Approval,
   ApprovalDecision,
   GitCompare,
-  LlmSettingsView,
   MessageRole,
   PullRequest,
   Repo,
@@ -39,7 +38,7 @@ import { timelineProductFromEvent, timelineToolOutput, type TimelineProduct } fr
 import { CodePanel, useCodePanelWidth } from "./CodePanel";
 import { Markdown } from "./Markdown";
 import { repoLabel } from "@/lib/listPrefs";
-import { AttachMenu, ModelPicker } from "./pickers";
+import { Composer } from "./composer";
 import { StatusPill } from "./StatusPill";
 import { TurnActions } from "./TurnActions";
 import { useToast } from "./Toast";
@@ -913,17 +912,15 @@ export function RunView({
   onRunStarted,
 }: RunViewProps) {
   const toast = useToast();
+  const composer = useComposerText();
+  const llm = useLlmSettings();
   const { width: codeWidth, setWidth: setCodeWidth } = useCodePanelWidth();
   const [run, setRun] = useState<Run | null>(null);
   const [items, setItems] = useState<TimelineItem[]>([]);
   /** False until initial event history is applied in one shot. */
   const [historyReady, setHistoryReady] = useState(false);
-  const [followUp, setFollowUp] = useState("");
   const [sending, setSending] = useState(false);
   const [cancelling, setCancelling] = useState(false);
-  const [selectedModel, setSelectedModel] = useState(DEFAULT_MODEL_ID);
-  const [composerMenu, setComposerMenu] = useState<"model" | "attach" | null>(null);
-  const [llmSettings, setLlmSettings] = useState<LlmSettingsView | null>(null);
   /** User-expanded activity groups (default collapsed — keeps layout stable while live). */
   const [openGroups, setOpenGroups] = useState<Set<string>>(() => new Set());
   /** Expanded consecutive tool/thought bunches inside an activity group. */
@@ -950,7 +947,6 @@ export function RunView({
   const lastKnownTitle = useRef<string | null>(null);
   const stickToBottom = useRef(true);
   const messagesRef = useRef<HTMLDivElement>(null);
-  const promptRef = useRef<HTMLTextAreaElement>(null);
   const composerRef = useRef<HTMLDivElement>(null);
 
   const scrollMessages = useCallback((force = false) => {
@@ -1290,7 +1286,7 @@ export function RunView({
 
   const refreshApprovals = useCallback(async () => {
     try {
-      const list = (await api<Approval[]>(`/api/v1/runs/${runId}/approvals`)) || [];
+      const list = (await runsApi.approvals(runId)) || [];
       for (const ap of list) {
         if (ap.status === "pending" && !seenApprovals.current.has(ap.id)) {
           seenApprovals.current.add(ap.id);
@@ -1325,7 +1321,7 @@ export function RunView({
 
     (async () => {
       try {
-        const r = await api<Run>(`/api/v1/runs/${runId}`);
+        const r = await runsApi.get(runId);
         if (stopped) return;
         if (r.title) lastKnownTitle.current = r.title;
         // Apply status/title from the run row first; event payloads may refine later.
@@ -1334,9 +1330,7 @@ export function RunView({
         const allEvents: RunEvent[] = [];
         let cursor = 0;
         for (;;) {
-          const page = await api<{ events?: RunEvent[]; nextSeq?: number }>(
-            `/api/v1/runs/${runId}/events?afterSeq=${cursor}`,
-          );
+          const page = await runsApi.events(runId, cursor);
           if (stopped) return;
           const batch = page.events || [];
           if (!batch.length) {
@@ -1371,7 +1365,7 @@ export function RunView({
         }
 
         // Fallback: if events missed the initial user prompt, seed from messages.
-        const msgs = (await api<RunMessage[]>(`/api/v1/runs/${runId}/messages`)) || [];
+        const msgs = (await runsApi.messages(runId)) || [];
         if (stopped) return;
         setRunMessages(msgs);
         if (!draft.items.some((it) => it.kind === "bubble" && it.role === "user")) {
@@ -1404,9 +1398,7 @@ export function RunView({
           try {
             // Drain pages so a catch-up burst does not look like chunked replay.
             for (;;) {
-              const live = await api<{ events?: RunEvent[]; nextSeq?: number }>(
-                `/api/v1/runs/${runId}/events?afterSeq=${afterSeq.current}`,
-              );
+              const live = await runsApi.events(runId, afterSeq.current);
               const batch = live.events || [];
               if (!batch.length) {
                 if (live.nextSeq != null) afterSeq.current = live.nextSeq;
@@ -1426,7 +1418,7 @@ export function RunView({
         timers.approval = setInterval(refreshApprovals, 2000);
         timers.status = setInterval(async () => {
           try {
-            const next = await api<Run>(`/api/v1/runs/${runId}`);
+            const next = await runsApi.get(runId);
             if (stopped) return;
             const titleChanged = Boolean(next.title && next.title !== lastKnownTitle.current);
             if (next.title) lastKnownTitle.current = next.title;
@@ -1505,24 +1497,6 @@ export function RunView({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [run?.title, run?.status]);
 
-  useEffect(() => {
-    setSelectedModel(loadSelectedModel());
-    api<LlmSettingsView>("/api/v1/settings/llm")
-      .then(setLlmSettings)
-      .catch(() => setLlmSettings(null));
-  }, []);
-
-  useEffect(() => {
-    if (!composerMenu) return;
-    const onDoc = (e: MouseEvent) => {
-      if (composerRef.current && !composerRef.current.contains(e.target as Node)) {
-        setComposerMenu(null);
-      }
-    };
-    document.addEventListener("mousedown", onDoc);
-    return () => document.removeEventListener("mousedown", onDoc);
-  }, [composerMenu]);
-
   const repoName = run ? repoLabel(repos, run.repositoryId) : "";
   const statusKey = (run?.status || "").toLowerCase();
   const isBusy = BUSY_STATUSES.has(statusKey);
@@ -1530,7 +1504,7 @@ export function RunView({
   const isSetup = SETUP_STATUSES.has(statusKey);
   const setupCopy = isSetup ? setupStatusCopy(statusKey, repoName) : null;
   const canRetry = RETRYABLE_STATUSES.has(statusKey);
-  const canSend = Boolean(followUp.trim()) && !sending && !sendBlocked && !canRetry;
+  const canSend = Boolean(composer.value.trim()) && !sending && !sendBlocked && !canRetry;
   const pushHeadKey = run?.headSha || gitCompare?.head || "";
   const showPushPrompt =
     historyReady &&
@@ -1550,83 +1524,53 @@ export function RunView({
     onRunsChanged();
   }, [runId, onRunsChanged]);
 
-  const autosize = useCallback(() => {
-    const el = promptRef.current;
-    if (!el) return;
-    el.style.height = "auto";
-    el.style.height = `${Math.min(128, Math.max(32, el.scrollHeight))}px`;
-  }, []);
-
-  const insertFollowUp = useCallback((text: string) => {
-    const t = promptRef.current;
-    if (!t) {
-      setFollowUp((v) => v + text);
-      return;
-    }
-    const start = t.selectionStart ?? t.value.length;
-    const end = t.selectionEnd ?? t.value.length;
-    const next = t.value.slice(0, start) + text + t.value.slice(end);
-    setFollowUp(next);
-    requestAnimationFrame(() => {
-      const pos = start + text.length;
-      t.focus();
-      t.setSelectionRange(pos, pos);
-    });
-  }, []);
-
   const sendFollowUp = useCallback(async () => {
-    const text = followUp.trim();
-    if (!text) return;
+    const body = composer.value.trim();
+    if (!body) return;
     setSending(true);
     try {
       setItems((prev) => sealOpenMeta(prev));
       hasAssistantTail.current = false;
       stickToBottom.current = true;
-      appendBubble("user", text);
+      appendBubble("user", body);
       scrollMessages(true);
-      setFollowUp("");
-      await api(`/api/v1/runs/${runId}/messages`, {
-        method: "POST",
-        body: JSON.stringify({ text, clientMessageId: crypto.randomUUID() }),
-      });
+      composer.clear();
+      await runsApi.postMessage(runId, body);
       setRun((prev) => (prev ? { ...prev, status: "running" } : prev));
     } catch (err) {
       toast(err instanceof Error ? err.message : String(err), "error");
     } finally {
       setSending(false);
     }
-  }, [followUp, runId, appendBubble, toast, sealOpenMeta, scrollMessages]);
+  }, [composer, runId, appendBubble, toast, sealOpenMeta, scrollMessages]);
 
   const retryRun = useCallback(async () => {
-    const text = followUp.trim();
+    const body = composer.value.trim();
     setRetrying(true);
     try {
-      if (text) {
+      if (body) {
         setItems((prev) => sealOpenMeta(prev));
         hasAssistantTail.current = false;
         stickToBottom.current = true;
-        appendBubble("user", text);
+        appendBubble("user", body);
         scrollMessages(true);
-        setFollowUp("");
+        composer.clear();
       }
-      const r = await api<Run>(`/api/v1/runs/${runId}/retry`, {
-        method: "POST",
-        body: JSON.stringify(text ? { text } : {}),
-      });
+      const r = await runsApi.retry(runId, body || undefined);
       setRun(r);
       onRunsChanged();
-      toast(text ? "Retrying with follow-up…" : "Retrying agent…", "ok");
+      toast(body ? "Retrying with follow-up…" : "Retrying agent…", "ok");
     } catch (err) {
       toast(err instanceof Error ? err.message : String(err), "error");
     } finally {
       setRetrying(false);
     }
-  }, [followUp, runId, appendBubble, toast, sealOpenMeta, scrollMessages, onRunsChanged]);
+  }, [composer, runId, appendBubble, toast, sealOpenMeta, scrollMessages, onRunsChanged]);
 
   const cancelRun = useCallback(async () => {
     setCancelling(true);
     try {
-      const r = await api<Run>(`/api/v1/runs/${runId}/cancel`, { method: "POST", body: "{}" });
+      const r = await runsApi.cancel(runId);
       setRun(r);
       onRunsChanged();
       toast("Run stopped", "ok");
@@ -1640,10 +1584,7 @@ export function RunView({
   const decideApproval = useCallback(
     async (itemId: number, approvalId: string, decision: ApprovalDecision) => {
       try {
-        await api(`/api/v1/runs/${runId}/approvals/${approvalId}/decide`, {
-          method: "POST",
-          body: JSON.stringify({ decision }),
-        });
+        await runsApi.decideApproval(runId, approvalId, decision);
         setItems((prev) =>
           prev.map((it) => (it.id === itemId && it.kind === "approval" ? { ...it, decision } : it)),
         );
@@ -1664,16 +1605,13 @@ export function RunView({
       setForkingTurn(turnIndex);
       try {
         const prompt = buildForkPrompt(turns, turnIndex);
-        const newRun = await api<Run>("/api/v1/runs", {
-          method: "POST",
-          body: JSON.stringify({
-            repositoryId: run.repositoryId,
-            prompt,
-            baseRef: run.baseRef,
-            model: run.model || selectedModel,
-            permissionMode: run.permissionMode || "default",
-            maxTurns: run.maxTurns ?? 100,
-          }),
+        const newRun = await runsApi.create({
+          repositoryId: run.repositoryId,
+          prompt,
+          baseRef: run.baseRef,
+          model: run.model || llm.selectedModel,
+          permissionMode: run.permissionMode || "default",
+          maxTurns: run.maxTurns ?? 100,
         });
         onRunStarted(newRun.id);
         onRunsChanged();
@@ -1684,7 +1622,7 @@ export function RunView({
         setForkingTurn(null);
       }
     },
-    [run, onRunStarted, items, runMessages, selectedModel, onRunsChanged, toast],
+    [run, onRunStarted, items, runMessages, llm.selectedModel, onRunsChanged, toast],
   );
 
   return (
@@ -2140,61 +2078,31 @@ export function RunView({
           ) : null}
           <div ref={composerRef} className="bg-canvas-bg px-4 pb-3 pt-1">
             <div className="mx-auto w-full max-w-[720px] px-3.5">
-              <div className="-mx-3.5 rounded-md bg-canvas px-3.5 pb-2 pt-2.5 shadow-card focus-within:shadow-[0_0_0_2px_#EAF2FF]">
-                <textarea
-                  ref={promptRef}
-                  className="block max-h-32 min-h-[32px] w-full resize-none border-0 bg-transparent px-0 pb-1 pt-0 text-[13px] leading-normal text-ink outline-none"
-                  rows={1}
-                  placeholder={
-                    sendBlocked
-                      ? "Agent is working…"
-                      : canRetry
-                        ? "Optional follow-up, then Retry…"
-                        : isSetup
-                          ? "Waiting for worker… you can still queue a follow-up"
-                          : "Send follow-up…"
-                  }
-                  aria-label="Follow-up"
-                  value={followUp}
-                  onChange={(e) => {
-                    setFollowUp(e.target.value);
-                    autosize();
-                  }}
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
-                      e.preventDefault();
-                      if (canSend) sendFollowUp();
-                    }
-                  }}
-                />
-                <div className="flex items-center justify-between gap-2">
-                  <div className="flex min-w-0 items-center gap-1">
-                    <AttachMenu
-                      compact
-                      open={composerMenu === "attach"}
-                      onToggle={() => setComposerMenu(composerMenu === "attach" ? null : "attach")}
-                      onClose={() => setComposerMenu(null)}
-                      sections={["files", "skills"]}
-                      onInsertText={insertFollowUp}
-                      onFilesAttached={(names) => {
-                        const prefix = followUp && !followUp.endsWith(" ") ? " " : "";
-                        insertFollowUp(prefix + names.map((n) => `@${n}`).join(" "));
-                      }}
-                      onNotice={(msg, kind) => toast(msg, kind)}
-                    />
-                    <ModelPicker
-                      compact
-                      open={composerMenu === "model"}
-                      onToggle={() => setComposerMenu(composerMenu === "model" ? null : "model")}
-                      selectedModel={selectedModel}
-                      llmSettings={llmSettings}
-                      onSelect={(id) => {
-                        setSelectedModel(id);
-                        saveSelectedModel(id);
-                        setComposerMenu(null);
-                      }}
-                    />
-                  </div>
+              <Composer
+                compact
+                text={composer}
+                placeholder={
+                  sendBlocked
+                    ? "Agent is working…"
+                    : canRetry
+                      ? "Optional follow-up, then Retry…"
+                      : isSetup
+                        ? "Waiting for worker… you can still queue a follow-up"
+                        : "Send follow-up…"
+                }
+                ariaLabel="Follow-up"
+                canSubmit={canSend}
+                submitTitle="Send"
+                submitAriaLabel="Send"
+                onSubmit={() => {
+                  if (canSend) void sendFollowUp();
+                }}
+                llmReady={llm.ready}
+                llmSettings={llm.view}
+                selectedModel={llm.selectedModel}
+                onSelectModel={llm.selectModel}
+                attachSections={["files", "skills"]}
+                trailingSubmit={
                   <div className="flex shrink-0 items-center gap-1">
                     {isBusy && (
                       <button
@@ -2233,8 +2141,8 @@ export function RunView({
                       </button>
                     )}
                   </div>
-                </div>
-              </div>
+                }
+              />
             </div>
           </div>
         </div>

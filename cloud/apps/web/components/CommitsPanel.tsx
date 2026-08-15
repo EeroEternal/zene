@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { api } from "@/lib/api";
+import { runsApi } from "@/lib/cloud";
 import type { GitCommit } from "@/lib/types";
 import { IconRefresh } from "@/lib/icons";
 import { useToast } from "./Toast";
@@ -26,7 +26,7 @@ export function CommitsPanel({ runId, baseRef }: { runId: string; baseRef?: stri
 
   const load = useCallback(async () => {
     try {
-      const data = await api<GitCommit[]>(`/api/v1/runs/${runId}/git/commits`);
+      const data = await runsApi.gitCommits(runId);
       setCommits(data || []);
       setError("");
     } catch (err) {

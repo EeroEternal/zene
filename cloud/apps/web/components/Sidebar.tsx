@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useMemo, useRef, useState } from "react";
 import {
   IconArchive,
   IconDots,
@@ -24,7 +24,7 @@ import {
 import type { ListFilter, ListGroup, Organization, Repo, Run, User, View } from "@/lib/types";
 import { SidebarPanelToggle } from "./PanelToggleButton";
 import { StatusDot } from "./StatusPill";
-import { Menu, MenuItem, MenuLabel, MenuSep } from "./ui";
+import { Menu, MenuItem, MenuLabel, MenuSep, useDismiss } from "./ui";
 
 export { filterLabelText, filterRuns, repoLabel } from "@/lib/listPrefs";
 
@@ -111,31 +111,12 @@ export function Sidebar(props: SidebarProps) {
   const footRef = useRef<HTMLDivElement>(null);
   const ctxRef = useRef<HTMLDivElement>(null);
 
-  useEffect(() => {
-    const onDoc = (e: MouseEvent) => {
-      if (!footRef.current?.contains(e.target as Node)) {
-        setMenu(null);
-        setFilterOpen(false);
-      }
-      if (ctxRef.current && !ctxRef.current.contains(e.target as Node)) {
-        setCtx(null);
-      }
-    };
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") {
-        setMenu(null);
-        setFilterOpen(false);
-        setCtx(null);
-        setRenamingId(null);
-      }
-    };
-    document.addEventListener("click", onDoc);
-    document.addEventListener("keydown", onKey);
-    return () => {
-      document.removeEventListener("click", onDoc);
-      document.removeEventListener("keydown", onKey);
-    };
+  const closeMenus = useCallback(() => {
+    setMenu(null);
+    setFilterOpen(false);
   }, []);
+  useDismiss(menu !== null, closeMenus, footRef);
+  useDismiss(ctx !== null, () => setCtx(null), ctxRef);
 
   const filtered = useMemo(
     () => filterRuns(runs, listFilter, listRepoFilter, selectedRepoId),

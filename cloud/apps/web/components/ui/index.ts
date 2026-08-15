@@ -1,4 +1,5 @@
 export { ChipTrigger, chipClass } from "./ChipTrigger";
+export { ConfirmDialog } from "./ConfirmDialog";
 export { FieldSelect } from "./FieldSelect";
 export { Menu, MenuItem, MenuLabel, MenuSearch, MenuSep, MENU_FLYOUT, MENU_PANEL } from "./Menu";
 export { SearchablePicker } from "./Picker";
