@@ -1,6 +1,6 @@
 # Console feature slice
 
-To add a Console capability that works in the UI and API, ship **one vertical slice**. Do not add a page that calls `fetch("/api/v1/...")`, and do not add a handler only in `routes.rs`. Copy `llm` or `repositories` (both already sliced) or run `cloud/scripts/new-feature.sh <name>`.
+To add a Console capability that works in the UI and API, ship **one vertical slice**. Do not add a page that calls `fetch("/api/v1/...")`, and do not add a handler only in `routes.rs`. Copy `llm` or `repositories` (both already sliced) or run `cloud/scripts/new-feature.sh <name>`. After it exists, add a row to [`cloud/apps/web/lib/capabilities.ts`](../../cloud/apps/web/lib/capabilities.ts) so later work can import it by id. Reuse catalog: [`console-capabilities.md`](console-capabilities.md).
 
 Worked examples: `cloud/apps/api/src/features/llm.rs` + `cloud/apps/web/lib/cloud/llm.ts` + `cloud/apps/web/lib/hooks/useLlmSettings.ts`; same pattern for `repositories` and `github`.
 

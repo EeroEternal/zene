@@ -16,7 +16,7 @@ alwaysApply: false
 - **关闭**：点选项、Esc、或点 backdrop / 外部区域关闭。
 - **可访问性**：触发器设 `aria-haspopup="menu"`、`aria-expanded`；面板设 `role="menu"`。
 
-复用 `components/ui`（`SearchablePicker` / `FieldSelect` / `Menu`）和 `components/pickers`（`ProjectPicker` / `BranchPicker` / `ModelPicker`）。不要在页面里再手写一套 picker。
+复用 `components/ui`（`SearchablePicker` / `FieldSelect` / `Menu`）和 `components/pickers`（`ProjectPicker` / `BranchPicker` / `ModelPicker`）。按能力 id 查 `cloud/apps/web/lib/capabilities.ts` 再 import，不要在页面里再手写一套 picker。
 
 ```tsx
 // ❌ BAD — 原生 select，OS 样式
