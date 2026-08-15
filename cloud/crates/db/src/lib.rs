@@ -15,9 +15,10 @@ use std::str::FromStr;
 use uuid::Uuid;
 use zene_cloud_domain::{
     ApprovalDecision, ApprovalKind, ApprovalRequest, ApprovalRisk, ApprovalStatus, AuthResponse,
-    CloneAuthResponse, CreateApprovalRequest, CreateRepositoryRequest, CreateRunRequest, LoginRequest, Organization,
-    PlatformEvent, QueueActive, QueueHold, QueueStats, RegisterRequest, Repository, Run, RunEvent, RunEventKind, RunMessage,
-    RunStatus, PermissionMode, MessageRole, User, WorkerCommand, WorkerFence,
+    CloneAuthResponse, CreateApprovalRequest, CreateRepositoryRequest, CreateRunRequest,
+    LoginRequest, MessageRole, Organization, PermissionMode, PlatformEvent, QueueActive, QueueHold,
+    QueueStats, RegisterRequest, Repository, Run, RunEvent, RunEventKind, RunMessage, RunStatus,
+    User, WorkerCommand, WorkerFence,
 };
 
 /// Worker attempt lease renewed by heartbeat (seconds).
@@ -110,6 +111,10 @@ impl Db {
                 "012_run_pending_mode",
                 include_str!("../../../migrations/012_run_pending_mode.sql"),
             ),
+            (
+                "013_email_login",
+                include_str!("../../../migrations/013_email_login.sql"),
+            ),
         ];
 
         for (version, sql) in migrations {
@@ -151,13 +156,11 @@ impl Db {
                 }
             }
 
-            sqlx::query(
-                "INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)",
-            )
-            .bind(version)
-            .bind(Utc::now().to_rfc3339())
-            .execute(&self.pool)
-            .await?;
+            sqlx::query("INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)")
+                .bind(version)
+                .bind(Utc::now().to_rfc3339())
+                .execute(&self.pool)
+                .await?;
         }
         Ok(())
     }
@@ -209,15 +212,13 @@ impl Db {
         .context("email may already exist")?;
 
         let slug = org_id.to_string();
-        sqlx::query(
-            "INSERT INTO organizations (id, slug, name, created_at) VALUES (?, ?, ?, ?)",
-        )
-        .bind(&slug)
-        .bind(&slug)
-        .bind(format!("{}'s Workspace", req.display_name))
-        .bind(now.to_rfc3339())
-        .execute(&mut *tx)
-        .await?;
+        sqlx::query("INSERT INTO organizations (id, slug, name, created_at) VALUES (?, ?, ?, ?)")
+            .bind(&slug)
+            .bind(&slug)
+            .bind(format!("{}'s Workspace", req.display_name))
+            .bind(now.to_rfc3339())
+            .execute(&mut *tx)
+            .await?;
 
         sqlx::query(
             "INSERT INTO organization_members (organization_id, user_id, role, joined_at)
@@ -248,6 +249,114 @@ impl Db {
                 created_at: now,
             },
         })
+    }
+
+    pub async fn create_email_login_token(&self, email: &str) -> Result<String> {
+        let email = email.trim().to_lowercase();
+        if !is_valid_email(&email) {
+            bail!("invalid email");
+        }
+        let now = Utc::now();
+        let recent: Option<(String,)> = sqlx::query_as(
+            "SELECT created_at FROM email_login_tokens
+             WHERE email = ? AND consumed_at IS NULL AND expires_at > ?
+             ORDER BY created_at DESC LIMIT 1",
+        )
+        .bind(&email)
+        .bind(now.to_rfc3339())
+        .fetch_optional(&self.pool)
+        .await?;
+        if let Some((created_at,)) = recent {
+            if now - parse_time(&created_at) < Duration::seconds(30) {
+                bail!("wait a moment before requesting another link");
+            }
+        }
+        sqlx::query(
+            "UPDATE email_login_tokens SET consumed_at = ? WHERE email = ? AND consumed_at IS NULL",
+        )
+        .bind(now.to_rfc3339())
+        .bind(&email)
+        .execute(&self.pool)
+        .await?;
+
+        let raw = format!("el_{}", Uuid::new_v4().simple());
+        let expires = now + Duration::minutes(15);
+        sqlx::query(
+            "INSERT INTO email_login_tokens
+             (id, email, token_hash, expires_at, created_at)
+             VALUES (?, ?, ?, ?, ?)",
+        )
+        .bind(Uuid::new_v4().to_string())
+        .bind(&email)
+        .bind(hash_token(&raw))
+        .bind(expires.to_rfc3339())
+        .bind(now.to_rfc3339())
+        .execute(&self.pool)
+        .await?;
+        Ok(raw)
+    }
+
+    pub async fn invalidate_email_login_tokens(&self, email: &str) -> Result<()> {
+        let email = email.trim().to_lowercase();
+        sqlx::query(
+            "UPDATE email_login_tokens SET consumed_at = ? WHERE email = ? AND consumed_at IS NULL",
+        )
+        .bind(Utc::now().to_rfc3339())
+        .bind(email)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    pub async fn consume_email_login_token(&self, token: &str) -> Result<AuthResponse> {
+        let now = Utc::now();
+        let row: Option<(String,)> = sqlx::query_as(
+            "UPDATE email_login_tokens
+             SET consumed_at = ?
+             WHERE token_hash = ? AND consumed_at IS NULL AND expires_at > ?
+             RETURNING email",
+        )
+        .bind(now.to_rfc3339())
+        .bind(hash_token(token.trim()))
+        .bind(now.to_rfc3339())
+        .fetch_optional(&self.pool)
+        .await?;
+        let Some((email,)) = row else {
+            bail!("invalid or expired sign-in link");
+        };
+        self.login_or_register_by_email(&email).await
+    }
+
+    async fn login_or_register_by_email(&self, email: &str) -> Result<AuthResponse> {
+        if let Some(user) = self.find_user_by_email(email).await? {
+            let org = self.primary_org(user.id).await?;
+            let token = self.create_session(user.id).await?;
+            return Ok(AuthResponse {
+                token,
+                user,
+                organization: org,
+            });
+        }
+        self.register(RegisterRequest {
+            email: email.to_string(),
+            password: format!("email:{}", Uuid::new_v4()),
+            display_name: display_name_from_email(email),
+        })
+        .await
+    }
+
+    async fn find_user_by_email(&self, email: &str) -> Result<Option<User>> {
+        let row: Option<(String, String, String, String)> =
+            sqlx::query_as("SELECT id, email, display_name, created_at FROM users WHERE email = ?")
+                .bind(email)
+                .fetch_optional(&self.pool)
+                .await?;
+        Ok(row.map(|(id, email, display_name, created_at)| User {
+            id: Uuid::parse_str(&id).unwrap(),
+            email,
+            display_name,
+            created_at: parse_time(&created_at),
+        }))
     }
 
     pub async fn login(&self, req: LoginRequest) -> Result<AuthResponse> {
@@ -332,9 +441,9 @@ impl Db {
     ) -> Result<Repository> {
         let id = Uuid::new_v4();
         let now = Utc::now();
-        let clone_url = req.clone_url.unwrap_or_else(|| {
-            format!("https://github.com/{}/{}.git", req.owner, req.name)
-        });
+        let clone_url = req
+            .clone_url
+            .unwrap_or_else(|| format!("https://github.com/{}/{}.git", req.owner, req.name));
         sqlx::query(
             "INSERT INTO repositories
              (id, organization_id, provider, owner, name, default_branch, clone_url, created_at)
@@ -618,13 +727,13 @@ impl Db {
             .await?
             .into_run();
         if title.is_some() {
-            let title_event_id = fence
-                .map(|fence| format!("platform.run.title.worker.{}", fence.generation));
+            let title_event_id =
+                fence.map(|fence| format!("platform.run.title.worker.{}", fence.generation));
             self.append_event_tx(
                 &mut tx,
                 run_id,
                 fence.map_or(0, |fence| fence.generation),
-                title_event_id.as_deref().or(Some("platform.run.title")), 
+                title_event_id.as_deref().or(Some("platform.run.title")),
                 None,
                 RunEventKind::Platform,
                 platform_payload(PlatformEvent::RunTitle {
@@ -662,10 +771,7 @@ impl Db {
             "DELETE FROM git_operations WHERE run_id = ?",
             "DELETE FROM runs WHERE id = ?",
         ] {
-            sqlx::query(sql)
-                .bind(&run_id_s)
-                .execute(&mut *tx)
-                .await?;
+            sqlx::query(sql).bind(&run_id_s).execute(&mut *tx).await?;
         }
         tx.commit().await?;
         Ok(())
@@ -757,16 +863,17 @@ impl Db {
              ORDER BY created_at ASC LIMIT 1"
         );
         let row = sqlx::query_as::<_, RunRow>(&sql)
-        .fetch_optional(&mut *tx)
-        .await?;
+            .fetch_optional(&mut *tx)
+            .await?;
         let Some(row) = row else {
             return Ok(None);
         };
         let run_id = row.id.clone();
-        let last_error: Option<String> = sqlx::query_scalar("SELECT last_error FROM runs WHERE id = ?")
-            .bind(&run_id)
-            .fetch_optional(&mut *tx)
-            .await?;
+        let last_error: Option<String> =
+            sqlx::query_scalar("SELECT last_error FROM runs WHERE id = ?")
+                .bind(&run_id)
+                .fetch_optional(&mut *tx)
+                .await?;
         let run = row.into_run();
         let attempt_id = Uuid::new_v4();
         let attempt = sqlx::query_scalar::<_, i64>(
@@ -823,7 +930,10 @@ impl Db {
             .join(run.id.to_string())
             .to_string_lossy()
             .to_string();
-        let mut run = self.get_run(run.id).await?.context("run missing after claim")?;
+        let mut run = self
+            .get_run(run.id)
+            .await?
+            .context("run missing after claim")?;
         run.status = RunStatus::Provisioning;
         Ok(Some((
             run,
@@ -836,23 +946,13 @@ impl Db {
     }
 
     /// Re-queue a terminal run so the user can continue in the same thread.
-    pub async fn user_retry_run(
-        &self,
-        run_id: Uuid,
-        follow_up: Option<&str>,
-    ) -> Result<Run> {
-        let run = self
-            .get_run(run_id)
-            .await?
-            .context("run not found")?;
+    pub async fn user_retry_run(&self, run_id: Uuid, follow_up: Option<&str>) -> Result<Run> {
+        let run = self.get_run(run_id).await?.context("run not found")?;
         if !matches!(
             run.status,
             RunStatus::Failed | RunStatus::TimedOut | RunStatus::Cancelled
         ) {
-            bail!(
-                "run status {} cannot be retried",
-                run.status.as_str()
-            );
+            bail!("run status {} cannot be retried", run.status.as_str());
         }
         let now = Utc::now().to_rfc3339();
         let mut tx = self.pool.begin().await?;
@@ -1060,12 +1160,13 @@ impl Db {
             run_status_payload(status, head_sha),
         )
         .await?;
-        let updated = sqlx::query_as::<_, RunRow>(&format!("SELECT {RUN_COLUMNS} FROM runs WHERE id = ?"))
-            .bind(run_id.to_string())
-            .fetch_optional(&mut *tx)
-            .await?
-            .map(RunRow::into_run)
-            .context("run missing after status update")?;
+        let updated =
+            sqlx::query_as::<_, RunRow>(&format!("SELECT {RUN_COLUMNS} FROM runs WHERE id = ?"))
+                .bind(run_id.to_string())
+                .fetch_optional(&mut *tx)
+                .await?
+                .map(RunRow::into_run)
+                .context("run missing after status update")?;
         tx.commit().await?;
         Ok(updated)
     }
@@ -1166,7 +1267,10 @@ impl Db {
                         // SQLite may store without offset; treat as UTC.
                         chrono::NaiveDateTime::parse_from_str(&since, "%Y-%m-%d %H:%M:%S%.f")
                             .or_else(|_| {
-                                chrono::NaiveDateTime::parse_from_str(&since, "%Y-%m-%dT%H:%M:%S%.f")
+                                chrono::NaiveDateTime::parse_from_str(
+                                    &since,
+                                    "%Y-%m-%dT%H:%M:%S%.f",
+                                )
                             })
                             .ok()
                             .map(|ndt| ndt.and_utc())
@@ -1200,7 +1304,15 @@ impl Db {
         let mut tx = self.pool.begin().await?;
         self.validate_worker_fence(&mut tx, run_id, fence).await?;
         let event = self
-            .append_event_tx(&mut tx, run_id, fence.generation, source_event_id, None, event_type, payload)
+            .append_event_tx(
+                &mut tx,
+                run_id,
+                fence.generation,
+                source_event_id,
+                None,
+                event_type,
+                payload,
+            )
             .await?;
         tx.commit().await?;
         Ok(event)
@@ -1216,7 +1328,15 @@ impl Db {
     ) -> Result<RunEvent> {
         let mut tx = self.pool.begin().await?;
         let event = self
-            .append_event_tx(&mut tx, run_id, attempt_generation, source_event_id, None, event_type, payload)
+            .append_event_tx(
+                &mut tx,
+                run_id,
+                attempt_generation,
+                source_event_id,
+                None,
+                event_type,
+                payload,
+            )
             .await?;
         tx.commit().await?;
         Ok(event)
@@ -1234,7 +1354,15 @@ impl Db {
         let mut tx = self.pool.begin().await?;
         self.validate_worker_fence(&mut tx, run_id, fence).await?;
         let event = self
-            .append_event_tx(&mut tx, run_id, fence.generation, source_event_id, cursor, event_type, payload)
+            .append_event_tx(
+                &mut tx,
+                run_id,
+                fence.generation,
+                source_event_id,
+                cursor,
+                event_type,
+                payload,
+            )
             .await?;
         tx.commit().await?;
         Ok(event)
@@ -1302,11 +1430,7 @@ impl Db {
         })
     }
 
-    async fn validate_worker_fence_simple(
-        &self,
-        run_id: Uuid,
-        fence: &WorkerFence,
-    ) -> Result<()> {
+    async fn validate_worker_fence_simple(&self, run_id: Uuid, fence: &WorkerFence) -> Result<()> {
         let row: Option<(i64, Option<String>, Option<String>)> = sqlx::query_as(
             "SELECT generation, worker_id, finished_at FROM run_attempts
              WHERE id = ? AND run_id = ?",
@@ -1317,7 +1441,10 @@ impl Db {
         .await?;
         match row {
             Some((generation, Some(worker_id), None))
-                if generation == fence.generation && worker_id == fence.worker_id => Ok(()),
+                if generation == fence.generation && worker_id == fence.worker_id =>
+            {
+                Ok(())
+            }
             _ => bail!("stale_attempt: worker fence rejected runtime session update"),
         }
     }
@@ -1360,14 +1487,16 @@ impl Db {
         .await?;
         Ok(rows
             .into_iter()
-            .map(|(seq, cursor, event_type, payload_json, created_at)| RunEvent {
-                run_id,
-                seq,
-                cursor: cursor.and_then(|value| u64::try_from(value).ok()),
-                event_type,
-                payload: serde_json::from_str(&payload_json).unwrap_or(serde_json::json!({})),
-                created_at: parse_time(&created_at),
-            })
+            .map(
+                |(seq, cursor, event_type, payload_json, created_at)| RunEvent {
+                    run_id,
+                    seq,
+                    cursor: cursor.and_then(|value| u64::try_from(value).ok()),
+                    event_type,
+                    payload: serde_json::from_str(&payload_json).unwrap_or(serde_json::json!({})),
+                    created_at: parse_time(&created_at),
+                },
+            )
             .collect())
     }
 
@@ -1377,7 +1506,11 @@ impl Db {
     /// retain every event and use `seq` for ordering. The cursor is translated
     /// to the greatest canonical sequence observed at or before that provider
     /// position; callers therefore cannot lose platform events without a cursor.
-    pub async fn events_after_cursor(&self, run_id: Uuid, after_cursor: u64) -> Result<Vec<RunEvent>> {
+    pub async fn events_after_cursor(
+        &self,
+        run_id: Uuid,
+        after_cursor: u64,
+    ) -> Result<Vec<RunEvent>> {
         let after_seq: i64 = sqlx::query_scalar(
             "SELECT COALESCE(MAX(seq), 0) FROM run_events
              WHERE run_id = ? AND cursor IS NOT NULL AND cursor <= ?",
@@ -1427,12 +1560,11 @@ impl Db {
             }),
         )
         .await?;
-        let current_status: Option<String> = sqlx::query_scalar(
-            "SELECT status FROM runs WHERE id = ?",
-        )
-        .bind(run_id.to_string())
-        .fetch_optional(&mut *tx)
-        .await?;
+        let current_status: Option<String> =
+            sqlx::query_scalar("SELECT status FROM runs WHERE id = ?")
+                .bind(run_id.to_string())
+                .fetch_optional(&mut *tx)
+                .await?;
         if current_status.as_deref() == Some(RunStatus::Completed.as_str()) {
             // Re-queue with the follow-up as the next claim prompt.
             sqlx::query("UPDATE runs SET prompt = ? WHERE id = ?")
@@ -1485,22 +1617,21 @@ impl Db {
         .await?;
         Ok(rows
             .into_iter()
-            .map(|(id, run_id, author_id, role, content, created_at)| RunMessage {
-                id: Uuid::parse_str(&id).unwrap(),
-                run_id: Uuid::parse_str(&run_id).unwrap(),
-                author_id: author_id.and_then(|v| Uuid::parse_str(&v).ok()),
-                role: MessageRole::parse(&role).unwrap_or(MessageRole::Assistant),
-                content,
-                created_at: parse_time(&created_at),
-            })
+            .map(
+                |(id, run_id, author_id, role, content, created_at)| RunMessage {
+                    id: Uuid::parse_str(&id).unwrap(),
+                    run_id: Uuid::parse_str(&run_id).unwrap(),
+                    author_id: author_id.and_then(|v| Uuid::parse_str(&v).ok()),
+                    role: MessageRole::parse(&role).unwrap_or(MessageRole::Assistant),
+                    content,
+                    created_at: parse_time(&created_at),
+                },
+            )
             .collect())
     }
 
     pub async fn get_clone_auth(&self, run_id: Uuid) -> Result<CloneAuthResponse> {
-        let run = self
-            .get_run(run_id)
-            .await?
-            .context("run not found")?;
+        let run = self.get_run(run_id).await?.context("run not found")?;
         let repo = self
             .get_repository(run.repository_id)
             .await?
@@ -1528,8 +1659,7 @@ impl Db {
 
         // Phase 0: no GitHub App tokens yet — treat as mock workspace unless a real
         // clone URL looks locally usable (file:// or existing path).
-        let mock = !repo.clone_url.starts_with("file://")
-            && !Path::new(&repo.clone_url).exists();
+        let mock = !repo.clone_url.starts_with("file://") && !Path::new(&repo.clone_url).exists();
         let now = Utc::now();
         sqlx::query(
             "INSERT OR REPLACE INTO run_clone_credentials
@@ -1622,7 +1752,8 @@ impl Db {
         run_id: Uuid,
         fence: &WorkerFence,
     ) -> Result<Vec<WorkerCommand>> {
-        self.poll_worker_commands_fenced_at(run_id, fence, Utc::now()).await
+        self.poll_worker_commands_fenced_at(run_id, fence, Utc::now())
+            .await
     }
 
     pub async fn poll_worker_commands_fenced_at(
@@ -1635,10 +1766,7 @@ impl Db {
         // delivery. Claims expire so a crashed worker cannot lose a follow-up.
         const CLAIM_LEASE: i64 = 60;
         let stale_before = (now - Duration::seconds(CLAIM_LEASE)).to_rfc3339();
-        let run = self
-            .get_run(run_id)
-            .await?
-            .context("run not found")?;
+        let run = self.get_run(run_id).await?.context("run not found")?;
         let mut tx = self.pool.begin().await?;
         self.validate_worker_fence(&mut tx, run_id, fence).await?;
         let mut commands = Vec::new();
@@ -1647,7 +1775,10 @@ impl Db {
             run.status,
             RunStatus::Cancelled | RunStatus::Stopping | RunStatus::TimedOut
         ) {
-            commands.push(WorkerCommand::cancel(format!("cancel-{}", run.status.as_str())));
+            commands.push(WorkerCommand::cancel(format!(
+                "cancel-{}",
+                run.status.as_str()
+            )));
         }
 
         let rows: Vec<(String, String)> = sqlx::query_as(
@@ -1681,7 +1812,11 @@ impl Db {
                 continue;
             }
             let message_id = Uuid::parse_str(&id)?;
-            commands.push(WorkerCommand::prompt(format!("msg-{id}"), content, message_id));
+            commands.push(WorkerCommand::prompt(
+                format!("msg-{id}"),
+                content,
+                message_id,
+            ));
         }
         tx.commit().await?;
         Ok(commands)
@@ -1772,17 +1907,17 @@ impl Db {
     /// workers must use `poll_worker_commands_fenced` followed by ack.
     #[allow(dead_code)]
     pub async fn poll_worker_commands(&self, run_id: Uuid) -> Result<Vec<WorkerCommand>> {
-        let run = self
-            .get_run(run_id)
-            .await?
-            .context("run not found")?;
+        let run = self.get_run(run_id).await?.context("run not found")?;
         let mut commands = Vec::new();
 
         if matches!(
             run.status,
             RunStatus::Cancelled | RunStatus::Stopping | RunStatus::TimedOut
         ) {
-            commands.push(WorkerCommand::cancel(format!("cancel-{}", run.status.as_str())));
+            commands.push(WorkerCommand::cancel(format!(
+                "cancel-{}",
+                run.status.as_str()
+            )));
         }
 
         let rows: Vec<(String, String)> = sqlx::query_as(
@@ -1796,7 +1931,11 @@ impl Db {
 
         for (id, content) in rows {
             let message_id = Uuid::parse_str(&id)?;
-            commands.push(WorkerCommand::prompt(format!("msg-{id}"), content, message_id));
+            commands.push(WorkerCommand::prompt(
+                format!("msg-{id}"),
+                content,
+                message_id,
+            ));
         }
 
         Ok(commands)
@@ -1807,10 +1946,7 @@ impl Db {
         run_id: Uuid,
         req: CreateApprovalRequest,
     ) -> Result<ApprovalRequest> {
-        let run = self
-            .get_run(run_id)
-            .await?
-            .context("run not found")?;
+        let run = self.get_run(run_id).await?.context("run not found")?;
 
         let id = Uuid::new_v4();
         let now = Utc::now();
@@ -1825,11 +1961,7 @@ impl Db {
         } else {
             None
         };
-        let resolved_at = if auto {
-            Some(now.to_rfc3339())
-        } else {
-            None
-        };
+        let resolved_at = if auto { Some(now.to_rfc3339()) } else { None };
         let allowed = serde_json::to_string(&req.allowed_decisions)?;
         let payload = serde_json::to_string(&req.payload)?;
 
@@ -2018,10 +2150,7 @@ impl Db {
         idempotency_key: &str,
         result: serde_json::Value,
     ) -> Result<serde_json::Value> {
-        let run = self
-            .get_run(run_id)
-            .await?
-            .context("run not found")?;
+        let run = self.get_run(run_id).await?.context("run not found")?;
         let id = Uuid::new_v4();
         let now = Utc::now();
         sqlx::query(
@@ -2157,6 +2286,29 @@ impl RunRow {
             archived_at: self.archived_at.as_deref().map(parse_time),
         }
     }
+}
+
+fn is_valid_email(email: &str) -> bool {
+    let Some((local, domain)) = email.split_once('@') else {
+        return false;
+    };
+    !local.is_empty()
+        && domain.contains('.')
+        && !domain.starts_with('.')
+        && !domain.ends_with('.')
+        && email.len() <= 254
+        && email
+            .chars()
+            .all(|c| c.is_ascii() && !c.is_ascii_whitespace())
+}
+
+fn display_name_from_email(email: &str) -> String {
+    email
+        .split_once('@')
+        .map(|(local, _)| local.trim())
+        .filter(|s| !s.is_empty())
+        .unwrap_or("User")
+        .to_string()
 }
 
 fn hash_password(password: &str) -> Result<String> {
@@ -2296,7 +2448,8 @@ pub(crate) fn map_approval_full_row(
     }
 }
 
-const RUN_COLUMNS: &str = "id, organization_id, repository_id, requested_by, status, status_version,
+const RUN_COLUMNS: &str =
+    "id, organization_id, repository_id, requested_by, status, status_version,
     title, prompt, base_ref, base_sha, head_branch, head_sha, model, permission_mode, max_turns,
     created_at, started_at, finished_at, archived_at";
 

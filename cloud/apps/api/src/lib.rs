@@ -1,4 +1,5 @@
 mod auth;
+mod email;
 mod error;
 pub mod routes;
 pub mod state;

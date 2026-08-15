@@ -12,12 +12,13 @@ use tokio_stream::wrappers::ReceiverStream;
 use uuid::Uuid;
 use zene_cloud_domain::{
     ClaimedRun, CreateApprovalRequest, CreatePullRequestBody, CreateRepositoryRequest,
-    CreateRunRequest, DecideApprovalRequest, GithubAccountType, GithubBranchSummary,
-    GithubInstallationStatus, GithubMode, GithubProviderConfigView,
-    LlmAuthResponse, LlmSettingsView, LoginRequest, PostMessageRequest, QueueStats, RegisterRequest,
-    MessageRole, RunStatus, SetRunModeRequest, UpdateGithubProviderConfigRequest, UpdateLlmSettingsRequest, UpdateRunRequest,
-    WorkerCommandAckRequest, WorkerCommandsResponse, WorkerEventRequest, WorkerFence,
-    WorkerSessionRequest, WorkerClaimRequest, WorkerPullRequestRequest, WorkerPushRequest,
+    CreateRunRequest, DecideApprovalRequest, EmailLoginRequest, EmailLoginResponse,
+    GithubAccountType, GithubBranchSummary, GithubInstallationStatus, GithubMode,
+    GithubProviderConfigView, LlmAuthResponse, LlmSettingsView, LoginRequest, MessageRole,
+    PostMessageRequest, QueueStats, RegisterRequest, RunStatus, SetRunModeRequest,
+    UpdateGithubProviderConfigRequest, UpdateLlmSettingsRequest, UpdateRunRequest,
+    WorkerClaimRequest, WorkerCommandAckRequest, WorkerCommandsResponse, WorkerEventRequest,
+    WorkerFence, WorkerPullRequestRequest, WorkerPushRequest, WorkerSessionRequest,
     WorkerStatusRequest, WorkerTitleRequest,
 };
 
@@ -31,18 +32,32 @@ pub fn router(state: AppState) -> Router {
         .route("/api/v1/health", get(health))
         .route("/api/v1/auth/register", post(register))
         .route("/api/v1/auth/login", post(login))
+        .route("/api/v1/auth/email", post(request_email_login))
+        .route("/api/v1/auth/email/callback", get(email_login_callback))
         .route("/api/v1/me", get(me))
-        .route("/api/v1/settings/github", get(get_github_settings).put(update_github_settings))
-        .route("/api/v1/settings/llm", get(get_llm_settings).put(update_llm_settings))
+        .route(
+            "/api/v1/settings/github",
+            get(get_github_settings).put(update_github_settings),
+        )
+        .route(
+            "/api/v1/settings/llm",
+            get(get_llm_settings).put(update_llm_settings),
+        )
         .route("/api/v1/github/status", get(github_status))
         .route("/api/v1/github/connect/start", get(github_connect_start))
-        .route("/api/v1/github/install/callback", get(github_install_callback))
+        .route(
+            "/api/v1/github/install/callback",
+            get(github_install_callback),
+        )
         .route("/api/v1/github/oauth/start", get(github_oauth_start))
         .route("/api/v1/github/oauth/callback", get(github_oauth_callback))
         .route("/api/v1/github/mock/connect", post(github_mock_connect))
         .route("/api/v1/github/sync", post(github_sync))
         .route("/api/v1/github/installations", get(list_installations))
-        .route("/api/v1/github/installations/mock", post(github_mock_install))
+        .route(
+            "/api/v1/github/installations/mock",
+            post(github_mock_install),
+        )
         .route(
             "/api/v1/github/installations/{installation_id}/sync",
             post(sync_installation_repos),
@@ -89,8 +104,14 @@ pub fn router(state: AppState) -> Router {
         .route("/internal/v1/runs/claim", post(claim_run))
         .route("/internal/v1/queue/stats", get(queue_stats))
         .route("/internal/v1/runs/{run_id}/heartbeat", post(heartbeat))
-        .route("/internal/v1/runs/{run_id}/runtime-session", post(worker_runtime_session))
-        .route("/internal/v1/runs/{run_id}/acp-session", post(worker_runtime_session))
+        .route(
+            "/internal/v1/runs/{run_id}/runtime-session",
+            post(worker_runtime_session),
+        )
+        .route(
+            "/internal/v1/runs/{run_id}/acp-session",
+            post(worker_runtime_session),
+        )
         .route("/internal/v1/runs/{run_id}/events", post(worker_event))
         .route("/internal/v1/runs/{run_id}/status", post(worker_status))
         .route("/internal/v1/runs/{run_id}/title", post(worker_title))
@@ -100,9 +121,18 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/internal/v1/runs/{run_id}/llm-auth", get(llm_auth))
         .route("/internal/v1/runs/{run_id}/commands", get(worker_commands))
-        .route("/internal/v1/runs/{run_id}/commands/ack", post(worker_command_ack))
-        .route("/internal/v1/runs/{run_id}/mode", post(worker_set_pending_mode))
-        .route("/internal/v1/runs/{run_id}/mode/take", post(worker_take_pending_mode))
+        .route(
+            "/internal/v1/runs/{run_id}/commands/ack",
+            post(worker_command_ack),
+        )
+        .route(
+            "/internal/v1/runs/{run_id}/mode",
+            post(worker_set_pending_mode),
+        )
+        .route(
+            "/internal/v1/runs/{run_id}/mode/take",
+            post(worker_take_pending_mode),
+        )
         .route(
             "/internal/v1/runs/{run_id}/approvals",
             post(create_approval),
@@ -143,12 +173,67 @@ async fn login(
     Ok(Json(state.db.login(req).await?))
 }
 
+async fn request_email_login(
+    State(state): State<AppState>,
+    Json(req): Json<EmailLoginRequest>,
+) -> Result<impl IntoResponse, AppError> {
+    let token = state.db.create_email_login_token(&req.email).await?;
+    let login_url = format!(
+        "{}/api/v1/auth/email/callback?token={token}",
+        state.public_base_url.trim_end_matches('/')
+    );
+    let cfg = crate::email::EmailConfig::from_env();
+    if cfg.configured() {
+        if let Err(err) =
+            crate::email::send_signin_email(&cfg, &req.email.trim().to_lowercase(), &login_url)
+                .await
+        {
+            let _ = state.db.invalidate_email_login_tokens(&req.email).await;
+            return Err(AppError::from(err));
+        }
+        return Ok(Json(EmailLoginResponse {
+            ok: true,
+            login_url: None,
+        }));
+    }
+    tracing::warn!(
+        email = %req.email.trim().to_lowercase(),
+        %login_url,
+        "RESEND_API_KEY unset; returning sign-in URL for local use"
+    );
+    Ok(Json(EmailLoginResponse {
+        ok: true,
+        login_url: Some(login_url),
+    }))
+}
+
+#[derive(Deserialize)]
+struct EmailCallbackQuery {
+    token: String,
+}
+
+async fn email_login_callback(
+    State(state): State<AppState>,
+    Query(query): Query<EmailCallbackQuery>,
+) -> Result<impl IntoResponse, AppError> {
+    match state.db.consume_email_login_token(&query.token).await {
+        Ok(auth) => Ok(Redirect::temporary(&format!("/?auth={}", auth.token))),
+        Err(err) => {
+            tracing::warn!(error = %err, "email sign-in callback failed");
+            Ok(Redirect::temporary("/?auth_error=invalid"))
+        }
+    }
+}
+
 async fn me(
     State(state): State<AppState>,
     AuthUser(user): AuthUser,
 ) -> Result<impl IntoResponse, AppError> {
     let org = state.db.primary_org(user.id).await?;
-    state.reload_github_for_org(org.id).await.map_err(AppError::from)?;
+    state
+        .reload_github_for_org(org.id)
+        .await
+        .map_err(AppError::from)?;
     let github = state.github_client().await;
     let gh_account = state.db.get_github_account(user.id).await?;
     Ok(Json(serde_json::json!({
@@ -160,9 +245,7 @@ async fn me(
     })))
 }
 
-fn github_provider_view(
-    github: &zene_cloud_github::GithubClient,
-) -> GithubProviderConfigView {
+fn github_provider_view(github: &zene_cloud_github::GithubClient) -> GithubProviderConfigView {
     let cfg = github.config();
     GithubProviderConfigView {
         mode: cfg.mode,
@@ -170,7 +253,10 @@ fn github_provider_view(
         client_id: cfg.client_id.clone(),
         has_client_secret: cfg.client_secret.as_ref().is_some_and(|s| !s.is_empty()),
         app_id: cfg.app_id.clone(),
-        has_app_private_key: cfg.app_private_key_pem.as_ref().is_some_and(|s| !s.is_empty()),
+        has_app_private_key: cfg
+            .app_private_key_pem
+            .as_ref()
+            .is_some_and(|s| !s.is_empty()),
         app_slug: cfg.app_slug.clone(),
     }
 }
@@ -180,7 +266,10 @@ async fn get_github_settings(
     AuthUser(user): AuthUser,
 ) -> Result<impl IntoResponse, AppError> {
     let org = state.db.primary_org(user.id).await?;
-    state.reload_github_for_org(org.id).await.map_err(AppError::from)?;
+    state
+        .reload_github_for_org(org.id)
+        .await
+        .map_err(AppError::from)?;
     let github = state.github_client().await;
     let account = state.db.get_github_account(user.id).await?;
     let view = github_provider_view(&github);
@@ -200,7 +289,10 @@ async fn update_github_settings(
 ) -> Result<impl IntoResponse, AppError> {
     let org = state.db.primary_org(user.id).await?;
     state.db.upsert_github_provider_config(org.id, req).await?;
-    let github = state.reload_github_for_org(org.id).await.map_err(AppError::from)?;
+    let github = state
+        .reload_github_for_org(org.id)
+        .await
+        .map_err(AppError::from)?;
     let account = state.db.get_github_account(user.id).await?;
     Ok(Json(serde_json::json!({
         "provider": github_provider_view(&github),
@@ -290,7 +382,10 @@ async fn github_status(
     AuthUser(user): AuthUser,
 ) -> Result<impl IntoResponse, AppError> {
     let org = state.db.primary_org(user.id).await?;
-    state.reload_github_for_org(org.id).await.map_err(AppError::from)?;
+    state
+        .reload_github_for_org(org.id)
+        .await
+        .map_err(AppError::from)?;
     let github = state.github_client().await;
     let account = state.db.get_github_account(user.id).await?;
     let installations = state.db.list_installations(org.id).await?;
@@ -306,11 +401,7 @@ async fn github_status(
     let display_login = account
         .as_ref()
         .map(|a| a.login.clone())
-        .or_else(|| {
-            live_installations
-                .first()
-                .map(|i| i.account_login.clone())
-        })
+        .or_else(|| live_installations.first().map(|i| i.account_login.clone()))
         .or_else(|| installations.first().map(|i| i.account_login.clone()));
     Ok(Json(serde_json::json!({
         "mode": github.mode(),
@@ -333,7 +424,10 @@ async fn github_connect_start(
     AuthUser(user): AuthUser,
 ) -> Result<impl IntoResponse, AppError> {
     let org = state.db.primary_org(user.id).await?;
-    state.reload_github_for_org(org.id).await.map_err(AppError::from)?;
+    state
+        .reload_github_for_org(org.id)
+        .await
+        .map_err(AppError::from)?;
     let github = state.github_client().await;
     if github.is_mock() {
         return Ok(Json(serde_json::json!({
@@ -386,7 +480,10 @@ async fn github_install_callback(
         .user_id
         .ok_or_else(|| AppError::unauthorized("install state has no user"))?;
     let org = state.db.primary_org(user_id).await?;
-    state.reload_github_for_org(org.id).await.map_err(AppError::from)?;
+    state
+        .reload_github_for_org(org.id)
+        .await
+        .map_err(AppError::from)?;
     let github = state.github_client().await;
     let remote = github
         .get_installation(&installation_id)
@@ -424,7 +521,10 @@ async fn github_oauth_start(
     AuthUser(user): AuthUser,
 ) -> Result<impl IntoResponse, AppError> {
     let org = state.db.primary_org(user.id).await?;
-    state.reload_github_for_org(org.id).await.map_err(AppError::from)?;
+    state
+        .reload_github_for_org(org.id)
+        .await
+        .map_err(AppError::from)?;
     let github = state.github_client().await;
     if github.is_mock() {
         return Ok(Json(serde_json::json!({
@@ -477,7 +577,10 @@ async fn github_oauth_callback(
         .user_id
         .ok_or_else(|| AppError::unauthorized("oauth state has no user"))?;
     let org = state.db.primary_org(user_id).await?;
-    state.reload_github_for_org(org.id).await.map_err(AppError::from)?;
+    state
+        .reload_github_for_org(org.id)
+        .await
+        .map_err(AppError::from)?;
     let github = state.github_client().await;
     let redirect = format!("{}/api/v1/github/oauth/callback", state.public_base_url);
     let tokens = github
@@ -507,10 +610,15 @@ async fn github_mock_connect(
     AuthUser(user): AuthUser,
 ) -> Result<impl IntoResponse, AppError> {
     let org = state.db.primary_org(user.id).await?;
-    state.reload_github_for_org(org.id).await.map_err(AppError::from)?;
+    state
+        .reload_github_for_org(org.id)
+        .await
+        .map_err(AppError::from)?;
     let github = state.github_client().await;
     if !github.is_mock() {
-        return Err(AppError::conflict("mock connect only available in mock mode"));
+        return Err(AppError::conflict(
+            "mock connect only available in mock mode",
+        ));
     }
     let tokens = github
         .exchange_oauth_code("mock-code", None)
@@ -558,7 +666,10 @@ async fn github_sync(
     AuthUser(user): AuthUser,
 ) -> Result<impl IntoResponse, AppError> {
     let org = state.db.primary_org(user.id).await?;
-    state.reload_github_for_org(org.id).await.map_err(AppError::from)?;
+    state
+        .reload_github_for_org(org.id)
+        .await
+        .map_err(AppError::from)?;
     let github = state.github_client().await;
     if github.is_mock() {
         let tokens = github
@@ -582,7 +693,13 @@ async fn github_sync(
             .await?;
         let installation = state
             .db
-            .upsert_installation(org.id, "10001", "mock-org", GithubAccountType::Organization, GithubInstallationStatus::Active)
+            .upsert_installation(
+                org.id,
+                "10001",
+                "mock-org",
+                GithubAccountType::Organization,
+                GithubInstallationStatus::Active,
+            )
             .await?;
         let listed = github
             .list_installation_repos("10001")
@@ -655,7 +772,13 @@ async fn github_mock_install(
     let org = state.db.primary_org(user.id).await?;
     let installation = state
         .db
-        .upsert_installation(org.id, "10001", "mock-org", GithubAccountType::Organization, GithubInstallationStatus::Active)
+        .upsert_installation(
+            org.id,
+            "10001",
+            "mock-org",
+            GithubAccountType::Organization,
+            GithubInstallationStatus::Active,
+        )
         .await?;
     Ok(Json(installation))
 }
@@ -674,7 +797,10 @@ async fn sync_installation_repos(
     if installation.organization_id != org.id {
         return Err(AppError::forbidden("installation not in organization"));
     }
-    state.reload_github_for_org(org.id).await.map_err(AppError::from)?;
+    state
+        .reload_github_for_org(org.id)
+        .await
+        .map_err(AppError::from)?;
     let github = state.github_client().await;
     let listed = github
         .list_installation_repos(&installation_id)
@@ -847,7 +973,9 @@ async fn set_run_mode(
         )));
     }
     state.db.set_pending_mode(run_id, &req.mode_id).await?;
-    Ok(Json(serde_json::json!({ "ok": true, "modeId": req.mode_id.trim() })))
+    Ok(Json(
+        serde_json::json!({ "ok": true, "modeId": req.mode_id.trim() }),
+    ))
 }
 
 #[derive(Debug, Deserialize)]
@@ -866,7 +994,12 @@ async fn list_events(
     let _ = authorize_run(&state, user.id, run_id).await?;
     let events = match query.after_cursor {
         Some(cursor) => state.db.events_after_cursor(run_id, cursor).await?,
-        None => state.db.events_after(run_id, query.after_seq.unwrap_or(0)).await?,
+        None => {
+            state
+                .db
+                .events_after(run_id, query.after_seq.unwrap_or(0))
+                .await?
+        }
     };
     Ok(Json(serde_json::json!({
         "events": events,
@@ -887,9 +1020,7 @@ async fn stream_events(
         .get("last-event-id")
         .and_then(|value| value.to_str().ok())
         .and_then(|value| value.parse::<i64>().ok());
-    let mut after = last_event_id
-        .or(query.after_seq)
-        .unwrap_or(0);
+    let mut after = last_event_id.or(query.after_seq).unwrap_or(0);
     let mut after_cursor = query.after_cursor;
     let (tx, rx) = tokio::sync::mpsc::channel::<Result<Event, Infallible>>(32);
     tokio::spawn(async move {
@@ -945,7 +1076,12 @@ async fn cancel_run(
     Ok(Json(
         state
             .db
-            .update_run_status(run_id, RunStatus::Cancelled, None, Some("user_cancelled".into()))
+            .update_run_status(
+                run_id,
+                RunStatus::Cancelled,
+                None,
+                Some("user_cancelled".into()),
+            )
             .await?,
     ))
 }
@@ -1013,7 +1149,10 @@ async fn decide_approval(
         return Err(AppError::not_found("approval not found"));
     }
     if !approval.allowed_decisions.is_empty()
-        && !approval.allowed_decisions.iter().any(|d| d == &req.decision)
+        && !approval
+            .allowed_decisions
+            .iter()
+            .any(|d| d == &req.decision)
     {
         return Err(AppError::conflict(format!(
             "decision {} not allowed",
@@ -1035,7 +1174,9 @@ async fn list_run_files(
 ) -> Result<impl IntoResponse, AppError> {
     let _ = authorize_run(&state, user.id, run_id).await?;
     let root = state.workspace_root.join(run_id.to_string());
-    Ok(Json(workspace::list_files(&root, 500).map_err(AppError::from)?))
+    Ok(Json(
+        workspace::list_files(&root, 500).map_err(AppError::from)?,
+    ))
 }
 
 #[derive(Debug, Deserialize)]
@@ -1192,15 +1333,16 @@ async fn claim_run(
         .await?;
     Ok(Json(claimed.map(
         |(run, attempt_id, generation, resume_session_id, workspace_dir, resume_without_prompt)| {
-        ClaimedRun {
-            run,
-            attempt_id,
-            generation,
-            resume_session_id,
-            resume_without_prompt,
-            workspace_dir,
-        }
-    })))
+            ClaimedRun {
+                run,
+                attempt_id,
+                generation,
+                resume_session_id,
+                resume_without_prompt,
+                workspace_dir,
+            }
+        },
+    )))
 }
 
 async fn queue_stats(
@@ -1272,13 +1414,7 @@ async fn worker_status(
     Ok(Json(
         state
             .db
-            .update_run_status_fenced(
-                run_id,
-                &fence,
-                req.status,
-                req.head_sha,
-                req.failure_code,
-            )
+            .update_run_status_fenced(run_id, &fence, req.status, req.head_sha, req.failure_code)
             .await?,
     ))
 }
@@ -1290,14 +1426,18 @@ async fn worker_title(
     Json(req): Json<WorkerTitleRequest>,
 ) -> Result<impl IntoResponse, AppError> {
     let updated = match req.fence {
-        Some(fence) => state
-            .db
-            .update_run_title_fenced(run_id, &fence, req.title.trim())
-            .await?,
-        None => state
-            .db
-            .update_run_title_legacy(run_id, req.title.trim())
-            .await?,
+        Some(fence) => {
+            state
+                .db
+                .update_run_title_fenced(run_id, &fence, req.title.trim())
+                .await?
+        }
+        None => {
+            state
+                .db
+                .update_run_title_legacy(run_id, req.title.trim())
+                .await?
+        }
     };
     Ok(Json(updated))
 }
@@ -1511,8 +1651,8 @@ mod reconnect_replay_tests {
     use zene_cloud_db::Db;
     use zene_cloud_domain::{
         AuthResponse, ClaimedRun, CreateRepositoryRequest, CreateRunRequest, PermissionMode,
-        RegisterRequest, Repository, Run, RunEvent, RunEventKind, RunStatus, UpdateLlmSettingsRequest,
-        WorkerEventRequest, WorkerFence,
+        RegisterRequest, Repository, Run, RunEvent, RunEventKind, RunStatus,
+        UpdateLlmSettingsRequest, WorkerEventRequest, WorkerFence,
     };
     use zene_cloud_github::{GithubClient, GithubConfig};
 
@@ -1520,7 +1660,10 @@ mod reconnect_replay_tests {
         assert_eq!(response.status(), StatusCode::OK);
         let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
         serde_json::from_slice(&bytes).unwrap_or_else(|error| {
-            panic!("invalid JSON response: {error}; body={}", String::from_utf8_lossy(&bytes))
+            panic!(
+                "invalid JSON response: {error}; body={}",
+                String::from_utf8_lossy(&bytes)
+            )
         })
     }
 
@@ -1575,7 +1718,8 @@ mod reconnect_replay_tests {
         db.migrate().await.unwrap();
         let worker_token = "integration-worker-token";
         db.ensure_dev_worker_token(worker_token).await.unwrap();
-        let workspace_root = std::env::temp_dir().join(format!("zene-api-replay-{}", Uuid::new_v4()));
+        let workspace_root =
+            std::env::temp_dir().join(format!("zene-api-replay-{}", Uuid::new_v4()));
         tokio::fs::create_dir_all(&workspace_root).await.unwrap();
         let state = AppState::new(
             db.clone(),
@@ -1749,7 +1893,10 @@ mod reconnect_replay_tests {
         assert!(second.seq > first.seq);
         let persisted = state.db.events_after(run.id, first.seq).await.unwrap();
         assert_eq!(
-            persisted.iter().filter(|event| event.payload == second.payload).count(),
+            persisted
+                .iter()
+                .filter(|event| event.payload == second.payload)
+                .count(),
             1
         );
 

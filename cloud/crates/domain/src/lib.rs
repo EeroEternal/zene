@@ -109,10 +109,7 @@ impl RunStatus {
     }
 
     pub fn is_terminal(self) -> bool {
-        matches!(
-            self,
-            Self::Failed | Self::TimedOut | Self::Cancelled
-        )
+        matches!(self, Self::Failed | Self::TimedOut | Self::Cancelled)
     }
 }
 
@@ -738,6 +735,20 @@ pub struct LoginRequest {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct EmailLoginRequest {
+    pub email: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EmailLoginResponse {
+    pub ok: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub login_url: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct AuthResponse {
     pub token: String,
     pub user: User,
@@ -835,11 +846,10 @@ mod tests {
     use super::{
         ApprovalDecision, ApprovalEventPayload, ApprovalKind, ApprovalRisk, ApprovalStatus,
         CloudEventKind, CreateApprovalRequest, GithubAccountType, GithubInstallationStatus,
-        GithubMode, MessageRole, PlatformEvent, PermissionMode, ProjectionPayload,
-        PullRequestState,
-        RunEventKind, RunStatus, TextEventPayload, ToolCallPayload, WorkerCommand,
-        WorkerCommandAckRequest, WorkerCommandKind, WorkerEventRequest, WorkerFence,
-        WorkerClaimRequest, WorkerPushRequest, WorkerSessionRequest,
+        GithubMode, MessageRole, PermissionMode, PlatformEvent, ProjectionPayload,
+        PullRequestState, RunEventKind, RunStatus, TextEventPayload, ToolCallPayload,
+        WorkerClaimRequest, WorkerCommand, WorkerCommandAckRequest, WorkerCommandKind,
+        WorkerEventRequest, WorkerFence, WorkerPushRequest, WorkerSessionRequest,
     };
 
     #[test]
@@ -939,7 +949,8 @@ mod tests {
         assert_eq!(encoded["text"], "hello");
         assert_eq!(encoded["messageId"], uuid::Uuid::nil().to_string());
 
-        let parsed: WorkerCommand = serde_json::from_value(encoded).expect("prompt should deserialize");
+        let parsed: WorkerCommand =
+            serde_json::from_value(encoded).expect("prompt should deserialize");
         assert_eq!(parsed.kind, WorkerCommandKind::Prompt);
         assert_eq!(parsed.text.as_deref(), Some("hello"));
 
@@ -949,7 +960,8 @@ mod tests {
         assert!(encoded["text"].is_null());
         assert!(encoded["messageId"].is_null());
 
-        let parsed: WorkerCommand = serde_json::from_value(encoded).expect("cancel should deserialize");
+        let parsed: WorkerCommand =
+            serde_json::from_value(encoded).expect("cancel should deserialize");
         assert_eq!(parsed.kind, WorkerCommandKind::Cancel);
     }
 
@@ -1127,14 +1139,23 @@ mod tests {
         }
         assert_eq!(CloudEventKind::parse("platform"), None);
         assert_eq!(CloudEventKind::parse("runtime"), None);
-        assert_eq!(RunEventKind::parse("platform"), Some(RunEventKind::Platform));
+        assert_eq!(
+            RunEventKind::parse("platform"),
+            Some(RunEventKind::Platform)
+        );
         assert_eq!(RunEventKind::parse("runtime"), Some(RunEventKind::Runtime));
-        assert_eq!(RunEventKind::parse("text_delta"), Some(RunEventKind::TextDelta));
+        assert_eq!(
+            RunEventKind::parse("text_delta"),
+            Some(RunEventKind::TextDelta)
+        );
         assert_eq!(
             RunEventKind::from(CloudEventKind::ToolCall).as_event_type(),
             "tool_call"
         );
-        assert_eq!(serde_json::to_value(RunEventKind::Platform).expect("platform"), serde_json::json!("platform"));
+        assert_eq!(
+            serde_json::to_value(RunEventKind::Platform).expect("platform"),
+            serde_json::json!("platform")
+        );
         assert_eq!(RunEventKind::parse("not-a-kind"), None);
     }
 
