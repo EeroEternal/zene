@@ -3,7 +3,7 @@
 import { useCallback, useState } from "react";
 import type { PullRequest, PullRequestState } from "@/lib/types";
 import { readSessionUi, writeSessionUi, type SessionGitSubTab } from "@/lib/sessionUi";
-import { markPullRequestReady, mergePullRequest } from "@/lib/gitPublish";
+import { markPullRequestReady, mergePullRequest, isDraftPullRequest } from "@/lib/gitPublish";
 import { ChangesPanel } from "./ChangesPanel";
 import { CommitsPanel } from "./CommitsPanel";
 import { ReviewPanel } from "./ReviewPanel";
@@ -96,8 +96,12 @@ export function GitPanel({
     }
   }, [prId, runId, onPullRequestChange, toast]);
 
-  const showMarkReady = prState === "draft" && !!prId;
-  const showMerge = prState === "open" && !!prId;
+  const isDraft = pullRequest ? isDraftPullRequest(pullRequest) : false;
+  const isMerged = prState === "merged";
+  const isClosed = prState === "closed";
+
+  const showMarkReady = isDraft && !!prId;
+  const showMerge = !!prId && !isDraft && !isMerged && !isClosed;
   const showCommit = !pullRequest && onCommitAndCreatePr;
 
   return (
@@ -124,11 +128,11 @@ export function GitPanel({
             </div>
           )}
           <div className="mt-1 flex flex-wrap items-center gap-1.5 text-[11px] text-muted">
-            {prState && (
+            {(prState || isDraft) && (
               <span
-                className={`rounded px-1.5 py-0.5 text-[10px] font-semibold ${prStateClass(prState)}`}
+                className={`rounded px-1.5 py-0.5 text-[10px] font-semibold ${prStateClass(isDraft ? "draft" : prState)}`}
               >
-                {prStateLabel(prState)}
+                {prStateLabel(isDraft ? "draft" : prState)}
               </span>
             )}
             {headBranch ? (
