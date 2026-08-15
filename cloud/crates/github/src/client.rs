@@ -32,16 +32,8 @@ impl GithubClient {
         Self { config, http, app }
     }
 
-    pub fn mock() -> Self {
-        Self::new(GithubConfig::mock())
-    }
-
     pub fn mode(&self) -> zene_cloud_domain::GithubMode {
         self.config.mode
-    }
-
-    pub fn is_mock(&self) -> bool {
-        self.config.is_mock()
     }
 
     pub fn config(&self) -> &GithubConfig {
@@ -70,19 +62,10 @@ impl GithubClient {
         redirect_uri: Option<String>,
     ) -> Result<OauthTokens> {
         let cfg = self.oauth_config(redirect_uri)?;
-        oauth::exchange_code(&cfg, &self.http, code, self.is_mock()).await
+        oauth::exchange_code(&cfg, &self.http, code).await
     }
 
     pub async fn get_user(&self, access_token: &str) -> Result<GithubUser> {
-        if self.is_mock() {
-            return Ok(GithubUser {
-                id: "1001".into(),
-                login: "mock-user".into(),
-                name: Some("Mock User".into()),
-                avatar_url: Some("https://avatars.githubusercontent.com/u/0".into()),
-            });
-        }
-
         #[derive(Deserialize)]
         struct GhUser {
             id: i64,
@@ -127,14 +110,6 @@ impl GithubClient {
     }
 
     pub async fn get_installation(&self, installation_id: &str) -> Result<AppInstallation> {
-        if self.is_mock() {
-            return Ok(AppInstallation {
-                id: installation_id.into(),
-                account_login: "mock-org".into(),
-                account_type: GithubAccountType::Organization,
-            });
-        }
-
         let jwt = self.create_app_jwt().await?;
         let url = format!(
             "{}/app/installations/{installation_id}",
@@ -175,14 +150,6 @@ impl GithubClient {
     }
 
     pub async fn list_app_installations(&self) -> Result<Vec<AppInstallation>> {
-        if self.is_mock() {
-            return Ok(vec![AppInstallation {
-                id: "10001".into(),
-                account_login: "mock-org".into(),
-                account_type: GithubAccountType::Organization,
-            }]);
-        }
-
         let jwt = self.create_app_jwt().await?;
         let mut page = 1u32;
         let mut out = Vec::new();
@@ -248,29 +215,6 @@ impl GithubClient {
         &self,
         installation_id: &str,
     ) -> Result<Vec<GithubRepoSummary>> {
-        if self.is_mock() {
-            return Ok(vec![
-                GithubRepoSummary {
-                    provider_repo_id: "9001".into(),
-                    owner: "mock-org".into(),
-                    name: "demo".into(),
-                    default_branch: "main".into(),
-                    clone_url: "https://github.com/mock-org/demo.git".into(),
-                    private: false,
-                    installation_id: installation_id.into(),
-                },
-                GithubRepoSummary {
-                    provider_repo_id: "9002".into(),
-                    owner: "mock-org".into(),
-                    name: "private-app".into(),
-                    default_branch: "main".into(),
-                    clone_url: "https://github.com/mock-org/private-app.git".into(),
-                    private: true,
-                    installation_id: installation_id.into(),
-                },
-            ]);
-        }
-
         let token = self.installation_token(installation_id).await?;
         let mut page = 1u32;
         let mut out = Vec::new();
@@ -369,15 +313,6 @@ impl GithubClient {
         owner: &str,
         repo: &str,
     ) -> Result<Vec<String>> {
-        if self.is_mock() {
-            return Ok(vec![
-                "main".into(),
-                "dev".into(),
-                "deploy".into(),
-                "feature-deploy-codebase-optimizations".into(),
-            ]);
-        }
-
         let token = self.installation_token(installation_id).await?;
         let mut page = 1u32;
         let mut out = Vec::new();
@@ -427,31 +362,6 @@ impl GithubClient {
         installation_id: &str,
         params: CreatePullRequestParams,
     ) -> Result<PullRequest> {
-        if self.is_mock() {
-            let number = 42i64;
-            return Ok(PullRequest {
-                id: uuid::Uuid::new_v4(),
-                repository_id: uuid::Uuid::nil(),
-                run_id: uuid::Uuid::nil(),
-                provider_number: Some(number),
-                url: Some(format!(
-                    "https://github.com/{}/{}/pull/{number}",
-                    params.owner, params.repo
-                )),
-                title: params.title,
-                body: params.body,
-                base_sha: None,
-                head_sha: None,
-                state: if params.draft {
-                    PullRequestState::Draft
-                } else {
-                    PullRequestState::Open
-                },
-                draft: params.draft,
-                created_at: chrono::Utc::now(),
-            });
-        }
-
         let token = self.installation_token(installation_id).await?;
         let url = format!(
             "{}/repos/{}/{}/pulls",
@@ -528,25 +438,6 @@ impl GithubClient {
         repo: &str,
         number: i64,
     ) -> Result<PullRequest> {
-        if self.is_mock() {
-            return Ok(PullRequest {
-                id: uuid::Uuid::new_v4(),
-                repository_id: uuid::Uuid::nil(),
-                run_id: uuid::Uuid::nil(),
-                provider_number: Some(number),
-                url: Some(format!(
-                    "https://github.com/{owner}/{repo}/pull/{number}"
-                )),
-                title: "Mock PR".into(),
-                body: None,
-                base_sha: None,
-                head_sha: None,
-                state: PullRequestState::Open,
-                draft: false,
-                created_at: chrono::Utc::now(),
-            });
-        }
-
         let token = self.installation_token(installation_id).await?;
         let url = format!(
             "{}/repos/{owner}/{repo}/pulls/{number}",
@@ -607,25 +498,6 @@ impl GithubClient {
         repo: &str,
         number: i64,
     ) -> Result<PullRequest> {
-        if self.is_mock() {
-            return Ok(PullRequest {
-                id: uuid::Uuid::new_v4(),
-                repository_id: uuid::Uuid::nil(),
-                run_id: uuid::Uuid::nil(),
-                provider_number: Some(number),
-                url: Some(format!(
-                    "https://github.com/{owner}/{repo}/pull/{number}"
-                )),
-                title: "Mock PR".into(),
-                body: None,
-                base_sha: None,
-                head_sha: None,
-                state: PullRequestState::Merged,
-                draft: false,
-                created_at: chrono::Utc::now(),
-            });
-        }
-
         let token = self.installation_token(installation_id).await?;
         let url = format!(
             "{}/repos/{owner}/{repo}/pulls/{number}/merge",

@@ -8,10 +8,9 @@ use crate::types::GithubConfig;
 #[derive(Debug, Clone)]
 pub struct GithubAppAuth {
     pub app_id: String,
-    /// PEM-encoded RSA private key. When `None`, JWT issuance returns mock tokens.
+    /// PEM-encoded RSA private key.
     pub private_key_pem: Option<String>,
     pub app_slug: Option<String>,
-    mock: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -38,20 +37,19 @@ impl GithubAppAuth {
                 .unwrap_or_else(|| "0".into()),
             private_key_pem: cfg.app_private_key_pem.clone(),
             app_slug: cfg.app_slug.clone(),
-            mock: cfg.is_mock() || cfg.app_private_key_pem.is_none(),
         }
     }
 
-    pub fn is_mock(&self) -> bool {
-        self.mock
+    pub fn is_configured(&self) -> bool {
+        self.private_key_pem.is_some()
     }
 
-    /// Create a GitHub App JWT (RS256). Falls back to a mock token when no key is available.
+    /// Create a GitHub App JWT (RS256).
     pub fn create_app_jwt(&self) -> Result<String> {
-        if self.mock || self.private_key_pem.is_none() {
-            return Ok(format!("mock.app.jwt.{}", self.app_id));
-        }
-        let pem = self.private_key_pem.as_ref().unwrap();
+        let pem = self
+            .private_key_pem
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("GitHub App private key PEM is missing"))?;
         let now = Utc::now();
         let claims = AppJwtClaims {
             // GitHub recommends iat slightly in the past to account for clock skew.
@@ -74,14 +72,6 @@ impl GithubAppAuth {
     ) -> Result<InstallationToken> {
         if installation_id.trim().is_empty() {
             bail!("installation_id is empty");
-        }
-        if self.mock {
-            let expires = (Utc::now() + Duration::hours(1)).to_rfc3339();
-            return Ok(InstallationToken {
-                token: format!("ghs_mock_{installation_id}"),
-                expires_at: expires,
-                installation_id: installation_id.into(),
-            });
         }
 
         let jwt = self.create_app_jwt()?;

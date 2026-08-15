@@ -55,20 +55,6 @@ impl GithubConfig {
         })
     }
 
-    pub fn mock() -> Self {
-        Self {
-            mode: GithubMode::Mock,
-            client_id: Some("mock-client-id".into()),
-            client_secret: Some("mock-client-secret".into()),
-            app_id: Some("123456".into()),
-            app_private_key_pem: None,
-            app_slug: Some("zene-cloud-mock".into()),
-            api_base: "https://api.github.com".into(),
-            oauth_authorize_url: "https://github.com/login/oauth/authorize".into(),
-            oauth_token_url: "https://github.com/login/oauth/access_token".into(),
-        }
-    }
-
     pub fn live_default() -> Self {
         Self {
             mode: GithubMode::Live,
@@ -86,11 +72,6 @@ impl GithubConfig {
     pub fn merge_env_and_db(
         stored: Option<zene_cloud_domain::GithubProviderConfig>,
     ) -> Self {
-        let env_mode = GithubMode::from_env();
-        if env_mode == GithubMode::Mock {
-            return Self::mock();
-        }
-
         let mut cfg = Self::live_default();
         if let Some(stored) = stored {
             cfg.mode = stored.mode;
@@ -163,10 +144,6 @@ impl GithubConfig {
     pub fn is_oauth_configured(&self) -> bool {
         self.client_id.as_ref().is_some_and(|s| !s.is_empty())
             && self.client_secret.as_ref().is_some_and(|s| !s.is_empty())
-    }
-
-    pub fn is_mock(&self) -> bool {
-        self.mode == GithubMode::Mock
     }
 }
 
