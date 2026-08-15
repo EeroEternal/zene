@@ -78,6 +78,7 @@ export interface Run {
   title: string;
   status: RunStatus;
   repositoryId: string;
+  workspaceId?: string;
   headBranch?: string;
   baseRef?: string;
   model?: string;
@@ -364,6 +365,7 @@ export interface GitCommit {
 export type PullRequestState = "open" | "closed" | "merged" | "draft";
 
 export interface PullRequest {
+  id: string;
   title: string;
   url?: string;
   providerNumber?: number;

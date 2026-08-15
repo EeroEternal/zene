@@ -49,7 +49,7 @@ export function PullRequestDialog({
       >
         <div className="flex items-center justify-between gap-2 border-b border-line px-4 py-3">
           <h2 id="pr-dialog-title" className="m-0 text-[15px] font-semibold text-ink">
-            Create pull request
+            Commit & Create PR
           </h2>
           <button type="button" className="btn btn-sm" onClick={onClose}>
             Cancel

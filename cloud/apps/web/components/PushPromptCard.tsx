@@ -2,7 +2,7 @@
 
 import { useCallback, useState } from "react";
 import type { GitCompare } from "@/lib/types";
-import { publishRunToGithub, type PublishResult } from "@/lib/gitPublish";
+import { commitAndCreatePullRequest, type PublishResult } from "@/lib/gitPublish";
 import { IconExternal, IconGithub } from "@/lib/icons";
 
 export function PushPromptCard({
@@ -36,7 +36,7 @@ export function PushPromptCard({
     setError("");
     setBusy(true);
     try {
-      const next = await publishRunToGithub(runId, {
+      const next = await commitAndCreatePullRequest(runId, {
         title: title?.trim() || "Changes from Zene Cloud",
         baseRef: baseRef || base,
         headBranch: branch,
@@ -45,6 +45,9 @@ export function PushPromptCard({
       });
       setResult(next);
       onPublished?.(next);
+      if (next.pullRequest?.url) {
+        window.open(next.pullRequest.url, "_blank", "noopener,noreferrer");
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -58,7 +61,7 @@ export function PushPromptCard({
       <div className="self-stretch rounded-md border border-line bg-canvas p-3.5 min-[981px]:ml-9">
         <div className="mb-1 flex items-center gap-2 text-[13px] font-semibold text-ink">
           <IconGithub className="h-4 w-4 shrink-0" />
-          <span>Pushed to GitHub</span>
+          <span>Draft PR created</span>
           {pr?.providerNumber != null && pr.url ? (
             <a
               href={pr.url}
@@ -74,7 +77,7 @@ export function PushPromptCard({
         <p className="m-0 text-[12px] leading-snug text-muted">
           {pr?.url ? (
             <>
-              Draft PR{" "}
+              Open{" "}
               <a
                 href={pr.url}
                 target="_blank"
@@ -83,10 +86,10 @@ export function PushPromptCard({
               >
                 {pr.title}
               </a>{" "}
-              created.
+              to mark as ready, then merge when checks pass.
             </>
           ) : (
-            <>Branch pushed{result.push.headSha ? ` · ${result.push.headSha.slice(0, 7)}` : ""}.</>
+            <>Changes committed{result.push.headSha ? ` · ${result.push.headSha.slice(0, 7)}` : ""}.</>
           )}
         </p>
       </div>
@@ -95,9 +98,9 @@ export function PushPromptCard({
 
   return (
     <div className="self-stretch rounded-md border-l-2 border-primary bg-secondary p-3.5 min-[981px]:ml-9">
-      <h4 className="mb-1 text-[13px] font-semibold text-ink">Push to GitHub?</h4>
+      <h4 className="mb-1 text-[13px] font-semibold text-ink">Commit & Create PR?</h4>
       <p className="mb-3 text-[12px] leading-snug text-muted">
-        <span className="font-medium text-ink">{fileCount} file(s)</span> are not on GitHub yet (
+        <span className="font-medium text-ink">{fileCount} file(s)</span> changed (
         <span className="font-mono text-[#1a7f37]">+{additions}</span>{" "}
         <span className="font-mono text-[#cf222e]">−{deletions}</span>
         {" vs "}
@@ -108,11 +111,11 @@ export function PushPromptCard({
             <span className="font-mono text-ink">{branch}</span>
           </>
         ) : null}
-        ). A draft pull request will be created after push.
+        ). Changes will be committed, pushed, and opened as a draft PR.
       </p>
       <div className="flex flex-wrap gap-2">
         <button type="button" className="btn btn-primary btn-sm" disabled={busy} onClick={() => void publish()}>
-          {busy ? "Pushing…" : "Push & create PR"}
+          {busy ? "Committing…" : "Commit & Create PR"}
         </button>
         <button type="button" className="btn btn-sm" disabled={busy} onClick={onDismiss}>
           Not now

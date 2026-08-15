@@ -519,6 +519,193 @@ impl GithubClient {
             created_at: chrono::Utc::now(),
         })
     }
+
+    /// Mark a draft pull request ready for review (`draft: false`).
+    pub async fn mark_pull_request_ready(
+        &self,
+        installation_id: &str,
+        owner: &str,
+        repo: &str,
+        number: i64,
+    ) -> Result<PullRequest> {
+        if self.is_mock() {
+            return Ok(PullRequest {
+                id: uuid::Uuid::new_v4(),
+                repository_id: uuid::Uuid::nil(),
+                run_id: uuid::Uuid::nil(),
+                provider_number: Some(number),
+                url: Some(format!(
+                    "https://github.com/{owner}/{repo}/pull/{number}"
+                )),
+                title: "Mock PR".into(),
+                body: None,
+                base_sha: None,
+                head_sha: None,
+                state: PullRequestState::Open,
+                draft: false,
+                created_at: chrono::Utc::now(),
+            });
+        }
+
+        let token = self.installation_token(installation_id).await?;
+        let url = format!(
+            "{}/repos/{owner}/{repo}/pulls/{number}",
+            self.config.api_base
+        );
+
+        #[derive(serde::Serialize)]
+        struct Body {
+            draft: bool,
+        }
+        #[derive(Deserialize)]
+        struct Resp {
+            number: i64,
+            html_url: String,
+            state: String,
+            draft: Option<bool>,
+            title: String,
+            body: Option<String>,
+        }
+
+        let resp = self
+            .http
+            .patch(&url)
+            .header("Accept", "application/vnd.github+json")
+            .header("Authorization", format!("Bearer {}", token.token))
+            .header("X-GitHub-Api-Version", "2022-11-28")
+            .json(&Body { draft: false })
+            .send()
+            .await
+            .context("mark pull request ready")?;
+        let status = resp.status();
+        let text = resp.text().await.unwrap_or_default();
+        if !status.is_success() {
+            bail!("mark pull request ready failed ({status}): {text}");
+        }
+        let pr: Resp = serde_json::from_str(&text).context("parse pull request")?;
+        Ok(PullRequest {
+            id: uuid::Uuid::new_v4(),
+            repository_id: uuid::Uuid::nil(),
+            run_id: uuid::Uuid::nil(),
+            provider_number: Some(pr.number),
+            url: Some(pr.html_url),
+            title: pr.title,
+            body: pr.body,
+            base_sha: None,
+            head_sha: None,
+            state: pull_request_state(&pr.state, pr.draft.unwrap_or(false)),
+            draft: pr.draft.unwrap_or(false),
+            created_at: chrono::Utc::now(),
+        })
+    }
+
+    /// Merge an open pull request.
+    pub async fn merge_pull_request(
+        &self,
+        installation_id: &str,
+        owner: &str,
+        repo: &str,
+        number: i64,
+    ) -> Result<PullRequest> {
+        if self.is_mock() {
+            return Ok(PullRequest {
+                id: uuid::Uuid::new_v4(),
+                repository_id: uuid::Uuid::nil(),
+                run_id: uuid::Uuid::nil(),
+                provider_number: Some(number),
+                url: Some(format!(
+                    "https://github.com/{owner}/{repo}/pull/{number}"
+                )),
+                title: "Mock PR".into(),
+                body: None,
+                base_sha: None,
+                head_sha: None,
+                state: PullRequestState::Merged,
+                draft: false,
+                created_at: chrono::Utc::now(),
+            });
+        }
+
+        let token = self.installation_token(installation_id).await?;
+        let url = format!(
+            "{}/repos/{owner}/{repo}/pulls/{number}/merge",
+            self.config.api_base
+        );
+
+        #[derive(Deserialize)]
+        struct Resp {
+            #[allow(dead_code)]
+            merged: bool,
+            #[allow(dead_code)]
+            message: Option<String>,
+        }
+
+        let resp = self
+            .http
+            .put(&url)
+            .header("Accept", "application/vnd.github+json")
+            .header("Authorization", format!("Bearer {}", token.token))
+            .header("X-GitHub-Api-Version", "2022-11-28")
+            .json(&serde_json::json!({}))
+            .send()
+            .await
+            .context("merge pull request")?;
+        let status = resp.status();
+        let text = resp.text().await.unwrap_or_default();
+        if !status.is_success() {
+            bail!("merge pull request failed ({status}): {text}");
+        }
+        let _: Resp = serde_json::from_str(&text).context("parse merge response")?;
+
+        let pr_url = format!(
+            "{}/repos/{owner}/{repo}/pulls/{number}",
+            self.config.api_base
+        );
+        let get = self
+            .http
+            .get(&pr_url)
+            .header("Accept", "application/vnd.github+json")
+            .header("Authorization", format!("Bearer {}", token.token))
+            .header("X-GitHub-Api-Version", "2022-11-28")
+            .send()
+            .await
+            .context("fetch merged pull request")?;
+        let status = get.status();
+        let text = get.text().await.unwrap_or_default();
+        if !status.is_success() {
+            bail!("fetch merged pull request failed ({status}): {text}");
+        }
+        #[derive(Deserialize)]
+        struct PrResp {
+            number: i64,
+            html_url: String,
+            state: String,
+            draft: Option<bool>,
+            title: String,
+            body: Option<String>,
+            merged: Option<bool>,
+        }
+        let pr: PrResp = serde_json::from_str(&text).context("parse pull request")?;
+        let state = if pr.merged.unwrap_or(false) || pr.state == "closed" {
+            PullRequestState::Merged
+        } else {
+            pull_request_state(&pr.state, pr.draft.unwrap_or(false))
+        };
+        Ok(PullRequest {
+            id: uuid::Uuid::new_v4(),
+            repository_id: uuid::Uuid::nil(),
+            run_id: uuid::Uuid::nil(),
+            provider_number: Some(pr.number),
+            url: Some(pr.html_url),
+            title: pr.title,
+            body: pr.body,
+            base_sha: None,
+            head_sha: None,
+            state,
+            draft: pr.draft.unwrap_or(false),
+            created_at: chrono::Utc::now(),
+        })
+    }
 }
 
 fn github_account_type(value: &str) -> GithubAccountType {
