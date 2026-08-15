@@ -18,7 +18,8 @@ import type {
   UpdateLlmSettingsRequest,
   User,
 } from "@/lib/types";
-import { filterLabelText } from "./Sidebar";
+import { filterLabelText, LIST_GROUPS, LIST_STATUS_FILTERS } from "@/lib/listPrefs";
+import { FieldSelect, Switch } from "./ui";
 import { useToast } from "./Toast";
 
 export type SettingsSection = "account" | "models" | "github" | "agents";
@@ -258,17 +259,12 @@ export function Settings(props: SettingsProps) {
                   <>
                     <div className="mb-3">
                       <FieldLabel>Provider preset</FieldLabel>
-                      <select
-                        className={`${INPUT_CLASS} cursor-pointer`}
+                      <FieldSelect
+                        aria-label="Provider preset"
                         value={providerId}
-                        onChange={(e) => selectPreset(e.target.value)}
-                      >
-                        {LLM_PRESETS.map((p) => (
-                          <option key={p.id} value={p.id}>
-                            {p.label}
-                          </option>
-                        ))}
-                      </select>
+                        options={LLM_PRESETS.map((p) => ({ id: p.id, label: p.label }))}
+                        onChange={selectPreset}
+                      />
                     </div>
 
                     <div className="mb-3">
@@ -406,45 +402,37 @@ export function Settings(props: SettingsProps) {
                   label="Group by"
                   hint={GROUP_LABELS[listGroup] || "Date"}
                   action={
-                    <button
-                      type="button"
-                      className="btn btn-sm"
-                      onClick={() => {
-                        const order: ListGroup[] = ["date", "project", "status", "none"];
-                        props.onSetListGroup(order[(order.indexOf(listGroup) + 1) % order.length]);
-                      }}
-                    >
-                      Change
-                    </button>
+                    <FieldSelect
+                      className="w-[140px]"
+                      aria-label="Group by"
+                      value={listGroup}
+                      options={LIST_GROUPS}
+                      onChange={props.onSetListGroup}
+                    />
                   }
                 />
                 <SettingsRow
                   label="Filter"
                   hint={filterLabel}
                   action={
-                    <button
-                      type="button"
-                      className="btn btn-sm"
-                      onClick={() => {
-                        const order: ListFilter[] = ["none", "running", "completed", "failed", "project"];
-                        props.onSetListFilter(order[(order.indexOf(listFilter) + 1) % order.length]);
-                      }}
-                    >
-                      Change
-                    </button>
+                    <FieldSelect
+                      className="w-[140px]"
+                      aria-label="Filter"
+                      value={listFilter === "project" ? "project" : listFilter}
+                      options={[...LIST_STATUS_FILTERS, { id: "project", label: "Project" }]}
+                      onChange={(id) => props.onSetListFilter(id)}
+                    />
                   }
                 />
                 <SettingsRow
                   label="Compact mode"
                   hint="Denser agent list in sidebar"
                   action={
-                    <button
-                      type="button"
-                      className="btn btn-sm"
-                      onClick={() => props.onSetListCompact(!listCompact)}
-                    >
-                      {listCompact ? "On" : "Off"}
-                    </button>
+                    <Switch
+                      checked={listCompact}
+                      label="Compact mode"
+                      onChange={props.onSetListCompact}
+                    />
                   }
                 />
               </SectionCard>

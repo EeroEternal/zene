@@ -3,7 +3,6 @@
 import {
   useCallback,
   useEffect,
-  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -12,24 +11,15 @@ import {
 import { api } from "@/lib/api";
 import {
   IconArrowUp,
-  IconCheck,
   IconChevronDown,
   IconChevronRight,
   IconLoader,
-  IconPlus,
   IconRefresh,
-  IconSearch,
   IconSkills,
   IconStop,
 } from "@/lib/icons";
 import { CodePanelToggle, SidebarPanelToggle } from "./PanelToggleButton";
-import {
-  DEFAULT_MODEL_ID,
-  loadSelectedModel,
-  modelLabel,
-  modelsForPicker,
-  saveSelectedModel,
-} from "@/lib/models";
+import { DEFAULT_MODEL_ID, loadSelectedModel, saveSelectedModel } from "@/lib/models";
 import { allowsDeny, allowsOnce, approvalCardBody, extraDecisions } from "@/lib/approval";
 import type {
   Approval,
@@ -48,7 +38,8 @@ import { platformEventFromPayload } from "@/lib/platformEvent";
 import { timelineProductFromEvent, timelineToolOutput, type TimelineProduct } from "@/lib/runtimeEvent";
 import { CodePanel, useCodePanelWidth } from "./CodePanel";
 import { Markdown } from "./Markdown";
-import { repoLabel } from "./Sidebar";
+import { repoLabel } from "@/lib/listPrefs";
+import { AttachMenu, ModelPicker } from "./pickers";
 import { StatusPill } from "./StatusPill";
 import { TurnActions } from "./TurnActions";
 import { useToast } from "./Toast";
@@ -931,15 +922,8 @@ export function RunView({
   const [sending, setSending] = useState(false);
   const [cancelling, setCancelling] = useState(false);
   const [selectedModel, setSelectedModel] = useState(DEFAULT_MODEL_ID);
-  const [modelMenuOpen, setModelMenuOpen] = useState(false);
-  const [modelQuery, setModelQuery] = useState("");
+  const [composerMenu, setComposerMenu] = useState<"model" | "attach" | null>(null);
   const [llmSettings, setLlmSettings] = useState<LlmSettingsView | null>(null);
-  const modelTriggerRef = useRef<HTMLDivElement>(null);
-  const [modelMenuPos, setModelMenuPos] = useState<{
-    left: number;
-    bottom: number;
-    maxHeight: number;
-  } | null>(null);
   /** User-expanded activity groups (default collapsed — keeps layout stable while live). */
   const [openGroups, setOpenGroups] = useState<Set<string>>(() => new Set());
   /** Expanded consecutive tool/thought bunches inside an activity group. */
@@ -1529,49 +1513,15 @@ export function RunView({
   }, []);
 
   useEffect(() => {
-    if (!modelMenuOpen) return;
+    if (!composerMenu) return;
     const onDoc = (e: MouseEvent) => {
       if (composerRef.current && !composerRef.current.contains(e.target as Node)) {
-        setModelMenuOpen(false);
-        setModelQuery("");
+        setComposerMenu(null);
       }
     };
     document.addEventListener("mousedown", onDoc);
     return () => document.removeEventListener("mousedown", onDoc);
-  }, [modelMenuOpen]);
-
-  useLayoutEffect(() => {
-    if (!modelMenuOpen) {
-      setModelMenuPos(null);
-      return;
-    }
-    const update = () => {
-      const el = modelTriggerRef.current;
-      if (!el) return;
-      const rect = el.getBoundingClientRect();
-      const gap = 8;
-      const spaceAbove = Math.max(160, rect.top - gap - 8);
-      setModelMenuPos({
-        left: Math.min(rect.left, window.innerWidth - 296),
-        bottom: window.innerHeight - rect.top + gap,
-        maxHeight: Math.min(420, spaceAbove),
-      });
-    };
-    update();
-    window.addEventListener("resize", update);
-    window.addEventListener("scroll", update, true);
-    return () => {
-      window.removeEventListener("resize", update);
-      window.removeEventListener("scroll", update, true);
-    };
-  }, [modelMenuOpen]);
-
-  const pickerModels = useMemo(() => modelsForPicker(llmSettings), [llmSettings]);
-  const filteredModels = useMemo(() => {
-    const q = modelQuery.trim().toLowerCase();
-    if (!q) return pickerModels;
-    return pickerModels.filter((m) => m.toLowerCase().includes(q));
-  }, [pickerModels, modelQuery]);
+  }, [composerMenu]);
 
   const repoName = run ? repoLabel(repos, run.repositoryId) : "";
   const statusKey = (run?.status || "").toLowerCase();
@@ -1605,6 +1555,23 @@ export function RunView({
     if (!el) return;
     el.style.height = "auto";
     el.style.height = `${Math.min(128, Math.max(32, el.scrollHeight))}px`;
+  }, []);
+
+  const insertFollowUp = useCallback((text: string) => {
+    const t = promptRef.current;
+    if (!t) {
+      setFollowUp((v) => v + text);
+      return;
+    }
+    const start = t.selectionStart ?? t.value.length;
+    const end = t.selectionEnd ?? t.value.length;
+    const next = t.value.slice(0, start) + text + t.value.slice(end);
+    setFollowUp(next);
+    requestAnimationFrame(() => {
+      const pos = start + text.length;
+      t.focus();
+      t.setSelectionRange(pos, pos);
+    });
   }, []);
 
   const sendFollowUp = useCallback(async () => {
@@ -2202,85 +2169,31 @@ export function RunView({
                 />
                 <div className="flex items-center justify-between gap-2">
                   <div className="flex min-w-0 items-center gap-1">
-                    <button
-                      type="button"
-                      className="inline-flex h-6 w-6 items-center justify-center rounded-sm bg-chip text-muted hover:bg-line-strong hover:text-ink"
-                      title="Add"
-                      aria-label="Add"
-                      onClick={() => toast("Attachments coming soon", "ok")}
-                    >
-                      <IconPlus className="h-3.5 w-3.5" />
-                    </button>
-                    <div className="relative" ref={modelTriggerRef}>
-                      <button
-                        type="button"
-                        className="inline-flex h-6 max-w-[200px] items-center gap-1 rounded-md px-1.5 text-[12px] font-medium text-muted hover:bg-secondary hover:text-ink"
-                        title="Model"
-                        aria-label="Model"
-                        aria-haspopup="menu"
-                        aria-expanded={modelMenuOpen}
-                        onClick={() => {
-                          setModelMenuOpen((o) => !o);
-                          setModelQuery("");
-                        }}
-                      >
-                        <span className="min-w-0 overflow-hidden text-ellipsis whitespace-nowrap">
-                          {modelLabel(selectedModel)}
-                        </span>
-                        <IconChevronDown className="h-3 w-3 shrink-0" />
-                      </button>
-                      {modelMenuOpen && modelMenuPos && (
-                        <div
-                          className="fixed z-[45] flex w-[min(280px,calc(100vw-48px))] flex-col overflow-hidden rounded-md border border-line bg-canvas shadow-menu"
-                          style={{
-                            left: modelMenuPos.left,
-                            bottom: modelMenuPos.bottom,
-                            maxHeight: modelMenuPos.maxHeight,
-                          }}
-                          role="menu"
-                          aria-label="Models"
-                        >
-                          <div className="flex shrink-0 items-center gap-2 border-b border-line px-3 py-2">
-                            <IconSearch className="h-3.5 w-3.5 shrink-0 text-placeholder" />
-                            <input
-                              className="min-w-0 flex-1 border-0 bg-transparent text-[13px] outline-none"
-                              type="search"
-                              placeholder="Search models"
-                              autoComplete="off"
-                              autoFocus
-                              value={modelQuery}
-                              onChange={(e) => setModelQuery(e.target.value)}
-                            />
-                          </div>
-                          <div className="min-h-0 flex-1 overflow-auto p-1.5">
-                            {!filteredModels.length ? (
-                              <p className="m-0 px-2 py-1.5 text-xs text-muted">No models — configure in Settings</p>
-                            ) : (
-                              filteredModels.map((m) => (
-                                <button
-                                  key={m}
-                                  type="button"
-                                  className="picker-item"
-                                  onClick={() => {
-                                    setSelectedModel(m);
-                                    saveSelectedModel(m);
-                                    setModelMenuOpen(false);
-                                    setModelQuery("");
-                                  }}
-                                >
-                                  <span className="min-w-0 flex-1 overflow-hidden text-ellipsis whitespace-nowrap font-mono text-[12.5px]">
-                                    {m}
-                                  </span>
-                                  {m === selectedModel && (
-                                    <IconCheck className="h-3.5 w-3.5 shrink-0 text-ink" />
-                                  )}
-                                </button>
-                              ))
-                            )}
-                          </div>
-                        </div>
-                      )}
-                    </div>
+                    <AttachMenu
+                      compact
+                      open={composerMenu === "attach"}
+                      onToggle={() => setComposerMenu(composerMenu === "attach" ? null : "attach")}
+                      onClose={() => setComposerMenu(null)}
+                      sections={["files", "skills"]}
+                      onInsertText={insertFollowUp}
+                      onFilesAttached={(names) => {
+                        const prefix = followUp && !followUp.endsWith(" ") ? " " : "";
+                        insertFollowUp(prefix + names.map((n) => `@${n}`).join(" "));
+                      }}
+                      onNotice={(msg, kind) => toast(msg, kind)}
+                    />
+                    <ModelPicker
+                      compact
+                      open={composerMenu === "model"}
+                      onToggle={() => setComposerMenu(composerMenu === "model" ? null : "model")}
+                      selectedModel={selectedModel}
+                      llmSettings={llmSettings}
+                      onSelect={(id) => {
+                        setSelectedModel(id);
+                        saveSelectedModel(id);
+                        setComposerMenu(null);
+                      }}
+                    />
                   </div>
                   <div className="flex shrink-0 items-center gap-1">
                     {isBusy && (

@@ -20,6 +20,7 @@ import { Markdown } from "./Markdown";
 import { CodePanelToggle } from "./PanelToggleButton";
 import { PrPanel } from "./PrPanel";
 import { useToast } from "./Toast";
+import { Menu, MenuItem } from "./ui";
 
 function isMarkdownPath(path: string): boolean {
   return /\.(md|markdown|mdx)$/i.test(path);
@@ -395,27 +396,26 @@ export function CodePanel({
               <IconDots className="h-4 w-4" />
             </button>
             {menuOpen && (
-              <div
-                className="absolute right-0 top-[calc(100%+4px)] z-50 w-[200px] rounded-lg border border-line bg-canvas p-1 shadow-menu"
-                role="menu"
-              >
-                <button type="button" className="menu-item w-full" onClick={() => { setMenuOpen(false); loadFiles(); loadPrs(); }}>
+              <Menu className="absolute right-0 top-[calc(100%+4px)] z-50 w-[200px] p-1" label="More actions">
+                <MenuItem
+                  onClick={() => {
+                    setMenuOpen(false);
+                    loadFiles();
+                    loadPrs();
+                  }}
+                >
                   Refresh
-                </button>
-                <button type="button" className="menu-item w-full" onClick={pushBranch}>
-                  Push & create PR
-                </button>
-                <button
-                  type="button"
-                  className="menu-item w-full"
+                </MenuItem>
+                <MenuItem onClick={pushBranch}>Push & create PR</MenuItem>
+                <MenuItem
                   onClick={() => {
                     setMenuOpen(false);
                     setPrModalOpen(true);
                   }}
                 >
                   Create pull request
-                </button>
-              </div>
+                </MenuItem>
+              </Menu>
             )}
           </div>
           {onCollapse && <CodePanelToggle open onClick={onCollapse} />}
