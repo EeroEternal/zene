@@ -1307,6 +1307,21 @@ async fn user_push(
 ) -> Result<impl IntoResponse, AppError> {
     let run = authorize_run(&state, user.id, run_id).await?;
     let root = state.workspace_root.join(run_id.to_string());
+    let commit_msg = format!(
+        "zene: {}",
+        run.title.chars().take(72).collect::<String>()
+    );
+    workspace::commit_worktree_if_dirty(&root, &commit_msg)
+        .await
+        .map_err(AppError::from)?;
+    if !workspace::branch_has_commits_ahead(&root, &run.base_ref)
+        .await
+        .map_err(AppError::from)?
+    {
+        return Err(AppError::bad_request(
+            "no commits ahead of base branch; commit your changes before pushing",
+        ));
+    }
     let bundle = create_bundle(&root).await.map_err(AppError::from)?;
     let expected = run.head_sha.clone().unwrap_or_else(|| "HEAD".into());
     let git_broker = state.git_broker().await;
@@ -1556,6 +1571,21 @@ async fn worker_push(
         .await?
         .ok_or_else(|| AppError::not_found("run not found"))?;
     let root = state.workspace_root.join(run_id.to_string());
+    let commit_msg = format!(
+        "zene: {}",
+        run.title.chars().take(72).collect::<String>()
+    );
+    workspace::commit_worktree_if_dirty(&root, &commit_msg)
+        .await
+        .map_err(AppError::from)?;
+    if !workspace::branch_has_commits_ahead(&root, &run.base_ref)
+        .await
+        .map_err(AppError::from)?
+    {
+        return Err(AppError::bad_request(
+            "no commits ahead of base branch; nothing to push",
+        ));
+    }
     let bundle = create_bundle(&root).await.map_err(AppError::from)?;
     let expected = run.head_sha.clone().unwrap_or_else(|| "HEAD".into());
     let key = req
