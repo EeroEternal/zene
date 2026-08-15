@@ -100,6 +100,14 @@ pub fn router(state: AppState) -> Router {
             "/api/v1/runs/{run_id}/pull-requests",
             get(list_run_prs).post(create_run_pr),
         )
+        .route(
+            "/api/v1/runs/{run_id}/pull-requests/{pr_id}/ready",
+            post(mark_run_pr_ready),
+        )
+        .route(
+            "/api/v1/runs/{run_id}/pull-requests/{pr_id}/merge",
+            post(merge_run_pr),
+        )
         .route("/api/v1/runs/{run_id}/git/push", post(user_push))
         .route("/internal/v1/runs/claim", post(claim_run))
         .route("/internal/v1/queue/stats", get(queue_stats))
@@ -1298,6 +1306,40 @@ async fn create_run_pr(
         .await
         .map_err(AppError::from)?;
     Ok(Json(pr))
+}
+
+async fn mark_run_pr_ready(
+    State(state): State<AppState>,
+    AuthUser(user): AuthUser,
+    Path((run_id, pr_id)): Path<(Uuid, Uuid)>,
+) -> Result<impl IntoResponse, AppError> {
+    let run = authorize_run(&state, user.id, run_id).await?;
+    let pr = state
+        .db
+        .get_pull_request(pr_id)
+        .await?
+        .filter(|pr| pr.run_id == run_id)
+        .ok_or_else(|| AppError::not_found("pull request not found"))?;
+    let git_broker = state.git_broker().await;
+    let updated = git_broker.mark_pr_ready(&run, &pr).await.map_err(AppError::from)?;
+    Ok(Json(updated))
+}
+
+async fn merge_run_pr(
+    State(state): State<AppState>,
+    AuthUser(user): AuthUser,
+    Path((run_id, pr_id)): Path<(Uuid, Uuid)>,
+) -> Result<impl IntoResponse, AppError> {
+    let run = authorize_run(&state, user.id, run_id).await?;
+    let pr = state
+        .db
+        .get_pull_request(pr_id)
+        .await?
+        .filter(|pr| pr.run_id == run_id)
+        .ok_or_else(|| AppError::not_found("pull request not found"))?;
+    let git_broker = state.git_broker().await;
+    let updated = git_broker.merge_pr(&run, &pr).await.map_err(AppError::from)?;
+    Ok(Json(updated))
 }
 
 async fn user_push(

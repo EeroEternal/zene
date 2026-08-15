@@ -67,8 +67,8 @@ export async function createRunPullRequest(
   });
 }
 
-/** Push branch to GitHub, then open a draft PR when none exists yet. */
-export async function publishRunToGithub(
+/** Commit workspace changes, push branch, then open a draft PR when none exists yet. */
+export async function commitAndCreatePullRequest(
   runId: string,
   opts: PublishOptions,
 ): Promise<PublishResult> {
@@ -81,6 +81,29 @@ export async function publishRunToGithub(
   const body = opts.body?.trim() || buildDefaultPrBody(opts.compare);
   const pullRequest = await createRunPullRequest(runId, { ...opts, body });
   return { push, pullRequest };
+}
+
+/** @deprecated Use commitAndCreatePullRequest */
+export const publishRunToGithub = commitAndCreatePullRequest;
+
+export async function markPullRequestReady(
+  runId: string,
+  prId: string,
+): Promise<PullRequest> {
+  return api<PullRequest>(`/api/v1/runs/${runId}/pull-requests/${prId}/ready`, {
+    method: "POST",
+    body: "{}",
+  });
+}
+
+export async function mergePullRequest(
+  runId: string,
+  prId: string,
+): Promise<PullRequest> {
+  return api<PullRequest>(`/api/v1/runs/${runId}/pull-requests/${prId}/merge`, {
+    method: "POST",
+    body: "{}",
+  });
 }
 
 export function hasUnpublishedChanges(

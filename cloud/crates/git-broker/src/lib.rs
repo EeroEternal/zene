@@ -328,6 +328,110 @@ impl GitBroker {
         Ok(pr)
     }
 
+    pub async fn mark_pr_ready(&self, run: &Run, pr: &PullRequest) -> Result<PullRequest> {
+        let repo = self
+            .db
+            .get_repository(run.repository_id)
+            .await?
+            .context("repository not found")?;
+        let number = pr
+            .provider_number
+            .context("pull request has no provider number")?;
+
+        let remote = if self.mode == GithubMode::Mock || self.github.is_mock() {
+            self.github
+                .mark_pull_request_ready("mock-install", &repo.owner, &repo.name, number)
+                .await?
+        } else {
+            let installation_id = repo
+                .installation_id
+                .as_deref()
+                .context("repository has no GitHub installation_id")?;
+            self.github
+                .mark_pull_request_ready(installation_id, &repo.owner, &repo.name, number)
+                .await?
+        };
+
+        self.db
+            .update_pull_request_state(pr.id, PullRequestState::Open, false)
+            .await?
+            .context("update pull request state")?;
+
+        self.db
+            .append_audit(
+                Some(run.organization_id),
+                "system",
+                Some("git-broker"),
+                "git.pr.ready",
+                Some("pull_request"),
+                Some(&pr.id.to_string()),
+                Some(serde_json::json!({
+                    "runId": run.id,
+                    "url": remote.url,
+                    "number": remote.provider_number,
+                })),
+            )
+            .await?;
+
+        Ok(self
+            .db
+            .get_pull_request(pr.id)
+            .await?
+            .context("pull request not found")?)
+    }
+
+    pub async fn merge_pr(&self, run: &Run, pr: &PullRequest) -> Result<PullRequest> {
+        let repo = self
+            .db
+            .get_repository(run.repository_id)
+            .await?
+            .context("repository not found")?;
+        let number = pr
+            .provider_number
+            .context("pull request has no provider number")?;
+
+        let remote = if self.mode == GithubMode::Mock || self.github.is_mock() {
+            self.github
+                .merge_pull_request("mock-install", &repo.owner, &repo.name, number)
+                .await?
+        } else {
+            let installation_id = repo
+                .installation_id
+                .as_deref()
+                .context("repository has no GitHub installation_id")?;
+            self.github
+                .merge_pull_request(installation_id, &repo.owner, &repo.name, number)
+                .await?
+        };
+
+        self.db
+            .update_pull_request_state(pr.id, PullRequestState::Merged, false)
+            .await?
+            .context("update pull request state")?;
+
+        self.db
+            .append_audit(
+                Some(run.organization_id),
+                "system",
+                Some("git-broker"),
+                "git.pr.merged",
+                Some("pull_request"),
+                Some(&pr.id.to_string()),
+                Some(serde_json::json!({
+                    "runId": run.id,
+                    "url": remote.url,
+                    "number": remote.provider_number,
+                })),
+            )
+            .await?;
+
+        Ok(self
+            .db
+            .get_pull_request(pr.id)
+            .await?
+            .context("pull request not found")?)
+    }
+
     async fn mock_accept_bundle(
         &self,
         run: &Run,
@@ -473,18 +577,19 @@ fn inject_token_into_https_url(clone_url: &str, token: &str) -> Result<String> {
 }
 
 async fn run_git(cwd: &Path, args: &[&str]) -> Result<()> {
-    let status = Command::new("git")
+    let output = Command::new("git")
         .args(args)
         .current_dir(cwd)
         .env("GIT_TERMINAL_PROMPT", "0")
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
-        .status()
+        .output()
         .await
         .with_context(|| format!("spawn git {}", args.join(" ")))?;
-    if !status.success() {
-        bail!("git {} failed with {status}", args.join(" "));
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        bail!("git {} failed with {}: {stderr}", args.join(" "), output.status);
     }
     Ok(())
 }

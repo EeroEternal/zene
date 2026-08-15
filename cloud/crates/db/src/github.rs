@@ -681,6 +681,78 @@ impl Db {
             .collect())
     }
 
+    pub async fn get_pull_request(&self, pr_id: Uuid) -> Result<Option<PullRequest>> {
+        let row: Option<(
+            String,
+            String,
+            String,
+            Option<i64>,
+            Option<String>,
+            String,
+            Option<String>,
+            Option<String>,
+            Option<String>,
+            String,
+            i64,
+            String,
+        )> = sqlx::query_as(
+            "SELECT id, repository_id, run_id, provider_number, url, title, body, base_sha,
+                    head_sha, state, draft, created_at
+             FROM pull_requests WHERE id = ?",
+        )
+        .bind(pr_id.to_string())
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(row.map(
+            |(
+                id,
+                repository_id,
+                run_id,
+                provider_number,
+                url,
+                title,
+                body,
+                base_sha,
+                head_sha,
+                state,
+                draft,
+                created_at,
+            )| {
+                PullRequest {
+                    id: Uuid::parse_str(&id).unwrap(),
+                    repository_id: Uuid::parse_str(&repository_id).unwrap(),
+                    run_id: Uuid::parse_str(&run_id).unwrap(),
+                    provider_number,
+                    url,
+                    title,
+                    body,
+                    base_sha,
+                    head_sha,
+                    state: PullRequestState::parse(&state).unwrap_or(PullRequestState::Open),
+                    draft: draft != 0,
+                    created_at: parse_time(&created_at),
+                }
+            },
+        ))
+    }
+
+    pub async fn update_pull_request_state(
+        &self,
+        pr_id: Uuid,
+        state: PullRequestState,
+        draft: bool,
+    ) -> Result<Option<PullRequest>> {
+        sqlx::query(
+            "UPDATE pull_requests SET state = ?, draft = ? WHERE id = ?",
+        )
+        .bind(state.as_str())
+        .bind(if draft { 1 } else { 0 })
+        .bind(pr_id.to_string())
+        .execute(&self.pool)
+        .await?;
+        self.get_pull_request(pr_id).await
+    }
+
     pub async fn append_audit(
         &self,
         organization_id: Option<Uuid>,
