@@ -1,4 +1,5 @@
 import { runsApi } from "@/lib/cloud";
+import { buildDefaultPrBody } from "@/lib/prBody";
 import type { GitCompare, PullRequest } from "@/lib/types";
 
 export interface PushResult {
@@ -13,6 +14,13 @@ export interface PublishOptions {
   headBranch?: string;
   body?: string;
   draft?: boolean;
+  compare?: GitCompare | null;
+}
+
+function isActivePullRequest(pr: PullRequest): boolean {
+  if (!pr.url) return false;
+  const state = (pr.state || "").toLowerCase();
+  return state === "open" || state === "draft";
 }
 
 export interface PublishResult {
@@ -60,11 +68,12 @@ export async function publishRunToGithub(
 ): Promise<PublishResult> {
   const push = await pushRunBranch(runId);
   const existing = await fetchRunPullRequests(runId);
-  const linked = existing.find((pr) => pr.url);
+  const linked = existing.find(isActivePullRequest);
   if (linked) {
     return { push, pullRequest: linked };
   }
-  const pullRequest = await createRunPullRequest(runId, opts);
+  const body = opts.body?.trim() || buildDefaultPrBody(opts.compare);
+  const pullRequest = await createRunPullRequest(runId, { ...opts, body });
   return { push, pullRequest };
 }
 
@@ -73,5 +82,5 @@ export function hasUnpublishedChanges(
   pullRequests: PullRequest[],
 ): boolean {
   if (!compare?.files?.length) return false;
-  return !pullRequests.some((pr) => Boolean(pr.url));
+  return !pullRequests.some(isActivePullRequest);
 }

@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { runsApi } from "@/lib/cloud";
-import type { PullRequest, WorkspaceFile } from "@/lib/types";
+import type { GitCompare, PullRequest, WorkspaceFile } from "@/lib/types";
 import {
   IconChevronsCollapse,
   IconChevronsExpand,
@@ -18,7 +18,7 @@ import { GitPanel } from "./GitPanel";
 import { CodeViewer } from "./CodeViewer";
 import { Markdown } from "./Markdown";
 import { CodePanelToggle } from "./PanelToggleButton";
-import { PrPanel } from "./PrPanel";
+import { PullRequestDialog } from "./PullRequestDialog";
 import { useToast } from "./Toast";
 import { Menu, MenuItem, useDismiss } from "./ui";
 
@@ -148,6 +148,7 @@ interface CodePanelProps {
   defaultPrTitle?: string;
   defaultBaseRef?: string;
   headBranch?: string;
+  gitCompare?: GitCompare | null;
   width: number;
   onWidthChange: (w: number) => void;
   /** When true, panel fills remaining width after the chat column; hide the drag handle. */
@@ -162,6 +163,7 @@ export function CodePanel({
   defaultPrTitle,
   defaultBaseRef,
   headBranch,
+  gitCompare,
   width,
   onWidthChange,
   equalSplit = false,
@@ -279,6 +281,7 @@ export function CodePanel({
         title: defaultPrTitle?.trim() || "Changes from Zene Cloud",
         baseRef: defaultBaseRef,
         headBranch,
+        compare: gitCompare,
         draft: true,
       });
       await loadPrs();
@@ -468,47 +471,19 @@ export function CodePanel({
           </div>
         )}
       </div>
-      {prModalOpen && (
-        <div
-          className="absolute inset-0 z-40 flex items-end justify-center bg-black/40 p-3 min-[981px]:items-center"
-          role="presentation"
-          onClick={() => {
-            setPrModalOpen(false);
-            loadPrs();
-          }}
-        >
-          <div
-            className="flex max-h-[90%] w-full max-w-md flex-col overflow-hidden rounded-md bg-canvas shadow-card"
-            role="dialog"
-            aria-modal="true"
-            aria-label="Create pull request"
-            onClick={(e) => e.stopPropagation()}
-          >
-            <div className="flex items-center justify-between gap-2 border-b border-line px-3 py-2">
-              <div className="text-[13px] font-semibold text-ink">Create pull request</div>
-              <button
-                type="button"
-                className="btn btn-sm"
-                onClick={() => {
-                  setPrModalOpen(false);
-                  loadPrs();
-                }}
-              >
-                Close
-              </button>
-            </div>
-            <div className="min-h-0 flex-1 overflow-auto">
-              <PrPanel
-                runId={runId}
-                defaultTitle={defaultPrTitle}
-                defaultBaseRef={defaultBaseRef}
-                headBranch={headBranch}
-                compact
-              />
-            </div>
-          </div>
-        </div>
-      )}
+      <PullRequestDialog
+        open={prModalOpen}
+        onClose={() => {
+          setPrModalOpen(false);
+          loadPrs();
+        }}
+        runId={runId}
+        defaultTitle={defaultPrTitle}
+        defaultBaseRef={defaultBaseRef}
+        headBranch={headBranch}
+        compare={gitCompare}
+        onSuccess={loadPrs}
+      />
     </aside>
   );
 }

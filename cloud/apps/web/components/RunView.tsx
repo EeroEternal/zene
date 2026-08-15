@@ -2153,6 +2153,7 @@ export function RunView({
           defaultPrTitle={run?.title}
           defaultBaseRef={run?.baseRef}
           headBranch={run?.headBranch}
+          gitCompare={gitCompare}
           width={codeWidth}
           onWidthChange={setCodeWidth}
           onCollapse={onToggleCodePanel}
