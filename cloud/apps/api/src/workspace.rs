@@ -580,3 +580,81 @@ fn safe_join(root: &Path, rel: &str) -> Result<PathBuf> {
     }
     Ok(canon)
 }
+
+/// Stage and commit all working-tree changes when the repo is dirty.
+/// Returns the new HEAD sha, or the existing HEAD when nothing to commit.
+pub async fn commit_worktree_if_dirty(root: &Path, message: &str) -> Result<Option<String>> {
+    if !root.join(".git").exists() {
+        return Ok(None);
+    }
+    let status = tokio::process::Command::new("git")
+        .args(["status", "--porcelain"])
+        .current_dir(root)
+        .output()
+        .await
+        .context("git status --porcelain")?;
+    if !status.status.success() {
+        let stderr = String::from_utf8_lossy(&status.stderr);
+        bail!("git status failed: {}", stderr.trim());
+    }
+    let porcelain = String::from_utf8_lossy(&status.stdout);
+    if porcelain.trim().is_empty() {
+        return rev_parse(root, "HEAD").await;
+    }
+
+    let add = tokio::process::Command::new("git")
+        .args(["add", "-A"])
+        .current_dir(root)
+        .output()
+        .await
+        .context("git add -A")?;
+    if !add.status.success() {
+        let stderr = String::from_utf8_lossy(&add.stderr);
+        bail!("git add failed: {}", stderr.trim());
+    }
+
+    let msg = message.trim();
+    let msg = if msg.is_empty() { "zene: changes" } else { msg };
+    let commit = tokio::process::Command::new("git")
+        .args([
+            "-c",
+            "user.email=zene-cloud@localhost",
+            "-c",
+            "user.name=Zene Cloud",
+            "commit",
+            "-m",
+            msg,
+        ])
+        .current_dir(root)
+        .output()
+        .await
+        .context("git commit")?;
+    if !commit.status.success() {
+        let stderr = String::from_utf8_lossy(&commit.stderr);
+        bail!("git commit failed: {}", stderr.trim());
+    }
+    rev_parse(root, "HEAD").await
+}
+
+/// True when HEAD has at least one commit not reachable from `base_ref`.
+pub async fn branch_has_commits_ahead(root: &Path, base_ref: &str) -> Result<bool> {
+    if !root.join(".git").exists() {
+        return Ok(false);
+    }
+    let base_oid = resolve_base_oid(root, base_ref).await?;
+    let output = tokio::process::Command::new("git")
+        .args(["rev-list", "--count", &format!("{base_oid}..HEAD")])
+        .current_dir(root)
+        .output()
+        .await
+        .context("git rev-list --count")?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        bail!("git rev-list failed: {}", stderr.trim());
+    }
+    let count = String::from_utf8_lossy(&output.stdout)
+        .trim()
+        .parse::<u64>()
+        .unwrap_or(0);
+    Ok(count > 0)
+}

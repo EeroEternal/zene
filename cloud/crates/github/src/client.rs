@@ -496,6 +496,11 @@ impl GithubClient {
         let status = resp.status();
         let text = resp.text().await.unwrap_or_default();
         if !status.is_success() {
+            if status.as_u16() == 422 && text.contains("No commits between") {
+                bail!(
+                    "cannot create pull request: branch has no commits ahead of base (push your latest changes first)"
+                );
+            }
             bail!("create pull request failed ({status}): {text}");
         }
         let pr: Resp = serde_json::from_str(&text).context("parse pull request")?;
