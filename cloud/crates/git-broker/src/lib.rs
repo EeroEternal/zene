@@ -1,15 +1,12 @@
 //! Git Broker: short-lived clone credentials, bundle accept/push, draft PRs.
 //!
-//! Mock mode (`ZENE_CLOUD_GITHUB_MODE=mock`) never talks to GitHub and
-//! records operations in SQLite with fake SHAs/URLs. Live mode uses installation
-//! tokens and a temporary git workdir for push.
+//! Uses GitHub App installation tokens and a temporary git workdir for push.
 
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 
 use anyhow::{bail, Context, Result};
 use chrono::{Duration, Utc};
-use sha2::{Digest, Sha256};
 use tokio::process::Command;
 use uuid::Uuid;
 use zene_cloud_db::Db;
@@ -37,10 +34,6 @@ impl GitBroker {
         Ok(Self::new(db, github))
     }
 
-    pub fn mock(db: Db) -> Self {
-        Self::new(db, GithubClient::mock())
-    }
-
     pub fn mode(&self) -> GithubMode {
         self.mode
     }
@@ -58,19 +51,13 @@ impl GitBroker {
             .context("repository not found")?;
 
         let expires_at = Utc::now() + Duration::minutes(30);
-        let (token, mode) = if self.mode == GithubMode::Mock || self.github.is_mock() {
-            (
-                format!("mock_clone_{}", &run.id.to_string()[..8]),
-                GithubMode::Mock,
-            )
-        } else {
-            let installation_id = repo
-                .installation_id
-                .as_deref()
-                .context("repository has no GitHub installation_id")?;
-            let tok = self.github.installation_token(installation_id).await?;
-            (tok.token, GithubMode::Live)
-        };
+        let installation_id = repo
+            .installation_id
+            .as_deref()
+            .context("repository has no GitHub installation_id")?;
+        let tok = self.github.installation_token(installation_id).await?;
+        let token = tok.token;
+        let mode = GithubMode::Live;
 
         self.db
             .append_audit(
@@ -144,13 +131,7 @@ impl GitBroker {
             }
         }
 
-        let result = if self.mode == GithubMode::Mock || self.github.is_mock() {
-            self.mock_accept_bundle(run, &repo.clone_url, bundle, expected_head)
-                .await
-        } else {
-            self.live_accept_bundle(run, &repo, bundle, expected_head)
-                .await
-        };
+        let result = self.live_accept_bundle(run, &repo, bundle, expected_head).await;
 
         match result {
             Ok((head_sha, push_url)) => {
@@ -243,13 +224,13 @@ impl GitBroker {
 
         let installation_id = repo
             .installation_id
-            .clone()
-            .unwrap_or_else(|| "mock-install".into());
+            .as_deref()
+            .context("repository has no GitHub installation_id")?;
 
         let remote = self
             .github
             .create_pull_request(
-                &installation_id,
+                installation_id,
                 CreatePullRequestParams {
                     owner: repo.owner.clone(),
                     repo: repo.name.clone(),
@@ -328,31 +309,98 @@ impl GitBroker {
         Ok(pr)
     }
 
-    async fn mock_accept_bundle(
-        &self,
-        run: &Run,
-        clone_url: &str,
-        bundle: &[u8],
-        expected_head: Option<&str>,
-    ) -> Result<(String, String)> {
-        let mut hasher = Sha256::new();
-        hasher.update(bundle);
-        hasher.update(run.id.as_bytes());
-        if let Some(h) = expected_head {
-            hasher.update(h.as_bytes());
-        }
-        let digest = hasher.finalize();
-        let head_sha = format!("{:x}", digest)
-            .chars()
-            .take(40)
-            .collect::<String>();
-        let push_url = format!(
-            "{}/compare/{}...{}",
-            clone_url.trim_end_matches(".git"),
-            expected_head.unwrap_or("main"),
-            &head_sha[..8]
-        );
-        Ok((head_sha, push_url))
+    pub async fn mark_pr_ready(&self, run: &Run, pr: &PullRequest) -> Result<PullRequest> {
+        let repo = self
+            .db
+            .get_repository(run.repository_id)
+            .await?
+            .context("repository not found")?;
+        let number = pr
+            .provider_number
+            .context("pull request has no provider number")?;
+
+        let installation_id = repo
+            .installation_id
+            .as_deref()
+            .context("repository has no GitHub installation_id")?;
+        let remote = self
+            .github
+            .mark_pull_request_ready(installation_id, &repo.owner, &repo.name, number)
+            .await?;
+
+        self.db
+            .update_pull_request_state(pr.id, PullRequestState::Open, false)
+            .await?
+            .context("update pull request state")?;
+
+        self.db
+            .append_audit(
+                Some(run.organization_id),
+                "system",
+                Some("git-broker"),
+                "git.pr.ready",
+                Some("pull_request"),
+                Some(&pr.id.to_string()),
+                Some(serde_json::json!({
+                    "runId": run.id,
+                    "url": remote.url,
+                    "number": remote.provider_number,
+                })),
+            )
+            .await?;
+
+        Ok(self
+            .db
+            .get_pull_request(pr.id)
+            .await?
+            .context("pull request not found")?)
+    }
+
+    pub async fn merge_pr(&self, run: &Run, pr: &PullRequest) -> Result<PullRequest> {
+        let repo = self
+            .db
+            .get_repository(run.repository_id)
+            .await?
+            .context("repository not found")?;
+        let number = pr
+            .provider_number
+            .context("pull request has no provider number")?;
+
+        let installation_id = repo
+            .installation_id
+            .as_deref()
+            .context("repository has no GitHub installation_id")?;
+        let remote = self
+            .github
+            .merge_pull_request(installation_id, &repo.owner, &repo.name, number)
+            .await?;
+
+        self.db
+            .update_pull_request_state(pr.id, PullRequestState::Merged, false)
+            .await?
+            .context("update pull request state")?;
+
+        self.db
+            .append_audit(
+                Some(run.organization_id),
+                "system",
+                Some("git-broker"),
+                "git.pr.merged",
+                Some("pull_request"),
+                Some(&pr.id.to_string()),
+                Some(serde_json::json!({
+                    "runId": run.id,
+                    "url": remote.url,
+                    "number": remote.provider_number,
+                })),
+            )
+            .await?;
+
+        Ok(self
+            .db
+            .get_pull_request(pr.id)
+            .await?
+            .context("pull request not found")?)
     }
 
     async fn live_accept_bundle(
@@ -473,18 +521,19 @@ fn inject_token_into_https_url(clone_url: &str, token: &str) -> Result<String> {
 }
 
 async fn run_git(cwd: &Path, args: &[&str]) -> Result<()> {
-    let status = Command::new("git")
+    let output = Command::new("git")
         .args(args)
         .current_dir(cwd)
         .env("GIT_TERMINAL_PROMPT", "0")
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
-        .status()
+        .output()
         .await
         .with_context(|| format!("spawn git {}", args.join(" ")))?;
-    if !status.success() {
-        bail!("git {} failed with {status}", args.join(" "));
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        bail!("git {} failed with {}: {stderr}", args.join(" "), output.status);
     }
     Ok(())
 }

@@ -8,7 +8,6 @@ use tower_http::services::ServeDir;
 use tower_http::trace::TraceLayer;
 use tracing_subscriber::EnvFilter;
 use zene_cloud_db::Db;
-use zene_cloud_domain::GithubMode;
 use zene_cloud_github::GithubClient;
 
 use zene_cloud_api::{router, AppState};
@@ -50,10 +49,8 @@ async fn main() -> Result<()> {
 
     let db = Db::connect(&cli.database_url).await?;
     db.migrate().await?;
-    if GithubMode::from_env() == GithubMode::Live {
-        db.purge_all_mock_github_data().await?;
-        tracing::info!("purged legacy mock GitHub data");
-    }
+    db.purge_all_mock_github_data().await?;
+    tracing::info!("purged legacy mock GitHub data");
     db.ensure_dev_worker_token(&cli.worker_token).await?;
 
     let github = zene_cloud_github::from_env()

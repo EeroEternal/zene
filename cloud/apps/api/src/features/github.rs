@@ -4,8 +4,7 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde::Deserialize;
 use zene_cloud_domain::{
-    GithubAccountType, GithubInstallationStatus, GithubProviderConfigView,
-    UpdateGithubProviderConfigRequest,
+    GithubInstallationStatus, GithubProviderConfigView, UpdateGithubProviderConfigRequest,
 };
 
 use crate::auth::AuthUser;
@@ -26,13 +25,8 @@ pub fn router() -> Router<AppState> {
         )
         .route("/api/v1/github/oauth/start", get(github_oauth_start))
         .route("/api/v1/github/oauth/callback", get(github_oauth_callback))
-        .route("/api/v1/github/mock/connect", post(github_mock_connect))
         .route("/api/v1/github/sync", post(github_sync))
         .route("/api/v1/github/installations", get(list_installations))
-        .route(
-            "/api/v1/github/installations/mock",
-            post(github_mock_install),
-        )
         .route(
             "/api/v1/github/installations/{installation_id}/sync",
             post(sync_installation_repos),
@@ -102,26 +96,16 @@ async fn github_status(
     AuthUser(user): AuthUser,
 ) -> Result<impl IntoResponse, AppError> {
     let org = state.db.primary_org(user.id).await?;
-    state
+    let github = state
         .reload_github_for_org(org.id)
         .await
         .map_err(AppError::from)?;
-    let github = state.github_client().await;
     let account = state.db.get_github_account(user.id).await?;
     let installations = state.db.list_installations(org.id).await?;
-    let live_installations: Vec<_> = installations
-        .iter()
-        .filter(|i| !is_mock_installation(i))
-        .collect();
-    let connected = if github.is_mock() {
-        account.is_some() || !installations.is_empty()
-    } else {
-        account.is_some() || !live_installations.is_empty()
-    };
+    let connected = account.is_some() || !installations.is_empty();
     let display_login = account
         .as_ref()
         .map(|a| a.login.clone())
-        .or_else(|| live_installations.first().map(|i| i.account_login.clone()))
         .or_else(|| installations.first().map(|i| i.account_login.clone()));
     Ok(Json(serde_json::json!({
         "mode": github.mode(),
@@ -135,26 +119,15 @@ async fn github_status(
     })))
 }
 
-fn is_mock_installation(inst: &zene_cloud_domain::GithubInstallation) -> bool {
-    inst.installation_id == "10001" || inst.account_login == "mock-org"
-}
-
 async fn github_connect_start(
     State(state): State<AppState>,
     AuthUser(user): AuthUser,
 ) -> Result<impl IntoResponse, AppError> {
     let org = state.db.primary_org(user.id).await?;
-    state
+    let github = state
         .reload_github_for_org(org.id)
         .await
         .map_err(AppError::from)?;
-    let github = state.github_client().await;
-    if github.is_mock() {
-        return Ok(Json(serde_json::json!({
-            "mode": "mock",
-            "hint": "mock mode: call POST /api/v1/github/mock/connect instead"
-        })));
-    }
     if !github.config().is_app_configured() {
         return Err(AppError::bad_request(
             "GitHub App is not configured on this server (set GITHUB_APP_ID, GITHUB_APP_PRIVATE_KEY_PATH, GITHUB_APP_SLUG)",
@@ -200,11 +173,10 @@ async fn github_install_callback(
         .user_id
         .ok_or_else(|| AppError::unauthorized("install state has no user"))?;
     let org = state.db.primary_org(user_id).await?;
-    state
+    let github = state
         .reload_github_for_org(org.id)
         .await
         .map_err(AppError::from)?;
-    let github = state.github_client().await;
     let remote = github
         .get_installation(&installation_id)
         .await
@@ -219,17 +191,12 @@ async fn github_install_callback(
             GithubInstallationStatus::Active,
         )
         .await?;
-    if !github.is_mock() {
-        state.db.purge_mock_github_data(org.id).await?;
-    }
     let listed = github
         .list_installation_repos(&remote.id)
         .await
         .map_err(AppError::from)?;
     state.db.sync_repos_from_github(org.id, &listed).await?;
     let _ = query.setup_action;
-    // Absolute redirect so the popup lands on the configured public origin
-    // (important when UI and API use different localhost ports).
     Ok(Redirect::temporary(&format!(
         "{}/?github=connected",
         state.public_base_url.trim_end_matches('/')
@@ -241,17 +208,10 @@ async fn github_oauth_start(
     AuthUser(user): AuthUser,
 ) -> Result<impl IntoResponse, AppError> {
     let org = state.db.primary_org(user.id).await?;
-    state
+    let github = state
         .reload_github_for_org(org.id)
         .await
         .map_err(AppError::from)?;
-    let github = state.github_client().await;
-    if github.is_mock() {
-        return Ok(Json(serde_json::json!({
-            "mode": "mock",
-            "hint": "mock mode: call POST /api/v1/github/mock/connect instead of browser OAuth"
-        })));
-    }
     if !github.config().is_configured() {
         return Err(AppError::bad_request(
             "Configure GitHub OAuth Client ID and Secret in Settings first",
@@ -297,11 +257,10 @@ async fn github_oauth_callback(
         .user_id
         .ok_or_else(|| AppError::unauthorized("oauth state has no user"))?;
     let org = state.db.primary_org(user_id).await?;
-    state
+    let github = state
         .reload_github_for_org(org.id)
         .await
         .map_err(AppError::from)?;
-    let github = state.github_client().await;
     let redirect = format!("{}/api/v1/github/oauth/callback", state.public_base_url);
     let tokens = github
         .exchange_oauth_code(&code, Some(redirect))
@@ -325,130 +284,25 @@ async fn github_oauth_callback(
     Ok(Redirect::temporary("/?github=connected"))
 }
 
-async fn github_mock_connect(
-    State(state): State<AppState>,
-    AuthUser(user): AuthUser,
-) -> Result<impl IntoResponse, AppError> {
-    let org = state.db.primary_org(user.id).await?;
-    state
-        .reload_github_for_org(org.id)
-        .await
-        .map_err(AppError::from)?;
-    let github = state.github_client().await;
-    if !github.is_mock() {
-        return Err(AppError::conflict(
-            "mock connect only available in mock mode",
-        ));
-    }
-    let tokens = github
-        .exchange_oauth_code("mock-code", None)
-        .await
-        .map_err(AppError::from)?;
-    let gh_user = github
-        .get_user(&tokens.access_token)
-        .await
-        .map_err(AppError::from)?;
-    let account = state
-        .db
-        .upsert_github_account(
-            user.id,
-            &gh_user.id,
-            &gh_user.login,
-            &tokens.access_token,
-            "bearer",
-            Some("repo,read:user"),
-        )
-        .await?;
-    let installation = state
-        .db
-        .upsert_installation(
-            org.id,
-            "10001",
-            "mock-org",
-            GithubAccountType::Organization,
-            GithubInstallationStatus::Active,
-        )
-        .await?;
-    let listed = github
-        .list_installation_repos("10001")
-        .await
-        .map_err(AppError::from)?;
-    let repos = state.db.sync_repos_from_github(org.id, &listed).await?;
-    Ok(Json(serde_json::json!({
-        "account": account,
-        "installation": installation,
-        "repositories": repos,
-    })))
-}
-
 async fn github_sync(
     State(state): State<AppState>,
     AuthUser(user): AuthUser,
 ) -> Result<impl IntoResponse, AppError> {
     let org = state.db.primary_org(user.id).await?;
-    state
+    let github = state
         .reload_github_for_org(org.id)
         .await
         .map_err(AppError::from)?;
-    let github = state.github_client().await;
-    if github.is_mock() {
-        let tokens = github
-            .exchange_oauth_code("mock-code", None)
-            .await
-            .map_err(AppError::from)?;
-        let gh_user = github
-            .get_user(&tokens.access_token)
-            .await
-            .map_err(AppError::from)?;
-        state
-            .db
-            .upsert_github_account(
-                user.id,
-                &gh_user.id,
-                &gh_user.login,
-                &tokens.access_token,
-                "bearer",
-                Some("repo,read:user"),
-            )
-            .await?;
-        let installation = state
-            .db
-            .upsert_installation(
-                org.id,
-                "10001",
-                "mock-org",
-                GithubAccountType::Organization,
-                GithubInstallationStatus::Active,
-            )
-            .await?;
-        let listed = github
-            .list_installation_repos("10001")
-            .await
-            .map_err(AppError::from)?;
-        let repos = state.db.sync_repos_from_github(org.id, &listed).await?;
-        return Ok(Json(serde_json::json!({
-            "installations": vec![installation],
-            "repositories": repos,
-        })));
-    }
 
-    // App install flow stores installations on the org; OAuth account is optional.
-    // Re-sync repos for installations already linked to this org (do not pull every
-    // installation of the GitHub App — that would cross tenants).
     let installations = state.db.list_installations(org.id).await?;
-    let live: Vec<_> = installations
-        .into_iter()
-        .filter(|i| !is_mock_installation(i))
-        .collect();
-    if live.is_empty() {
+    if installations.is_empty() {
         return Err(AppError::bad_request(
             "connect GitHub before syncing repositories",
         ));
     }
     let mut synced_installations = Vec::new();
     let mut all_repos = Vec::new();
-    for inst in live {
-        // Refresh account metadata from GitHub when possible.
+    for inst in installations {
         if let Ok(remote) = github.get_installation(&inst.installation_id).await {
             let installation = state
                 .db
@@ -483,24 +337,6 @@ async fn list_installations(
 ) -> Result<impl IntoResponse, AppError> {
     let org = state.db.primary_org(user.id).await?;
     Ok(Json(state.db.list_installations(org.id).await?))
-}
-
-async fn github_mock_install(
-    State(state): State<AppState>,
-    AuthUser(user): AuthUser,
-) -> Result<impl IntoResponse, AppError> {
-    let org = state.db.primary_org(user.id).await?;
-    let installation = state
-        .db
-        .upsert_installation(
-            org.id,
-            "10001",
-            "mock-org",
-            GithubAccountType::Organization,
-            GithubInstallationStatus::Active,
-        )
-        .await?;
-    Ok(Json(installation))
 }
 
 async fn sync_installation_repos(

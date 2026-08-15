@@ -12,12 +12,11 @@ use tokio_stream::wrappers::ReceiverStream;
 use uuid::Uuid;
 use zene_cloud_domain::{
     ClaimedRun, CreateApprovalRequest, CreatePullRequestBody, CreateRunRequest,
-    DecideApprovalRequest, EmailLoginRequest, EmailLoginResponse, GithubMode, LoginRequest,
-    MessageRole, PostMessageRequest, QueueStats, RegisterRequest, RunStatus, SetRunModeRequest,
-    UpdateRunRequest, WorkerClaimRequest,
-    WorkerCommandAckRequest, WorkerCommandsResponse, WorkerEventRequest, WorkerFence,
-    WorkerPullRequestRequest, WorkerPushRequest, WorkerSessionRequest, WorkerStatusRequest,
-    WorkerTitleRequest,
+    DecideApprovalRequest, EmailLoginRequest, EmailLoginResponse, LoginRequest, MessageRole,
+    PostMessageRequest, QueueStats, RegisterRequest, RunStatus, SetRunModeRequest,
+    UpdateRunRequest, WorkerClaimRequest, WorkerCommandAckRequest, WorkerCommandsResponse,
+    WorkerEventRequest, WorkerFence, WorkerPullRequestRequest, WorkerPushRequest,
+    WorkerSessionRequest, WorkerStatusRequest, WorkerTitleRequest,
 };
 
 use crate::auth::{AuthUser, WorkerAuth};
@@ -68,6 +67,14 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/api/v1/runs/{run_id}/pull-requests",
             get(list_run_prs).post(create_run_pr),
+        )
+        .route(
+            "/api/v1/runs/{run_id}/pull-requests/{pr_id}/ready",
+            post(mark_run_pr_ready),
+        )
+        .route(
+            "/api/v1/runs/{run_id}/pull-requests/{pr_id}/merge",
+            post(merge_run_pr),
         )
         .route("/api/v1/runs/{run_id}/git/push", post(user_push))
         .route("/internal/v1/runs/claim", post(claim_run))
@@ -641,12 +648,55 @@ async fn create_run_pr(
     Json(req): Json<CreatePullRequestBody>,
 ) -> Result<impl IntoResponse, AppError> {
     let run = authorize_run(&state, user.id, run_id).await?;
-    let git_broker = state.git_broker().await;
+    let git_broker = state
+        .git_broker_for_org(run.organization_id)
+        .await
+        .map_err(AppError::from)?;
     let pr = git_broker
         .create_draft_pr(&run, req)
         .await
         .map_err(AppError::from)?;
     Ok(Json(pr))
+}
+
+async fn mark_run_pr_ready(
+    State(state): State<AppState>,
+    AuthUser(user): AuthUser,
+    Path((run_id, pr_id)): Path<(Uuid, Uuid)>,
+) -> Result<impl IntoResponse, AppError> {
+    let run = authorize_run(&state, user.id, run_id).await?;
+    let pr = state
+        .db
+        .get_pull_request(pr_id)
+        .await?
+        .filter(|pr| pr.run_id == run_id)
+        .ok_or_else(|| AppError::not_found("pull request not found"))?;
+    let git_broker = state
+        .git_broker_for_org(run.organization_id)
+        .await
+        .map_err(AppError::from)?;
+    let updated = git_broker.mark_pr_ready(&run, &pr).await.map_err(AppError::from)?;
+    Ok(Json(updated))
+}
+
+async fn merge_run_pr(
+    State(state): State<AppState>,
+    AuthUser(user): AuthUser,
+    Path((run_id, pr_id)): Path<(Uuid, Uuid)>,
+) -> Result<impl IntoResponse, AppError> {
+    let run = authorize_run(&state, user.id, run_id).await?;
+    let pr = state
+        .db
+        .get_pull_request(pr_id)
+        .await?
+        .filter(|pr| pr.run_id == run_id)
+        .ok_or_else(|| AppError::not_found("pull request not found"))?;
+    let git_broker = state
+        .git_broker_for_org(run.organization_id)
+        .await
+        .map_err(AppError::from)?;
+    let updated = git_broker.merge_pr(&run, &pr).await.map_err(AppError::from)?;
+    Ok(Json(updated))
 }
 
 async fn user_push(
@@ -656,9 +706,27 @@ async fn user_push(
 ) -> Result<impl IntoResponse, AppError> {
     let run = authorize_run(&state, user.id, run_id).await?;
     let root = state.workspace_root.join(run_id.to_string());
+    let commit_msg = format!(
+        "zene: {}",
+        run.title.chars().take(72).collect::<String>()
+    );
+    workspace::commit_worktree_if_dirty(&root, &commit_msg)
+        .await
+        .map_err(AppError::from)?;
+    if !workspace::branch_has_commits_ahead(&root, &run.base_ref)
+        .await
+        .map_err(AppError::from)?
+    {
+        return Err(AppError::bad_request(
+            "no commits ahead of base branch; commit your changes before pushing",
+        ));
+    }
     let bundle = create_bundle(&root).await.map_err(AppError::from)?;
     let expected = run.head_sha.clone().unwrap_or_else(|| "HEAD".into());
-    let git_broker = state.git_broker().await;
+    let git_broker = state
+        .git_broker_for_org(run.organization_id)
+        .await
+        .map_err(AppError::from)?;
     let result = git_broker
         .accept_bundle_and_push(
             &run,
@@ -804,13 +872,14 @@ async fn clone_auth(
     if let Some(cached) = state.db.get_cached_clone_credentials(run_id).await? {
         return Ok(Json(cached));
     }
-    let git_broker = state.git_broker().await;
+    let git_broker = state
+        .git_broker_for_org(run.organization_id)
+        .await
+        .map_err(AppError::from)?;
     let token = git_broker
         .issue_read_clone_token(&run)
         .await
         .map_err(AppError::from)?;
-    let github = state.github_client().await;
-    let mock = token.mode == GithubMode::Mock || github.is_mock();
     let response = zene_cloud_domain::CloneAuthResponse {
         run_id: run.id,
         repository_id: run.repository_id,
@@ -819,7 +888,7 @@ async fn clone_auth(
         token: Some(token.token),
         base_ref: run.base_ref,
         head_branch: run.head_branch,
-        mock,
+        mock: false,
     };
     state.db.store_clone_credentials(&response).await?;
     Ok(Json(response))
@@ -905,12 +974,30 @@ async fn worker_push(
         .await?
         .ok_or_else(|| AppError::not_found("run not found"))?;
     let root = state.workspace_root.join(run_id.to_string());
+    let commit_msg = format!(
+        "zene: {}",
+        run.title.chars().take(72).collect::<String>()
+    );
+    workspace::commit_worktree_if_dirty(&root, &commit_msg)
+        .await
+        .map_err(AppError::from)?;
+    if !workspace::branch_has_commits_ahead(&root, &run.base_ref)
+        .await
+        .map_err(AppError::from)?
+    {
+        return Err(AppError::bad_request(
+            "no commits ahead of base branch; nothing to push",
+        ));
+    }
     let bundle = create_bundle(&root).await.map_err(AppError::from)?;
     let expected = run.head_sha.clone().unwrap_or_else(|| "HEAD".into());
     let key = req
         .idempotency_key
         .unwrap_or_else(|| format!("push-{}", Uuid::new_v4()));
-    let git_broker = state.git_broker().await;
+    let git_broker = state
+        .git_broker_for_org(run.organization_id)
+        .await
+        .map_err(AppError::from)?;
     Ok(Json(
         git_broker
             .accept_bundle_and_push(&run, &bundle, Some(expected.as_str()), &key)
@@ -937,7 +1024,10 @@ async fn worker_pull_request(
         base_ref: Some(run.base_ref.clone()),
         head_ref: Some(run.head_branch.clone()),
     };
-    let git_broker = state.git_broker().await;
+    let git_broker = state
+        .git_broker_for_org(run.organization_id)
+        .await
+        .map_err(AppError::from)?;
     Ok(Json(
         git_broker
             .create_draft_pr(&run, body)
@@ -1073,7 +1163,7 @@ mod reconnect_replay_tests {
         let state = AppState::new(
             db.clone(),
             worker_token.into(),
-            GithubClient::new(GithubConfig::mock()),
+            GithubClient::new(GithubConfig::live_default()),
             workspace_root.clone(),
             "http://127.0.0.1:8788".into(),
         );

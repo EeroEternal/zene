@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { createRunPullRequest, fetchRunPullRequests, publishRunToGithub } from "@/lib/gitPublish";
+import { commitAndCreatePullRequest, createRunPullRequest, fetchRunPullRequests } from "@/lib/gitPublish";
 import { buildDefaultPrBody } from "@/lib/prBody";
 import type { GitCompare, PullRequest } from "@/lib/types";
 import { IconExternal, IconRefresh } from "@/lib/icons";
@@ -70,7 +70,7 @@ export function PrPanel({
     setError("");
     setBusy(true);
     try {
-      const result = await publishRunToGithub(runId, {
+      const result = await commitAndCreatePullRequest(runId, {
         title: t,
         baseRef: baseRef.trim() || defaultBaseRef,
         headBranch,
@@ -80,8 +80,8 @@ export function PrPanel({
       });
       toast(
         result.pullRequest?.providerNumber != null
-          ? `Pushed · PR #${result.pullRequest.providerNumber}`
-          : `Pushed · ${result.push.headSha || result.push.pushUrl || "ok"}`,
+          ? `Draft PR #${result.pullRequest.providerNumber} created`
+          : `Committed · ${result.push.headSha || result.push.pushUrl || "ok"}`,
         "ok",
       );
       if (!dialog) await loadPrs();
@@ -170,7 +170,7 @@ export function PrPanel({
       </label>
       <div className={`flex flex-wrap gap-2 ${dialog ? "" : "mb-4"}`}>
         <button type="button" className="btn btn-primary btn-sm" disabled={busy} onClick={publish}>
-          {busy ? "Creating…" : dialog ? "Create pull request" : "Push & create PR"}
+          {busy ? "Creating…" : dialog ? "Commit & Create PR" : "Commit & Create PR"}
         </button>
         {!dialog && (
           <>
