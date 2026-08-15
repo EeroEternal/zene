@@ -34,8 +34,10 @@ import { allowsDeny, allowsOnce, approvalCardBody, extraDecisions } from "@/lib/
 import type {
   Approval,
   ApprovalDecision,
+  GitCompare,
   LlmSettingsView,
   MessageRole,
+  PullRequest,
   Repo,
   Run,
   RunEvent,
@@ -51,6 +53,13 @@ import { StatusPill } from "./StatusPill";
 import { TurnActions } from "./TurnActions";
 import { useToast } from "./Toast";
 import { buildConversationTurns, buildForkPrompt } from "@/lib/turnActions";
+import {
+  fetchGitCompare,
+  fetchRunPullRequests,
+  hasUnpublishedChanges,
+} from "@/lib/gitPublish";
+import { readSessionUi, writeSessionUi } from "@/lib/sessionUi";
+import { PushPromptCard } from "./PushPromptCard";
 
 /** Show Stop — agent/session is in progress (includes setup). */
 const BUSY_STATUSES: ReadonlySet<string> = new Set<RunStatus>([
@@ -942,6 +951,12 @@ export function RunView({
   const [runMessages, setRunMessages] = useState<RunMessage[]>([]);
   const [forkingTurn, setForkingTurn] = useState<number | null>(null);
   const [retrying, setRetrying] = useState(false);
+  const [gitCompare, setGitCompare] = useState<GitCompare | null>(null);
+  const [runPullRequests, setRunPullRequests] = useState<PullRequest[]>([]);
+  const [pushPublished, setPushPublished] = useState(false);
+  const [pushDismissedHead, setPushDismissedHead] = useState<string | null>(() =>
+    readSessionUi(runId).pushPromptDismissedHead ?? null,
+  );
   const titleInputRef = useRef<HTMLInputElement>(null);
 
   const nextId = useRef(1);
@@ -1472,6 +1487,36 @@ export function RunView({
   }, [runId]);
 
   useEffect(() => {
+    setPushDismissedHead(readSessionUi(runId).pushPromptDismissedHead ?? null);
+    setPushPublished(false);
+    setGitCompare(null);
+    setRunPullRequests([]);
+  }, [runId]);
+
+  useEffect(() => {
+    if (!runId || !run) return;
+    const status = (run.status || "").toLowerCase();
+    const idle = ["completed", "waiting_for_user", "failed"].includes(status);
+    if (!idle) return;
+
+    let cancelled = false;
+    (async () => {
+      const [compare, prs] = await Promise.all([
+        fetchGitCompare(runId),
+        fetchRunPullRequests(runId),
+      ]);
+      if (cancelled) return;
+      setGitCompare(compare);
+      setRunPullRequests(prs);
+      if (prs.some((pr) => pr.url)) setPushPublished(true);
+    })().catch(() => undefined);
+
+    return () => {
+      cancelled = true;
+    };
+  }, [runId, run?.status, run?.headSha]);
+
+  useEffect(() => {
     onMeta(run?.title || "Agent", run?.status || "idle");
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [run?.title, run?.status]);
@@ -1536,6 +1581,24 @@ export function RunView({
   const setupCopy = isSetup ? setupStatusCopy(statusKey, repoName) : null;
   const canRetry = RETRYABLE_STATUSES.has(statusKey);
   const canSend = Boolean(followUp.trim()) && !sending && !sendBlocked && !canRetry;
+  const pushHeadKey = run?.headSha || gitCompare?.head || "";
+  const showPushPrompt =
+    historyReady &&
+    !pushPublished &&
+    hasUnpublishedChanges(gitCompare, runPullRequests) &&
+    pushDismissedHead !== pushHeadKey;
+
+  const dismissPushPrompt = useCallback(() => {
+    const head = pushHeadKey || "dismissed";
+    writeSessionUi(runId, { pushPromptDismissedHead: head });
+    setPushDismissedHead(head);
+  }, [runId, pushHeadKey]);
+
+  const onPushPublished = useCallback(() => {
+    setPushPublished(true);
+    void fetchRunPullRequests(runId).then(setRunPullRequests).catch(() => undefined);
+    onRunsChanged();
+  }, [runId, onRunsChanged]);
 
   const autosize = useCallback(() => {
     const el = promptRef.current;
@@ -2095,6 +2158,19 @@ export function RunView({
               })}
             </div>
           </div>
+          {showPushPrompt && gitCompare ? (
+            <div className="mx-auto w-full max-w-[720px] px-3.5 pb-2">
+              <PushPromptCard
+                runId={runId}
+                title={run?.title}
+                baseRef={run?.baseRef}
+                headBranch={run?.headBranch}
+                compare={gitCompare}
+                onPublished={onPushPublished}
+                onDismiss={dismissPushPrompt}
+              />
+            </div>
+          ) : null}
           <div ref={composerRef} className="bg-canvas-bg px-4 pb-3 pt-1">
             <div className="mx-auto w-full max-w-[720px] px-3.5">
               <div className="-mx-3.5 rounded-md bg-canvas px-3.5 pb-2 pt-2.5 shadow-card focus-within:shadow-[0_0_0_2px_#EAF2FF]">

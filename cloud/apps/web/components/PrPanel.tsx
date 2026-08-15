@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { api } from "@/lib/api";
+import { createRunPullRequest, fetchRunPullRequests, publishRunToGithub } from "@/lib/gitPublish";
 import type { PullRequest } from "@/lib/types";
 import { IconExternal, IconRefresh } from "@/lib/icons";
 import { useToast } from "./Toast";
@@ -41,7 +41,7 @@ export function PrPanel({
   const loadPrs = useCallback(async () => {
     setError("");
     try {
-      setPrs((await api<PullRequest[]>(`/api/v1/runs/${runId}/pull-requests`)) || []);
+      setPrs(await fetchRunPullRequests(runId));
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     }
@@ -55,11 +55,20 @@ export function PrPanel({
     setError("");
     setPushBusy(true);
     try {
-      const result = await api<{ headSha?: string; pushUrl?: string }>(`/api/v1/runs/${runId}/git/push`, {
-        method: "POST",
-        body: "{}",
+      const result = await publishRunToGithub(runId, {
+        title: title.trim() || defaultTitle || "Changes from Zene Cloud",
+        baseRef: baseRef.trim() || defaultBaseRef,
+        headBranch,
+        body: body.trim() || undefined,
+        draft,
       });
-      toast(`Pushed · ${result.headSha || result.pushUrl || "ok"}`, "ok");
+      toast(
+        result.pullRequest?.providerNumber != null
+          ? `Pushed · PR #${result.pullRequest.providerNumber}`
+          : `Pushed · ${result.push.headSha || result.push.pushUrl || "ok"}`,
+        "ok",
+      );
+      await loadPrs();
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       setError(msg);
@@ -67,7 +76,7 @@ export function PrPanel({
     } finally {
       setPushBusy(false);
     }
-  }, [runId, toast]);
+  }, [runId, title, defaultTitle, baseRef, defaultBaseRef, headBranch, body, draft, loadPrs, toast]);
 
   const createPr = useCallback(async () => {
     const t = title.trim();
@@ -78,15 +87,12 @@ export function PrPanel({
     setError("");
     setPrBusy(true);
     try {
-      await api(`/api/v1/runs/${runId}/pull-requests`, {
-        method: "POST",
-        body: JSON.stringify({
-          title: t,
-          body: body.trim() || undefined,
-          draft,
-          baseRef: baseRef.trim() || undefined,
-          headRef: headBranch || undefined,
-        }),
+      await createRunPullRequest(runId, {
+        title: t,
+        body: body.trim() || undefined,
+        draft,
+        baseRef: baseRef.trim() || undefined,
+        headBranch: headBranch || undefined,
       });
       toast("Pull request created", "ok");
       await loadPrs();
