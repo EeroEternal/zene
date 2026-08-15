@@ -12,6 +12,7 @@ import {
   IconRefresh,
 } from "@/lib/icons";
 import { readSessionUi, writeSessionUi, type SessionIdeTab } from "@/lib/sessionUi";
+import { fetchRunPullRequests, publishRunToGithub } from "@/lib/gitPublish";
 import { FileTree } from "./FileTree";
 import { GitPanel } from "./GitPanel";
 import { CodeViewer } from "./CodeViewer";
@@ -180,6 +181,7 @@ export function CodePanel({
     null,
   );
   const [latestPr, setLatestPr] = useState<PullRequest | null>(null);
+  const [pushBusy, setPushBusy] = useState(false);
   const [treeExpandAll, setTreeExpandAll] = useState(0);
   const [treeCollapseAll, setTreeCollapseAll] = useState(0);
   const [mdPreview, setMdPreviewState] = useState(() => saved.mdPreview !== false);
@@ -246,7 +248,7 @@ export function CodePanel({
 
   const loadPrs = useCallback(async () => {
     try {
-      const prs = (await api<PullRequest[]>(`/api/v1/runs/${runId}/pull-requests`)) || [];
+      const prs = await fetchRunPullRequests(runId);
       setLatestPr(prs[0] ?? null);
     } catch {
       setLatestPr(null);
@@ -279,17 +281,27 @@ export function CodePanel({
 
   const pushBranch = async () => {
     setMenuOpen(false);
+    setPushBusy(true);
     try {
-      const result = await api<{ headSha?: string; pushUrl?: string }>(`/api/v1/runs/${runId}/git/push`, {
-        method: "POST",
-        body: "{}",
+      const result = await publishRunToGithub(runId, {
+        title: defaultPrTitle?.trim() || "Changes from Zene Cloud",
+        baseRef: defaultBaseRef,
+        headBranch,
+        draft: true,
       });
-      toast(`Pushed · ${result.headSha || result.pushUrl || "ok"}`, "ok");
+      await loadPrs();
+      const pr = result.pullRequest;
+      if (pr?.url && pr.providerNumber != null) {
+        toast(`Pushed · PR #${pr.providerNumber}`, "ok");
+      } else {
+        toast(`Pushed · ${result.push.headSha || result.push.pushUrl || "ok"}`, "ok");
+      }
     } catch (err) {
       toast(err instanceof Error ? err.message : String(err), "error");
+    } finally {
+      setPushBusy(false);
     }
   };
-
   const mainTabs: { id: IdeTab; label: string }[] = [
     { id: "git", label: "Changes" },
     { id: "files", label: "Files" },
@@ -391,7 +403,7 @@ export function CodePanel({
                   Refresh
                 </button>
                 <button type="button" className="menu-item w-full" onClick={pushBranch}>
-                  Push branch
+                  Push & create PR
                 </button>
                 <button
                   type="button"
@@ -418,6 +430,9 @@ export function CodePanel({
             headBranch={headBranch}
             prUrl={latestPr?.url}
             prState={latestPr?.state}
+            pushBusy={pushBusy}
+            onPush={pushBranch}
+            onCreatePr={() => setPrModalOpen(true)}
           />
         )}
         {tab === "files" && (
