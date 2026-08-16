@@ -689,21 +689,51 @@ async fn prepare_workspace(
     info!(
         cache = %cache.display(),
         path = %workspace.display(),
-        "cloning workspace from local cache"
+        "attaching worktree from local repo cache"
     );
-    let status = git_command()
+
+    // Try adding git worktree from the local bare cache
+    let worktree_status = git_command()
         .args([
-            "clone",
-            "--local",
+            "-C",
             &cache.display().to_string(),
+            "worktree",
+            "add",
+            "--force",
+            "--detach",
             &workspace.display().to_string(),
+            &auth.base_ref,
         ])
         .status()
-        .await
-        .context("git clone --local")?;
-    if !status.success() {
-        bail!("git local clone failed with {status}");
+        .await;
+
+    let worktree_ok = match worktree_status {
+        Ok(s) if s.success() => true,
+        other => {
+            warn!(status = ?other, "git worktree add failed; falling back to git clone --local");
+            false
+        }
+    };
+
+    if !worktree_ok {
+        if workspace.exists() {
+            let _ = tokio::fs::remove_dir_all(workspace).await;
+        }
+        let status = git_command()
+            .args([
+                "clone",
+                "--local",
+                &cache.display().to_string(),
+                &workspace.display().to_string(),
+            ])
+            .status()
+            .await
+            .context("git clone --local")?;
+        if !status.success() {
+            bail!("git local clone failed with {status}");
+        }
     }
+
     let _ = run_git(
         workspace,
         &["checkout", "-B", &auth.head_branch, &auth.base_ref],
@@ -1865,8 +1895,8 @@ async fn drain_stderr_lines(stderr: tokio::process::ChildStderr) {
 #[cfg(test)]
 mod title_tests {
     use super::{
-        chat_completions_url, event_file_key, outcome_for_hold, sanitize_run_title, EventOutbox,
-        HoldExit, RunOutcome,
+        chat_completions_url, event_file_key, git_command, outcome_for_hold, prepare_workspace,
+        sanitize_run_title, workspace_ready, EventOutbox, HoldExit, RunOutcome,
     };
     use futures::StreamExt;
     use std::future::IntoFuture;
@@ -1874,7 +1904,7 @@ mod title_tests {
     use serde_json::json;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use uuid::Uuid;
-    use zene_cloud_domain::{RunEventKind, WorkerEventRequest, WorkerFence};
+    use zene_cloud_domain::{CloneAuthResponse, RunEventKind, WorkerEventRequest, WorkerFence};
 
     #[test]
     fn completions_url_appends_path() {
@@ -2372,5 +2402,67 @@ mod title_tests {
             .unwrap();
         assert_eq!(reopened.stats().await.unwrap(), (0, 0));
         tokio::fs::remove_dir_all(root).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn prepare_workspace_uses_git_worktree_from_cache() {
+        let root = std::env::temp_dir().join(format!("zene-wt-test-{}", Uuid::new_v4()));
+        let repo_id = Uuid::new_v4();
+        let cache = root.join(".repo-cache").join(repo_id.to_string());
+        std::fs::create_dir_all(&cache).unwrap();
+
+        // Initialize a dummy bare repo
+        let _ = git_command().args(["-C", &cache.display().to_string(), "init", "--bare"]).status().await.unwrap();
+        // Create an initial commit in a temp worktree to have a valid HEAD
+        let init_wt = root.join("init-wt");
+        std::fs::create_dir_all(&init_wt).unwrap();
+        let _ = git_command().args(["-C", &init_wt.display().to_string(), "init"]).status().await.unwrap();
+        tokio::fs::write(init_wt.join("hello.txt"), "hello").await.unwrap();
+        let _ = git_command().args(["-C", &init_wt.display().to_string(), "add", "."]).status().await.unwrap();
+        let _ = git_command()
+            .args([
+                "-C",
+                &init_wt.display().to_string(),
+                "-c",
+                "user.email=test@test.com",
+                "-c",
+                "user.name=Test",
+                "commit",
+                "-m",
+                "initial commit",
+            ])
+            .status()
+            .await
+            .unwrap();
+        let _ = git_command()
+            .args([
+                "-C",
+                &init_wt.display().to_string(),
+                "push",
+                &cache.display().to_string(),
+                "HEAD:refs/heads/main",
+            ])
+            .status()
+            .await
+            .unwrap();
+        let _ = git_command().args(["-C", &cache.display().to_string(), "symbolic-ref", "HEAD", "refs/heads/main"]).status().await.unwrap();
+
+        let auth = CloneAuthResponse {
+            run_id: Uuid::new_v4(),
+            repository_id: repo_id,
+            clone_url: "https://example.com/test.git".into(),
+            token: None,
+            username: None,
+            base_ref: "main".into(),
+            head_branch: "zene/test-branch".into(),
+            mock: false,
+        };
+
+        let ws = root.join("ws").join(Uuid::new_v4().to_string());
+        prepare_workspace(&root, &ws, &auth).await.unwrap();
+        assert!(ws.join("hello.txt").exists());
+        assert!(workspace_ready(&ws).await);
+
+        let _ = tokio::fs::remove_dir_all(root).await;
     }
 }

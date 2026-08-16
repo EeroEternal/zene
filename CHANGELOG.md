@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v0.1.13 (2026-08-16)
+
 ### Added
 - Context governance system inspired by DeepSeek Harness:
   - Agent Skills: `trim-cot-leakage`, `archive-agent-notes`, `find-simplifications` under `.agents/skills/`.
@@ -10,6 +12,15 @@
   - Context optimization plan and governance lessons (`docs/context-optimization-plan.md`, `docs/deepseek-harness-context-lessons.md`).
 - `zene-context`: `FsMemoryStore` automatically discovers and loads active Agent Notes (`.zene/notes/active/*.md` and `docs/notes/active/*.md`) into stable system prompt prefix.
 - `zene-tools`: `OutputSanitizer` module to strip verbose passing test logs (`test ... ok`) and fold excessive command output (>300 lines) to save context tokens.
+- Cloud Worker: Git Worktree multi-session isolation via `git worktree add --force --detach` from local `.repo-cache` with local clone fallback.
+- Cloud Console UX:
+  - Global keyboard shortcuts (`Cmd/Ctrl+B` toggle CodePanel, `Cmd/Ctrl+N` new task).
+  - Prompt history navigation in empty Composer with `ArrowUp`/`ArrowDown`.
+  - Diff reviewer checkboxes with automatic collapse and viewed state.
+  - Large terminal log automatic folding (>30 lines / 2KB) with full output expand.
+  - Dynamic tab title badges reflecting live agent state (`🟢`, `🟡`, `🔴`).
+  - PromptQueue item cancellation while agent is running.
+- Backend & DB: SQLite WAL journal mode, NORMAL synchronous, and 5s busy timeout tuning.
 
 ## v0.1.12 (2026-08-15)
 

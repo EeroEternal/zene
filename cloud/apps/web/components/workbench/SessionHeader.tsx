@@ -8,6 +8,7 @@ interface SessionHeaderProps {
   title: string;
   repoName?: string;
   headBranch?: string;
+  model?: string;
   editingTitle: boolean;
   titleDraft: string;
   onTitleDraftChange: (value: string) => void;
@@ -24,6 +25,7 @@ export function SessionHeader({
   title,
   repoName,
   headBranch,
+  model,
   editingTitle,
   titleDraft,
   onTitleDraftChange,
@@ -100,6 +102,14 @@ export function SessionHeader({
               {headBranch}
             </span>
           ) : null}
+          {model && model !== "default" && (
+            <span
+              className="hidden items-center gap-1 rounded bg-secondary px-1.5 py-0.5 text-[11px] font-medium text-muted min-[860px]:inline-flex"
+              title={`Model: ${model}`}
+            >
+              {model}
+            </span>
+          )}
         </div>
       </div>
       {!codePanelOpen && onToggleCodePanel && (

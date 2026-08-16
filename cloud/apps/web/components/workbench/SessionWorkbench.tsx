@@ -774,6 +774,7 @@ export function SessionWorkbench({
           title={run?.title || "Agent"}
           repoName={repoName}
           headBranch={headBranch}
+          model={run?.model || selectedModel}
           editingTitle={editingTitle}
           titleDraft={titleDraft}
           onTitleDraftChange={setTitleDraft}

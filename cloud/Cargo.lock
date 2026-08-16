@@ -2929,7 +2929,7 @@ dependencies = [
 
 [[package]]
 name = "zene-cloud-acp-bridge"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "anyhow",
  "serde",
@@ -2941,7 +2941,7 @@ dependencies = [
 
 [[package]]
 name = "zene-cloud-api"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "anyhow",
  "axum",
@@ -2966,7 +2966,7 @@ dependencies = [
 
 [[package]]
 name = "zene-cloud-db"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "anyhow",
  "argon2",
@@ -2983,7 +2983,7 @@ dependencies = [
 
 [[package]]
 name = "zene-cloud-domain"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "chrono",
  "serde",
@@ -2993,7 +2993,7 @@ dependencies = [
 
 [[package]]
 name = "zene-cloud-git-broker"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "anyhow",
  "axum",
@@ -3012,7 +3012,7 @@ dependencies = [
 
 [[package]]
 name = "zene-cloud-github"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "anyhow",
  "chrono",
@@ -3029,7 +3029,7 @@ dependencies = [
 
 [[package]]
 name = "zene-cloud-runtime-client"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3043,7 +3043,7 @@ dependencies = [
 
 [[package]]
 name = "zene-cloud-worker"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "anyhow",
  "axum",

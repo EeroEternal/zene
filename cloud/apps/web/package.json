@@ -1,6 +1,6 @@
 {
   "name": "zene-cloud-web",
-  "version": "0.1.5",
+  "version": "0.1.6",
   "private": true,
   "scripts": {
     "dev": "NO_PROXY=127.0.0.1,localhost no_proxy=127.0.0.1,localhost next dev -p 8787",
