@@ -37,7 +37,10 @@ impl Db {
     pub async fn connect(database_url: &str) -> Result<Self> {
         let options = SqliteConnectOptions::from_str(database_url)
             .context("parse sqlite url")?
-            .create_if_missing(true);
+            .create_if_missing(true)
+            .journal_mode(sqlx::sqlite::SqliteJournalMode::Wal)
+            .synchronous(sqlx::sqlite::SqliteSynchronous::Normal)
+            .busy_timeout(std::time::Duration::from_secs(5));
         if let Some(parent) = options.get_filename().parent() {
             std::fs::create_dir_all(parent).ok();
         }
@@ -115,6 +118,10 @@ impl Db {
                 "013_email_login",
                 include_str!("../../../migrations/013_email_login.sql"),
             ),
+            (
+                "014_workspaces",
+                include_str!("../../../migrations/014_workspaces.sql"),
+            ),
         ];
 
         for (version, sql) in migrations {
@@ -132,7 +139,8 @@ impl Db {
                 || version.starts_with("007")
                 || version.starts_with("010")
                 || version.starts_with("011")
-                || version.starts_with("012");
+                || version.starts_with("012")
+                || version.starts_with("014");
             for statement in split_sql_statements(sql) {
                 match sqlx::query(&statement).execute(&self.pool).await {
                     Ok(_) => {}
@@ -498,6 +506,47 @@ impl Db {
         Ok(row.map(RepoRow::into_repo))
     }
 
+    pub async fn ensure_workspace(&self, org_id: Uuid, repository_id: Uuid) -> Result<Uuid> {
+        if let Some(id) = sqlx::query_scalar::<_, String>(
+            "SELECT id FROM workspaces WHERE organization_id = ? AND repository_id = ?",
+        )
+        .bind(org_id.to_string())
+        .bind(repository_id.to_string())
+        .fetch_optional(&self.pool)
+        .await?
+        {
+            return Ok(Uuid::parse_str(&id).context("workspace id")?);
+        }
+        let id = Uuid::new_v4();
+        let now = Utc::now().to_rfc3339();
+        let inserted = sqlx::query(
+            "INSERT OR IGNORE INTO workspaces (id, organization_id, repository_id, created_at)
+             VALUES (?, ?, ?, ?)",
+        )
+        .bind(id.to_string())
+        .bind(org_id.to_string())
+        .bind(repository_id.to_string())
+        .bind(&now)
+        .execute(&self.pool)
+        .await?
+        .rows_affected();
+        if inserted == 0 {
+            let existing = sqlx::query_scalar::<_, String>(
+                "SELECT id FROM workspaces WHERE organization_id = ? AND repository_id = ?",
+            )
+            .bind(org_id.to_string())
+            .bind(repository_id.to_string())
+            .fetch_one(&self.pool)
+            .await?;
+            return Ok(Uuid::parse_str(&existing).context("workspace id")?);
+        }
+        Ok(id)
+    }
+
+    pub fn workspace_checkout_dir(workspace_root: &Path, workspace_id: Uuid) -> std::path::PathBuf {
+        workspace_root.join("ws").join(workspace_id.to_string())
+    }
+
     pub async fn create_run(
         &self,
         org_id: Uuid,
@@ -511,6 +560,7 @@ impl Db {
         if repo.organization_id != org_id {
             bail!("repository not in organization");
         }
+        let workspace_id = self.ensure_workspace(org_id, repo.id).await?;
         let id = Uuid::new_v4();
         let now = Utc::now();
         let title = title_from_prompt(&req.prompt);
@@ -527,6 +577,7 @@ impl Db {
             id,
             organization_id: org_id,
             repository_id: repo.id,
+            workspace_id,
             requested_by: user_id,
             status: RunStatus::Queued,
             status_version: 1,
@@ -547,14 +598,15 @@ impl Db {
         let mut tx = self.pool.begin().await?;
         sqlx::query(
             "INSERT INTO runs
-             (id, organization_id, repository_id, requested_by, status, status_version, title,
+             (id, organization_id, repository_id, workspace_id, requested_by, status, status_version, title,
               prompt, base_ref, base_sha, head_branch, head_sha, model, permission_mode, max_turns,
               created_at, started_at, finished_at, archived_at, pending_mode_id)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(run.id.to_string())
         .bind(run.organization_id.to_string())
         .bind(run.repository_id.to_string())
+        .bind(run.workspace_id.to_string())
         .bind(run.requested_by.to_string())
         .bind(run.status.as_str())
         .bind(run.status_version)
@@ -918,16 +970,33 @@ impl Db {
         .bind(now.to_rfc3339())
         .execute(&mut *tx)
         .await?;
-        let resume_without_prompt =
-            last_error.as_deref() == Some("user_retry") && resume_session_id.is_some();
+        // Only skip the initial prompt when a live hold lost its worker lease.
+        // User-initiated retry must re-run the task; resuming without a prompt
+        // leaves failed runs stuck in waiting_for_user with no agent activity.
+        let resume_without_prompt = last_error
+            .as_deref()
+            .is_some_and(|e| e.contains("lease expired"))
+            && resume_session_id.is_some();
         sqlx::query("UPDATE runs SET last_error = NULL WHERE id = ?")
             .bind(run.id.to_string())
             .execute(&mut *tx)
             .await?;
         tx.commit().await?;
 
-        let workspace_dir = workspace_root
-            .join(run.id.to_string())
+        let workspace_id = if run.workspace_id.is_nil() {
+            self.ensure_workspace(run.organization_id, run.repository_id)
+                .await?
+        } else {
+            run.workspace_id
+        };
+        if run.workspace_id.is_nil() {
+            sqlx::query("UPDATE runs SET workspace_id = ? WHERE id = ?")
+                .bind(workspace_id.to_string())
+                .bind(run.id.to_string())
+                .execute(&self.pool)
+                .await?;
+        }
+        let workspace_dir = Self::workspace_checkout_dir(workspace_root, workspace_id)
             .to_string_lossy()
             .to_string();
         let mut run = self
@@ -2243,6 +2312,7 @@ struct RunRow {
     id: String,
     organization_id: String,
     repository_id: String,
+    workspace_id: Option<String>,
     requested_by: String,
     status: String,
     status_version: i64,
@@ -2267,6 +2337,11 @@ impl RunRow {
             id: Uuid::parse_str(&self.id).unwrap(),
             organization_id: Uuid::parse_str(&self.organization_id).unwrap(),
             repository_id: Uuid::parse_str(&self.repository_id).unwrap(),
+            workspace_id: self
+                .workspace_id
+                .as_deref()
+                .and_then(|id| Uuid::parse_str(id).ok())
+                .unwrap_or(Uuid::nil()),
             requested_by: Uuid::parse_str(&self.requested_by).unwrap(),
             status: RunStatus::parse(&self.status).unwrap_or(RunStatus::Failed),
             status_version: self.status_version,
@@ -2449,7 +2524,7 @@ pub(crate) fn map_approval_full_row(
 }
 
 const RUN_COLUMNS: &str =
-    "id, organization_id, repository_id, requested_by, status, status_version,
+    "id, organization_id, repository_id, workspace_id, requested_by, status, status_version,
     title, prompt, base_ref, base_sha, head_branch, head_sha, model, permission_mode, max_turns,
     created_at, started_at, finished_at, archived_at";
 

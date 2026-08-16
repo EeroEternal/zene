@@ -538,6 +538,16 @@ export function SessionWorkbench({
 
   useEffect(() => {
     onMeta(run?.title || "Agent", run?.status);
+    if (typeof document !== "undefined") {
+      const title = run?.title || "Agent";
+      const status = (run?.status || "").toLowerCase();
+      let prefix = "";
+      if (status === "waiting_for_approval") prefix = "🟡 [Approval] ";
+      else if (status === "running" || status === "starting" || status === "provisioning" || status === "cloning") prefix = "⏳ ";
+      else if (status === "failed") prefix = "🔴 ";
+      else if (status === "completed") prefix = "🟢 ";
+      document.title = `${prefix}${title} · Zene`;
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [run?.title, run?.status]);
 
@@ -832,6 +842,11 @@ export function SessionWorkbench({
               }}
               models={pickerModels}
               queue={promptQueue}
+              onRemoveQueueItem={(id) => {
+                const item = promptQueue.find((p) => p.id === id);
+                if (item) queuedTextsRef.current.delete(item.text);
+                setPromptQueue((prev) => prev.filter((p) => p.id !== id));
+              }}
               submitDisabled={!historyReady}
               submitBusy={sending || retrying}
               stopBusy={cancelling}

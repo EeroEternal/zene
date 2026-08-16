@@ -34,6 +34,24 @@ Login / Register 可用居中卡片，仍用同一套 token。深色只用于终
 
 Zene 页面对应：New Agent = 新建任务；Run 对话 = 运行工作台（意图 / 动作 / 证据）；CodePanel = 变更与检查；Settings = 工具栏设置。
 
+Workbench 表面（`cloud/apps/web/components/workbench/`）：
+
+```
+AppShell
+├── ActivityBar          Toolbar
+├── SessionList          Sidebar
+└── Main
+    ├── NewTask          NewAgent：空态，复用 Composer
+    ├── SessionWorkbench
+    │   ├── SessionHeader
+    │   ├── ChatTimeline   用户气泡、助手回复、thought/tool、审批
+    │   ├── Composer       输入、排队、Send/Stop、模型
+    │   └── IdePane        CodePanel（Files / Git / Review）
+    └── Settings
+```
+
+Stop / Send / Retry / Queue 一律由 `lib/sessionPhase.ts` 的 `SessionPhase` + `ComposerChrome` 推导，禁止在各表面各自判断 `run.status`。
+
 ## 反馈与提醒
 
 操作结果用 **Toast**（`components/Toast.tsx` 的 `useToast()`）。禁止为提醒预留固定 layout。任务摘要条、审批区、检查结果是工作区内容，不是 Toast。确认与危险操作用应用内模态，禁止 `alert` / `confirm` / `prompt`。
@@ -48,6 +66,7 @@ Zene 页面对应：New Agent = 新建任务；Run 对话 = 运行工作台（�
 6. **状态明确** — 颜色必须配文字（如 `失败 · 命令退出码 1`）
 7. **Token reuse** — 与 `globals.css` 共用，禁止页内自造主色
 8. **页面稳定** — 过渡 ≤ 150ms，避免 layout shift
+9. **无焦点外框** — 按钮、链接、导航项不显示浏览器默认 focus outline；选中 / 活跃态用 `bg-active` 背景区分，不用描边环。表单控件 focus 仅加深边框色，不加外发光
 
 ## 实现对照
 
@@ -57,4 +76,5 @@ Zene 页面对应：New Agent = 新建任务；Run 对话 = 运行工作台（�
 | 完整细则 | `docs/Designs.md` |
 | Token / 组件类 | `cloud/apps/web/app/globals.css` |
 | Cloud Console | `cloud/apps/web/` |
+| Workbench | `cloud/apps/web/components/workbench/` + `lib/sessionPhase.ts` |
 | 对照稿 | `docs/design/changes-and-checks.png` |

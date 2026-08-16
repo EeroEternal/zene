@@ -645,7 +645,10 @@ impl AcpRuntimeClient {
             let guard = bridge.lock().await;
             let client = guard.as_ref().context("runtime bridge missing")?;
             let (id, events) = match existing_session_id {
-                Some(existing) => client.initialize_and_resume_session(workdir, existing).await?,
+                Some(existing) => match client.initialize_and_resume_session(workdir, existing).await {
+                    Ok(pair) => pair,
+                    Err(_) => client.initialize_and_new_session(workdir).await?,
+                },
                 None => client.initialize_and_new_session(workdir).await?,
             };
             session_id = id;

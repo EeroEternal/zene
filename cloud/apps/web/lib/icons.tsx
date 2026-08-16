@@ -50,6 +50,7 @@ import {
   Trash2,
   Upload,
   User,
+  X,
   type LucideIcon,
   type LucideProps,
 } from "lucide-react";
@@ -99,6 +100,7 @@ export const IconArchive = lucideIcon(Archive);
 export const IconArrowUp = lucideIcon(ArrowUp);
 export const IconBranch = lucideIcon(GitBranch);
 export const IconCheck = lucideIcon(Check);
+export const IconClose = lucideIcon(X);
 export const IconCopy = lucideIcon(Copy);
 export const IconCode = lucideIcon(Code2);
 export const IconChevronDown = lucideIcon(ChevronDown);

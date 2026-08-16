@@ -41,6 +41,12 @@
   button:disabled {
     cursor: not-allowed;
   }
+  button,
+  a,
+  [role="button"],
+  [role="menuitem"] {
+    outline: none;
+  }
   /* JetBrains Mono ligatures turn `://` into a gap that looks like a missing character. */
   .font-mono {
     font-variant-ligatures: none;
@@ -62,7 +68,7 @@
     @apply h-7 px-2.5 text-xs;
   }
   .field-input {
-    @apply w-full rounded-sm border border-line-strong bg-canvas px-3 py-[9px] text-ink outline-none transition-colors duration-150 focus:border-primary focus:shadow-[0_0_0_2px_#EAF2FF];
+    @apply w-full rounded-sm border border-line-strong bg-canvas px-3 py-[9px] text-ink outline-none transition-colors duration-150 focus:border-primary;
   }
   .nav-item {
     @apply flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-left text-[12.5px] text-ink hover:bg-canvas/60;

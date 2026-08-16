@@ -63,6 +63,7 @@ export function statusTone(status?: RunStatus | string): "ok" | "warn" | "danger
   const s = statusClass(status);
   if ((RUN_STATUSES as readonly string[]).includes(s)) return "run";
   if ((OK_STATUSES as readonly string[]).includes(s)) return "ok";
+  if (s === "cancelled") return "idle";
   if ((DANGER_STATUSES as readonly string[]).includes(s)) return "danger";
   if ((WARN_STATUSES as readonly string[]).includes(s)) return "warn";
   if ((IDLE_STATUSES as readonly string[]).includes(s)) return "idle";

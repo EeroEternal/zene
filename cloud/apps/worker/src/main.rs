@@ -1,4 +1,5 @@
 mod event_outbox;
+mod github_auth;
 mod supervisor;
 
 use std::collections::HashMap;
@@ -339,15 +340,62 @@ async fn execute_run(
     );
 
     let workspace_exists = workspace_ready(&workspace).await;
+    let clone_auth = fetch_clone_auth(client, cli, run_id).await.ok();
     if workspace_exists {
-        info!(path = %workspace.display(), "workspace ready; skipping clone-auth");
+        info!(path = %workspace.display(), "workspace ready; skipping clone");
+        let _ = run_git(
+            &workspace,
+            &["checkout", "-B", &claimed.run.head_branch],
+        )
+        .await;
         set_status(client, cli, run_id, &fence, RunStatus::Running, None, None).await?;
     } else {
-        let clone_auth = fetch_clone_auth(client, cli, run_id).await?;
-        set_status(client, cli, run_id, &fence, RunStatus::Cloning, None, None).await?;
-        prepare_workspace(&cli.workspace_root, &workspace, &clone_auth).await?;
+        let auth = clone_auth
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("clone-auth failed"))?;
+        let cache = cli
+            .workspace_root
+            .join(".repo-cache")
+            .join(claimed.run.repository_id.to_string());
+        let need_network_clone = !auth.mock && !bare_cache_ready(&cache).await;
+        if need_network_clone {
+            set_status(client, cli, run_id, &fence, RunStatus::Cloning, None, None).await?;
+        }
+        prepare_workspace(&cli.workspace_root, &workspace, auth).await?;
         set_status(client, cli, run_id, &fence, RunStatus::Running, None, None).await?;
     }
+    let mut github_refresh: Option<tokio::task::JoinHandle<()>> = None;
+    let github_for_acp = if let Some(auth) = clone_auth.as_ref().filter(|a| !a.mock) {
+        match github_auth::install(&workspace, auth).await {
+            Ok(_) => {
+                let dir = github_auth::auth_dir(&workspace);
+                github_refresh = Some(github_token_refresh_loop(
+                    client.clone(),
+                    cli.clone(),
+                    run_id,
+                    dir.clone(),
+                ));
+                Some((
+                    dir,
+                    auth.token.clone(),
+                    github_auth::github_repo_slug(&auth.clone_url),
+                ))
+            }
+            Err(err) => {
+                warn!(error = %err, "failed to install GitHub credentials for agent");
+                None
+            }
+        }
+    } else {
+        None
+    };
+
+    let abort_bg = || {
+        hb.abort();
+        if let Some(h) = github_refresh.as_ref() {
+            h.abort();
+        }
+    };
 
     let result = if let Some(bin) = zene_bin {
         info!(run_id = %run_id, agent_mode = "real", "starting agent");
@@ -359,6 +407,7 @@ async fn execute_run(
             &workspace,
             &cli.workspace_root,
             bin,
+            github_for_acp.as_ref(),
             shutdown.clone(),
         )
         .await
@@ -381,7 +430,7 @@ async fn execute_run(
     match result {
         Ok(RunOutcome::Completed) => {
             if shutdown.load(Ordering::SeqCst) {
-                hb.abort();
+                abort_bg();
                 return Ok(());
             }
             let head_sha = git_commit_all(&workspace, &claimed.run.title)
@@ -393,7 +442,7 @@ async fn execute_run(
                 let _ = post_pull_request(client, cli, run_id, &claimed.run.title).await;
             }
             if shutdown.load(Ordering::SeqCst) {
-                hb.abort();
+                abort_bg();
                 return Ok(());
             }
             set_status(
@@ -406,19 +455,19 @@ async fn execute_run(
                 None,
             )
             .await?;
-            hb.abort();
+            abort_bg();
             Ok(())
         }
         Ok(RunOutcome::Cancelled | RunOutcome::Shutdown) => {
-            hb.abort();
+            abort_bg();
             Ok(())
         }
         Ok(RunOutcome::RuntimeInterrupted) => {
-            hb.abort();
+            abort_bg();
             bail!("ACP runtime interrupted before completion")
         }
         Err(err) => {
-            hb.abort();
+            abort_bg();
             Err(err)
         }
     }
@@ -500,7 +549,8 @@ async fn bare_cache_ready(cache: &Path) -> bool {
 
 fn git_command() -> Command {
     let mut cmd = Command::new("git");
-    // Developer proxies often throttle or stall github.com clones.
+    // HTTP/2 framing errors stall github.com clones on some developer networks.
+    cmd.args(["-c", "http.version=HTTP/1.1"]);
     for key in [
         "HTTP_PROXY",
         "HTTPS_PROXY",
@@ -526,45 +576,20 @@ fn authenticated_clone_url(auth: &CloneAuthResponse) -> String {
 }
 
 async fn ensure_repo_cache(cache: &Path, auth: &CloneAuthResponse) -> Result<()> {
-    let clone_url = authenticated_clone_url(auth);
-
     if bare_cache_ready(cache).await {
         info!(
             path = %cache.display(),
             repository_id = %auth.repository_id,
-            "updating repo cache"
+            "repo cache ready; skipping github fetch"
         );
-        // Tokens are short-lived; refresh the remote URL before fetch.
-        if let Err(err) = run_git(cache, &["remote", "set-url", "origin", &clone_url]).await {
-            warn!(error = %err, "failed to set cache remote url; recloning");
-            let _ = tokio::fs::remove_dir_all(cache).await;
-        } else {
-            let refspec = format!(
-                "+refs/heads/{}:refs/heads/{}",
-                auth.base_ref, auth.base_ref
-            );
-            match run_git(
-                cache,
-                &["fetch", "--depth", "1", "origin", &refspec],
-            )
-            .await
-            {
-                Ok(()) => return Ok(()),
-                Err(err) => {
-                    warn!(
-                        error = %err,
-                        path = %cache.display(),
-                        "cache fetch failed; recloning"
-                    );
-                    let _ = tokio::fs::remove_dir_all(cache).await;
-                }
-            }
-        }
-    } else if cache.exists() {
+        return Ok(());
+    }
+    if cache.exists() {
         warn!(path = %cache.display(), "removing incomplete repo cache");
         let _ = tokio::fs::remove_dir_all(cache).await;
     }
 
+    let clone_url = authenticated_clone_url(auth);
     std::fs::create_dir_all(cache.parent().unwrap_or_else(|| Path::new(".")))?;
     info!(
         url = %auth.clone_url,
@@ -572,7 +597,7 @@ async fn ensure_repo_cache(cache: &Path, auth: &CloneAuthResponse) -> Result<()>
         repository_id = %auth.repository_id,
         "cloning repository into cache (shallow bare)"
     );
-    let status = git_command()
+    let clone = git_command()
         .args([
             "clone",
             "--bare",
@@ -584,8 +609,10 @@ async fn ensure_repo_cache(cache: &Path, auth: &CloneAuthResponse) -> Result<()>
             &clone_url,
             &cache.display().to_string(),
         ])
-        .status()
+        .status();
+    let status = tokio::time::timeout(Duration::from_secs(10 * 60), clone)
         .await
+        .context("git clone --bare timed out")?
         .context("git clone --bare")?;
     if !status.success() {
         bail!("git bare clone failed with {status}");
@@ -1151,6 +1178,7 @@ async fn run_with_real_acp(
     workspace: &Path,
     outbox_root: &Path,
     zene_bin: &Path,
+    github_for_acp: Option<&(PathBuf, Option<String>, Option<String>)>,
     shutdown: Arc<AtomicBool>,
 ) -> Result<RunOutcome> {
     let run_id = claimed.run.id;
@@ -1199,6 +1227,9 @@ async fn run_with_real_acp(
     inject_run_max_turns(&mut llm_env, claimed.run.max_turns);
     inject_run_context(&mut llm_env, run_id);
     inject_inference_gateway(&mut llm_env, cli.inference_gateway_url.as_deref());
+    if let Some((dir, token, repo)) = github_for_acp {
+        github_auth::inject_env(&mut llm_env, dir, token.as_deref(), repo.as_deref());
+    }
     info!(
         run_id = %run_id,
         max_turns = claimed.run.max_turns,
@@ -1403,6 +1434,34 @@ fn event_to_req(event: RuntimeNotification) -> WorkerEventRequest {
         payload: event.payload.to_value(),
         fence: None,
     }
+}
+
+fn github_token_refresh_loop(
+    client: reqwest::Client,
+    cli: Cli,
+    run_id: Uuid,
+    dir: PathBuf,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        loop {
+            tokio::time::sleep(Duration::from_secs(10 * 60)).await;
+            match fetch_clone_auth(&client, &cli, run_id).await {
+                Ok(auth) if !auth.mock => {
+                    if let Some(token) = auth.token.as_deref().filter(|t| !t.is_empty()) {
+                        if let Err(err) = github_auth::write_token_file(&dir, token).await {
+                            warn!(run_id = %run_id, error = %err, "failed to refresh GitHub token file");
+                        } else {
+                            info!(run_id = %run_id, "refreshed GitHub installation token");
+                        }
+                    }
+                }
+                Ok(_) => {}
+                Err(err) => {
+                    warn!(run_id = %run_id, error = %err, "clone-auth refresh failed");
+                }
+            }
+        }
+    })
 }
 
 fn heartbeat_loop(

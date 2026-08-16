@@ -18,7 +18,7 @@ import { AuthView } from "./AuthView";
 import { useCodePanelOpen } from "./CodePanel";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { NewAgent } from "./NewAgent";
-import { RunView } from "./RunView";
+import { SessionWorkbench } from "./workbench/SessionWorkbench";
 import { Settings, type SettingsSection } from "./Settings";
 import { Sidebar } from "./Sidebar";
 import { ToastProvider, useToast } from "./Toast";
@@ -42,7 +42,7 @@ function AppInner() {
   const [selectedRepoId, setSelectedRepoIdState] = useState("");
   const [runs, setRuns] = useState<Run[]>([]);
 
-  const [listGroup, setListGroupState] = useState<ListGroup>("date");
+  const [listGroup, setListGroupState] = useState<ListGroup>("project");
   const [listFilter, setListFilterState] = useState<ListFilter>("none");
   const [listRepoFilter, setListRepoFilterState] = useState("");
   const [listCompact, setListCompactState] = useState(true);
@@ -356,7 +356,7 @@ function AppInner() {
   useEffect(() => {
     if (bootstrapped.current) return;
     bootstrapped.current = true;
-    setListGroupState((readPref("zc.listGroup", "date") as ListGroup) || "date");
+    setListGroupState((readPref("zc.listGroup", "project") as ListGroup) || "project");
     setListFilterState((readPref("zc.listFilter", "none") as ListFilter) || "none");
     setListRepoFilterState(readPref("zc.listRepoFilter", ""));
     setListCompactState(readPref("zc.listCompact", "1") !== "0");
@@ -394,21 +394,23 @@ function AppInner() {
     })();
   }, [refreshGithub, refreshRepos, refreshRuns, toast]);
 
-  // Deep-link after OAuth redirect
+  // Global keyboard shortcuts
   useEffect(() => {
-    if (!ready) return;
-    if (new URLSearchParams(location.search).get("github") !== "connected") return;
-    history.replaceState({}, "", location.pathname);
-    if (window.opener && !window.opener.closed) {
-      // Parent may be on a different localhost port (Next :8787 vs API :8788).
-      window.opener.postMessage({ type: "github-connected" }, "*");
-      window.close();
-      return;
-    }
     if (!authed) return;
-    finishGithubConnect().catch(() => {});
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [ready, authed]);
+    const handleKeyDown = (e: KeyboardEvent) => {
+      const isMac = typeof navigator !== "undefined" && /Mac|iPod|iPhone|iPad/.test(navigator.platform);
+      const mod = isMac ? e.metaKey : e.ctrlKey;
+      if (mod && (e.key === "b" || e.key === "B")) {
+        e.preventDefault();
+        toggleCodePanel();
+      } else if (mod && (e.key === "n" || e.key === "N")) {
+        e.preventDefault();
+        showNewAgent();
+      }
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [authed, toggleCodePanel, showNewAgent]);
 
   if (!ready) return null;
 
@@ -518,7 +520,7 @@ function AppInner() {
             />
           )}
           {view === "run" && currentRunId && (
-            <RunView
+            <SessionWorkbench
               key={currentRunId}
               runId={currentRunId}
               repos={repos}
@@ -526,13 +528,16 @@ function AppInner() {
               onToggleCodePanel={toggleCodePanel}
               sidebarCollapsed={sidebarCollapsed}
               onOpenMenu={openSidebar}
-              onMeta={(title) => {
+              onMeta={(title, status) => {
                 setRunTitle(title);
-                if (currentRunId && title) {
-                  setRuns((prev) =>
-                    prev.map((r) => (r.id === currentRunId && r.title !== title ? { ...r, title } : r)),
-                  );
-                }
+                if (!currentRunId) return;
+                setRuns((prev) =>
+                  prev.map((r) =>
+                    r.id === currentRunId && (r.title !== title || (status && r.status !== status))
+                      ? { ...r, title, ...(status ? { status } : {}) }
+                      : r,
+                  ),
+                );
               }}
               onRename={(title) => (currentRunId ? renameRun(currentRunId, title) : undefined)}
               onRunsChanged={refreshRuns}

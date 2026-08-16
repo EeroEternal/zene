@@ -1,9 +1,8 @@
 "use client";
 
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api } from "@/lib/api";
 import {
-  IconArrowUp,
   IconBranch,
   IconCheck,
   IconChevronDown,
@@ -17,13 +16,11 @@ import {
   IconRefresh,
   IconRepo,
   IconSearch,
-  IconSettings,
   IconSkills,
 } from "@/lib/icons";
 import {
   DEFAULT_MODEL_ID,
   loadSelectedModel,
-  modelLabel,
   modelsForPicker,
   saveSelectedModel,
 } from "@/lib/models";
@@ -36,8 +33,10 @@ import type {
   Run,
   Skill,
 } from "@/lib/types";
+import { CREATE_COMPOSER_CHROME } from "@/lib/sessionPhase";
 import type { SettingsSection } from "./Settings";
 import { useToast } from "./Toast";
+import { Composer, type ComposerHandle } from "./workbench/composer/Composer";
 
 const SKILLS: Skill[] = [
   { id: "review", label: "Code review", insert: "/review " },
@@ -120,27 +119,21 @@ export function NewAgent(props: NewAgentProps) {
   const { repos, selectedRepoId, permissionMode, githubConnected, openProjectMenuSignal } = props;
   const toast = useToast();
   const shellRef = useRef<HTMLDivElement>(null);
-  const promptRef = useRef<HTMLTextAreaElement>(null);
+  const composerRef = useRef<ComposerHandle>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const modelTriggerRef = useRef<HTMLDivElement>(null);
-  const [modelMenuPos, setModelMenuPos] = useState<{
-    left: number;
-    bottom: number;
-    maxHeight: number;
-  } | null>(null);
 
   const [prompt, setPrompt] = useState("");
   const [error, setError] = useState("");
   const [starting, setStarting] = useState(false);
 
-  const [openMenu, setOpenMenu] = useState<"project" | "branch" | "attach" | "model" | null>(null);
+  const [openMenu, setOpenMenu] = useState<"project" | "branch" | "attach" | null>(null);
   const [attachPanel, setAttachPanel] = useState<"skills" | "mcp" | "permission" | "maxTurns" | null>(
     null,
   );
+  const [dismissPickerNonce, setDismissPickerNonce] = useState(0);
   const [maxTurns, setMaxTurns] = useState(100);
   const [projectQuery, setProjectQuery] = useState("");
   const [branchQuery, setBranchQuery] = useState("");
-  const [modelQuery, setModelQuery] = useState("");
   const [projectIndex, setProjectIndex] = useState(-1);
   const [branchIndex, setBranchIndex] = useState(-1);
   const [mcpQuery, setMcpQuery] = useState("");
@@ -209,19 +202,12 @@ export function NewAgent(props: NewAgentProps) {
     localStorage.setItem("zc.mcpServers", JSON.stringify(servers));
   }, []);
 
-  const selectModel = useCallback((id: string) => {
-    setSelectedModel(id);
-    saveSelectedModel(id);
-    setOpenMenu(null);
-    setModelQuery("");
-  }, []);
-
   const closeMenus = useCallback(() => {
     setOpenMenu(null);
     setAttachPanel(null);
     setProjectIndex(-1);
     setBranchIndex(-1);
-    setModelQuery("");
+    setDismissPickerNonce((n) => n + 1);
   }, []);
 
   useEffect(() => {
@@ -304,33 +290,22 @@ export function NewAgent(props: NewAgentProps) {
   }, [selectedRepo, branchesByRepoId, branchQuery]);
 
   const insertPromptText = useCallback((text: string) => {
-    const t = promptRef.current;
-    if (!t) return;
-    const start = t.selectionStart ?? t.value.length;
-    const end = t.selectionEnd ?? t.value.length;
-    const next = t.value.slice(0, start) + text + t.value.slice(end);
-    setPrompt(next);
-    requestAnimationFrame(() => {
-      const pos = start + text.length;
-      t.focus();
-      t.setSelectionRange(pos, pos);
-    });
+    composerRef.current?.insertText(text);
   }, []);
 
   const llmReady = Boolean(llmSettings?.hasApiKey && llmSettings?.baseUrl?.trim());
 
   const openLlmSettings = useCallback(() => {
     setOpenMenu(null);
-    setModelQuery("");
+    setAttachPanel(null);
     props.onOpenSettings("models");
   }, [props]);
 
   const startRun = useCallback(async () => {
     setError("");
     if (!llmReady) {
-      setOpenMenu("model");
+      composerRef.current?.openModelPicker();
       setAttachPanel(null);
-      setModelQuery("");
       return;
     }
     setStarting(true);
@@ -374,13 +349,6 @@ export function NewAgent(props: NewAgentProps) {
   const canStart =
     llmReady && Boolean(selectedRepoId) && Boolean(prompt.trim()) && !starting;
 
-  const autosize = useCallback(() => {
-    const t = promptRef.current;
-    if (!t) return;
-    t.style.height = "auto";
-    t.style.height = Math.min(t.scrollHeight, 200) + "px";
-  }, []);
-
   const chipClass = (open: boolean) =>
     `inline-flex h-7 items-center gap-[5px] rounded-md px-2 text-[13px] font-medium transition-colors disabled:opacity-45 ${
       open ? "bg-secondary text-ink" : "text-muted hover:bg-secondary hover:text-ink"
@@ -392,37 +360,6 @@ export function NewAgent(props: NewAgentProps) {
   }, [mcpServers, mcpQuery]);
 
   const pickerModels = useMemo(() => modelsForPicker(llmSettings), [llmSettings]);
-
-  const filteredModels = useMemo(() => {
-    const q = modelQuery.trim().toLowerCase();
-    return pickerModels.filter((m) => !q || m.toLowerCase().includes(q));
-  }, [pickerModels, modelQuery]);
-
-  useLayoutEffect(() => {
-    if (openMenu !== "model") {
-      setModelMenuPos(null);
-      return;
-    }
-    const update = () => {
-      const el = modelTriggerRef.current;
-      if (!el) return;
-      const rect = el.getBoundingClientRect();
-      const gap = 8;
-      const spaceAbove = Math.max(160, rect.top - gap - 8);
-      setModelMenuPos({
-        left: Math.min(rect.left, window.innerWidth - 296),
-        bottom: window.innerHeight - rect.top + gap,
-        maxHeight: Math.min(420, spaceAbove),
-      });
-    };
-    update();
-    window.addEventListener("resize", update);
-    window.addEventListener("scroll", update, true);
-    return () => {
-      window.removeEventListener("resize", update);
-      window.removeEventListener("scroll", update, true);
-    };
-  }, [openMenu]);
 
   return (
     <div className="grid h-full place-items-center overflow-auto bg-canvas-bg px-5 pb-12 pt-8">
@@ -623,32 +560,30 @@ export function NewAgent(props: NewAgentProps) {
           </div>
         )}
 
-        <div className="rounded-md bg-canvas p-3 pb-2.5 shadow-card focus-within:shadow-[0_0_0_2px_#EAF2FF]">
-          <textarea
-            ref={promptRef}
-            className="block max-h-[200px] min-h-[72px] w-full resize-none border-0 bg-transparent px-1 pb-2.5 pt-0.5 text-sm leading-normal text-ink outline-none"
-            placeholder="Describe the task. / for skills, @ for context"
-            aria-label="Task prompt"
-            value={prompt}
-            onChange={(e) => {
-              setPrompt(e.target.value);
-              autosize();
-            }}
-            onKeyDown={(e) => {
-              if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
-                e.preventDefault();
-                if (!llmReady) {
-                  setOpenMenu("model");
-                  setAttachPanel(null);
-                  setModelQuery("");
-                  return;
-                }
-                if (canStart) startRun();
-              }
-            }}
-          />
-          <div className="flex items-center justify-between gap-2">
-            <div className="flex min-w-0 items-center gap-1.5">
+        <Composer
+          ref={composerRef}
+          size="task"
+          value={prompt}
+          onChange={setPrompt}
+          onSubmit={() => void startRun()}
+          chrome={CREATE_COMPOSER_CHROME}
+          selectedModel={selectedModel}
+          onSelectModel={(m) => {
+            setSelectedModel(m);
+            saveSelectedModel(m);
+          }}
+          models={pickerModels}
+          modelReady={llmReady}
+          onManageModels={openLlmSettings}
+          submitDisabled={!canStart}
+          submitBusy={starting}
+          submitTitle={llmReady ? "Start agent" : "Set API key first"}
+          dismissPickerNonce={dismissPickerNonce}
+          onPickerOpen={() => {
+            setOpenMenu(null);
+            setAttachPanel(null);
+          }}
+          leading={
               <div className="relative">
                 <button
                   type="button"
@@ -664,6 +599,7 @@ export function NewAgent(props: NewAgentProps) {
                       setOpenMenu(null);
                       setAttachPanel(null);
                     } else {
+                      setDismissPickerNonce((n) => n + 1);
                       setOpenMenu("attach");
                       setAttachPanel(null);
                     }
@@ -892,126 +828,8 @@ export function NewAgent(props: NewAgentProps) {
                   }}
                 />
               </div>
-              <div className="relative" ref={modelTriggerRef}>
-                <button
-                  type="button"
-                  className={`inline-flex h-7 max-w-[220px] items-center gap-1 rounded-md px-2 text-[12.5px] font-medium hover:bg-secondary hover:text-ink ${
-                    llmReady ? "text-muted" : "text-ink"
-                  }`}
-                  title={llmReady ? "Model" : "Set API key to run agents"}
-                  aria-label="Model"
-                  aria-haspopup="menu"
-                  aria-expanded={openMenu === "model"}
-                  onClick={() => {
-                    if (openMenu === "model") {
-                      setOpenMenu(null);
-                      setModelQuery("");
-                    } else {
-                      setOpenMenu("model");
-                      setAttachPanel(null);
-                      setModelQuery("");
-                    }
-                  }}
-                >
-                  <span className="min-w-0 overflow-hidden text-ellipsis whitespace-nowrap">
-                    {llmReady ? modelLabel(selectedModel) : "Set API key"}
-                  </span>
-                  <IconChevronDown className="h-3 w-3 shrink-0" />
-                </button>
-                {openMenu === "model" && modelMenuPos && (
-                  <div
-                    className="fixed z-[45] flex w-[min(280px,calc(100vw-48px))] flex-col overflow-hidden rounded-md border border-line bg-canvas shadow-menu"
-                    style={{
-                      left: modelMenuPos.left,
-                      bottom: modelMenuPos.bottom,
-                      maxHeight: modelMenuPos.maxHeight,
-                    }}
-                    role="menu"
-                    aria-label="Models"
-                  >
-                    {!llmReady ? (
-                      <button
-                        type="button"
-                        className="flex w-full items-start gap-2.5 px-3 py-3 text-left hover:bg-secondary"
-                        onClick={openLlmSettings}
-                      >
-                        <IconSettings className="mt-0.5 h-3.5 w-3.5 shrink-0 text-ink" />
-                        <span className="min-w-0">
-                          <span className="block text-[13px] font-medium text-ink">
-                            Set API key &amp; models
-                          </span>
-                          <span className="mt-0.5 block text-[11.5px] leading-snug text-muted">
-                            Required before starting an agent
-                          </span>
-                        </span>
-                        <IconChevronRight className="mt-0.5 h-3.5 w-3.5 shrink-0 text-placeholder" />
-                      </button>
-                    ) : (
-                      <>
-                        <div className="flex shrink-0 items-center gap-2 border-b border-line px-3 py-2.5">
-                          <IconSearch className="h-3.5 w-3.5 shrink-0 text-placeholder" />
-                          <input
-                            className="min-w-0 flex-1 border-0 bg-transparent text-[13px] outline-none"
-                            type="search"
-                            placeholder="Search models"
-                            autoComplete="off"
-                            autoFocus
-                            value={modelQuery}
-                            onChange={(e) => setModelQuery(e.target.value)}
-                          />
-                        </div>
-                        <div className="min-h-0 flex-1 overflow-auto p-1.5">
-                          {!filteredModels.length ? (
-                            <p className="m-0 px-2 py-1.5 text-xs text-muted">No models yet</p>
-                          ) : (
-                            filteredModels.map((m) => (
-                              <button
-                                key={m}
-                                type="button"
-                                className="picker-item"
-                                onClick={() => selectModel(m)}
-                              >
-                                <span className="min-w-0 flex-1 overflow-hidden text-ellipsis whitespace-nowrap font-mono text-[12.5px]">
-                                  {m}
-                                </span>
-                                {m === selectedModel && (
-                                  <IconCheck className="h-3.5 w-3.5 shrink-0 text-ink" />
-                                )}
-                              </button>
-                            ))
-                          )}
-                        </div>
-                        <div className="shrink-0 border-t border-line p-1.5">
-                          <button
-                            type="button"
-                            className="picker-item"
-                            onClick={openLlmSettings}
-                          >
-                            <IconSettings className="h-3.5 w-3.5 shrink-0 text-muted" />
-                            <span className="min-w-0 flex-1 text-left text-[12.5px] text-ink">
-                              Manage API key &amp; models
-                            </span>
-                            <IconChevronRight className="h-3.5 w-3.5 shrink-0 text-placeholder" />
-                          </button>
-                        </div>
-                      </>
-                    )}
-                  </div>
-                )}
-              </div>
-            </div>
-            <button
-              type="button"
-              className="inline-flex h-8 w-8 items-center justify-center rounded-sm bg-primary text-white hover:bg-primary-hover disabled:opacity-35 disabled:hover:bg-primary"
-              title={llmReady ? "Start agent" : "Set API key first"}
-              aria-label="Start agent"
-              disabled={!canStart}
-              onClick={startRun}
-            >
-              <IconArrowUp className="h-4 w-4" />
-            </button>
-          </div>
-        </div>
+          }
+        />
         <div className="mt-2.5 text-xs text-danger">{error}</div>
       </div>
     </div>
