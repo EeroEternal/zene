@@ -46,6 +46,14 @@ export interface Repo {
   defaultBranch?: string;
 }
 
+/** Matches domain `CreateRepositoryRequest`. */
+export interface CreateRepositoryRequest {
+  owner: string;
+  name: string;
+  defaultBranch?: string;
+  cloneUrl?: string;
+}
+
 export interface Branch {
   name: string;
   default?: boolean;
@@ -90,6 +98,17 @@ export interface Run {
   updatedAt?: string;
   startedAt?: string;
   archivedAt?: string;
+}
+
+/** Matches domain `CreateRunRequest`. */
+export interface CreateRunRequest {
+  repositoryId: string;
+  prompt: string;
+  baseRef?: string;
+  model?: string;
+  permissionMode?: PermissionMode;
+  maxTurns?: number;
+  modeId?: string;
 }
 
 export interface RunMessage {

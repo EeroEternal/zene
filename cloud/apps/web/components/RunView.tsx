@@ -3,39 +3,28 @@
 import {
   useCallback,
   useEffect,
-  useLayoutEffect,
   useMemo,
   useRef,
   useState,
   type CSSProperties,
 } from "react";
-import { api } from "@/lib/api";
+import { runsApi } from "@/lib/cloud";
+import { useComposerText, useLlmSettings } from "@/lib/hooks";
 import {
   IconArrowUp,
-  IconCheck,
   IconChevronDown,
   IconChevronRight,
   IconLoader,
-  IconPlus,
   IconRefresh,
-  IconSearch,
   IconSkills,
   IconStop,
 } from "@/lib/icons";
 import { CodePanelToggle, SidebarPanelToggle } from "./PanelToggleButton";
-import {
-  DEFAULT_MODEL_ID,
-  loadSelectedModel,
-  modelLabel,
-  modelsForPicker,
-  saveSelectedModel,
-} from "@/lib/models";
 import { allowsDeny, allowsOnce, approvalCardBody, extraDecisions } from "@/lib/approval";
 import type {
   Approval,
   ApprovalDecision,
   GitCompare,
-  LlmSettingsView,
   MessageRole,
   PullRequest,
   Repo,
@@ -48,7 +37,8 @@ import { platformEventFromPayload } from "@/lib/platformEvent";
 import { timelineProductFromEvent, timelineToolOutput, type TimelineProduct } from "@/lib/runtimeEvent";
 import { CodePanel, useCodePanelWidth } from "./CodePanel";
 import { Markdown } from "./Markdown";
-import { repoLabel } from "./Sidebar";
+import { repoLabel } from "@/lib/listPrefs";
+import { Composer } from "./composer";
 import { StatusPill } from "./StatusPill";
 import { TurnActions } from "./TurnActions";
 import { useToast } from "./Toast";
@@ -922,24 +912,15 @@ export function RunView({
   onRunStarted,
 }: RunViewProps) {
   const toast = useToast();
+  const composer = useComposerText();
+  const llm = useLlmSettings();
   const { width: codeWidth, setWidth: setCodeWidth } = useCodePanelWidth();
   const [run, setRun] = useState<Run | null>(null);
   const [items, setItems] = useState<TimelineItem[]>([]);
   /** False until initial event history is applied in one shot. */
   const [historyReady, setHistoryReady] = useState(false);
-  const [followUp, setFollowUp] = useState("");
   const [sending, setSending] = useState(false);
   const [cancelling, setCancelling] = useState(false);
-  const [selectedModel, setSelectedModel] = useState(DEFAULT_MODEL_ID);
-  const [modelMenuOpen, setModelMenuOpen] = useState(false);
-  const [modelQuery, setModelQuery] = useState("");
-  const [llmSettings, setLlmSettings] = useState<LlmSettingsView | null>(null);
-  const modelTriggerRef = useRef<HTMLDivElement>(null);
-  const [modelMenuPos, setModelMenuPos] = useState<{
-    left: number;
-    bottom: number;
-    maxHeight: number;
-  } | null>(null);
   /** User-expanded activity groups (default collapsed — keeps layout stable while live). */
   const [openGroups, setOpenGroups] = useState<Set<string>>(() => new Set());
   /** Expanded consecutive tool/thought bunches inside an activity group. */
@@ -966,7 +947,6 @@ export function RunView({
   const lastKnownTitle = useRef<string | null>(null);
   const stickToBottom = useRef(true);
   const messagesRef = useRef<HTMLDivElement>(null);
-  const promptRef = useRef<HTMLTextAreaElement>(null);
   const composerRef = useRef<HTMLDivElement>(null);
 
   const scrollMessages = useCallback((force = false) => {
@@ -1306,7 +1286,7 @@ export function RunView({
 
   const refreshApprovals = useCallback(async () => {
     try {
-      const list = (await api<Approval[]>(`/api/v1/runs/${runId}/approvals`)) || [];
+      const list = (await runsApi.approvals(runId)) || [];
       for (const ap of list) {
         if (ap.status === "pending" && !seenApprovals.current.has(ap.id)) {
           seenApprovals.current.add(ap.id);
@@ -1341,7 +1321,7 @@ export function RunView({
 
     (async () => {
       try {
-        const r = await api<Run>(`/api/v1/runs/${runId}`);
+        const r = await runsApi.get(runId);
         if (stopped) return;
         if (r.title) lastKnownTitle.current = r.title;
         // Apply status/title from the run row first; event payloads may refine later.
@@ -1350,9 +1330,7 @@ export function RunView({
         const allEvents: RunEvent[] = [];
         let cursor = 0;
         for (;;) {
-          const page = await api<{ events?: RunEvent[]; nextSeq?: number }>(
-            `/api/v1/runs/${runId}/events?afterSeq=${cursor}`,
-          );
+          const page = await runsApi.events(runId, cursor);
           if (stopped) return;
           const batch = page.events || [];
           if (!batch.length) {
@@ -1387,7 +1365,7 @@ export function RunView({
         }
 
         // Fallback: if events missed the initial user prompt, seed from messages.
-        const msgs = (await api<RunMessage[]>(`/api/v1/runs/${runId}/messages`)) || [];
+        const msgs = (await runsApi.messages(runId)) || [];
         if (stopped) return;
         setRunMessages(msgs);
         if (!draft.items.some((it) => it.kind === "bubble" && it.role === "user")) {
@@ -1420,9 +1398,7 @@ export function RunView({
           try {
             // Drain pages so a catch-up burst does not look like chunked replay.
             for (;;) {
-              const live = await api<{ events?: RunEvent[]; nextSeq?: number }>(
-                `/api/v1/runs/${runId}/events?afterSeq=${afterSeq.current}`,
-              );
+              const live = await runsApi.events(runId, afterSeq.current);
               const batch = live.events || [];
               if (!batch.length) {
                 if (live.nextSeq != null) afterSeq.current = live.nextSeq;
@@ -1442,7 +1418,7 @@ export function RunView({
         timers.approval = setInterval(refreshApprovals, 2000);
         timers.status = setInterval(async () => {
           try {
-            const next = await api<Run>(`/api/v1/runs/${runId}`);
+            const next = await runsApi.get(runId);
             if (stopped) return;
             const titleChanged = Boolean(next.title && next.title !== lastKnownTitle.current);
             if (next.title) lastKnownTitle.current = next.title;
@@ -1521,58 +1497,6 @@ export function RunView({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [run?.title, run?.status]);
 
-  useEffect(() => {
-    setSelectedModel(loadSelectedModel());
-    api<LlmSettingsView>("/api/v1/settings/llm")
-      .then(setLlmSettings)
-      .catch(() => setLlmSettings(null));
-  }, []);
-
-  useEffect(() => {
-    if (!modelMenuOpen) return;
-    const onDoc = (e: MouseEvent) => {
-      if (composerRef.current && !composerRef.current.contains(e.target as Node)) {
-        setModelMenuOpen(false);
-        setModelQuery("");
-      }
-    };
-    document.addEventListener("mousedown", onDoc);
-    return () => document.removeEventListener("mousedown", onDoc);
-  }, [modelMenuOpen]);
-
-  useLayoutEffect(() => {
-    if (!modelMenuOpen) {
-      setModelMenuPos(null);
-      return;
-    }
-    const update = () => {
-      const el = modelTriggerRef.current;
-      if (!el) return;
-      const rect = el.getBoundingClientRect();
-      const gap = 8;
-      const spaceAbove = Math.max(160, rect.top - gap - 8);
-      setModelMenuPos({
-        left: Math.min(rect.left, window.innerWidth - 296),
-        bottom: window.innerHeight - rect.top + gap,
-        maxHeight: Math.min(420, spaceAbove),
-      });
-    };
-    update();
-    window.addEventListener("resize", update);
-    window.addEventListener("scroll", update, true);
-    return () => {
-      window.removeEventListener("resize", update);
-      window.removeEventListener("scroll", update, true);
-    };
-  }, [modelMenuOpen]);
-
-  const pickerModels = useMemo(() => modelsForPicker(llmSettings), [llmSettings]);
-  const filteredModels = useMemo(() => {
-    const q = modelQuery.trim().toLowerCase();
-    if (!q) return pickerModels;
-    return pickerModels.filter((m) => m.toLowerCase().includes(q));
-  }, [pickerModels, modelQuery]);
-
   const repoName = run ? repoLabel(repos, run.repositoryId) : "";
   const statusKey = (run?.status || "").toLowerCase();
   const isBusy = BUSY_STATUSES.has(statusKey);
@@ -1580,7 +1504,7 @@ export function RunView({
   const isSetup = SETUP_STATUSES.has(statusKey);
   const setupCopy = isSetup ? setupStatusCopy(statusKey, repoName) : null;
   const canRetry = RETRYABLE_STATUSES.has(statusKey);
-  const canSend = Boolean(followUp.trim()) && !sending && !sendBlocked && !canRetry;
+  const canSend = Boolean(composer.value.trim()) && !sending && !sendBlocked && !canRetry;
   const pushHeadKey = run?.headSha || gitCompare?.head || "";
   const showPushPrompt =
     historyReady &&
@@ -1600,66 +1524,53 @@ export function RunView({
     onRunsChanged();
   }, [runId, onRunsChanged]);
 
-  const autosize = useCallback(() => {
-    const el = promptRef.current;
-    if (!el) return;
-    el.style.height = "auto";
-    el.style.height = `${Math.min(128, Math.max(32, el.scrollHeight))}px`;
-  }, []);
-
   const sendFollowUp = useCallback(async () => {
-    const text = followUp.trim();
-    if (!text) return;
+    const body = composer.value.trim();
+    if (!body) return;
     setSending(true);
     try {
       setItems((prev) => sealOpenMeta(prev));
       hasAssistantTail.current = false;
       stickToBottom.current = true;
-      appendBubble("user", text);
+      appendBubble("user", body);
       scrollMessages(true);
-      setFollowUp("");
-      await api(`/api/v1/runs/${runId}/messages`, {
-        method: "POST",
-        body: JSON.stringify({ text, clientMessageId: crypto.randomUUID() }),
-      });
+      composer.clear();
+      await runsApi.postMessage(runId, body);
       setRun((prev) => (prev ? { ...prev, status: "running" } : prev));
     } catch (err) {
       toast(err instanceof Error ? err.message : String(err), "error");
     } finally {
       setSending(false);
     }
-  }, [followUp, runId, appendBubble, toast, sealOpenMeta, scrollMessages]);
+  }, [composer, runId, appendBubble, toast, sealOpenMeta, scrollMessages]);
 
   const retryRun = useCallback(async () => {
-    const text = followUp.trim();
+    const body = composer.value.trim();
     setRetrying(true);
     try {
-      if (text) {
+      if (body) {
         setItems((prev) => sealOpenMeta(prev));
         hasAssistantTail.current = false;
         stickToBottom.current = true;
-        appendBubble("user", text);
+        appendBubble("user", body);
         scrollMessages(true);
-        setFollowUp("");
+        composer.clear();
       }
-      const r = await api<Run>(`/api/v1/runs/${runId}/retry`, {
-        method: "POST",
-        body: JSON.stringify(text ? { text } : {}),
-      });
+      const r = await runsApi.retry(runId, body || undefined);
       setRun(r);
       onRunsChanged();
-      toast(text ? "Retrying with follow-up…" : "Retrying agent…", "ok");
+      toast(body ? "Retrying with follow-up…" : "Retrying agent…", "ok");
     } catch (err) {
       toast(err instanceof Error ? err.message : String(err), "error");
     } finally {
       setRetrying(false);
     }
-  }, [followUp, runId, appendBubble, toast, sealOpenMeta, scrollMessages, onRunsChanged]);
+  }, [composer, runId, appendBubble, toast, sealOpenMeta, scrollMessages, onRunsChanged]);
 
   const cancelRun = useCallback(async () => {
     setCancelling(true);
     try {
-      const r = await api<Run>(`/api/v1/runs/${runId}/cancel`, { method: "POST", body: "{}" });
+      const r = await runsApi.cancel(runId);
       setRun(r);
       onRunsChanged();
       toast("Run stopped", "ok");
@@ -1673,10 +1584,7 @@ export function RunView({
   const decideApproval = useCallback(
     async (itemId: number, approvalId: string, decision: ApprovalDecision) => {
       try {
-        await api(`/api/v1/runs/${runId}/approvals/${approvalId}/decide`, {
-          method: "POST",
-          body: JSON.stringify({ decision }),
-        });
+        await runsApi.decideApproval(runId, approvalId, decision);
         setItems((prev) =>
           prev.map((it) => (it.id === itemId && it.kind === "approval" ? { ...it, decision } : it)),
         );
@@ -1697,16 +1605,13 @@ export function RunView({
       setForkingTurn(turnIndex);
       try {
         const prompt = buildForkPrompt(turns, turnIndex);
-        const newRun = await api<Run>("/api/v1/runs", {
-          method: "POST",
-          body: JSON.stringify({
-            repositoryId: run.repositoryId,
-            prompt,
-            baseRef: run.baseRef,
-            model: run.model || selectedModel,
-            permissionMode: run.permissionMode || "default",
-            maxTurns: run.maxTurns ?? 100,
-          }),
+        const newRun = await runsApi.create({
+          repositoryId: run.repositoryId,
+          prompt,
+          baseRef: run.baseRef,
+          model: run.model || llm.selectedModel,
+          permissionMode: run.permissionMode || "default",
+          maxTurns: run.maxTurns ?? 100,
         });
         onRunStarted(newRun.id);
         onRunsChanged();
@@ -1717,7 +1622,7 @@ export function RunView({
         setForkingTurn(null);
       }
     },
-    [run, onRunStarted, items, runMessages, selectedModel, onRunsChanged, toast],
+    [run, onRunStarted, items, runMessages, llm.selectedModel, onRunsChanged, toast],
   );
 
   return (
@@ -2173,115 +2078,31 @@ export function RunView({
           ) : null}
           <div ref={composerRef} className="bg-canvas-bg px-4 pb-3 pt-1">
             <div className="mx-auto w-full max-w-[720px] px-3.5">
-              <div className="-mx-3.5 rounded-md bg-canvas px-3.5 pb-2 pt-2.5 shadow-card focus-within:shadow-[0_0_0_2px_#EAF2FF]">
-                <textarea
-                  ref={promptRef}
-                  className="block max-h-32 min-h-[32px] w-full resize-none border-0 bg-transparent px-0 pb-1 pt-0 text-[13px] leading-normal text-ink outline-none"
-                  rows={1}
-                  placeholder={
-                    sendBlocked
-                      ? "Agent is working…"
-                      : canRetry
-                        ? "Optional follow-up, then Retry…"
-                        : isSetup
-                          ? "Waiting for worker… you can still queue a follow-up"
-                          : "Send follow-up…"
-                  }
-                  aria-label="Follow-up"
-                  value={followUp}
-                  onChange={(e) => {
-                    setFollowUp(e.target.value);
-                    autosize();
-                  }}
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
-                      e.preventDefault();
-                      if (canSend) sendFollowUp();
-                    }
-                  }}
-                />
-                <div className="flex items-center justify-between gap-2">
-                  <div className="flex min-w-0 items-center gap-1">
-                    <button
-                      type="button"
-                      className="inline-flex h-6 w-6 items-center justify-center rounded-sm bg-chip text-muted hover:bg-line-strong hover:text-ink"
-                      title="Add"
-                      aria-label="Add"
-                      onClick={() => toast("Attachments coming soon", "ok")}
-                    >
-                      <IconPlus className="h-3.5 w-3.5" />
-                    </button>
-                    <div className="relative" ref={modelTriggerRef}>
-                      <button
-                        type="button"
-                        className="inline-flex h-6 max-w-[200px] items-center gap-1 rounded-md px-1.5 text-[12px] font-medium text-muted hover:bg-secondary hover:text-ink"
-                        title="Model"
-                        aria-label="Model"
-                        aria-haspopup="menu"
-                        aria-expanded={modelMenuOpen}
-                        onClick={() => {
-                          setModelMenuOpen((o) => !o);
-                          setModelQuery("");
-                        }}
-                      >
-                        <span className="min-w-0 overflow-hidden text-ellipsis whitespace-nowrap">
-                          {modelLabel(selectedModel)}
-                        </span>
-                        <IconChevronDown className="h-3 w-3 shrink-0" />
-                      </button>
-                      {modelMenuOpen && modelMenuPos && (
-                        <div
-                          className="fixed z-[45] flex w-[min(280px,calc(100vw-48px))] flex-col overflow-hidden rounded-md border border-line bg-canvas shadow-menu"
-                          style={{
-                            left: modelMenuPos.left,
-                            bottom: modelMenuPos.bottom,
-                            maxHeight: modelMenuPos.maxHeight,
-                          }}
-                          role="menu"
-                          aria-label="Models"
-                        >
-                          <div className="flex shrink-0 items-center gap-2 border-b border-line px-3 py-2">
-                            <IconSearch className="h-3.5 w-3.5 shrink-0 text-placeholder" />
-                            <input
-                              className="min-w-0 flex-1 border-0 bg-transparent text-[13px] outline-none"
-                              type="search"
-                              placeholder="Search models"
-                              autoComplete="off"
-                              autoFocus
-                              value={modelQuery}
-                              onChange={(e) => setModelQuery(e.target.value)}
-                            />
-                          </div>
-                          <div className="min-h-0 flex-1 overflow-auto p-1.5">
-                            {!filteredModels.length ? (
-                              <p className="m-0 px-2 py-1.5 text-xs text-muted">No models — configure in Settings</p>
-                            ) : (
-                              filteredModels.map((m) => (
-                                <button
-                                  key={m}
-                                  type="button"
-                                  className="picker-item"
-                                  onClick={() => {
-                                    setSelectedModel(m);
-                                    saveSelectedModel(m);
-                                    setModelMenuOpen(false);
-                                    setModelQuery("");
-                                  }}
-                                >
-                                  <span className="min-w-0 flex-1 overflow-hidden text-ellipsis whitespace-nowrap font-mono text-[12.5px]">
-                                    {m}
-                                  </span>
-                                  {m === selectedModel && (
-                                    <IconCheck className="h-3.5 w-3.5 shrink-0 text-ink" />
-                                  )}
-                                </button>
-                              ))
-                            )}
-                          </div>
-                        </div>
-                      )}
-                    </div>
-                  </div>
+              <Composer
+                compact
+                text={composer}
+                placeholder={
+                  sendBlocked
+                    ? "Agent is working…"
+                    : canRetry
+                      ? "Optional follow-up, then Retry…"
+                      : isSetup
+                        ? "Waiting for worker… you can still queue a follow-up"
+                        : "Send follow-up…"
+                }
+                ariaLabel="Follow-up"
+                canSubmit={canSend}
+                submitTitle="Send"
+                submitAriaLabel="Send"
+                onSubmit={() => {
+                  if (canSend) void sendFollowUp();
+                }}
+                llmReady={llm.ready}
+                llmSettings={llm.view}
+                selectedModel={llm.selectedModel}
+                onSelectModel={llm.selectModel}
+                attachSections={["files", "skills"]}
+                trailingSubmit={
                   <div className="flex shrink-0 items-center gap-1">
                     {isBusy && (
                       <button
@@ -2320,8 +2141,8 @@ export function RunView({
                       </button>
                     )}
                   </div>
-                </div>
-              </div>
+                }
+              />
             </div>
           </div>
         </div>

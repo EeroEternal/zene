@@ -1,12 +1,13 @@
 {
   "name": "zene-cloud-web",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "private": true,
   "scripts": {
     "dev": "NO_PROXY=127.0.0.1,localhost no_proxy=127.0.0.1,localhost next dev -p 8787",
     "build": "next build && rm -rf dist && cp -r out dist",
     "lint": "next lint",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test": "node --experimental-strip-types --test lib/*.test.ts lib/cloud/*.test.ts"
   },
   "dependencies": {
     "@fontsource/inter": "^5.3.0",

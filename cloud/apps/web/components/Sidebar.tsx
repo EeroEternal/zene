@@ -1,10 +1,8 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useMemo, useRef, useState } from "react";
 import {
   IconArchive,
-  IconCheck,
-  IconChevronRight,
   IconDots,
   IconFilter,
   IconHelp,
@@ -16,75 +14,19 @@ import {
   IconTrash,
 } from "@/lib/icons";
 import { statusLabel } from "@/lib/api";
+import {
+  filterLabelText,
+  filterRuns,
+  groupKeyForRun,
+  LIST_GROUPS,
+  LIST_STATUS_FILTERS,
+} from "@/lib/listPrefs";
 import type { ListFilter, ListGroup, Organization, Repo, Run, User, View } from "@/lib/types";
 import { SidebarPanelToggle } from "./PanelToggleButton";
 import { StatusDot } from "./StatusPill";
+import { Menu, MenuItem, MenuLabel, MenuSep, useDismiss } from "./ui";
 
-function runTimestamp(run: Run): number {
-  const raw = run.updatedAt || run.createdAt || run.startedAt || "";
-  const t = Date.parse(raw);
-  return Number.isFinite(t) ? t : 0;
-}
-
-export function filterRuns(
-  runs: Run[],
-  listFilter: ListFilter,
-  listRepoFilter: string,
-  selectedRepoId: string,
-): Run[] {
-  let out = [...runs];
-  if (listFilter === "running") {
-    out = out.filter((r) => /running|starting|queued|cloning|provisioning|waiting/i.test(r.status || ""));
-  } else if (listFilter === "completed") {
-    out = out.filter((r) => /completed|success/i.test(r.status || ""));
-  } else if (listFilter === "failed") {
-    out = out.filter((r) => /failed|timed_out|cancelled/i.test(r.status || ""));
-  } else if (listFilter === "project") {
-    const repoId = listRepoFilter || selectedRepoId;
-    if (repoId) out = out.filter((r) => r.repositoryId === repoId);
-  }
-  out.sort((a, b) => runTimestamp(b) - runTimestamp(a));
-  return out;
-}
-
-export function repoLabel(repos: Repo[], repoId?: string): string {
-  const r = repos.find((x) => x.id === repoId);
-  return r ? `${r.owner}/${r.name}` : repoId || "—";
-}
-
-export function filterLabelText(
-  listFilter: ListFilter,
-  listRepoFilter: string,
-  repos: Repo[],
-  selectedRepoId: string,
-): string {
-  if (listFilter === "project") {
-    if (listRepoFilter) {
-      const repo = repos.find((r) => r.id === listRepoFilter);
-      return repo ? `${repo.owner}/${repo.name}` : "Project";
-    }
-    const cur = repos.find((r) => r.id === selectedRepoId);
-    return cur ? `${cur.owner}/${cur.name}` : "Current project";
-  }
-  return { none: "None", running: "Running", completed: "Completed", failed: "Failed" }[listFilter] || "None";
-}
-
-function groupKeyForRun(run: Run, listGroup: ListGroup, repos: Repo[]): string {
-  if (listGroup === "project") return repoLabel(repos, run.repositoryId);
-  if (listGroup === "status") return run.status || "unknown";
-  if (listGroup === "date") {
-    const t = runTimestamp(run);
-    if (!t) return "Earlier";
-    const d = new Date(t);
-    const today = new Date();
-    const startToday = new Date(today.getFullYear(), today.getMonth(), today.getDate()).getTime();
-    const startYesterday = startToday - 86400000;
-    if (t >= startToday) return "Today";
-    if (t >= startYesterday) return "Yesterday";
-    return d.toLocaleDateString(undefined, { month: "short", day: "numeric" });
-  }
-  return "";
-}
+export { filterLabelText, filterRuns, repoLabel } from "@/lib/listPrefs";
 
 function userInitials(name: string): string {
   const parts = String(name || "U").trim().split(/\s+/).filter(Boolean);
@@ -169,31 +111,12 @@ export function Sidebar(props: SidebarProps) {
   const footRef = useRef<HTMLDivElement>(null);
   const ctxRef = useRef<HTMLDivElement>(null);
 
-  useEffect(() => {
-    const onDoc = (e: MouseEvent) => {
-      if (!footRef.current?.contains(e.target as Node)) {
-        setMenu(null);
-        setFilterOpen(false);
-      }
-      if (ctxRef.current && !ctxRef.current.contains(e.target as Node)) {
-        setCtx(null);
-      }
-    };
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") {
-        setMenu(null);
-        setFilterOpen(false);
-        setCtx(null);
-        setRenamingId(null);
-      }
-    };
-    document.addEventListener("click", onDoc);
-    document.addEventListener("keydown", onKey);
-    return () => {
-      document.removeEventListener("click", onDoc);
-      document.removeEventListener("keydown", onKey);
-    };
+  const closeMenus = useCallback(() => {
+    setMenu(null);
+    setFilterOpen(false);
   }, []);
+  useDismiss(menu !== null, closeMenus, footRef);
+  useDismiss(ctx !== null, () => setCtx(null), ctxRef);
 
   const filtered = useMemo(
     () => filterRuns(runs, listFilter, listRepoFilter, selectedRepoId),
@@ -219,12 +142,11 @@ export function Sidebar(props: SidebarProps) {
     return out;
   }, [filtered, listGroup, repos]);
 
-  const statusOptions: { id: ListFilter; label: string }[] = [
-    { id: "none", label: "None" },
-    { id: "running", label: "Running" },
-    { id: "completed", label: "Completed" },
-    { id: "failed", label: "Failed" },
-  ];
+  const openRunMenu = (runId: string, x: number, y: number) => {
+    setCtx({ runId, x, y });
+    setMenu(null);
+    setFilterOpen(false);
+  };
 
   return (
     <aside
@@ -283,9 +205,7 @@ export function Sidebar(props: SidebarProps) {
                       ].join(" ")}
                       onContextMenu={(e) => {
                         e.preventDefault();
-                        setCtx({ runId: run.id, x: e.clientX, y: e.clientY });
-                        setMenu(null);
-                        setFilterOpen(false);
+                        openRunMenu(run.id, e.clientX, e.clientY);
                       }}
                     >
                       {renaming ? (
@@ -312,19 +232,34 @@ export function Sidebar(props: SidebarProps) {
                           }}
                         />
                       ) : (
-                        <button
-                          type="button"
-                          className="flex min-w-0 flex-1 items-center gap-2 text-left"
-                          onClick={() => props.onOpenRun(run.id)}
-                        >
-                          <StatusDot status={run.status} />
-                          <span className="min-w-0 flex-1 overflow-hidden text-ellipsis whitespace-nowrap">
-                            {run.title || "Untitled"}
-                          </span>
-                          <span className="max-w-[72px] shrink-0 truncate text-[11px] text-muted">
-                            {statusLabel(run.status)}
-                          </span>
-                        </button>
+                        <>
+                          <button
+                            type="button"
+                            className="flex min-w-0 flex-1 items-center gap-2 text-left"
+                            onClick={() => props.onOpenRun(run.id)}
+                          >
+                            <StatusDot status={run.status} />
+                            <span className="min-w-0 flex-1 overflow-hidden text-ellipsis whitespace-nowrap">
+                              {run.title || "Untitled"}
+                            </span>
+                            <span className="max-w-[72px] shrink-0 truncate text-[11px] text-muted group-hover:hidden">
+                              {statusLabel(run.status)}
+                            </span>
+                          </button>
+                          <button
+                            type="button"
+                            className="hidden h-6 w-6 shrink-0 items-center justify-center rounded-sm text-muted hover:bg-active hover:text-ink group-hover:inline-flex"
+                            title="Task actions"
+                            aria-label="Task actions"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              const rect = e.currentTarget.getBoundingClientRect();
+                              openRunMenu(run.id, rect.left, rect.bottom + 4);
+                            }}
+                          >
+                            <IconDots className="h-3.5 w-3.5" />
+                          </button>
+                        </>
                       )}
                     </div>
                   );
@@ -338,52 +273,47 @@ export function Sidebar(props: SidebarProps) {
       {ctx && (
         <div
           ref={ctxRef}
-          className="menu-card fixed z-[60] min-w-[168px]"
+          className="fixed z-[60]"
           style={{
             left: Math.min(ctx.x, typeof window !== "undefined" ? window.innerWidth - 180 : ctx.x),
             top: Math.min(ctx.y, typeof window !== "undefined" ? window.innerHeight - 160 : ctx.y),
           }}
-          role="menu"
-          onClick={(e) => e.stopPropagation()}
         >
-          <button
-            type="button"
-            className="menu-item"
-            onClick={() => {
-              const run = runs.find((r) => r.id === ctx.runId);
-              setRenameDraft(run?.title || "");
-              setRenamingId(ctx.runId);
-              setCtx(null);
-            }}
-          >
-            <IconPencil className="h-3.5 w-3.5 shrink-0 text-muted" />
-            <span className="min-w-0 flex-1">Rename</span>
-          </button>
-          <button
-            type="button"
-            className="menu-item"
-            onClick={() => {
-              const id = ctx.runId;
-              setCtx(null);
-              void props.onArchiveRun(id);
-            }}
-          >
-            <IconArchive className="h-3.5 w-3.5 shrink-0 text-muted" />
-            <span className="min-w-0 flex-1">Archive</span>
-          </button>
-          <div className="menu-sep" />
-          <button
-            type="button"
-            className="menu-item text-danger"
-            onClick={() => {
-              const id = ctx.runId;
-              setCtx(null);
-              void props.onDeleteRun(id);
-            }}
-          >
-            <IconTrash className="h-3.5 w-3.5 shrink-0" />
-            <span className="min-w-0 flex-1">Delete</span>
-          </button>
+          <Menu className="min-w-[168px] p-1.5">
+            <MenuItem
+              icon={IconPencil}
+              onClick={() => {
+                const run = runs.find((r) => r.id === ctx.runId);
+                setRenameDraft(run?.title || "");
+                setRenamingId(ctx.runId);
+                setCtx(null);
+              }}
+            >
+              Rename
+            </MenuItem>
+            <MenuItem
+              icon={IconArchive}
+              onClick={() => {
+                const id = ctx.runId;
+                setCtx(null);
+                void props.onArchiveRun(id);
+              }}
+            >
+              Archive
+            </MenuItem>
+            <MenuSep />
+            <MenuItem
+              icon={IconTrash}
+              danger
+              onClick={() => {
+                const id = ctx.runId;
+                setCtx(null);
+                void props.onDeleteRun(id);
+              }}
+            >
+              Delete
+            </MenuItem>
+          </Menu>
         </div>
       )}
       <div className="px-2 pb-1">
@@ -454,129 +384,109 @@ export function Sidebar(props: SidebarProps) {
         </div>
 
         {menu === "account" && (
-          <div className="menu-card absolute bottom-[calc(100%+6px)] left-2 right-2 z-50" role="menu" aria-label="Account">
+          <Menu className="absolute bottom-[calc(100%+6px)] left-2 right-2 z-50 p-1.5" label="Account">
             <div className="px-2.5 pb-2 pt-2.5">
               <div className="text-sm font-semibold leading-tight text-ink">{name}</div>
               <div className="mt-0.5 overflow-hidden text-ellipsis whitespace-nowrap text-xs text-muted">
                 {user?.email || "—"}
               </div>
             </div>
-            <div className="menu-sep" />
-            <button
-              type="button"
-              className="menu-item"
+            <MenuSep />
+            <MenuItem
+              icon={IconSettings}
               onClick={() => {
                 setMenu(null);
                 props.onSettings();
               }}
             >
-              <IconSettings className="h-4 w-4 shrink-0 text-muted" />
-              <span className="min-w-0 flex-1">Settings</span>
-            </button>
-            <button
-              type="button"
-              className="menu-item"
+              Settings
+            </MenuItem>
+            <MenuItem
+              icon={IconHelp}
+              submenu
               onClick={() => {
                 setMenu(null);
                 window.open("https://github.com/ParaTensor/zene", "_blank", "noopener");
               }}
             >
-              <IconHelp className="h-4 w-4 shrink-0 text-muted" />
-              <span className="min-w-0 flex-1">Help</span>
-              <IconChevronRight className="h-3.5 w-3.5 shrink-0 text-muted" />
-            </button>
-            <div className="menu-sep" />
-            <button
-              type="button"
-              className="menu-item"
+              Help
+            </MenuItem>
+            <MenuSep />
+            <MenuItem
+              icon={IconLogout}
               onClick={() => {
                 setMenu(null);
                 props.onLogout();
               }}
             >
-              <IconLogout className="h-4 w-4 shrink-0 text-muted" />
-              <span className="min-w-0 flex-1">Log Out</span>
-            </button>
-          </div>
+              Log Out
+            </MenuItem>
+          </Menu>
         )}
 
         {menu === "list" && (
-          <div
-            className="menu-card absolute bottom-[calc(100%+6px)] left-2 right-2 z-50 !overflow-visible"
-            role="menu"
-            aria-label="Group and filter"
+          <Menu
+            className="absolute bottom-[calc(100%+6px)] left-2 right-2 z-50 !overflow-visible p-1.5"
+            label="Group and filter"
           >
-            <div className="menu-label">Group</div>
-            {(["project", "date", "status", "none"] as ListGroup[]).map((g) => (
-              <button key={g} type="button" className="menu-item" onClick={() => props.onSetListGroup(g)}>
-                <span className="min-w-0 flex-1 capitalize">{g === "none" ? "None" : g}</span>
-                {listGroup === g && <IconCheck className="h-3.5 w-3.5 shrink-0 text-ink" />}
-              </button>
+            <MenuLabel>Group</MenuLabel>
+            {LIST_GROUPS.map((g) => (
+              <MenuItem key={g.id} checked={listGroup === g.id} onClick={() => props.onSetListGroup(g.id)}>
+                {g.label}
+              </MenuItem>
             ))}
-            <div className="menu-sep" />
-            <button type="button" className="menu-item" onClick={() => setFilterOpen((v) => !v)}>
-              <span className="min-w-0 flex-1">Filter</span>
-              <span className="text-xs text-muted">{filterLabel}</span>
-              <IconChevronRight className="h-3.5 w-3.5 shrink-0 text-muted" />
-            </button>
+            <MenuSep />
+            <MenuItem hint={filterLabel} submenu onClick={() => setFilterOpen((v) => !v)}>
+              Filter
+            </MenuItem>
             {filterOpen && (
-              <div
-                className="menu-card absolute bottom-0 left-[calc(100%+6px)] z-[55] max-h-[280px] min-w-[180px] max-w-[240px] overflow-auto"
-                role="menu"
-                aria-label="Filter"
+              <Menu
+                className="absolute bottom-0 left-[calc(100%+6px)] z-[55] max-h-[280px] min-w-[180px] max-w-[240px] overflow-auto p-1.5"
+                label="Filter"
               >
-                <div className="menu-label">Status</div>
-                {statusOptions.map((opt) => (
-                  <button
+                <MenuLabel>Status</MenuLabel>
+                {LIST_STATUS_FILTERS.map((opt) => (
+                  <MenuItem
                     key={opt.id}
-                    type="button"
-                    className="menu-item"
+                    checked={listFilter === opt.id}
                     onClick={() => {
                       props.onSetListFilter(opt.id);
                       setFilterOpen(false);
                     }}
                   >
-                    <span className="min-w-0 flex-1">{opt.label}</span>
-                    {listFilter === opt.id && <IconCheck className="h-3.5 w-3.5 shrink-0 text-ink" />}
-                  </button>
+                    {opt.label}
+                  </MenuItem>
                 ))}
-                <div className="menu-sep" />
-                <div className="menu-label">Project</div>
-                <button
-                  type="button"
-                  className="menu-item"
+                <MenuSep />
+                <MenuLabel>Project</MenuLabel>
+                <MenuItem
+                  checked={listFilter === "project" && !listRepoFilter}
                   onClick={() => {
                     props.onSetListFilter("project", "");
                     setFilterOpen(false);
                   }}
                 >
-                  <span className="min-w-0 flex-1">Current project</span>
-                  {listFilter === "project" && !listRepoFilter && <IconCheck className="h-3.5 w-3.5 shrink-0 text-ink" />}
-                </button>
+                  Current project
+                </MenuItem>
                 {repos.map((repo) => (
-                  <button
+                  <MenuItem
                     key={repo.id}
-                    type="button"
-                    className="menu-item"
+                    checked={listFilter === "project" && listRepoFilter === repo.id}
                     onClick={() => {
                       props.onSetListFilter("project", repo.id);
                       setFilterOpen(false);
                     }}
                   >
-                    <span className="min-w-0 flex-1">{`${repo.owner}/${repo.name}`}</span>
-                    {listFilter === "project" && listRepoFilter === repo.id && (
-                      <IconCheck className="h-3.5 w-3.5 shrink-0 text-ink" />
-                    )}
-                  </button>
+                    {`${repo.owner}/${repo.name}`}
+                  </MenuItem>
                 ))}
-              </div>
+              </Menu>
             )}
-            <div className="menu-sep" />
-            <button type="button" className="menu-item" onClick={() => props.onSetListCompact(!listCompact)}>
-              <span className="min-w-0 flex-1">Compact</span>
-              {listCompact && <IconCheck className="h-3.5 w-3.5 shrink-0 text-ink" />}
-            </button>
-          </div>
+            <MenuSep />
+            <MenuItem checked={listCompact} onClick={() => props.onSetListCompact(!listCompact)}>
+              Compact
+            </MenuItem>
+          </Menu>
         )}
       </div>
     </aside>

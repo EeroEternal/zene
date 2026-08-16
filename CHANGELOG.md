@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+## v0.1.12 (2026-08-15)
+
+### Added
+- Cloud Console named capabilities: `import { … } from "@/cap/<id>"`, `./cloud/scripts/use-capability.sh`, and `./cloud/scripts/new-feature.sh` for a compiling UI+API slice.
+- Shared Composer, typed `lib/cloud` clients, and API feature modules for LLM, repositories, and GitHub.
+
+### Changed
+- New Agent / Run follow-up pickers live in `components/ui` and `components/pickers`; AGENTS.md requires `@/cap/<id>` on Console generation.
+
 ## v0.1.11 (2026-08-11)
 
 ### Added
