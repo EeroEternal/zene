@@ -15,7 +15,7 @@ TOKEN=dev-worker-token
 lsof -tiTCP:18788 -sTCP:LISTEN 2>/dev/null | xargs kill 2>/dev/null || true
 sleep 0.3
 
-export ZENE_CLOUD_GITHUB_MODE=mock
+export ZENE_CLOUD_GITHUB_MODE=live
 "$ROOT/target/debug/zene-cloud-api" \
   --bind 127.0.0.1:18788 \
   --database-url "sqlite:$TMP/db.sqlite" \

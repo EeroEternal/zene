@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { api } from "@/lib/api";
+import { authApi } from "@/lib/cloud";
 import { useToast } from "./Toast";
 
 function isValidEmail(value: string): boolean {
@@ -27,10 +27,7 @@ export function AuthView() {
     }
     setBusy(true);
     try {
-      const res = await api<{ ok: boolean; loginUrl?: string }>("/api/v1/auth/email", {
-        method: "POST",
-        body: JSON.stringify({ email: value }),
-      });
+      const res = await authApi.email(value);
       setSentTo(value);
       setLoginUrl(res.loginUrl || null);
     } catch (err) {

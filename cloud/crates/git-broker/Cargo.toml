@@ -19,4 +19,5 @@ zene-cloud-domain.workspace = true
 zene-cloud-github.workspace = true
 
 [dev-dependencies]
+axum = { workspace = true }
 tokio = { workspace = true }

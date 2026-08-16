@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { api } from "@/lib/api";
+import { runsApi } from "@/lib/cloud";
 import type { GitCompare, GitStatusFile } from "@/lib/types";
 import {
   IconChevronDown,
@@ -47,9 +47,7 @@ function FileDiffBlock({
     setLoading(true);
     setError("");
     try {
-      const data = await api<{ diff?: string }>(
-        `/api/v1/runs/${runId}/git/compare/diff?path=${encodeURIComponent(file.path)}`,
-      );
+      const data = await runsApi.gitCompareDiff(runId, file.path);
       setDiff((data?.diff || "").trim());
       setLoaded(true);
     } catch (err) {
@@ -149,7 +147,7 @@ export function ChangesPanel({
 
   const loadCompare = useCallback(async () => {
     try {
-      const data = await api<GitCompare>(`/api/v1/runs/${runId}/git/compare`);
+      const data = await runsApi.gitCompare(runId);
       setCompare(data);
       setError("");
       setOpenMap((prev) => {

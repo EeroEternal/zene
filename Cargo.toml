@@ -23,7 +23,7 @@ members = [
 resolver = "2"
 
 [workspace.package]
-version = "0.1.11"
+version = "0.1.12"
 edition = "2021"
 license = "MIT"
 authors = ["Zene Contributors"]
@@ -52,19 +52,19 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 uuid = { version = "1", features = ["v4", "serde"] }
 walkdir = "2"
-zene-config = { version = "0.1.11", path = "crates/config" }
-zene-context = { version = "0.1.11", path = "crates/context" }
+zene-config = { version = "0.1.12", path = "crates/config" }
+zene-context = { version = "0.1.12", path = "crates/context" }
 zene-core = { path = "crates/core" }
-zene-llm = { version = "0.1.11", path = "crates/llm" }
+zene-llm = { version = "0.1.12", path = "crates/llm" }
 zene-sandbox = { path = "crates/sandbox" }
-zene-session = { version = "0.1.11", path = "crates/session" }
+zene-session = { version = "0.1.12", path = "crates/session" }
 zene-tools = { path = "crates/tools" }
 zene-mcp = { path = "crates/mcp" }
 zene-model-executor = { path = "crates/model-executor" }
 zene-runtime = { path = "crates/runtime" }
 zene-agent-runtime = { path = "crates/agent-runtime" }
 zene-hooks = { path = "crates/hooks" }
-zene-permission = { version = "0.1.11", path = "crates/permission" }
+zene-permission = { version = "0.1.12", path = "crates/permission" }
 zene-tool-runtime = { path = "crates/tool-runtime" }
 zene-turn = { path = "crates/turn" }
 zene-workspace = { path = "crates/workspace" }

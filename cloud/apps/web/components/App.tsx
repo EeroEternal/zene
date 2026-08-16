@@ -1,7 +1,8 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { api, loadToken, setToken } from "@/lib/api";
+import { loadToken, setToken } from "@/lib/api";
+import { githubApi, meApi, repositoriesApi, runsApi } from "@/lib/cloud";
 import { removeSessionUi } from "@/lib/sessionUi";
 import type {
   GithubStatus,
@@ -61,8 +62,7 @@ function AppInner() {
   const githubConnected = useMemo(() => {
     if (github.connected) return true;
     const installations = github.installations || [];
-    if (github.mode === "mock") return installations.length > 0 || !!github.account;
-    return installations.some((i) => i.accountLogin && i.accountLogin !== "mock-org");
+    return installations.length > 0 || !!github.account;
   }, [github]);
 
   const githubDisplayLogin = useMemo(() => {
@@ -70,7 +70,6 @@ function AppInner() {
     return (
       github.displayLogin ||
       github.account?.login ||
-      installations.find((i) => i.accountLogin && i.accountLogin !== "mock-org")?.accountLogin ||
       installations[0]?.accountLogin ||
       null
     );
@@ -111,7 +110,7 @@ function AppInner() {
   }, [setSidebarCollapsed]);
 
   const refreshRepos = useCallback(async () => {
-    const list = (await api<Repo[]>("/api/v1/repositories")) || [];
+    const list = (await repositoriesApi.list()) || [];
     setRepos(list);
     setSelectedRepoIdState((prev) => {
       if (list.length && (!prev || !list.some((r) => r.id === prev))) {
@@ -129,7 +128,7 @@ function AppInner() {
 
   const refreshRuns = useCallback(async () => {
     try {
-      setRuns((await api<Run[]>("/api/v1/runs")) || []);
+      setRuns((await runsApi.list()) || []);
     } catch {
       /* keep previous list */
     }
@@ -138,13 +137,10 @@ function AppInner() {
   const syncGithubRepos = useCallback(
     async ({ silent = false } = {}) => {
       try {
-        const res = await api<{ repositories?: Repo[] }>("/api/v1/github/sync", {
-          method: "POST",
-          body: "{}",
-        });
+        const res = await githubApi.sync();
         if (res.repositories) setRepos(res.repositories);
         const list = await refreshRepos();
-        const st = await api<GithubStatus>("/api/v1/github/status");
+        const st = await githubApi.status();
         setGithub(st);
         if (!silent) toast(`Synced ${list.length} repositories`, "ok");
       } catch (err) {
@@ -157,16 +153,14 @@ function AppInner() {
 
   const refreshGithub = useCallback(async () => {
     try {
-      const st = await api<GithubStatus>("/api/v1/github/status");
+      const st = await githubApi.status();
       setGithub(st);
       const installations = st.installations || [];
-      const hasLiveInstall =
-        !!st.connected ||
-        installations.some((i) => i.accountLogin && i.accountLogin !== "mock-org");
+      const hasInstall = !!st.connected || installations.length > 0;
       // Connected but empty picker: load DB list, then sync from GitHub if still empty.
-      if (st.mode === "live" && hasLiveInstall) {
+      if (hasInstall) {
         const list = await refreshRepos().catch(() => [] as Repo[]);
-        if (!list.some((r) => r.owner && r.owner !== "mock-org")) {
+        if (!list.length) {
           await syncGithubRepos({ silent: true }).catch(() => {});
         }
       }
@@ -180,9 +174,7 @@ function AppInner() {
   const finishGithubConnect = useCallback(async () => {
     const st = await refreshGithub();
     const installations = st?.installations || [];
-    const connected =
-      !!st?.connected ||
-      installations.some((i) => i.accountLogin && i.accountLogin !== "mock-org");
+    const connected = !!st?.connected || installations.length > 0;
     if (!connected) {
       toast(
         "GitHub connection did not complete. Re-open Connect GitHub and finish the App install.",
@@ -198,7 +190,7 @@ function AppInner() {
     const login =
       st?.displayLogin ||
       st?.account?.login ||
-      installations.find((i) => i.accountLogin && i.accountLogin !== "mock-org")?.accountLogin;
+      installations[0]?.accountLogin;
     toast(`GitHub connected${login ? ` · @${login}` : ""}`, "ok");
     if (view !== "settings") setOpenProjectMenuSignal((n) => n + 1);
   }, [refreshGithub, refreshRepos, syncGithubRepos, toast, view]);
@@ -240,19 +232,7 @@ function AppInner() {
 
   const connectGithub = useCallback(async (): Promise<string> => {
     try {
-      if (github.mode === "mock") {
-        const res = await api<{ account?: { login?: string }; repositories?: Repo[] }>(
-          "/api/v1/github/mock/connect",
-          { method: "POST", body: "{}" },
-        );
-        if (res.repositories) setRepos(res.repositories);
-        toast(`Connected as @${res.account?.login || "github"} (mock)`, "ok");
-        await refreshGithub();
-        await refreshRepos();
-        if (view !== "settings") setOpenProjectMenuSignal((n) => n + 1);
-        return "";
-      }
-      const start = await api<{ installUrl?: string; hint?: string }>("/api/v1/github/connect/start");
+      const start = await githubApi.connectStart();
       if (start.installUrl) {
         openGithubConnectPopup(start.installUrl, finishGithubConnect);
         return "";
@@ -263,7 +243,7 @@ function AppInner() {
       toast(msg, "error");
       return msg;
     }
-  }, [github.mode, refreshGithub, refreshRepos, toast, view, openGithubConnectPopup, finishGithubConnect]);
+  }, [toast, openGithubConnectPopup, finishGithubConnect]);
 
   const showNewAgent = useCallback(() => {
     setCurrentRunId(null);
@@ -297,10 +277,7 @@ function AppInner() {
   const renameRun = useCallback(
     async (runId: string, title: string) => {
       try {
-        const updated = await api<Run>(`/api/v1/runs/${runId}`, {
-          method: "PATCH",
-          body: JSON.stringify({ title }),
-        });
+        const updated = await runsApi.update(runId, { title });
         setRuns((prev) => prev.map((r) => (r.id === runId ? { ...r, ...updated } : r)));
         if (currentRunId === runId) setRunTitle(updated.title || title);
         toast("Renamed", "ok");
@@ -314,10 +291,7 @@ function AppInner() {
   const archiveRun = useCallback(
     async (runId: string) => {
       try {
-        await api(`/api/v1/runs/${runId}`, {
-          method: "PATCH",
-          body: JSON.stringify({ archived: true }),
-        });
+        await runsApi.update(runId, { archived: true });
         setRuns((prev) => prev.filter((r) => r.id !== runId));
         if (currentRunId === runId) showNewAgent();
         toast("Archived", "ok");
@@ -331,7 +305,7 @@ function AppInner() {
   const deleteRun = useCallback(
     async (runId: string) => {
       try {
-        await api(`/api/v1/runs/${runId}`, { method: "DELETE" });
+        await runsApi.remove(runId);
         removeSessionUi(runId);
         setRuns((prev) => prev.filter((r) => r.id !== runId));
         if (currentRunId === runId) showNewAgent();
@@ -381,7 +355,7 @@ function AppInner() {
         return;
       }
       try {
-        const me = await api<{ user: User; organization: Organization }>("/api/v1/me");
+        const me = await meApi.get();
         setUser(me.user);
         setOrg(me.organization);
         setAuthed(true);

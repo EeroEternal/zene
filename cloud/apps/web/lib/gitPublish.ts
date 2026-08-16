@@ -1,4 +1,5 @@
 import { api } from "@/lib/api";
+import { runsApi } from "@/lib/cloud";
 import { buildDefaultPrBody } from "@/lib/prBody";
 import type { GitCompare, PullRequest } from "@/lib/types";
 
@@ -37,7 +38,7 @@ export interface PublishResult {
 
 export async function fetchGitCompare(runId: string): Promise<GitCompare | null> {
   try {
-    return await api<GitCompare>(`/api/v1/runs/${runId}/git/compare`);
+    return await runsApi.gitCompare(runId);
   } catch {
     return null;
   }
@@ -45,32 +46,26 @@ export async function fetchGitCompare(runId: string): Promise<GitCompare | null>
 
 export async function fetchRunPullRequests(runId: string): Promise<PullRequest[]> {
   try {
-    return (await api<PullRequest[]>(`/api/v1/runs/${runId}/pull-requests`)) || [];
+    return (await runsApi.pullRequests(runId)) || [];
   } catch {
     return [];
   }
 }
 
 export async function pushRunBranch(runId: string): Promise<PushResult> {
-  return api<PushResult>(`/api/v1/runs/${runId}/git/push`, {
-    method: "POST",
-    body: "{}",
-  });
+  return runsApi.push(runId);
 }
 
 export async function createRunPullRequest(
   runId: string,
   opts: PublishOptions,
 ): Promise<PullRequest> {
-  return api<PullRequest>(`/api/v1/runs/${runId}/pull-requests`, {
-    method: "POST",
-    body: JSON.stringify({
-      title: opts.title.trim(),
-      body: opts.body?.trim() || undefined,
-      draft: opts.draft ?? true,
-      baseRef: opts.baseRef?.trim() || undefined,
-      headRef: opts.headBranch?.trim() || undefined,
-    }),
+  return runsApi.createPullRequest(runId, {
+    title: opts.title.trim(),
+    body: opts.body?.trim() || undefined,
+    draft: opts.draft ?? true,
+    baseRef: opts.baseRef?.trim() || undefined,
+    headRef: opts.headBranch?.trim() || undefined,
   });
 }
 

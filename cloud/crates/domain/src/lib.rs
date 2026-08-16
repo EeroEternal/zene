@@ -1304,7 +1304,7 @@ pub struct CloneAuthResponse {
     pub token: Option<String>,
     pub base_ref: String,
     pub head_branch: String,
-    /// When true the worker should `git init` a local sample workspace instead of cloning.
+    #[serde(default)]
     pub mock: bool,
 }
 
@@ -1906,6 +1906,7 @@ pub struct UpsertInstallationRequest {
 #[serde(rename_all = "camelCase")]
 pub struct GithubProviderConfig {
     pub organization_id: Id,
+    #[serde(default = "default_github_mode")]
     pub mode: GithubMode,
     pub client_id: Option<String>,
     pub client_secret: Option<String>,
@@ -1913,6 +1914,10 @@ pub struct GithubProviderConfig {
     pub app_private_key: Option<String>,
     pub app_slug: Option<String>,
     pub updated_at: DateTime<Utc>,
+}
+
+fn default_github_mode() -> GithubMode {
+    GithubMode::Live
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

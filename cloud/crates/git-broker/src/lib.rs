@@ -1,15 +1,12 @@
 //! Git Broker: short-lived clone credentials, bundle accept/push, draft PRs.
 //!
-//! Mock mode (`ZENE_CLOUD_GITHUB_MODE=mock`) never talks to GitHub and
-//! records operations in SQLite with fake SHAs/URLs. Live mode uses installation
-//! tokens and a temporary git workdir for push.
+//! Uses GitHub App installation tokens and a temporary git workdir for push.
 
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 
 use anyhow::{bail, Context, Result};
 use chrono::{Duration, Utc};
-use sha2::{Digest, Sha256};
 use tokio::process::Command;
 use uuid::Uuid;
 use zene_cloud_db::Db;
@@ -37,10 +34,6 @@ impl GitBroker {
         Ok(Self::new(db, github))
     }
 
-    pub fn mock(db: Db) -> Self {
-        Self::new(db, GithubClient::mock())
-    }
-
     pub fn mode(&self) -> GithubMode {
         self.mode
     }
@@ -58,19 +51,13 @@ impl GitBroker {
             .context("repository not found")?;
 
         let expires_at = Utc::now() + Duration::minutes(30);
-        let (token, mode) = if self.mode == GithubMode::Mock || self.github.is_mock() {
-            (
-                format!("mock_clone_{}", &run.id.to_string()[..8]),
-                GithubMode::Mock,
-            )
-        } else {
-            let installation_id = repo
-                .installation_id
-                .as_deref()
-                .context("repository has no GitHub installation_id")?;
-            let tok = self.github.installation_token(installation_id).await?;
-            (tok.token, GithubMode::Live)
-        };
+        let installation_id = repo
+            .installation_id
+            .as_deref()
+            .context("repository has no GitHub installation_id")?;
+        let tok = self.github.installation_token(installation_id).await?;
+        let token = tok.token;
+        let mode = GithubMode::Live;
 
         self.db
             .append_audit(
@@ -144,13 +131,7 @@ impl GitBroker {
             }
         }
 
-        let result = if self.mode == GithubMode::Mock || self.github.is_mock() {
-            self.mock_accept_bundle(run, &repo.clone_url, bundle, expected_head)
-                .await
-        } else {
-            self.live_accept_bundle(run, &repo, bundle, expected_head)
-                .await
-        };
+        let result = self.live_accept_bundle(run, &repo, bundle, expected_head).await;
 
         match result {
             Ok((head_sha, push_url)) => {
@@ -243,13 +224,13 @@ impl GitBroker {
 
         let installation_id = repo
             .installation_id
-            .clone()
-            .unwrap_or_else(|| "mock-install".into());
+            .as_deref()
+            .context("repository has no GitHub installation_id")?;
 
         let remote = self
             .github
             .create_pull_request(
-                &installation_id,
+                installation_id,
                 CreatePullRequestParams {
                     owner: repo.owner.clone(),
                     repo: repo.name.clone(),
@@ -338,19 +319,14 @@ impl GitBroker {
             .provider_number
             .context("pull request has no provider number")?;
 
-        let remote = if self.mode == GithubMode::Mock || self.github.is_mock() {
-            self.github
-                .mark_pull_request_ready("mock-install", &repo.owner, &repo.name, number)
-                .await?
-        } else {
-            let installation_id = repo
-                .installation_id
-                .as_deref()
-                .context("repository has no GitHub installation_id")?;
-            self.github
-                .mark_pull_request_ready(installation_id, &repo.owner, &repo.name, number)
-                .await?
-        };
+        let installation_id = repo
+            .installation_id
+            .as_deref()
+            .context("repository has no GitHub installation_id")?;
+        let remote = self
+            .github
+            .mark_pull_request_ready(installation_id, &repo.owner, &repo.name, number)
+            .await?;
 
         self.db
             .update_pull_request_state(pr.id, PullRequestState::Open, false)
@@ -395,19 +371,14 @@ impl GitBroker {
             .provider_number
             .context("pull request has no provider number")?;
 
-        let remote = if self.mode == GithubMode::Mock || self.github.is_mock() {
-            self.github
-                .merge_pull_request("mock-install", &repo.owner, &repo.name, number)
-                .await?
-        } else {
-            let installation_id = repo
-                .installation_id
-                .as_deref()
-                .context("repository has no GitHub installation_id")?;
-            self.github
-                .merge_pull_request(installation_id, &repo.owner, &repo.name, number)
-                .await?
-        };
+        let installation_id = repo
+            .installation_id
+            .as_deref()
+            .context("repository has no GitHub installation_id")?;
+        let remote = self
+            .github
+            .merge_pull_request(installation_id, &repo.owner, &repo.name, number)
+            .await?;
 
         self.db
             .update_pull_request_state(current.id, PullRequestState::Merged, false)
@@ -435,33 +406,6 @@ impl GitBroker {
             .get_pull_request(current.id)
             .await?
             .context("pull request not found")?)
-    }
-
-    async fn mock_accept_bundle(
-        &self,
-        run: &Run,
-        clone_url: &str,
-        bundle: &[u8],
-        expected_head: Option<&str>,
-    ) -> Result<(String, String)> {
-        let mut hasher = Sha256::new();
-        hasher.update(bundle);
-        hasher.update(run.id.as_bytes());
-        if let Some(h) = expected_head {
-            hasher.update(h.as_bytes());
-        }
-        let digest = hasher.finalize();
-        let head_sha = format!("{:x}", digest)
-            .chars()
-            .take(40)
-            .collect::<String>();
-        let push_url = format!(
-            "{}/compare/{}...{}",
-            clone_url.trim_end_matches(".git"),
-            expected_head.unwrap_or("main"),
-            &head_sha[..8]
-        );
-        Ok((head_sha, push_url))
     }
 
     async fn live_accept_bundle(

@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { api } from "@/lib/api";
+import { runsApi } from "@/lib/cloud";
 import type { GitCompare, PullRequest, WorkspaceFile } from "@/lib/types";
 import {
   IconChevronsCollapse,
@@ -20,6 +20,7 @@ import { Markdown } from "./Markdown";
 import { CodePanelToggle } from "./PanelToggleButton";
 import { PullRequestDialog } from "./PullRequestDialog";
 import { useToast } from "./Toast";
+import { Menu, MenuItem, useDismiss } from "./ui";
 
 function isMarkdownPath(path: string): boolean {
   return /\.(md|markdown|mdx)$/i.test(path);
@@ -214,9 +215,7 @@ export function CodePanel({
       setSelectedFile(path);
       writeSessionUi(runId, { selectedFile: path });
       try {
-        const data = await api<{ path: string; content?: string; truncated?: boolean }>(
-          `/api/v1/runs/${runId}/file?path=${encodeURIComponent(path)}`,
-        );
+        const data = await runsApi.file(runId, path);
         setFileView({ path: data.path, content: data.content || "", truncated: data.truncated });
       } catch (err) {
         toast(err instanceof Error ? err.message : String(err), "error");
@@ -227,7 +226,7 @@ export function CodePanel({
 
   const loadFiles = useCallback(async () => {
     try {
-      const list = (await api<WorkspaceFile[]>(`/api/v1/runs/${runId}/files`)) || [];
+      const list = (await runsApi.files(runId)) || [];
       setFiles(list);
       setFilesError("");
       if (!autoOpenedRef.current) {
@@ -272,14 +271,7 @@ export function CodePanel({
     if (tab === "git") loadPrs();
   }, [tab, loadFiles, loadPrs]);
 
-  useEffect(() => {
-    if (!menuOpen) return;
-    const onDoc = (e: MouseEvent) => {
-      if (menuRef.current && !menuRef.current.contains(e.target as Node)) setMenuOpen(false);
-    };
-    document.addEventListener("mousedown", onDoc);
-    return () => document.removeEventListener("mousedown", onDoc);
-  }, [menuOpen]);
+  useDismiss(menuOpen, () => setMenuOpen(false), menuRef, { event: "mousedown" });
 
   const commitAndCreatePr = async () => {
     setMenuOpen(false);
@@ -399,27 +391,28 @@ export function CodePanel({
               <IconDots className="h-4 w-4" />
             </button>
             {menuOpen && (
-              <div
-                className="absolute right-0 top-[calc(100%+4px)] z-50 w-[200px] rounded-lg border border-line bg-canvas p-1 shadow-menu"
-                role="menu"
-              >
-                <button type="button" className="menu-item w-full" onClick={() => { setMenuOpen(false); loadFiles(); loadPrs(); }}>
+              <Menu className="absolute right-0 top-[calc(100%+4px)] z-50 w-[200px] p-1" label="More actions">
+                <MenuItem
+                  onClick={() => {
+                    setMenuOpen(false);
+                    loadFiles();
+                    loadPrs();
+                  }}
+                >
                   Refresh
-                </button>
-                <button type="button" className="menu-item w-full" onClick={() => { void commitAndCreatePr(); }}>
+                </MenuItem>
+                <MenuItem onClick={() => { void commitAndCreatePr(); }}>
                   Commit & Create PR
-                </button>
-                <button
-                  type="button"
-                  className="menu-item w-full"
+                </MenuItem>
+                <MenuItem
                   onClick={() => {
                     setMenuOpen(false);
                     setPrModalOpen(true);
                   }}
                 >
                   Create pull request
-                </button>
-              </div>
+                </MenuItem>
+              </Menu>
             )}
           </div>
           {onCollapse && <CodePanelToggle open onClick={onCollapse} />}
