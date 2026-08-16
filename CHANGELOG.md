@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+### Added
+- Context governance system inspired by DeepSeek Harness:
+  - Agent Skills: `trim-cot-leakage`, `archive-agent-notes`, `find-simplifications` under `.agents/skills/`.
+  - Cursor gate rule `.cursor/rules/trim-cot-leakage.mdc` to enforce HEAD-only prose and comments.
+  - Agent Notes architecture and storage specification (`docs/agent-notes-design.md`).
+  - Context optimization plan and governance lessons (`docs/context-optimization-plan.md`, `docs/deepseek-harness-context-lessons.md`).
+- `zene-context`: `FsMemoryStore` automatically discovers and loads active Agent Notes (`.zene/notes/active/*.md` and `docs/notes/active/*.md`) into stable system prompt prefix.
+- `zene-tools`: `OutputSanitizer` module to strip verbose passing test logs (`test ... ok`) and fold excessive command output (>300 lines) to save context tokens.
+
+
 ## v0.1.11 (2026-08-11)
 
 ### Added

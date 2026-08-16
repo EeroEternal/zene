@@ -7,6 +7,7 @@ mod fetch_url;
 mod glob;
 mod grep;
 mod line_endings;
+mod output_sanitizer;
 mod permission;
 mod plan;
 mod plan_mode;

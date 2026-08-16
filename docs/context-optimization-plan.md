@@ -62,7 +62,7 @@ Phase 4: 代码库减熵与巡检常态化 (Long-term)
 
 ---
 
-### Phase 2: 决策记录与 Memory 生命周期治理 (短期)
+### Phase 2: 决策记录与 Memory 生命周期治理 (短期 · ✅ 已落地)
 
 **核心任务**：防止 ADR / Notes 无限膨胀拖慢 Context，保证注入给模型的知识高信噪比。
 
@@ -76,36 +76,43 @@ Phase 4: 代码库减熵与巡检常态化 (Long-term)
 2. **解除教条死锁（Not Golden Truth 原则）**：
    - 在 Prompt 中明确：历史 Notes 和 Tests 是上下文背景与历史理据，**不是不可推翻的承重墙**。鼓励在新场景下发起演进讨论。
 3. **交付物**：
-   - 建立 `docs/notes/` 分层目录规范（`active/`、`negative-guardrails/`、`archived/`）。
-   - 实现或引入 `zene-archive-agent-notes` 工具脚本。
+   - ✅ [docs/agent-notes-design.md](./agent-notes-design.md)（三层存储隔离规范）
+   - ✅ `.agents/skills/archive-agent-notes/SKILL.md`（生命周期管理 Skill）
+   - ✅ `crates/context/src/memory_store.rs`（原生支持从 `.zene/notes/active/` 与 `docs/notes/active/` 自动注入现行公理至 System Prefix）
 
 ---
 
-### Phase 3: 输入端与工具输出收敛 (中期)
+### Phase 3: 输入端与工具输出收敛 (中期 · ✅ 已落地)
 
 **核心任务**：避免巨大的终端日志和无差别全量阅读炸毁 Agent 上下文窗口。
 
 1. **窄域执行 (Change-Scope)**：
    - 引入精确的 diff/依赖分析，本地验证只跑直接受影响的最小测试子集。
    - 全覆盖和矩阵验证交给 CI，不把海量测试日志塞进本地 Agent 对话。
-2. **工具输出清洗器（Tool Output Sanitizer）**：
-   - 对 `cargo test` / `npm test` 输出实施过滤：**默认仅回传 `FAILED` 用例的堆栈与 Panic，剥离所有成百上千行的 `test ... ok`**。
-   - 对大型 Grep/Search 结果实行智能折叠，优先返回文件路径与符号拓扑，引导 Agent 逐步深入。
+2. **工具输出清洗器（Tool Output Sanitizer · ✅ 已实现）**：
+   - 在 `crates/tools/src/output_sanitizer.rs` 中实现 `OutputSanitizer`，并在 `BashTool` 中自动接入：
+     - **测试成功折叠**：过滤掉成百上千行无害的 `test ... ok` 输出，仅保留结果 Summary。
+     - **测试失败精准提取**：仅定位并返回 `FAILED` 用例的错误帧与 Panic 堆栈。
+     - **超长输出智能省略**：单次命令输出超过阈值（如 300 行）时自动对中间内容进行截断提示。
 3. **交付物**：
-   - 在 `zene-tools` 执行层增加 `OutputFilter` 钩子。
+   - ✅ `crates/tools/src/output_sanitizer.rs`
+   - ✅ `crates/tools/src/bash.rs` 联动过滤
 
 ---
 
-### Phase 4: 代码库主动减熵与巡检 (长期)
+### Phase 4: 代码库主动减熵与巡检 (长期 · 持续演进)
 
 **核心任务**：消除代码库中的投机冗余，提升代码检索（Select / RepoMap）给模型喂回上下文时的纯度。
 
-1. **实现 `zene-find-simplifications` 技能**：
+1. **落地 `zene-find-simplifications` 技能**：
    - 扫描**“镜像同一事实的多个表示”**（尤其是持久 session 事件 vs 瞬时 runtime 事件的重复抽象）。
    - 扫描**“无生产消费者的公开方法/配置旋钮”**以及**“仅为测试而存在的非承重代码”**。
    - 强制要求“简化需要扎实证据”，每次提议生成简化候选 Note，杜绝盲目大删大改。
 2. **ContextEngine Compaction 深度协同**：
    - 在 `ContextEngine::handle_overflow` 和 `compact_forced` 时，将历史会话中的 Trial-and-error 纠结过程直接“语义编译”为干净的声明式状态，提升 KV cache 稳定性与上下文密度。
+3. **交付物**：
+   - ✅ `.agents/skills/find-simplifications/SKILL.md`（减熵巡检 Skill）
+   - ✅ [docs/context-engine.md](./context-engine.md)（三区布局与 Compaction 去抖）
 
 ---
 

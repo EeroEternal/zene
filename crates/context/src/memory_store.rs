@@ -64,6 +64,26 @@ impl MemoryStore for FsMemoryStore {
             }
         }
 
+        // Load active agent notes (.zene/notes/active or docs/notes/active)
+        for notes_parent in &[self.workdir.join(".zene").join("notes"), self.workdir.join("docs").join("notes")] {
+            let active_dir = notes_parent.join("active");
+            if let Ok(entries) = std::fs::read_dir(&active_dir) {
+                let mut note_files: Vec<PathBuf> = entries
+                    .filter_map(|e| e.ok().map(|e| e.path()))
+                    .filter(|p| p.extension().and_then(|e| e.to_str()) == Some("md"))
+                    .collect();
+                note_files.sort();
+                for path in note_files {
+                    if let Ok(text) = std::fs::read_to_string(&path) {
+                        let trimmed = text.trim();
+                        if !trimmed.is_empty() {
+                            chunks.push(format!("### Invariant Note ({})\n\n{trimmed}", path.file_name().unwrap_or_default().to_string_lossy()));
+                        }
+                    }
+                }
+            }
+        }
+
         let daily_dir = root.join("daily");
         if let Ok(entries) = std::fs::read_dir(&daily_dir) {
             let mut files: Vec<PathBuf> = entries
@@ -149,5 +169,22 @@ mod tests {
             .unwrap();
         let loaded = store.load_recent().unwrap();
         assert!(loaded.contains("Ship it"));
+    }
+
+    #[test]
+    fn load_active_agent_notes() {
+        let dir = tempdir().unwrap();
+        let active_dir = dir.path().join(".zene").join("notes").join("active");
+        std::fs::create_dir_all(&active_dir).unwrap();
+        std::fs::write(
+            active_dir.join("001-prefix-invariants.md"),
+            "System prefix must be frozen for prompt caching.",
+        )
+        .unwrap();
+
+        let store = FsMemoryStore::new(dir.path());
+        let loaded = store.load_recent().unwrap();
+        assert!(loaded.contains("Invariant Note"));
+        assert!(loaded.contains("System prefix must be frozen"));
     }
 }

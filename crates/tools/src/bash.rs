@@ -66,7 +66,7 @@ impl Tool for BashTool {
                 ctx.cancel.as_ref(),
             )
             .await?;
-        Ok(format_exec_result(result))
+        Ok(format_exec_result_for_command(&args.command, result))
     }
 }
 
@@ -117,7 +117,7 @@ async fn spawn_background_bash(
         }
         match result {
             Ok(exec) => {
-                let content = format_exec_result(exec.clone()).content;
+                let content = format_exec_result_for_command(&command, exec.clone()).content;
                 let status = if exec.exit_code == 0 {
                     BackgroundTaskStatus::Completed
                 } else {
@@ -166,22 +166,17 @@ async fn exec_with_timeout(
         .await
 }
 
-fn format_exec_result(result: zene_sandbox::ExecResult) -> ToolResult {
-    let mut content = String::new();
-    if !result.stdout.is_empty() {
-        content.push_str(&result.stdout);
-    }
-    if !result.stderr.is_empty() {
-        if !content.is_empty() {
-            content.push('\n');
-        }
-        content.push_str(&result.stderr);
-    }
-    if content.is_empty() {
-        content = format!("exit code {}", result.exit_code);
-    }
+fn format_exec_result_for_command(command: &str, result: zene_sandbox::ExecResult) -> ToolResult {
+    let content = crate::output_sanitizer::OutputSanitizer::sanitize_exec_output(
+        command,
+        &result.stdout,
+        &result.stderr,
+        result.exit_code,
+    );
     ToolResult {
         content,
         is_error: result.exit_code != 0,
     }
 }
+
+
