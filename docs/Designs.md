@@ -95,6 +95,8 @@ Zene 现有页面对应关系：New Agent 是空态下的新建任务入口（�
 
 少用边框。优先靠背景差、缩进、留白、活跃底、轻分隔。边框只用于 Diff 行、输入焦点、审批卡片左侧风险提示、终端边界、表单控件。
 
+**焦点与选中**：全局禁止浏览器默认 focus outline（`outline: none`，见 `globals.css` `@layer base`）。侧栏任务、工具栏图标、菜单项等交互元素的选中 / 活跃态只用浅蓝底 `#EAF2FF`（`bg-active` / `nav-item-active`），不加描边环或外发光。文本输入、textarea、select 类控件 focus 时仅将边框色切至 `#3584E4`，禁止 `box-shadow` 外框。
+
 圆角：`--radius-sm: 4px; --radius-md: 6px; --radius-lg: 8px`。不用 16–24px 大圆角。
 
 阴影极轻：`0 1px 2px rgba(46, 52, 54, 0.08)`。用于主工作区、浮层、审批区、需与画布分开的工具面板。无多层、发光或彩色阴影。
@@ -125,7 +127,7 @@ Diff 按审查工具语义：新增绿、删除暗红、上下文中性灰、文
 
 删除与危险确认用应用内模态：sm ~384px 确认，md 480px 设置，lg 560–800px 多分区。Backdrop `rgba(46, 52, 54, .45)`，无 blur。
 
-表单标签次要色；输入白底、细边、圆角 4–6px；focus 用主色轮廓。密钥等宽。字段校验可留在字段旁；全局错误走 Toast。
+表单标签次要色；输入白底、细边、圆角 4–6px；focus 仅加深边框为主色，不加外框。密钥等宽。字段校验可留在字段旁；全局错误走 Toast。
 
 图标统一 Lucide（`lib/icons.tsx` 的 `Icon*`）。小尺寸 ≤16px 用 `strokeWidth={2}` + `absoluteStrokeWidth`。品牌标（GitHub / GitLab）用官方资源。
 

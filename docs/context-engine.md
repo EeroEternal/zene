@@ -135,6 +135,8 @@ Compact 是 **允许的一次打断**（`epoch++`）。要消灭的是同一会�
 - Overflow 先 `apply_steps_truncate_pass`（当前 user 之后）；不够再完整 compact
 - Compact 快照不再持久化 volatile `<system-reminder>`
 - Memory 开工写入 system 一次；本步可见的更新走 tail
+- Agent Notes：`FsMemoryStore` 自动扫描加载 `.zene/notes/active/` 与 `docs/notes/active/` 注入为稳定 Invariants
+- 工具输出降噪：`OutputSanitizer` 过滤 `cargo test` / `npm test` 冗余输出，仅向上下文保留失败堆栈与汇总
 - Workspace / skills 只在 session start 编进 system
 - `break_kind` + `cached_tokens` 进入 explain / ACP（`cached_tokens` 为上一轮 provider 回传）
 - Phase S：`InjectionZone`（FrozenPrefix / TailDecorations）；`project()` 把紧贴 pinned 前缀的 reminder 拖到尾巴；debug 断言拒绝 msg[1] 注入块

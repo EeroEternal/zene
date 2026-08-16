@@ -25,13 +25,17 @@ function FileDiffBlock({
   runId,
   file,
   open,
+  reviewed,
   onToggle,
+  onToggleReviewed,
   autoLoad,
 }: {
   runId: string;
   file: GitStatusFile;
   open: boolean;
+  reviewed?: boolean;
   onToggle: () => void;
+  onToggleReviewed?: () => void;
   autoLoad: boolean;
 }) {
   const [diff, setDiff] = useState("");
@@ -56,42 +60,60 @@ function FileDiffBlock({
   }, [runId, file.path]);
 
   useEffect(() => {
-    if ((open || autoLoad) && !loaded && !loading) {
-      load().catch(() => undefined);
-    }
-  }, [open, autoLoad, loaded, loading, load]);
+    if (open && (!loaded || error)) load();
+  }, [open, loaded, error, load]);
+
+  useEffect(() => {
+    if (autoLoad && !loaded && !loading) load();
+  }, [autoLoad, loaded, loading, load]);
 
   return (
-    <section className="border-b border-line last:border-b-0">
-      <button
-        type="button"
-        className="sticky top-0 z-[1] flex w-full items-center gap-2 border-b border-line bg-[#f6f8fa] px-3 py-2 text-left hover:bg-secondary"
-        onClick={onToggle}
-        aria-expanded={open}
-      >
-        {open ? (
-          <IconChevronDown className="h-3.5 w-3.5 shrink-0 text-muted" />
-        ) : (
-          <IconChevronRight className="h-3.5 w-3.5 shrink-0 text-muted" />
+    <section className={`border-b border-line ${reviewed ? "opacity-60" : ""}`}>
+      <div className="flex items-center gap-1.5 bg-secondary px-3 py-1.5">
+        {onToggleReviewed && (
+          <label className="flex cursor-pointer items-center gap-1 text-[11px] text-muted hover:text-ink mr-1">
+            <input
+              type="checkbox"
+              checked={!!reviewed}
+              onChange={(e) => {
+                e.stopPropagation();
+                onToggleReviewed();
+              }}
+              className="h-3.5 w-3.5 rounded border-line text-primary focus:ring-0 cursor-pointer"
+            />
+            <span className="text-[10.5px]">Viewed</span>
+          </label>
         )}
-        <code className="min-w-0 flex-1 truncate font-mono text-[12px] font-medium text-ink" title={file.path}>
-          {file.path}
-        </code>
-        {isAdded(file.status) && (
-          <span className="shrink-0 rounded px-1.5 py-0.5 text-[10px] font-semibold text-[#1a7f37] bg-[#e6ffec]">
-            New
+        <button
+          type="button"
+          className="flex min-w-0 flex-1 items-center gap-1.5 text-left text-[12px] hover:text-ink"
+          onClick={onToggle}
+          aria-expanded={open}
+        >
+          {open ? (
+            <IconChevronDown className="h-3.5 w-3.5 shrink-0 text-placeholder" />
+          ) : (
+            <IconChevronRight className="h-3.5 w-3.5 shrink-0 text-placeholder" />
+          )}
+          <code className="min-w-0 flex-1 truncate font-mono text-[11.5px] font-medium text-ink">
+            {file.path}
+          </code>
+          {isAdded(file.status) && (
+            <span className="shrink-0 rounded px-1.5 py-0.5 text-[10px] font-semibold text-[#1a7f37] bg-[#e6ffec]">
+              New
+            </span>
+          )}
+          {isDeleted(file.status) && (
+            <span className="shrink-0 rounded px-1.5 py-0.5 text-[10px] font-semibold text-[#cf222e] bg-[#ffebe9]">
+              Deleted
+            </span>
+          )}
+          <span className="shrink-0 font-mono text-[11px] tabular-nums">
+            <span className="text-[#1a7f37]">+{file.additions}</span>{" "}
+            <span className="text-[#cf222e]">−{file.deletions}</span>
           </span>
-        )}
-        {isDeleted(file.status) && (
-          <span className="shrink-0 rounded px-1.5 py-0.5 text-[10px] font-semibold text-[#cf222e] bg-[#ffebe9]">
-            Deleted
-          </span>
-        )}
-        <span className="shrink-0 font-mono text-[11px] tabular-nums">
-          <span className="text-[#1a7f37]">+{file.additions}</span>{" "}
-          <span className="text-[#cf222e]">−{file.deletions}</span>
-        </span>
-      </button>
+        </button>
+      </div>
       {open && (
         <div className="min-h-0 bg-canvas">
           {error ? (
@@ -149,18 +171,27 @@ export function ChangesPanel({
   const totalAdd = compare?.totalAdditions ?? 0;
   const totalDel = compare?.totalDeletions ?? 0;
 
+  const [searchFilter, setSearchFilter] = useState("");
+  const filteredFiles = useMemo(() => {
+    const q = searchFilter.trim().toLowerCase();
+    if (!q) return files;
+    return files.filter((f) => f.path.toLowerCase().includes(q));
+  }, [files, searchFilter]);
+
   const expandAll = useCallback(() => {
-    setOpenMap(Object.fromEntries(files.map((f) => [f.path, true])));
-  }, [files]);
+    setOpenMap(Object.fromEntries(filteredFiles.map((f) => [f.path, true])));
+  }, [filteredFiles]);
 
   const collapseAll = useCallback(() => {
-    setOpenMap(Object.fromEntries(files.map((f) => [f.path, false])));
-  }, [files]);
+    setOpenMap(Object.fromEntries(filteredFiles.map((f) => [f.path, false])));
+  }, [filteredFiles]);
 
   const allOpen = useMemo(
-    () => files.length > 0 && files.every((f) => openMap[f.path]),
-    [files, openMap],
+    () => filteredFiles.length > 0 && filteredFiles.every((f) => openMap[f.path]),
+    [filteredFiles, openMap],
   );
+
+  const [reviewedMap, setReviewedMap] = useState<Record<string, boolean>>({});
 
   return (
     <div className="grid h-full min-h-0 grid-rows-[auto_minmax(0,1fr)] bg-canvas">
@@ -213,6 +244,18 @@ export function ChangesPanel({
           </div>
         </div>
 
+        {files.length > 5 && (
+          <div className="border-b border-line px-3 py-1 bg-secondary">
+            <input
+              type="search"
+              placeholder="Filter changed files…"
+              className="w-full bg-transparent text-[11.5px] font-mono outline-none placeholder:text-placeholder"
+              value={searchFilter}
+              onChange={(e) => setSearchFilter(e.target.value)}
+            />
+          </div>
+        )}
+
         <div className="min-h-0 flex-1 overflow-auto">
           {error && <div className="px-3 py-3 text-[12px] text-danger">{error}</div>}
           {!error && !files.length && (
@@ -223,15 +266,26 @@ export function ChangesPanel({
               </p>
             </div>
           )}
-          {files.map((f, idx) => (
+          {filteredFiles.map((f, idx) => (
             <FileDiffBlock
               key={f.path}
               runId={runId}
               file={f}
               open={!!openMap[f.path]}
+              reviewed={!!reviewedMap[f.path]}
               autoLoad={idx < 4}
               onToggle={() => {
                 setOpenMap((prev) => ({ ...prev, [f.path]: !prev[f.path] }));
+              }}
+              onToggleReviewed={() => {
+                setReviewedMap((prev) => {
+                  const nextVal = !prev[f.path];
+                  if (nextVal) {
+                    // Automatically collapse when marked as reviewed
+                    setOpenMap((o) => ({ ...o, [f.path]: false }));
+                  }
+                  return { ...prev, [f.path]: nextVal };
+                });
               }}
             />
           ))}

@@ -182,6 +182,8 @@ pub struct Run {
     pub id: Id,
     pub organization_id: Id,
     pub repository_id: Id,
+    /// Persistent checkout shared by sessions for the same org+repo.
+    pub workspace_id: Id,
     pub requested_by: Id,
     pub status: RunStatus,
     pub status_version: i64,

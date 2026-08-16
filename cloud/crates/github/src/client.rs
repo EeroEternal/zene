@@ -474,6 +474,10 @@ impl GithubClient {
             bail!("mark pull request ready failed ({status}): {text}");
         }
         let pr: Resp = serde_json::from_str(&text).context("parse pull request")?;
+        let draft = pr.draft.unwrap_or(false);
+        if draft {
+            bail!("GitHub still reports this pull request as a draft after mark-as-ready");
+        }
         Ok(PullRequest {
             id: uuid::Uuid::new_v4(),
             repository_id: uuid::Uuid::nil(),
@@ -484,8 +488,8 @@ impl GithubClient {
             body: pr.body,
             base_sha: None,
             head_sha: None,
-            state: pull_request_state(&pr.state, pr.draft.unwrap_or(false)),
-            draft: pr.draft.unwrap_or(false),
+            state: pull_request_state(&pr.state, draft),
+            draft,
             created_at: chrono::Utc::now(),
         })
     }
@@ -525,6 +529,9 @@ impl GithubClient {
         let status = resp.status();
         let text = resp.text().await.unwrap_or_default();
         if !status.is_success() {
+            if status.as_u16() == 405 && text.contains("still a draft") {
+                bail!("cannot merge a draft pull request; mark it as ready first");
+            }
             bail!("merge pull request failed ({status}): {text}");
         }
         let _: Resp = serde_json::from_str(&text).context("parse merge response")?;
@@ -585,9 +592,8 @@ fn github_account_type(value: &str) -> GithubAccountType {
 }
 
 fn pull_request_state(value: &str, draft: bool) -> PullRequestState {
-    PullRequestState::parse(value).unwrap_or(if draft {
-        PullRequestState::Draft
-    } else {
-        PullRequestState::Open
-    })
+    if draft {
+        return PullRequestState::Draft;
+    }
+    PullRequestState::parse(value).unwrap_or(PullRequestState::Open)
 }

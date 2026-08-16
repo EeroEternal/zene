@@ -1079,7 +1079,10 @@ async fn user_retry_requeues_failed_run_and_resumes_without_prompt() {
         .unwrap();
     assert_eq!(replacement.0.status, RunStatus::Provisioning);
     assert_eq!(replacement.3.as_deref(), Some("runtime-session-retry"));
-    assert!(replacement.5);
+    assert!(
+        !replacement.5,
+        "user retry must re-run the prompt after a terminal failure"
+    );
 }
 
 #[tokio::test]
@@ -1107,4 +1110,81 @@ async fn email_login_rejects_invalid_and_rate_limits() {
     let email = format!("rate-{}@example.com", Uuid::new_v4());
     db.create_email_login_token(&email).await.unwrap();
     assert!(db.create_email_login_token(&email).await.is_err());
+}
+
+#[tokio::test]
+async fn same_repo_sessions_share_workspace_checkout() {
+    let db = Db::connect("sqlite::memory:").await.unwrap();
+    db.migrate().await.unwrap();
+    db.ensure_dev_worker_token("dev-worker-token")
+        .await
+        .unwrap();
+    let auth = db
+        .register(RegisterRequest {
+            email: "ws@example.com".into(),
+            password: "password123".into(),
+            display_name: "Ws".into(),
+        })
+        .await
+        .unwrap();
+    let repo = db
+        .create_repository(
+            auth.organization.id,
+            CreateRepositoryRequest {
+                owner: "ada".into(),
+                name: "shared".into(),
+                default_branch: "main".into(),
+                clone_url: None,
+            },
+        )
+        .await
+        .unwrap();
+    let other = db
+        .create_repository(
+            auth.organization.id,
+            CreateRepositoryRequest {
+                owner: "ada".into(),
+                name: "other".into(),
+                default_branch: "main".into(),
+                clone_url: None,
+            },
+        )
+        .await
+        .unwrap();
+    let req = |repository_id| CreateRunRequest {
+        repository_id,
+        prompt: "continue".into(),
+        base_ref: Some("main".into()),
+        model: "default".into(),
+        permission_mode: PermissionMode::Default,
+        max_turns: 10,
+        mode_id: None,
+    };
+    let first = db
+        .create_run(auth.organization.id, auth.user.id, req(repo.id))
+        .await
+        .unwrap();
+    let second = db
+        .create_run(auth.organization.id, auth.user.id, req(repo.id))
+        .await
+        .unwrap();
+    let other_run = db
+        .create_run(auth.organization.id, auth.user.id, req(other.id))
+        .await
+        .unwrap();
+    assert_eq!(first.workspace_id, second.workspace_id);
+    assert_ne!(first.workspace_id, other_run.workspace_id);
+
+    let root = std::path::Path::new("/tmp/zc-workspaces");
+    let a = db.claim_next_run("w1", root).await.unwrap().unwrap();
+    let b = db.claim_next_run("w2", root).await.unwrap().unwrap();
+    let c = db.claim_next_run("w3", root).await.unwrap().unwrap();
+    let dirs = [a.4, b.4, c.4];
+    let shared: Vec<_> = dirs
+        .iter()
+        .filter(|dir| dir.contains(&first.workspace_id.to_string()))
+        .collect();
+    assert_eq!(shared.len(), 2);
+    assert!(dirs.iter().any(|dir| dir.contains(&other_run.workspace_id.to_string())));
+    assert!(dirs.iter().all(|dir| dir.contains("/ws/")));
 }

@@ -357,6 +357,11 @@ impl GitBroker {
     }
 
     pub async fn merge_pr(&self, run: &Run, pr: &PullRequest) -> Result<PullRequest> {
+        let mut current = pr.clone();
+        if current.draft || current.state == PullRequestState::Draft {
+            current = self.mark_pr_ready(run, &current).await?;
+        }
+
         let repo = self
             .db
             .get_repository(run.repository_id)
@@ -376,7 +381,7 @@ impl GitBroker {
             .await?;
 
         self.db
-            .update_pull_request_state(pr.id, PullRequestState::Merged, false)
+            .update_pull_request_state(current.id, PullRequestState::Merged, false)
             .await?
             .context("update pull request state")?;
 
@@ -387,7 +392,7 @@ impl GitBroker {
                 Some("git-broker"),
                 "git.pr.merged",
                 Some("pull_request"),
-                Some(&pr.id.to_string()),
+                Some(&current.id.to_string()),
                 Some(serde_json::json!({
                     "runId": run.id,
                     "url": remote.url,
@@ -398,7 +403,7 @@ impl GitBroker {
 
         Ok(self
             .db
-            .get_pull_request(pr.id)
+            .get_pull_request(current.id)
             .await?
             .context("pull request not found")?)
     }

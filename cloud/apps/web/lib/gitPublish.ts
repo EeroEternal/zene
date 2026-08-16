@@ -18,11 +18,18 @@ export interface PublishOptions {
   compare?: GitCompare | null;
 }
 
+function isDraftPullRequest(pr: PullRequest): boolean {
+  if (pr.draft) return true;
+  return (pr.state || "").toLowerCase() === "draft";
+}
+
 function isActivePullRequest(pr: PullRequest): boolean {
   if (!pr.url) return false;
   const state = (pr.state || "").toLowerCase();
   return state === "open" || state === "draft";
 }
+
+export { isDraftPullRequest, isActivePullRequest };
 
 export interface PublishResult {
   push: PushResult;
