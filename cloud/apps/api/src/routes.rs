@@ -528,8 +528,8 @@ async fn list_run_files(
     AuthUser(user): AuthUser,
     Path(run_id): Path<Uuid>,
 ) -> Result<impl IntoResponse, AppError> {
-    let _ = authorize_run(&state, user.id, run_id).await?;
-    let root = state.workspace_root.join(run_id.to_string());
+    let run = authorize_run(&state, user.id, run_id).await?;
+    let root = state.run_checkout_dir(&run);
     Ok(Json(
         workspace::list_files(&root, 500).map_err(AppError::from)?,
     ))
@@ -546,8 +546,8 @@ async fn read_run_file(
     Path(run_id): Path<Uuid>,
     Query(query): Query<FileQuery>,
 ) -> Result<impl IntoResponse, AppError> {
-    let _ = authorize_run(&state, user.id, run_id).await?;
-    let root = state.workspace_root.join(run_id.to_string());
+    let run = authorize_run(&state, user.id, run_id).await?;
+    let root = state.run_checkout_dir(&run);
     Ok(Json(
         workspace::read_file(&root, &query.path, 200_000).map_err(AppError::from)?,
     ))
@@ -564,8 +564,8 @@ async fn run_diff(
     Path(run_id): Path<Uuid>,
     Query(query): Query<DiffQuery>,
 ) -> Result<impl IntoResponse, AppError> {
-    let _ = authorize_run(&state, user.id, run_id).await?;
-    let root = state.workspace_root.join(run_id.to_string());
+    let run = authorize_run(&state, user.id, run_id).await?;
+    let root = state.run_checkout_dir(&run);
     let diff = workspace::git_diff(&root, query.path.as_deref())
         .await
         .map_err(AppError::from)?;
@@ -577,8 +577,8 @@ async fn run_git_status(
     AuthUser(user): AuthUser,
     Path(run_id): Path<Uuid>,
 ) -> Result<impl IntoResponse, AppError> {
-    let _ = authorize_run(&state, user.id, run_id).await?;
-    let root = state.workspace_root.join(run_id.to_string());
+    let run = authorize_run(&state, user.id, run_id).await?;
+    let root = state.run_checkout_dir(&run);
     Ok(Json(
         workspace::git_status(&root).await.map_err(AppError::from)?,
     ))
@@ -590,7 +590,7 @@ async fn run_git_compare(
     Path(run_id): Path<Uuid>,
 ) -> Result<impl IntoResponse, AppError> {
     let run = authorize_run(&state, user.id, run_id).await?;
-    let root = state.workspace_root.join(run_id.to_string());
+    let root = state.run_checkout_dir(&run);
     Ok(Json(
         workspace::git_compare(&root, &run.base_ref)
             .await
@@ -605,7 +605,7 @@ async fn run_git_compare_diff(
     Query(query): Query<DiffQuery>,
 ) -> Result<impl IntoResponse, AppError> {
     let run = authorize_run(&state, user.id, run_id).await?;
-    let root = state.workspace_root.join(run_id.to_string());
+    let root = state.run_checkout_dir(&run);
     let path = query
         .path
         .as_deref()
@@ -624,7 +624,7 @@ async fn run_git_commits(
     Path(run_id): Path<Uuid>,
 ) -> Result<impl IntoResponse, AppError> {
     let run = authorize_run(&state, user.id, run_id).await?;
-    let root = state.workspace_root.join(run_id.to_string());
+    let root = state.run_checkout_dir(&run);
     Ok(Json(
         workspace::git_commits(&root, &run.base_ref, 50)
             .await
@@ -705,7 +705,7 @@ async fn user_push(
     Path(run_id): Path<Uuid>,
 ) -> Result<impl IntoResponse, AppError> {
     let run = authorize_run(&state, user.id, run_id).await?;
-    let root = state.workspace_root.join(run_id.to_string());
+    let root = state.run_checkout_dir(&run);
     let commit_msg = format!(
         "zene: {}",
         run.title.chars().take(72).collect::<String>()
@@ -902,7 +902,17 @@ async fn worker_commands(
 ) -> Result<impl IntoResponse, AppError> {
     let commands = state.db.poll_worker_commands_fenced(run_id, &req).await?;
     let mode_id = state.db.take_pending_mode(run_id).await?;
-    Ok(Json(WorkerCommandsResponse { commands, mode_id }))
+    let title = state
+        .db
+        .get_run(run_id)
+        .await?
+        .map(|run| run.title)
+        .filter(|title| !title.trim().is_empty());
+    Ok(Json(WorkerCommandsResponse {
+        commands,
+        mode_id,
+        title,
+    }))
 }
 
 async fn worker_set_pending_mode(
@@ -973,7 +983,7 @@ async fn worker_push(
         .get_run(run_id)
         .await?
         .ok_or_else(|| AppError::not_found("run not found"))?;
-    let root = state.workspace_root.join(run_id.to_string());
+    let root = state.run_checkout_dir(&run);
     let commit_msg = format!(
         "zene: {}",
         run.title.chars().take(72).collect::<String>()

@@ -6,6 +6,7 @@ use anyhow::Result;
 use tokio::sync::RwLock;
 use uuid::Uuid;
 use zene_cloud_db::Db;
+use zene_cloud_domain::Run;
 use zene_cloud_git_broker::GitBroker;
 use zene_cloud_github::{GithubClient, GithubConfig};
 
@@ -36,6 +37,15 @@ impl AppState {
             fallback_github: Arc::new(RwLock::new(github)),
             workspace_root,
             public_base_url,
+        }
+    }
+
+    /// On-disk checkout the worker actually uses (`ws/{workspace_id}`).
+    pub fn run_checkout_dir(&self, run: &Run) -> PathBuf {
+        if run.workspace_id.is_nil() {
+            self.workspace_root.join(run.id.to_string())
+        } else {
+            Db::workspace_checkout_dir(&self.workspace_root, run.workspace_id)
         }
     }
 

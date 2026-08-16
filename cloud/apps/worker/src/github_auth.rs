@@ -96,6 +96,41 @@ fn real_gh() -> Option<PathBuf> {
     }
 }
 
+async fn install_pre_push_hook(workspace: &Path) -> Result<()> {
+    let output = Command::new("git")
+        .current_dir(workspace)
+        .args(["rev-parse", "--git-path", "hooks"])
+        .output()
+        .await
+        .context("git rev-parse hooks")?;
+    if !output.status.success() {
+        anyhow::bail!(
+            "git rev-parse --git-path hooks failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    let rel = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    let hooks_dir = {
+        let p = PathBuf::from(&rel);
+        if p.is_absolute() {
+            p
+        } else {
+            workspace.join(p)
+        }
+    };
+    tokio::fs::create_dir_all(&hooks_dir).await?;
+    let hook = hooks_dir.join("pre-push");
+    tokio::fs::write(
+        &hook,
+        "#!/bin/sh\n\
+         echo 'git push is disabled in Zene Cloud. Use the PublishGithub tool or Console Commit & Create PR.' >&2\n\
+         exit 1\n",
+    )
+    .await?;
+    chmod(&hook, 0o700).await?;
+    Ok(())
+}
+
 async fn ensure_git_exclude(workspace: &Path) -> Result<()> {
     let exclude = workspace.join(".git").join("info").join("exclude");
     if let Some(parent) = exclude.parent() {
@@ -227,6 +262,9 @@ pub async fn install(workspace: &Path, auth: &CloneAuthResponse) -> Result<PathB
     }
     if let Err(err) = ensure_git_exclude(workspace).await {
         warn!(error = %err, "failed to exclude .zene/ from git");
+    }
+    if let Err(err) = install_pre_push_hook(workspace).await {
+        warn!(error = %err, "failed to install cloud pre-push hook");
     }
     if let Some(token) = auth.token.as_deref().filter(|t| !t.is_empty()) {
         write_token_file(&dir, token).await?;

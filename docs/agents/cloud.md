@@ -5,7 +5,7 @@
 
 The agent makes outbound HTTPS calls to an external LLM (OpenAI-compatible or Anthropic). Cloud workers use `zene acp` via `cloud/crates/acp-bridge`. Console users set LLM keys in Settings (BYOK); env / `~/.zene/config.toml` still apply to the ACP process when injected.
 
-Agent `gh` / git must not inherit the worker host login (`GH_TOKEN`, `~/.config/gh`). The worker writes a run-private installation token under the git workspace (`.zene/github/`, gitignored, refreshed via clone-auth) so the sandbox can read it, puts a `gh` wrapper and git credential helper on `PATH`, and points `origin` at the public GitHub URL. Console Push/PR still goes through git-broker.
+Agent `gh` / git must not inherit the worker host login (`GH_TOKEN`, `~/.config/gh`). The worker writes a run-private installation token under the git workspace (`.zene/github/`, gitignored, refreshed via clone-auth) so clone/fetch can use it if needed. **Publish has one path:** the `PublishGithub` tool (and Console **Commit & Create PR**) call git-broker on `ws/{workspace_id}` — commit dirty files, push the session branch, open a draft PR. Cloud Bash hard-denies `git push` / `gh`; the workspace `pre-push` hook also rejects local pushes. Do not SSH to another host to publish.
 
 A Cloud **workspace** is one on-disk checkout per organization + repository (`{workspace_root}/ws/{workspace_id}`). New sessions (runs) for that repo reuse it and skip clone; they only `git checkout -B` a session branch from the current HEAD. Concurrent live agents on the same checkout can conflict.
 

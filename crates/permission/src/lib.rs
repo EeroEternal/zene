@@ -1,6 +1,7 @@
 //! Tool permission gate: modes, rules, and interactive approval for gated tools.
 
 mod broker;
+mod cloud_github;
 
 use std::collections::HashSet;
 use std::io::{self, Write};
@@ -301,7 +302,19 @@ impl PermissionGate {
 }
 
 /// Hard deny Write/Edit under protected path segments (aligned with sandbox `.git` rules).
+/// Cloud runs also deny `git push` / `gh` so publish stays on git-broker.
 pub fn policy_denied(tool_name: &str, arguments: &str) -> Option<String> {
+    policy_denied_inner(tool_name, arguments, cloud_github::is_cloud_run())
+}
+
+fn policy_denied_inner(tool_name: &str, arguments: &str, cloud_run: bool) -> Option<String> {
+    if cloud_run && matches!(tool_name, "Bash") {
+        if let Some(command) = extract_bash_command(arguments) {
+            if let Some(msg) = cloud_github::deny_cloud_github_cli(&command) {
+                return Some(msg);
+            }
+        }
+    }
     if !matches!(tool_name, "Write" | "Edit") {
         return None;
     }
@@ -313,6 +326,11 @@ pub fn policy_denied(tool_name: &str, arguments: &str) -> Option<String> {
     } else {
         None
     }
+}
+
+fn extract_bash_command(arguments: &str) -> Option<String> {
+    let value: Value = serde_json::from_str(arguments).ok()?;
+    value.get("command")?.as_str().map(str::to_string)
 }
 
 pub fn approve_tool_call(
@@ -579,6 +597,16 @@ mod tests {
             r#"{"path":"node_modules/x"}"#,
         );
         assert!(msg.contains("node_modules"));
+    }
+
+    #[test]
+    fn cloud_run_blocks_git_push_and_gh() {
+        let push = policy_denied_inner("Bash", r#"{"command":"git push origin HEAD"}"#, true);
+        assert!(push.unwrap().contains("git push"));
+        let gh = policy_denied_inner("Bash", r#"{"command":"gh pr create"}"#, true);
+        assert!(gh.unwrap().contains("`gh`"));
+        assert!(policy_denied_inner("Bash", r#"{"command":"git status"}"#, true).is_none());
+        assert!(policy_denied_inner("Bash", r#"{"command":"git push"}"#, false).is_none());
     }
 
     #[test]

@@ -13,7 +13,6 @@ import {
   IconSquarePen,
   IconTrash,
 } from "@/lib/icons";
-import { statusLabel } from "@/lib/api";
 import {
   filterLabelText,
   filterRuns,
@@ -23,7 +22,6 @@ import {
 } from "@/lib/listPrefs";
 import type { ListFilter, ListGroup, Organization, Repo, Run, User, View } from "@/lib/types";
 import { SidebarPanelToggle } from "./PanelToggleButton";
-import { StatusDot } from "./StatusPill";
 import { Menu, MenuItem, MenuLabel, MenuSep, useDismiss } from "./ui";
 
 export { filterLabelText, filterRuns, repoLabel } from "@/lib/listPrefs";
@@ -235,15 +233,11 @@ export function Sidebar(props: SidebarProps) {
                         <>
                           <button
                             type="button"
-                            className="flex min-w-0 flex-1 items-center gap-2 text-left"
+                            className="flex min-w-0 flex-1 items-center text-left"
                             onClick={() => props.onOpenRun(run.id)}
                           >
-                            <StatusDot status={run.status} />
                             <span className="min-w-0 flex-1 overflow-hidden text-ellipsis whitespace-nowrap">
                               {run.title || "Untitled"}
-                            </span>
-                            <span className="max-w-[72px] shrink-0 truncate text-[11px] text-muted group-hover:hidden">
-                              {statusLabel(run.status)}
                             </span>
                           </button>
                           <button

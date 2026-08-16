@@ -5,6 +5,7 @@ use crate::fetch_url::FetchUrlTool;
 use crate::glob::GlobTool;
 use crate::grep::GrepTool;
 use crate::plan::{EnterPlanModeTool, ExitPlanModeTool};
+use crate::publish_github::PublishGithubTool;
 use crate::read::ReadTool;
 use crate::registry::ToolRegistry;
 use crate::repomap::RepoMapTool;
@@ -53,8 +54,15 @@ pub fn tools_for_profile(profile: SubagentProfile) -> ToolRegistry {
     }
 }
 
+fn with_cloud_publish(mut tools: Vec<Box<dyn crate::registry::Tool>>) -> Vec<Box<dyn crate::registry::Tool>> {
+    if PublishGithubTool::available() {
+        tools.push(Box::new(PublishGithubTool));
+    }
+    tools
+}
+
 fn all_builtin_tool_boxes(web_search: WebSearchConfig) -> Vec<Box<dyn crate::registry::Tool>> {
-    vec![
+    with_cloud_publish(vec![
         Box::new(ReadTool),
         Box::new(WriteTool),
         Box::new(EditTool),
@@ -72,7 +80,7 @@ fn all_builtin_tool_boxes(web_search: WebSearchConfig) -> Vec<Box<dyn crate::reg
         Box::new(WebSearchTool::new(web_search)),
         Box::new(EnterPlanModeTool),
         Box::new(ExitPlanModeTool),
-    ]
+    ])
 }
 
 fn explore_agent_tool_boxes(web_search: WebSearchConfig) -> Vec<Box<dyn crate::registry::Tool>> {
@@ -93,7 +101,7 @@ fn explore_agent_tool_boxes(web_search: WebSearchConfig) -> Vec<Box<dyn crate::r
 }
 
 fn coder_agent_tool_boxes(web_search: WebSearchConfig) -> Vec<Box<dyn crate::registry::Tool>> {
-    vec![
+    with_cloud_publish(vec![
         Box::new(ReadTool),
         Box::new(WriteTool),
         Box::new(EditTool),
@@ -111,7 +119,7 @@ fn coder_agent_tool_boxes(web_search: WebSearchConfig) -> Vec<Box<dyn crate::reg
         Box::new(WebSearchTool::new(web_search)),
         Box::new(EnterPlanModeTool),
         Box::new(ExitPlanModeTool),
-    ]
+    ])
 }
 
 #[cfg(test)]
@@ -139,5 +147,20 @@ mod tests {
         assert!(names.iter().any(|n| n == "Write"));
         assert!(names.iter().any(|n| n == "Edit"));
         assert!(names.iter().any(|n| n == "Task"));
+    }
+
+    #[test]
+    fn publish_github_is_absent_outside_cloud() {
+        let names: Vec<String> = default_builtin_tools()
+            .definitions()
+            .into_iter()
+            .map(|d| d.name)
+            .collect();
+        if std::env::var_os("ZENE_RUN_ID").is_none()
+            || std::env::var_os("ZENE_CLOUD_API_URL").is_none()
+            || std::env::var_os("ZENE_CLOUD_WORKER_TOKEN").is_none()
+        {
+            assert!(!names.iter().any(|n| n == "PublishGithub"));
+        }
     }
 }

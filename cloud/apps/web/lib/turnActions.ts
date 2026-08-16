@@ -12,8 +12,6 @@ export interface ConversationTurn {
 
 const RATING_STORAGE_KEY = "zc.turnRatings";
 
-type BubbleItem = { kind: "bubble"; role: MessageRole; text: string };
-
 export function buildConversationTurns(
   items: Array<{ kind: string; role?: MessageRole; text?: string }>,
   messages: RunMessage[] = [],
@@ -24,31 +22,52 @@ export function buildConversationTurns(
 
   const turns: ConversationTurn[] = [];
   let userText = "";
+  let assistantParts: string[] = [];
+
+  const flush = () => {
+    if (!userText) return;
+    const idx = turns.length;
+    turns.push({
+      index: idx,
+      userText,
+      assistantText: assistantParts.join("\n\n"),
+      assistantAt: assistantTimes[idx],
+    });
+    userText = "";
+    assistantParts = [];
+  };
 
   for (const item of items) {
     if (item.kind !== "bubble") continue;
     if (item.role === "user") {
-      if (userText) {
-        turns.push({ index: turns.length, userText, assistantText: "" });
-      }
+      flush();
       userText = item.text || "";
-    } else if (item.role === "assistant" && userText) {
-      const idx = turns.length;
-      turns.push({
-        index: idx,
-        userText,
-        assistantText: item.text || "",
-        assistantAt: assistantTimes[idx],
-      });
-      userText = "";
+    } else if (item.role === "assistant" && userText && item.text) {
+      assistantParts.push(item.text);
     }
   }
-
-  if (userText) {
-    turns.push({ index: turns.length, userText, assistantText: "" });
-  }
-
+  flush();
   return turns;
+}
+
+/** Maps the last timeline item of each turn (not the user bubble) to that turn index. */
+export function turnIndexByEndItemId(
+  items: Array<{ id: number; kind: string; role?: MessageRole }>,
+): Map<number, number> {
+  const lastId: number[] = [];
+  let turnIdx = -1;
+  for (const item of items) {
+    if (item.kind === "bubble" && item.role === "user") {
+      turnIdx += 1;
+      continue;
+    }
+    if (turnIdx >= 0) lastId[turnIdx] = item.id;
+  }
+  const byItem = new Map<number, number>();
+  for (let i = 0; i < lastId.length; i++) {
+    if (lastId[i] != null) byItem.set(lastId[i], i);
+  }
+  return byItem;
 }
 
 export function turnCopyText(turn: ConversationTurn): string {

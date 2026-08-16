@@ -1354,6 +1354,9 @@ pub struct WorkerCommandsResponse {
     /// `RuntimeCommand::SetMode` while idle. Not a [`WorkerCommandKind`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mode_id: Option<String>,
+    /// Current run title so the worker can skip auto-refresh after a user rename.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

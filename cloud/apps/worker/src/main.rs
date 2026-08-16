@@ -841,11 +841,13 @@ fn spawn_command_poller<R: RuntimeClient + 'static>(
     cancelled: Arc<AtomicBool>,
     last_activity: Arc<tokio::sync::Mutex<tokio::time::Instant>>,
     turn_busy: Arc<AtomicBool>,
+    title_state: Arc<tokio::sync::Mutex<TitleRefresh>>,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         loop {
             match fetch_commands(&client, &api_url, &token, run_id, &fence).await {
                 Ok(response) => {
+                    let current_title = response.title.clone();
                     if let Some(mode_id) = response.mode_id {
                         if turn_busy.load(Ordering::SeqCst) {
                             // SetMode is idle-only; put the mode back until the turn ends.
@@ -923,7 +925,7 @@ fn spawn_command_poller<R: RuntimeClient + 'static>(
                                     )
                                     .await;
                                     turn_busy.store(true, Ordering::SeqCst);
-                                    match runtime.send(RuntimeCommand::Prompt { text }).await {
+                                    match runtime.send(RuntimeCommand::Prompt { text: text.clone() }).await {
                                         Ok(()) => {
                                             if let Some(message_id) = cmd.message_id {
                                                 if let Err(err) = ack_command(
@@ -959,6 +961,47 @@ fn spawn_command_poller<R: RuntimeClient + 'static>(
                                             RunStatus::WaitingForUser,
                                         )
                                         .await;
+                                        let (focus, llm_env, skip) = {
+                                            let mut st = title_state.lock().await;
+                                            st.recent.push(text.clone());
+                                            if st.recent.len() > 5 {
+                                                st.recent.remove(0);
+                                            }
+                                            let skip = title_is_user_locked(
+                                                current_title.as_deref().unwrap_or(""),
+                                                st.last_auto.as_deref(),
+                                                &st.seed,
+                                            );
+                                            (
+                                                format_title_focus(&st.original_prompt, &st.recent),
+                                                st.llm_env.clone(),
+                                                skip,
+                                            )
+                                        };
+                                        if !skip {
+                                            if let Some(llm_env) = llm_env.as_ref() {
+                                                match maybe_refresh_run_title(
+                                                    &client,
+                                                    &api_url,
+                                                    &token,
+                                                    run_id,
+                                                    &fence,
+                                                    &focus,
+                                                    current_title.as_deref(),
+                                                    llm_env,
+                                                )
+                                                .await
+                                                {
+                                                    Ok(Some(title)) => {
+                                                        title_state.lock().await.last_auto = Some(title);
+                                                    }
+                                                    Ok(None) => {}
+                                                    Err(err) => {
+                                                        warn!(run_id = %run_id, error = %err, "run title refresh failed");
+                                                    }
+                                                }
+                                            }
+                                        }
                                     }
                                 }
                                 {
@@ -1006,6 +1049,13 @@ async fn run_runtime_session<R: RuntimeClient + 'static>(
     let cancelled = Arc::new(AtomicBool::new(false));
     let last_activity = Arc::new(tokio::sync::Mutex::new(tokio::time::Instant::now()));
     let turn_busy = Arc::new(AtomicBool::new(false));
+    let title_state = Arc::new(tokio::sync::Mutex::new(TitleRefresh {
+        seed: claimed.run.title.clone(),
+        original_prompt: claimed.run.prompt.clone(),
+        llm_env: llm_env.cloned(),
+        recent: Vec::new(),
+        last_auto: None,
+    }));
     let cmd_task = spawn_command_poller(
         runtime.clone(),
         client.clone(),
@@ -1016,6 +1066,7 @@ async fn run_runtime_session<R: RuntimeClient + 'static>(
         cancelled.clone(),
         last_activity.clone(),
         turn_busy.clone(),
+        title_state.clone(),
     );
 
     if let Some(mode_id) = take_pending_mode(client, cli, run_id).await? {
@@ -1046,17 +1097,26 @@ async fn run_runtime_session<R: RuntimeClient + 'static>(
         set_status(client, cli, run_id, fence, RunStatus::WaitingForUser, None, None).await?;
         if !resume_without_prompt {
             if let Some(llm_env) = llm_env {
-                if let Err(err) = maybe_refresh_run_title(
+                let focus = format_title_focus(&claimed.run.prompt, &[]);
+                match maybe_refresh_run_title(
                     client,
-                    cli,
+                    &cli.api_url,
+                    &cli.worker_token,
                     run_id,
                     fence,
-                    &claimed.run.prompt,
+                    &focus,
+                    Some(claimed.run.title.as_str()),
                     llm_env,
                 )
                 .await
                 {
-                    warn!(run_id = %run_id, error = %err, "run title refresh failed");
+                    Ok(Some(title)) => {
+                        title_state.lock().await.last_auto = Some(title);
+                    }
+                    Ok(None) => {}
+                    Err(err) => {
+                        warn!(run_id = %run_id, error = %err, "run title refresh failed");
+                    }
                 }
             }
         }
@@ -1173,8 +1233,10 @@ fn inject_run_max_turns(env: &mut HashMap<String, String>, max_turns: u32) {
     env.insert("ZENE_MAX_TURNS".into(), max_turns.to_string());
 }
 
-fn inject_run_context(env: &mut HashMap<String, String>, run_id: Uuid) {
+fn inject_run_context(env: &mut HashMap<String, String>, run_id: Uuid, api_url: &str, worker_token: &str) {
     env.insert("ZENE_RUN_ID".into(), run_id.to_string());
+    env.insert("ZENE_CLOUD_API_URL".into(), api_url.trim_end_matches('/').to_string());
+    env.insert("ZENE_CLOUD_WORKER_TOKEN".into(), worker_token.to_string());
 }
 
 fn inject_inference_gateway(env: &mut HashMap<String, String>, url: Option<&str>) {
@@ -1255,7 +1317,7 @@ async fn run_with_real_acp(
         }
     };
     inject_run_max_turns(&mut llm_env, claimed.run.max_turns);
-    inject_run_context(&mut llm_env, run_id);
+    inject_run_context(&mut llm_env, run_id, &cli.api_url, &cli.worker_token);
     inject_inference_gateway(&mut llm_env, cli.inference_gateway_url.as_deref());
     if let Some((dir, token, repo)) = github_for_acp {
         github_auth::inject_env(&mut llm_env, dir, token.as_deref(), repo.as_deref());
@@ -1602,14 +1664,48 @@ fn sanitize_run_title(raw: &str) -> String {
     cleaned.chars().take(56).collect()
 }
 
+struct TitleRefresh {
+    seed: String,
+    original_prompt: String,
+    llm_env: Option<HashMap<String, String>>,
+    recent: Vec<String>,
+    last_auto: Option<String>,
+}
+
+fn format_title_focus(original: &str, recent: &[String]) -> String {
+    let orig: String = original.chars().take(400).collect();
+    if recent.is_empty() {
+        return format!("Original task:\n{orig}");
+    }
+    let mut out = format!("Original task:\n{orig}\n\nRecent user requests:");
+    for (i, turn) in recent.iter().take(5).enumerate() {
+        let snippet: String = turn.chars().take(240).collect();
+        out.push_str(&format!("\n{}. {snippet}", i + 1));
+    }
+    out
+}
+
+fn title_is_user_locked(current: &str, last_auto: Option<&str>, seed: &str) -> bool {
+    let cur = current.trim();
+    if cur.is_empty() || cur == seed {
+        return false;
+    }
+    match last_auto {
+        Some(auto) => cur != auto,
+        None => true,
+    }
+}
+
 async fn maybe_refresh_run_title(
     client: &reqwest::Client,
-    cli: &Cli,
+    api_url: &str,
+    worker_token: &str,
     run_id: Uuid,
     fence: &WorkerFence,
-    prompt: &str,
+    focus: &str,
+    current_title: Option<&str>,
     llm_env: &HashMap<String, String>,
-) -> Result<()> {
+) -> Result<Option<String>> {
     let api_key = llm_env
         .get("ZENE_API_KEY")
         .cloned()
@@ -1628,10 +1724,10 @@ async fn maybe_refresh_run_title(
         .or_else(|| std::env::var("ZENE_MODEL").ok())
         .unwrap_or_else(|| "gpt-4o-mini".into());
     if api_key.trim().is_empty() {
-        return Ok(());
+        return Ok(None);
     }
     let url = chat_completions_url(&base_url);
-    let snippet: String = prompt.chars().take(800).collect();
+    let snippet: String = focus.chars().take(1200).collect();
     // DeepSeek V4 (and similar) enable thinking by default; with a tiny max_tokens budget
     // all tokens go to reasoning_content and message.content stays empty.
     let mut body = serde_json::json!({
@@ -1642,11 +1738,11 @@ async fn maybe_refresh_run_title(
         "messages": [
             {
                 "role": "system",
-                "content": "Return only a concise agent session title in the user's language. Max 8 words. No quotes or punctuation wrapping."
+                "content": "Return only a concise agent session title in the user's language. Max 8 words. Focus on the current work, not the original request if the conversation has moved on. No quotes or punctuation wrapping."
             },
             {
                 "role": "user",
-                "content": format!("Task:\n{snippet}")
+                "content": snippet
             }
         ]
     });
@@ -1680,14 +1776,14 @@ async fn maybe_refresh_run_title(
                 .context("title llm retry")?;
         } else {
             warn!(%status, body = %err_body.chars().take(240).collect::<String>(), "title llm failed");
-            return Ok(());
+            return Ok(None);
         }
     }
     if !resp.status().is_success() {
         let status = resp.status();
         let err_body = resp.text().await.unwrap_or_default();
         warn!(%status, body = %err_body.chars().take(240).collect::<String>(), "title llm failed");
-        return Ok(());
+        return Ok(None);
     }
     let value: serde_json::Value = resp.json().await.context("title llm json")?;
     let title = value
@@ -1697,22 +1793,25 @@ async fn maybe_refresh_run_title(
         .unwrap_or_default();
     if title.is_empty() {
         warn!(run_id = %run_id, "title llm returned empty content");
-        return Ok(());
+        return Ok(None);
+    }
+    if current_title.is_some_and(|cur| cur.trim() == title) {
+        return Ok(Some(title));
     }
     let req = WorkerTitleRequest {
         title: title.clone(),
         fence: Some(fence.clone()),
     };
     client
-        .post(format!("{}/internal/v1/runs/{run_id}/title", cli.api_url))
-        .bearer_auth(&cli.worker_token)
+        .post(format!("{api_url}/internal/v1/runs/{run_id}/title"))
+        .bearer_auth(worker_token)
         .json(&req)
         .send()
         .await?
         .error_for_status()
         .context("post title")?;
     info!(run_id = %run_id, %title, "refreshed run title");
-    Ok(())
+    Ok(Some(title))
 }
 
 async fn set_status(
@@ -1895,8 +1994,9 @@ async fn drain_stderr_lines(stderr: tokio::process::ChildStderr) {
 #[cfg(test)]
 mod title_tests {
     use super::{
-        chat_completions_url, event_file_key, git_command, outcome_for_hold, prepare_workspace,
-        sanitize_run_title, workspace_ready, EventOutbox, HoldExit, RunOutcome,
+        chat_completions_url, event_file_key, format_title_focus, git_command, outcome_for_hold,
+        prepare_workspace, sanitize_run_title, title_is_user_locked, workspace_ready, EventOutbox,
+        HoldExit, RunOutcome,
     };
     use futures::StreamExt;
     use std::future::IntoFuture;
@@ -1926,6 +2026,21 @@ mod title_tests {
     fn sanitize_strips_wrapping() {
         assert_eq!(sanitize_run_title("  \"项目总结\"  "), "项目总结");
         assert_eq!(sanitize_run_title("# Fix login bug\nmore"), "Fix login bug");
+    }
+
+    #[test]
+    fn title_focus_includes_recent_follow_ups() {
+        let focus = format_title_focus("检查一下项目", &["服务器不动，继续用".into()]);
+        assert!(focus.contains("Original task:\n检查一下项目"));
+        assert!(focus.contains("1. 服务器不动，继续用"));
+    }
+
+    #[test]
+    fn user_rename_locks_auto_title() {
+        assert!(!title_is_user_locked("检查一下项目", None, "检查一下项目"));
+        assert!(title_is_user_locked("我改的标题", None, "检查一下项目"));
+        assert!(!title_is_user_locked("SSH 优化服务器", Some("SSH 优化服务器"), "检查一下项目"));
+        assert!(title_is_user_locked("手动标题", Some("SSH 优化服务器"), "检查一下项目"));
     }
 
     #[test]

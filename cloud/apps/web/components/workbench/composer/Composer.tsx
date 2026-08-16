@@ -3,6 +3,7 @@
 import {
   forwardRef,
   useCallback,
+  useEffect,
   useImperativeHandle,
   useRef,
   useState,
@@ -88,6 +89,18 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
       el.style.height = `${Math.min(el.scrollHeight, 200)}px`;
     }
   }, [compact]);
+
+  useEffect(() => {
+    autosize();
+  }, [value, autosize]);
+
+  useEffect(() => {
+    const parent = promptRef.current?.parentElement;
+    if (!parent || typeof ResizeObserver === "undefined") return;
+    const ro = new ResizeObserver(() => autosize());
+    ro.observe(parent);
+    return () => ro.disconnect();
+  }, [autosize]);
 
   useImperativeHandle(
     ref,
@@ -190,8 +203,8 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
           ref={promptRef}
           className={
             compact
-              ? "block max-h-32 min-h-[32px] w-full resize-none border-0 bg-transparent px-0 pb-1 pt-0 text-[13px] leading-normal text-ink outline-none"
-              : "block max-h-[200px] min-h-[72px] w-full resize-none border-0 bg-transparent px-1 pb-2.5 pt-0.5 text-sm leading-normal text-ink outline-none"
+              ? "block max-h-32 min-h-[32px] w-full resize-none overflow-y-auto border-0 bg-transparent px-0 pb-1 pt-0 text-[13px] leading-normal text-ink outline-none"
+              : "block max-h-[200px] min-h-[72px] w-full resize-none overflow-y-auto border-0 bg-transparent px-1 pb-2.5 pt-0.5 text-sm leading-normal text-ink outline-none"
           }
           rows={1}
           placeholder={chrome.placeholder}
@@ -201,6 +214,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
             onChange(e.target.value);
             autosize();
           }}
+          onFocus={() => autosize()}
           onKeyDown={handleKeyDown}
         />
         <div className="flex items-center justify-between gap-2">

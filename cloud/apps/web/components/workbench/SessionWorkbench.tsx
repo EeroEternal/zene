@@ -55,7 +55,7 @@ import { PushPromptCard } from "../PushPromptCard";
 import { repoLabel } from "../Sidebar";
 import { useToast } from "../Toast";
 import { ChatTimeline } from "./ChatTimeline";
-import { Composer } from "./composer/Composer";
+import { Composer, type ComposerHandle } from "./composer/Composer";
 import type { QueuedPrompt } from "./composer/PromptQueue";
 import { SessionHeader } from "./SessionHeader";
 
@@ -85,6 +85,7 @@ export function SessionWorkbench({
   onRunStarted,
 }: SessionWorkbenchProps) {
   const toast = useToast();
+  const composerRef = useRef<ComposerHandle>(null);
   const { width: codeWidth, setWidth: setCodeWidth } = useCodePanelWidth();
   const [run, setRun] = useState<Run | null>(null);
   const [items, setItems] = useState<TimelineItem[]>([]);
@@ -92,6 +93,7 @@ export function SessionWorkbench({
   const [followUp, setFollowUp] = useState("");
   const [promptQueue, setPromptQueue] = useState<QueuedPrompt[]>([]);
   const [sending, setSending] = useState(false);
+  const [pendingSince, setPendingSince] = useState<number | null>(null);
   const [cancelling, setCancelling] = useState(false);
   const [selectedModel, setSelectedModel] = useState(DEFAULT_MODEL_ID);
   const [llmSettings, setLlmSettings] = useState<LlmSettingsView | null>(null);
@@ -284,6 +286,9 @@ export function SessionWorkbench({
           return next;
         });
         if (isTerminalStatus(nextStatus)) sealOnStop();
+        if (nextStatus === "failed" || nextStatus === "timed_out" || nextStatus === "cancelled") {
+          setPendingSince(null);
+        }
         onRunsChanged();
       }
       if (platform?.event === "run.title" && platform.title) {
@@ -316,13 +321,16 @@ export function SessionWorkbench({
       if (!product) return;
 
       if (product.kind === "text_delta") {
+        setPendingSince(null);
         appendAssistantChunk(product.text || "");
       } else if (product.kind === "thought_delta") {
+        setPendingSince(null);
         appendThoughtChunk(product.text || "");
       } else if (product.kind === "user_message") {
         const text = product.text || "";
         if (text && !queuedTextsRef.current.has(text)) appendUserBubble(text);
       } else if (product.kind === "tool_call") {
+        setPendingSince(null);
         upsertToolCall(product);
       } else if (product.kind === "tool_result") {
         applyToolUpdate(product);
@@ -475,6 +483,10 @@ export function SessionWorkbench({
               return { ...prev, ...next };
             });
             if (isTerminalStatus(next.status)) sealOnStop();
+            const ended = (next.status || "").toLowerCase();
+            if (ended === "failed" || ended === "timed_out" || ended === "cancelled") {
+              setPendingSince(null);
+            }
             if (titleChanged || isSetupStatus(next.status) || statusChanged) {
               onRunsChanged();
             }
@@ -511,6 +523,7 @@ export function SessionWorkbench({
     setRunPullRequests([]);
     setPromptQueue([]);
     queuedTextsRef.current.clear();
+    setPendingSince(null);
   }, [runId]);
 
   useEffect(() => {
@@ -539,17 +552,15 @@ export function SessionWorkbench({
   useEffect(() => {
     onMeta(run?.title || "Agent", run?.status);
     if (typeof document !== "undefined") {
-      const title = run?.title || "Agent";
-      const status = (run?.status || "").toLowerCase();
-      let prefix = "";
-      if (status === "waiting_for_approval") prefix = "🟡 [Approval] ";
-      else if (status === "running" || status === "starting" || status === "provisioning" || status === "cloning") prefix = "⏳ ";
-      else if (status === "failed") prefix = "🔴 ";
-      else if (status === "completed") prefix = "🟢 ";
-      document.title = `${prefix}${title} · Zene`;
+      document.title = `${run?.title || "Agent"} · Zene`;
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [run?.title, run?.status]);
+
+  useEffect(() => {
+    const id = window.requestAnimationFrame(() => composerRef.current?.focus());
+    return () => window.cancelAnimationFrame(id);
+  }, [runId]);
 
   useEffect(() => {
     setSelectedModel(loadSelectedModel());
@@ -560,7 +571,7 @@ export function SessionWorkbench({
 
   const pickerModels = useMemo(() => modelsForPicker(llmSettings), [llmSettings]);
   const hasLiveMeta = useMemo(() => timelineHasLiveMeta(items), [items]);
-  const phase = sessionPhase(run?.status, hasLiveMeta);
+  const phase = sessionPhase(run?.status, hasLiveMeta, pendingSince != null);
   const chrome = composerChrome(phase);
   const repoName = run ? repoLabel(repos, run.repositoryId) : "";
   const headBranch = run?.headBranch || gitCompare?.head || "";
@@ -632,6 +643,7 @@ export function SessionWorkbench({
   const retryRun = useCallback(async () => {
     const text = followUp.trim();
     setRetrying(true);
+    setPendingSince(Date.now());
     try {
       if (text) {
         setItems((prev) => sealOpenMeta(prev));
@@ -646,6 +658,7 @@ export function SessionWorkbench({
       setRun(r);
       onRunsChanged();
     } catch (err) {
+      setPendingSince(null);
       toast(err instanceof Error ? err.message : String(err), "error");
     } finally {
       setRetrying(false);
@@ -661,6 +674,7 @@ export function SessionWorkbench({
     }
     const queue = chrome.queueFollowUp;
     setSending(true);
+    setPendingSince(Date.now());
     try {
       setItems((prev) => sealOpenMeta(prev));
       hasAssistantTail.current = false;
@@ -679,6 +693,7 @@ export function SessionWorkbench({
         setRun((prev) => (prev ? { ...prev, status: "running" } : prev));
       }
     } catch (err) {
+      setPendingSince(null);
       queuedTextsRef.current.delete(text);
       setPromptQueue((prev) => prev.filter((item) => item.text !== text));
       toast(err instanceof Error ? err.message : String(err), "error");
@@ -689,6 +704,7 @@ export function SessionWorkbench({
 
   const cancelRun = useCallback(async () => {
     setCancelling(true);
+    setPendingSince(null);
     sealOnStop();
     setRun((prev) => (prev ? { ...prev, status: "stopping" } : prev));
     try {
@@ -798,6 +814,7 @@ export function SessionWorkbench({
           items={items}
           historyReady={historyReady}
           setupCopy={setupCopy}
+          pendingSince={pendingSince}
           assistantLive={phase === "live" || phase === "approval"}
           runMessages={runMessages}
           forkingTurn={forkingTurn}
@@ -831,6 +848,7 @@ export function SessionWorkbench({
         <div className="bg-canvas-bg px-4 pb-3 pt-1">
           <div className="mx-auto w-full max-w-[720px] px-3.5">
             <Composer
+              ref={composerRef}
               value={followUp}
               onChange={setFollowUp}
               onSubmit={() => void sendFollowUp()}

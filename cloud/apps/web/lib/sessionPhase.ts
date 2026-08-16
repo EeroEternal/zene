@@ -87,12 +87,14 @@ export function isRetryableStatus(status?: string | null): boolean {
 export function sessionPhase(
   status?: string | null,
   hasLiveMeta = false,
+  pendingTurn = false,
 ): SessionPhase {
   const key = normalizeRunStatus(status);
-  if (!key) return "loading";
+  if (!key && !pendingTurn) return "loading";
   if (SETUP_STATUSES.has(key)) return "setup";
   if (key === "waiting_for_approval") return "approval";
   if (key === "stopping") return "stopping";
+  if (pendingTurn) return "live";
   if (key === "cancelled") return "cancelled";
   if (key === "failed" || key === "timed_out") return "failed";
   if (key === "waiting_for_user" || key === "completed") return "idle";
