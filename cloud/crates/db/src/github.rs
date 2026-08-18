@@ -1,4 +1,4 @@
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 use chrono::{Duration, Utc};
 use uuid::Uuid;
 use zene_cloud_domain::{
@@ -190,20 +190,25 @@ impl Db {
         status: GithubInstallationStatus,
     ) -> Result<GithubInstallation> {
         let now = Utc::now();
-        let existing: Option<(String, String)> = sqlx::query_as(
-            "SELECT id, created_at FROM github_installations WHERE installation_id = ?",
+        let existing: Option<(String, String, String)> = sqlx::query_as(
+            "SELECT id, organization_id, created_at FROM github_installations WHERE installation_id = ?",
         )
         .bind(installation_id)
         .fetch_optional(&self.pool)
         .await?;
-        let (id, created_at) = if let Some((id, created_at)) = existing {
+        let (id, created_at) = if let Some((id, bound_org, created_at)) = existing {
+            let bound_org = Uuid::parse_str(&bound_org)?;
+            if bound_org != organization_id {
+                bail!(
+                    "installation {installation_id} already exists in another organization"
+                );
+            }
             sqlx::query(
                 "UPDATE github_installations
-                 SET organization_id = ?, account_login = ?, account_type = ?, status = ?,
+                 SET account_login = ?, account_type = ?, status = ?,
                      updated_at = ?
                  WHERE id = ?",
             )
-            .bind(organization_id.to_string())
             .bind(account_login)
             .bind(account_type.as_str())
             .bind(status.as_str())

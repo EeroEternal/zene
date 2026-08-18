@@ -211,6 +211,23 @@ impl GithubClient {
             .await
     }
 
+    pub async fn repository_token(
+        &self,
+        installation_id: &str,
+        repository_ids: &[u64],
+        permissions: &serde_json::Value,
+    ) -> Result<InstallationToken> {
+        self.app
+            .installation_token_scoped(
+                &self.http,
+                &self.config.api_base,
+                installation_id,
+                Some(repository_ids),
+                Some(permissions),
+            )
+            .await
+    }
+
     pub async fn list_installation_repos(
         &self,
         installation_id: &str,
@@ -430,7 +447,10 @@ impl GithubClient {
         })
     }
 
-    /// Mark a draft pull request ready for review (`draft: false`).
+    /// Mark a draft pull request ready for review.
+    ///
+    /// REST `PATCH /pulls/{n}` ignores `draft`; GitHub only exposes undraft via
+    /// GraphQL `markPullRequestReadyForReview`.
     pub async fn mark_pull_request_ready(
         &self,
         installation_id: &str,
@@ -439,59 +459,92 @@ impl GithubClient {
         number: i64,
     ) -> Result<PullRequest> {
         let token = self.installation_token(installation_id).await?;
-        let url = format!(
-            "{}/repos/{owner}/{repo}/pulls/{number}",
-            self.config.api_base
-        );
-
-        #[derive(serde::Serialize)]
-        struct Body {
-            draft: bool,
+        let current = self
+            .graphql(
+                &token.token,
+                r#"query($owner: String!, $name: String!, $number: Int!) {
+                    repository(owner: $owner, name: $name) {
+                        pullRequest(number: $number) {
+                            id number url title body state isDraft
+                        }
+                    }
+                }"#,
+                serde_json::json!({
+                    "owner": owner,
+                    "name": repo,
+                    "number": number,
+                }),
+            )
+            .await
+            .context("load pull request for mark-ready")?;
+        let node = current
+            .pointer("/data/repository/pullRequest")
+            .cloned()
+            .context("pull request not found on GitHub")?;
+        if node.get("isDraft").and_then(|v| v.as_bool()) == Some(false) {
+            return graphql_pull_request(node);
         }
-        #[derive(Deserialize)]
-        struct Resp {
-            number: i64,
-            html_url: String,
-            state: String,
-            draft: Option<bool>,
-            title: String,
-            body: Option<String>,
-        }
-
-        let resp = self
-            .http
-            .patch(&url)
-            .header("Accept", "application/vnd.github+json")
-            .header("Authorization", format!("Bearer {}", token.token))
-            .header("X-GitHub-Api-Version", "2022-11-28")
-            .json(&Body { draft: false })
-            .send()
+        let node_id = node
+            .get("id")
+            .and_then(|v| v.as_str())
+            .context("pull request is missing a GraphQL id")?;
+        let marked = self
+            .graphql(
+                &token.token,
+                r#"mutation($id: ID!) {
+                    markPullRequestReadyForReview(input: { pullRequestId: $id }) {
+                        pullRequest { id number url title body state isDraft }
+                    }
+                }"#,
+                serde_json::json!({ "id": node_id }),
+            )
             .await
             .context("mark pull request ready")?;
+        let after = marked
+            .pointer("/data/markPullRequestReadyForReview/pullRequest")
+            .cloned()
+            .context("GitHub did not return the updated pull request")?;
+        let pr = graphql_pull_request(after)?;
+        if pr.draft {
+            bail!("GitHub still reports this pull request as a draft after mark-as-ready");
+        }
+        Ok(pr)
+    }
+
+    async fn graphql(
+        &self,
+        token: &str,
+        query: &str,
+        variables: serde_json::Value,
+    ) -> Result<serde_json::Value> {
+        let url = format!("{}/graphql", self.config.api_base.trim_end_matches('/'));
+        let resp = self
+            .http
+            .post(&url)
+            .header("Authorization", format!("Bearer {token}"))
+            .header("User-Agent", "zene-cloud")
+            .json(&serde_json::json!({ "query": query, "variables": variables }))
+            .send()
+            .await
+            .context("GitHub GraphQL request")?;
         let status = resp.status();
         let text = resp.text().await.unwrap_or_default();
         if !status.is_success() {
-            bail!("mark pull request ready failed ({status}): {text}");
+            bail!("GitHub GraphQL failed ({status}): {text}");
         }
-        let pr: Resp = serde_json::from_str(&text).context("parse pull request")?;
-        let draft = pr.draft.unwrap_or(false);
-        if draft {
-            bail!("GitHub still reports this pull request as a draft after mark-as-ready");
+        let body: serde_json::Value =
+            serde_json::from_str(&text).context("parse GitHub GraphQL response")?;
+        if let Some(errors) = body.get("errors").and_then(|v| v.as_array()) {
+            if !errors.is_empty() {
+                let msg = errors
+                    .iter()
+                    .filter_map(|e| e.get("message").and_then(|m| m.as_str()))
+                    .collect::<Vec<_>>()
+                    .join("; ");
+                bail!("GitHub GraphQL error: {msg}");
+            }
         }
-        Ok(PullRequest {
-            id: uuid::Uuid::new_v4(),
-            repository_id: uuid::Uuid::nil(),
-            run_id: uuid::Uuid::nil(),
-            provider_number: Some(pr.number),
-            url: Some(pr.html_url),
-            title: pr.title,
-            body: pr.body,
-            base_sha: None,
-            head_sha: None,
-            state: pull_request_state(&pr.state, draft),
-            draft,
-            created_at: chrono::Utc::now(),
-        })
+        Ok(body)
     }
 
     /// Merge an open pull request.
@@ -595,5 +648,37 @@ fn pull_request_state(value: &str, draft: bool) -> PullRequestState {
     if draft {
         return PullRequestState::Draft;
     }
-    PullRequestState::parse(value).unwrap_or(PullRequestState::Open)
+    PullRequestState::parse(&value.to_ascii_lowercase()).unwrap_or(PullRequestState::Open)
+}
+
+fn graphql_pull_request(node: serde_json::Value) -> Result<PullRequest> {
+    let draft = node.get("isDraft").and_then(|v| v.as_bool()).unwrap_or(false);
+    let state = node
+        .get("state")
+        .and_then(|v| v.as_str())
+        .unwrap_or("OPEN");
+    Ok(PullRequest {
+        id: uuid::Uuid::new_v4(),
+        repository_id: uuid::Uuid::nil(),
+        run_id: uuid::Uuid::nil(),
+        provider_number: node.get("number").and_then(|v| v.as_i64()),
+        url: node
+            .get("url")
+            .and_then(|v| v.as_str())
+            .map(str::to_string),
+        title: node
+            .get("title")
+            .and_then(|v| v.as_str())
+            .unwrap_or("Pull request")
+            .to_string(),
+        body: node
+            .get("body")
+            .and_then(|v| v.as_str())
+            .map(str::to_string),
+        base_sha: None,
+        head_sha: None,
+        state: pull_request_state(state, draft),
+        draft,
+        created_at: chrono::Utc::now(),
+    })
 }

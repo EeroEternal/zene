@@ -12,16 +12,17 @@ mkdir -p /opt/zene-cloud/bin /opt/zene-cloud/web /var/lib/zene-cloud/workspaces 
 chown -R zene:zene /opt/zene-cloud /var/lib/zene-cloud
 
 if [[ ! -f /etc/zene-cloud.env ]]; then
-  cat >/etc/zene-cloud.env <<'EOF'
+  WORKER_TOKEN="$(openssl rand -hex 32)"
+  cat >/etc/zene-cloud.env <<EOF
 ZENE_CLOUD_BIND=127.0.0.1:8788
 ZENE_CLOUD_DATABASE_URL=sqlite:/var/lib/zene-cloud/zene-cloud.db
-ZENE_CLOUD_WORKER_TOKEN=dev-worker-token-change-me
+ZENE_CLOUD_WORKER_TOKEN=${WORKER_TOKEN}
 ZENE_CLOUD_WEB_DIR=/opt/zene-cloud/web
 ZENE_CLOUD_WORKSPACE_ROOT=/var/lib/zene-cloud/workspaces
 ZENE_CLOUD_API_URL=http://127.0.0.1:8788
 ZENE_CLOUD_PUBLIC_BASE_URL=https://zene.run
 ZENE_CLOUD_GITHUB_MODE=live
-ZENE_CLOUD_PUSH_PR=true
+ZENE_CLOUD_PUSH_PR=false
 ZENE_CLOUD_ACP_YOLO=true
 ZENE_BIN=/opt/zene-cloud/bin/zene
 EOF

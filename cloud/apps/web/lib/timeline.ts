@@ -214,15 +214,26 @@ function applyPlatformEventToDraft(draft: TimelineDraft, payload: NonNullable<Ru
   }
 }
 
+function lastTrailingThoughtIndex(items: TimelineItem[]): number {
+  for (let i = items.length - 1; i >= 0; i--) {
+    const it = items[i];
+    if (it.kind === "thought") return i;
+    if (it.kind === "bubble" || it.kind === "tool" || it.kind === "approval") return -1;
+  }
+  return -1;
+}
+
 function finalizeTimelineDraft(draft: TimelineDraft): TimelineItem[] {
   const sealedAt = Date.now();
-  return draft.items.map((it) => {
+  const liveTail = lastTrailingThoughtIndex(draft.items);
+  return draft.items.map((it, index) => {
     if (it.kind === "thought") {
+      const keepLive = index === liveTail;
       return {
         ...it,
-        sealed: true,
+        sealed: keepLive ? false : true,
         expanded: false,
-        endedAt: it.endedAt ?? sealedAt,
+        endedAt: keepLive ? undefined : it.endedAt ?? sealedAt,
       };
     }
     if (it.kind === "tool" && !/pending|in_progress|running/i.test(it.status)) {
@@ -271,15 +282,36 @@ export function groupTimeline(items: TimelineItem[]): DisplaySegment[] {
   let buf: MetaItem[] = [];
   const flush = () => {
     if (!buf.length) return;
-    out.push({
-      type: "activity",
-      key: `act-${buf[0].id}`,
-      items: buf,
-      live: buf.some(metaIsLive),
-    });
+    const last = buf[buf.length - 1];
+    let liveThought: ThoughtItem | null = null;
+    if (last.kind === "thought" && !last.sealed && buf.length > 1) {
+      liveThought = last;
+      buf = buf.slice(0, -1);
+    }
+    if (buf.length) {
+      out.push({
+        type: "activity",
+        key: `act-${buf[0].id}`,
+        items: buf,
+        live: buf.some(metaIsLive),
+      });
+    }
+    if (liveThought) {
+      out.push({
+        type: "activity",
+        key: `act-${liveThought.id}`,
+        items: [liveThought],
+        live: true,
+      });
+    }
     buf = [];
   };
   for (const item of items) {
+    if (item.kind === "tool" && isAskUserTool(item)) {
+      flush();
+      out.push({ type: "solo", item });
+      continue;
+    }
     if (isMetaItem(item)) {
       buf.push(item);
     } else {
@@ -345,6 +377,14 @@ function detectToolName(item: ToolItem, raw: Record<string, unknown> | null): st
   if (/^Read\b/i.test(title)) return "Read";
   if (/^Wrote\b|^Write\b/i.test(title)) return "Write";
   if (/^Edited\b|^Edit\b/i.test(title)) return "Edit";
+  if (
+    /AskUserQuestion/i.test(title) ||
+    /^Asked a question$/i.test(title) ||
+    raw?.askUser === true ||
+    (typeof raw?.question === "string" && raw.question.trim().length > 0)
+  ) {
+    return "AskUserQuestion";
+  }
   if (/^Ran\b|^Created\b|^Listed\b|^Checked\b|^Built\b|^Removed\b|^Inspected\b|^Synced\b|^Pushed\b|^Recorded\b|^Fetched\b|^Printed\b|^Processed\b|^Installed\b|^Updated\b|^Used\b|^Moved\b|^Archived\b|^Queried\b|^Changed\b/i.test(title)) {
     if (raw?.command) return "Bash";
     // Runtime already sent a past-tense label (e.g. "Used skill …"); not a tool named "Used".
@@ -514,6 +554,7 @@ function labelFromArgs(name: string, raw: Record<string, unknown> | null): strin
     case "TaskOutput":
       return "Checked task output";
     case "AskUser":
+    case "AskUserQuestion":
       return "Asked a question";
     case "EnterPlanMode":
       return "Entered plan mode";
@@ -529,6 +570,12 @@ function labelFromArgs(name: string, raw: Record<string, unknown> | null): strin
       if (/^Used$/i.test(name)) return "Used";
       return name === "Tool" ? "" : `Used ${name}`;
   }
+}
+
+export function isAskUserTool(item: ToolItem): boolean {
+  const raw = parseToolInput(item);
+  const name = detectToolName(item, raw);
+  return name === "AskUserQuestion" || name === "AskUser";
 }
 
 export function toolLabel(item: ToolItem): string {

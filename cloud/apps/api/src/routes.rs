@@ -11,7 +11,7 @@ use serde::Deserialize;
 use tokio_stream::wrappers::ReceiverStream;
 use uuid::Uuid;
 use zene_cloud_domain::{
-    ClaimedRun, CreateApprovalRequest, CreatePullRequestBody, CreateRunRequest,
+    github_account_view, ClaimedRun, CreateApprovalRequest, CreatePullRequestBody, CreateRunRequest,
     DecideApprovalRequest, EmailLoginRequest, EmailLoginResponse, LoginRequest, MessageRole,
     PostMessageRequest, QueueStats, RegisterRequest, RunStatus, SetRunModeRequest,
     UpdateRunRequest, WorkerClaimRequest, WorkerCommandAckRequest, WorkerCommandsResponse,
@@ -214,7 +214,7 @@ async fn me(
     Ok(Json(serde_json::json!({
         "user": user,
         "organization": org,
-        "github": gh_account,
+        "github": gh_account.as_ref().map(github_account_view),
         "githubMode": github.mode(),
         "githubConfigured": github.config().is_app_configured(),
     })))
@@ -518,7 +518,13 @@ async fn decide_approval(
     Ok(Json(
         state
             .db
-            .decide_approval(approval_id, req.decision, Some(&user.id.to_string()))
+            .decide_approval_with_outcome(
+                approval_id,
+                req.decision,
+                Some(&user.id.to_string()),
+                req.option_id.as_deref(),
+                req.answer.as_deref(),
+            )
             .await?,
     ))
 }
@@ -988,7 +994,7 @@ async fn worker_push(
         "zene: {}",
         run.title.chars().take(72).collect::<String>()
     );
-    workspace::commit_worktree_if_dirty(&root, &commit_msg)
+    let committed_head = workspace::commit_worktree_if_dirty(&root, &commit_msg)
         .await
         .map_err(AppError::from)?;
     if !workspace::branch_has_commits_ahead(&root, &run.base_ref)
@@ -1000,10 +1006,12 @@ async fn worker_push(
         ));
     }
     let bundle = create_bundle(&root).await.map_err(AppError::from)?;
-    let expected = run.head_sha.clone().unwrap_or_else(|| "HEAD".into());
+    let expected = committed_head
+        .or_else(|| run.head_sha.clone())
+        .unwrap_or_else(|| "HEAD".into());
     let key = req
         .idempotency_key
-        .unwrap_or_else(|| format!("push-{}", Uuid::new_v4()));
+        .unwrap_or_else(|| format!("push-{run_id}-{expected}"));
     let git_broker = state
         .git_broker_for_org(run.organization_id)
         .await

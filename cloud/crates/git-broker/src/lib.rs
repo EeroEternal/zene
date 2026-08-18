@@ -55,7 +55,15 @@ impl GitBroker {
             .installation_id
             .as_deref()
             .context("repository has no GitHub installation_id")?;
-        let tok = self.github.installation_token(installation_id).await?;
+        let repo_id = provider_repo_id(&repo)?;
+        let tok = self
+            .github
+            .repository_token(
+                installation_id,
+                &[repo_id],
+                &serde_json::json!({ "contents": "read", "metadata": "read" }),
+            )
+            .await?;
         let token = tok.token;
         let mode = GithubMode::Live;
 
@@ -419,7 +427,19 @@ impl GitBroker {
             .installation_id
             .as_deref()
             .context("repository has no GitHub installation_id")?;
-        let token = self.github.installation_token(installation_id).await?;
+        let repo_id = provider_repo_id(repo)?;
+        let token = self
+            .github
+            .repository_token(
+                installation_id,
+                &[repo_id],
+                &serde_json::json!({
+                    "contents": "write",
+                    "metadata": "read",
+                    "pull_requests": "write"
+                }),
+            )
+            .await?;
 
         let tmp = tempfile::tempdir().context("create tempdir for bundle push")?;
         let work = tmp.path().join("repo");
@@ -512,6 +532,15 @@ impl GitBroker {
         );
         Ok((head_sha, push_url))
     }
+}
+
+fn provider_repo_id(repo: &zene_cloud_domain::Repository) -> Result<u64> {
+    let raw = repo
+        .provider_repo_id
+        .as_deref()
+        .context("repository has no GitHub provider_repo_id")?;
+    raw.parse::<u64>()
+        .with_context(|| format!("invalid provider_repo_id {raw}"))
 }
 
 fn inject_token_into_https_url(clone_url: &str, token: &str) -> Result<String> {

@@ -39,6 +39,21 @@ export interface GithubStatus {
   hint?: string;
 }
 
+export interface GithubProviderConfigView {
+  mode?: GithubMode;
+  configured?: boolean;
+  appId?: string | null;
+  hasAppPrivateKey?: boolean;
+  appSlug?: string | null;
+}
+
+export interface GithubSettingsView {
+  provider?: GithubProviderConfigView;
+  connected?: boolean;
+  installUrl?: string | null;
+  redirectUri?: string | null;
+}
+
 export interface Repo {
   id: string;
   owner: string;

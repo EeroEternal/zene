@@ -5,7 +5,8 @@ const CLOUD_GITHUB_RULE: &str = "\
 # Cloud GitHub
 
 This session is bound to a GitHub App installation. \
-When the user wants a commit, push, or pull request, call the `PublishGithub` tool. \
+Call `PublishGithub` only when the user explicitly asks to commit, push, or open a pull request. \
+Exploration, status checks, and “look at the project” must not publish. \
 That tool is the only supported publish path: Cloud git-broker commits the workspace, pushes the session branch, and opens a draft PR. \
 Do not run `git push` or `gh`. Do not SSH to another machine to publish. \
 Local `git status`, `diff`, `log`, `add`, and `commit` in this workspace are allowed.";

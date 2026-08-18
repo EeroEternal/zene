@@ -64,11 +64,37 @@ impl GithubAppAuth {
     }
 
     /// Exchange App JWT for an installation access token.
+    ///
+    /// When `repository_ids` is set, GitHub limits the token to those
+    /// repositories and the given `permissions`. Omitting both keeps the
+    /// installation-wide token (server-side listing only).
     pub async fn installation_token(
         &self,
         http: &reqwest::Client,
         api_base: &str,
         installation_id: &str,
+    ) -> Result<InstallationToken> {
+        self.installation_token_scoped(http, api_base, installation_id, None, None)
+            .await
+    }
+
+    pub fn scoped_token_body(
+        repository_ids: &[u64],
+        permissions: &serde_json::Value,
+    ) -> serde_json::Value {
+        serde_json::json!({
+            "repository_ids": repository_ids,
+            "permissions": permissions,
+        })
+    }
+
+    pub async fn installation_token_scoped(
+        &self,
+        http: &reqwest::Client,
+        api_base: &str,
+        installation_id: &str,
+        repository_ids: Option<&[u64]>,
+        permissions: Option<&serde_json::Value>,
     ) -> Result<InstallationToken> {
         if installation_id.trim().is_empty() {
             bail!("installation_id is empty");
@@ -83,12 +109,19 @@ impl GithubAppAuth {
             expires_at: String,
         }
 
-        let resp = http
+        let mut req = http
             .post(&url)
             .header("Accept", "application/vnd.github+json")
             .header("Authorization", format!("Bearer {jwt}"))
             .header("User-Agent", "zene-cloud")
-            .header("X-GitHub-Api-Version", "2022-11-28")
+            .header("X-GitHub-Api-Version", "2022-11-28");
+        if let (Some(ids), Some(perms)) = (repository_ids, permissions) {
+            if ids.is_empty() {
+                bail!("scoped installation token requires repository_ids");
+            }
+            req = req.json(&Self::scoped_token_body(ids, perms));
+        }
+        let resp = req
             .send()
             .await
             .context("create installation token request")?;
@@ -119,6 +152,21 @@ impl GithubAppAuth {
                 urlencoding(state)
             )
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::GithubAppAuth;
+
+    #[test]
+    fn scoped_token_body_includes_repository_ids_and_permissions() {
+        let body = GithubAppAuth::scoped_token_body(
+            &[1296269],
+            &serde_json::json!({ "contents": "read", "metadata": "read" }),
+        );
+        assert_eq!(body["repository_ids"][0], 1296269);
+        assert_eq!(body["permissions"]["contents"], "read");
     }
 }
 

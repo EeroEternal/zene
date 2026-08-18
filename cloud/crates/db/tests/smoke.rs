@@ -385,6 +385,29 @@ fn approval_request(request_key: &str) -> CreateApprovalRequest {
     }
 }
 
+fn ask_user_request(request_key: &str) -> CreateApprovalRequest {
+    CreateApprovalRequest {
+        request_key: request_key.into(),
+        kind: ApprovalKind::Permission,
+        risk: ApprovalRisk::Low,
+        payload: ApprovalEventPayload {
+            request_id: request_key.into(),
+            tool_call_id: Some(request_key.into()),
+            title: Some("Create the pull request now?".into()),
+            tool_name: None,
+            kind: None,
+            status: None,
+            raw_input: Some(serde_json::json!({
+                "askUser": true,
+                "question": "Create the pull request now?",
+                "options": [{ "label": "Yes, open a draft PR" }]
+            })),
+        },
+        allowed_decisions: vec![ApprovalDecision::AllowOnce, ApprovalDecision::Deny],
+        expires_at: None,
+    }
+}
+
 #[tokio::test]
 async fn concurrent_approval_creation_has_one_row_and_event() {
     let (db, run_id) = approval_test_run(PermissionMode::AcceptEdits).await;
@@ -443,6 +466,37 @@ async fn concurrent_approval_decisions_have_one_winner_event() {
             .count(),
         1
     );
+}
+
+#[tokio::test]
+async fn yolo_does_not_auto_resolve_ask_user_approvals() {
+    let (db, run_id) = approval_test_run(PermissionMode::Yolo).await;
+    let regular = db
+        .create_approval(run_id, approval_request("regular-auto"))
+        .await
+        .unwrap();
+    assert_eq!(regular.status, ApprovalStatus::Resolved);
+    assert_eq!(regular.decision, Some(ApprovalDecision::AllowOnce));
+
+    let ask = db
+        .create_approval(run_id, ask_user_request("ask-user-wait"))
+        .await
+        .unwrap();
+    assert_eq!(ask.status, ApprovalStatus::Pending);
+    assert_eq!(ask.decision, None);
+
+    let decided = db
+        .decide_approval_with_outcome(
+            ask.id,
+            ApprovalDecision::AllowOnce,
+            Some("user-a"),
+            Some("ask-0"),
+            None,
+        )
+        .await
+        .unwrap();
+    assert_eq!(decided.status, ApprovalStatus::Approved);
+    assert_eq!(decided.payload["optionId"], "ask-0");
 }
 
 #[tokio::test]
@@ -1113,7 +1167,7 @@ async fn email_login_rejects_invalid_and_rate_limits() {
 }
 
 #[tokio::test]
-async fn same_repo_sessions_share_workspace_checkout() {
+async fn same_repo_sessions_share_workspace_id_not_checkout() {
     let db = Db::connect("sqlite::memory:").await.unwrap();
     db.migrate().await.unwrap();
     db.ensure_dev_worker_token("dev-worker-token")
@@ -1180,11 +1234,15 @@ async fn same_repo_sessions_share_workspace_checkout() {
     let b = db.claim_next_run("w2", root).await.unwrap().unwrap();
     let c = db.claim_next_run("w3", root).await.unwrap().unwrap();
     let dirs = [a.4, b.4, c.4];
-    let shared: Vec<_> = dirs
+    let same_repo: Vec<_> = dirs
         .iter()
         .filter(|dir| dir.contains(&first.workspace_id.to_string()))
         .collect();
-    assert_eq!(shared.len(), 2);
+    assert_eq!(same_repo.len(), 2);
+    assert_ne!(same_repo[0], same_repo[1]);
+    assert!(same_repo.iter().all(|dir| dir.contains("/runs/")));
     assert!(dirs.iter().any(|dir| dir.contains(&other_run.workspace_id.to_string())));
     assert!(dirs.iter().all(|dir| dir.contains("/ws/")));
+    assert!(dirs.iter().any(|dir| dir.contains(&first.id.to_string())));
+    assert!(dirs.iter().any(|dir| dir.contains(&second.id.to_string())));
 }

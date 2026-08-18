@@ -153,3 +153,55 @@ async fn github_crud_and_migrations() {
         .await
         .unwrap();
 }
+
+#[tokio::test]
+async fn installation_cannot_move_to_another_organization() {
+    let db = Db::connect("sqlite::memory:").await.unwrap();
+    db.migrate().await.unwrap();
+    let first = db
+        .register(RegisterRequest {
+            email: "a-org@example.com".into(),
+            password: "password123".into(),
+            display_name: "A".into(),
+        })
+        .await
+        .unwrap();
+    let second = db
+        .register(RegisterRequest {
+            email: "b-org@example.com".into(),
+            password: "password123".into(),
+            display_name: "B".into(),
+        })
+        .await
+        .unwrap();
+    db.upsert_installation(
+        first.organization.id,
+        "inst-1",
+        "acme",
+        GithubAccountType::Organization,
+        GithubInstallationStatus::Active,
+    )
+    .await
+    .unwrap();
+    let err = db
+        .upsert_installation(
+            second.organization.id,
+            "inst-1",
+            "acme",
+            GithubAccountType::Organization,
+            GithubInstallationStatus::Active,
+        )
+        .await
+        .expect_err("must not transfer installation");
+    assert!(err.to_string().contains("another organization"));
+    let still = db
+        .list_installations(first.organization.id)
+        .await
+        .unwrap();
+    assert_eq!(still.len(), 1);
+    assert!(db
+        .list_installations(second.organization.id)
+        .await
+        .unwrap()
+        .is_empty());
+}

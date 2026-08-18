@@ -5,6 +5,23 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
+const RPC_DEADLINE: Duration = Duration::from_secs(600);
+const LONG_RPC_SILENCE: Duration = Duration::from_secs(600);
+const LONG_RPC_POLL: Duration = Duration::from_secs(30);
+
+#[derive(Debug, Clone, Copy)]
+enum RpcWait {
+    Deadline(Duration),
+    Silence { poll: Duration, max_silence: Duration },
+}
+
+fn keep_waiting(wait: RpcWait, started_elapsed: Duration, silence_elapsed: Duration) -> bool {
+    match wait {
+        RpcWait::Deadline(total) => started_elapsed < total,
+        RpcWait::Silence { max_silence, .. } => silence_elapsed < max_silence,
+    }
+}
+
 use anyhow::{anyhow, bail, Context, Result};
 use serde_json::{json, Value};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -19,6 +36,7 @@ pub struct AcpBridge {
     stdin: Arc<Mutex<ChildStdin>>,
     next_id: AtomicU64,
     pending: Arc<Mutex<HashMap<String, oneshot::Sender<Value>>>>,
+    last_stdout: Arc<Mutex<tokio::time::Instant>>,
     pump: tokio::task::JoinHandle<()>,
 }
 
@@ -182,6 +200,8 @@ impl AcpBridge {
         let pending: Arc<Mutex<HashMap<String, oneshot::Sender<Value>>>> =
             Arc::new(Mutex::new(HashMap::new()));
         let pending_pump = Arc::clone(&pending);
+        let last_stdout = Arc::new(Mutex::new(tokio::time::Instant::now()));
+        let last_stdout_pump = Arc::clone(&last_stdout);
         let pump = tokio::spawn(async move {
             let mut reader = BufReader::new(stdout);
             let mut line = String::new();
@@ -192,7 +212,9 @@ impl AcpBridge {
                         fail_pending(&pending_pump, "ACP child exited before responding").await;
                         break;
                     }
-                    Ok(_) => {}
+                    Ok(_) => {
+                        *last_stdout_pump.lock().await = tokio::time::Instant::now();
+                    }
                     Err(err) => {
                         warn!(error = %err, "acp stdout read failed");
                         fail_pending(&pending_pump, "ACP child stdout failed before responding").await;
@@ -220,6 +242,7 @@ impl AcpBridge {
                 stdin: Arc::new(Mutex::new(stdin)),
                 next_id: AtomicU64::new(1),
                 pending,
+                last_stdout,
                 pump,
             },
             msg_rx,
@@ -310,23 +333,31 @@ impl AcpBridge {
     }
 
     pub async fn prompt(&self, session_id: &str, text: &str) -> Result<Value> {
-        self.request(
+        self.request_wait(
             "session/prompt",
             json!({
                 "sessionId": session_id,
                 "prompt": [{ "type": "text", "text": text }]
             }),
+            RpcWait::Silence {
+                poll: LONG_RPC_POLL,
+                max_silence: LONG_RPC_SILENCE,
+            },
         )
         .await
     }
 
     pub async fn steer(&self, session_id: &str, text: &str) -> Result<Value> {
-        self.request(
+        self.request_wait(
             "session/steer",
             json!({
                 "sessionId": session_id,
                 "text": text
             }),
+            RpcWait::Silence {
+                poll: LONG_RPC_POLL,
+                max_silence: LONG_RPC_SILENCE,
+            },
         )
         .await
     }
@@ -366,6 +397,11 @@ impl AcpBridge {
     }
 
     async fn request(&self, method: &str, params: Value) -> Result<Value> {
+        self.request_wait(method, params, RpcWait::Deadline(RPC_DEADLINE))
+            .await
+    }
+
+    async fn request_wait(&self, method: &str, params: Value, wait: RpcWait) -> Result<Value> {
         let id = self.next_id.fetch_add(1, Ordering::SeqCst);
         let id_value = json!(id);
         let key = id.to_string();
@@ -385,18 +421,33 @@ impl AcpBridge {
             pending.remove(&key);
             return Err(err);
         }
-        match tokio::time::timeout(Duration::from_secs(600), rx).await {
-            Ok(Ok(value)) => {
-                if let Some(err) = value.get("error") {
-                    bail!("{method} failed: {err}");
+        let started = tokio::time::Instant::now();
+        *self.last_stdout.lock().await = started;
+        let mut rx = rx;
+        loop {
+            let slice = match wait {
+                RpcWait::Deadline(total) => total
+                    .saturating_sub(started.elapsed())
+                    .max(Duration::from_millis(1)),
+                RpcWait::Silence { poll, .. } => poll,
+            };
+            match tokio::time::timeout(slice, &mut rx).await {
+                Ok(Ok(value)) => {
+                    if let Some(err) = value.get("error") {
+                        bail!("{method} failed: {err}");
+                    }
+                    return Ok(value.get("result").cloned().unwrap_or(Value::Null));
                 }
-                Ok(value.get("result").cloned().unwrap_or(Value::Null))
-            }
-            Ok(Err(_)) => bail!("{method}: response channel closed"),
-            Err(_) => {
-                let mut pending = self.pending.lock().await;
-                pending.remove(&key);
-                bail!("{method}: timed out waiting for response")
+                Ok(Err(_)) => bail!("{method}: response channel closed"),
+                Err(_) => {
+                    let silence = self.last_stdout.lock().await.elapsed();
+                    if keep_waiting(wait, started.elapsed(), silence) {
+                        continue;
+                    }
+                    let mut pending = self.pending.lock().await;
+                    pending.remove(&key);
+                    bail!("{method}: timed out waiting for response");
+                }
             }
         }
     }
@@ -508,6 +559,25 @@ mod tests {
         assert_eq!(response["error"]["code"], -32000);
         assert_eq!(response["error"]["message"], "child failed");
         assert!(pending.lock().await.is_empty());
+    }
+
+    #[test]
+    fn prompt_wait_survives_long_turns_if_acp_is_still_talking() {
+        let wait = RpcWait::Silence {
+            poll: Duration::from_secs(30),
+            max_silence: Duration::from_secs(600),
+        };
+        assert!(keep_waiting(wait, Duration::from_secs(1200), Duration::from_secs(5)));
+        assert!(!keep_waiting(
+            wait,
+            Duration::from_secs(1200),
+            Duration::from_secs(600)
+        ));
+        assert!(!keep_waiting(
+            RpcWait::Deadline(Duration::from_secs(600)),
+            Duration::from_secs(600),
+            Duration::from_secs(0)
+        ));
     }
 
     #[test]

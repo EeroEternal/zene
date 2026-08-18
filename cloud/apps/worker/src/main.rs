@@ -25,8 +25,8 @@ use zene_cloud_domain::{
     ApprovalDecision, ApprovalEventPayload, ApprovalKind, ApprovalRequest, ApprovalRisk,
     ApprovalStatus, ClaimedRun, CloneAuthResponse, CreateApprovalRequest, LlmAuthResponse,
     PermissionMode, RunStatus, WorkerClaimRequest, WorkerCommandAckRequest,
-    WorkerCommandKind, WorkerCommandsResponse, WorkerEventRequest, WorkerFence, WorkerPullRequestRequest,
-    WorkerPushRequest, WorkerSessionRequest, WorkerStatusRequest, WorkerTitleRequest,
+    WorkerCommandKind, WorkerCommandsResponse, WorkerEventRequest, WorkerFence,
+    WorkerSessionRequest, WorkerStatusRequest, WorkerTitleRequest,
 };
 
 #[derive(Debug, Clone, Parser)]
@@ -63,7 +63,7 @@ pub(crate) struct Cli {
     pub(crate) poll_seconds: u64,
 
     /// Call push/PR endpoints after commit (mock Git Broker by default).
-    #[arg(long, env = "ZENE_CLOUD_PUSH_PR", default_value_t = true)]
+    #[arg(long, env = "ZENE_CLOUD_PUSH_PR", default_value_t = false)]
     pub(crate) push_pr: bool,
 
     /// Run as process supervisor (spawn/scale executor children). Mutually exclusive with executor loop.
@@ -109,6 +109,10 @@ enum HoldExit {
     Cancelled,
     Shutdown,
     RuntimeInterrupted,
+}
+
+fn idle_hold_elapsed(turn_busy: bool, elapsed: Duration, idle: Duration) -> bool {
+    !turn_busy && elapsed >= idle
 }
 
 fn outcome_for_hold(prompt_completed: bool, exit: HoldExit) -> RunOutcome {
@@ -342,12 +346,7 @@ async fn execute_run(
     let workspace_exists = workspace_ready(&workspace).await;
     let clone_auth = fetch_clone_auth(client, cli, run_id).await.ok();
     if workspace_exists {
-        info!(path = %workspace.display(), "workspace ready; skipping clone");
-        let _ = run_git(
-            &workspace,
-            &["checkout", "-B", &claimed.run.head_branch],
-        )
-        .await;
+        info!(path = %workspace.display(), "resuming this run's checkout");
         set_status(client, cli, run_id, &fence, RunStatus::Running, None, None).await?;
     } else {
         let auth = clone_auth
@@ -433,14 +432,6 @@ async fn execute_run(
                 abort_bg();
                 return Ok(());
             }
-            let head_sha = git_commit_all(&workspace, &claimed.run.title)
-                .await
-                .ok()
-                .flatten();
-            if cli.push_pr {
-                let _ = post_push(client, cli, run_id).await;
-                let _ = post_pull_request(client, cli, run_id, &claimed.run.title).await;
-            }
             if shutdown.load(Ordering::SeqCst) {
                 abort_bg();
                 return Ok(());
@@ -451,7 +442,7 @@ async fn execute_run(
                 run_id,
                 &fence,
                 RunStatus::Completed,
-                head_sha,
+                None,
                 None,
             )
             .await?;
@@ -575,13 +566,35 @@ fn authenticated_clone_url(auth: &CloneAuthResponse) -> String {
     clone_url
 }
 
+async fn fetch_cache_base_ref(cache: &Path, auth: &CloneAuthResponse) -> Result<()> {
+    let clone_url = authenticated_clone_url(auth);
+    let status = git_command()
+        .args([
+            "-C",
+            &cache.display().to_string(),
+            "fetch",
+            "--depth",
+            "1",
+            clone_url.as_str(),
+            &format!("+refs/heads/{0}:refs/heads/{0}", auth.base_ref),
+        ])
+        .status()
+        .await
+        .context("git fetch base_ref")?;
+    if !status.success() {
+        bail!("git fetch base_ref failed with {status}");
+    }
+    Ok(())
+}
+
 async fn ensure_repo_cache(cache: &Path, auth: &CloneAuthResponse) -> Result<()> {
     if bare_cache_ready(cache).await {
         info!(
             path = %cache.display(),
             repository_id = %auth.repository_id,
-            "repo cache ready; skipping github fetch"
+            "repo cache ready; fetching latest base_ref"
         );
+        let _ = fetch_cache_base_ref(cache, auth).await;
         return Ok(());
     }
     if cache.exists() {
@@ -702,7 +715,7 @@ async fn prepare_workspace(
             "--force",
             "--detach",
             &workspace.display().to_string(),
-            &auth.base_ref,
+            auth.base_ref.as_str(),
         ])
         .status()
         .await;
@@ -750,6 +763,7 @@ fn spawn_event_pump<R: RuntimeClient + 'static>(
     run_id: Uuid,
     fence: WorkerFence,
     outbox: EventOutbox,
+    last_activity: Arc<tokio::sync::Mutex<tokio::time::Instant>>,
 ) -> (
     tokio::task::JoinHandle<()>,
     Arc<tokio::sync::Mutex<Option<String>>>,
@@ -759,6 +773,10 @@ fn spawn_event_pump<R: RuntimeClient + 'static>(
     let runtime_bg = runtime.clone();
     let pump = tokio::spawn(async move {
         while let Some(event) = runtime_bg.next_event().await {
+            {
+                let mut ts = last_activity.lock().await;
+                *ts = tokio::time::Instant::now();
+            }
             match event {
                 RuntimeEvent::Initialized { event, .. } | RuntimeEvent::Notification(event) => {
                     if let Err(err) = deliver_event(
@@ -799,7 +817,7 @@ fn spawn_event_pump<R: RuntimeClient + 'static>(
                         allowed_decisions,
                         context,
                     } = request;
-                    let decision = match resolve_permission(
+                    let outcome = match resolve_permission(
                         &client,
                         &api_url,
                         &token,
@@ -811,14 +829,23 @@ fn spawn_event_pump<R: RuntimeClient + 'static>(
                     )
                     .await
                     {
-                        Ok(d) => d,
+                        Ok(outcome) => outcome,
                         Err(err) => {
                             warn!(error = %err, "permission resolve failed");
-                            ApprovalDecision::Deny
+                            ResolvedPermission {
+                                decision: ApprovalDecision::Deny,
+                                option_id: None,
+                                answer: None,
+                            }
                         }
                     };
                     let _ = runtime_bg
-                        .send(RuntimeCommand::Approval { request_id, decision })
+                        .send(RuntimeCommand::Approval {
+                            request_id,
+                            decision: outcome.decision,
+                            option_id: outcome.option_id,
+                            answer: outcome.answer,
+                        })
                         .await;
                 }
                 RuntimeEvent::ChildExited => {
@@ -946,11 +973,11 @@ fn spawn_command_poller<R: RuntimeClient + 'static>(
                                             warn!(error = %err, "follow-up prompt failed; command will be retried");
                                         }
                                     }
-                                    turn_busy.store(false, Ordering::SeqCst);
                                     {
                                         let mut ts = last_activity.lock().await;
                                         *ts = tokio::time::Instant::now();
                                     }
+                                    turn_busy.store(false, Ordering::SeqCst);
                                     if !cancelled.load(Ordering::SeqCst) {
                                         let _ = set_status_raw(
                                             &client,
@@ -961,7 +988,7 @@ fn spawn_command_poller<R: RuntimeClient + 'static>(
                                             RunStatus::WaitingForUser,
                                         )
                                         .await;
-                                        let (focus, llm_env, skip) = {
+                                        let (focus, source_prompt, llm_env, skip) = {
                                             let mut st = title_state.lock().await;
                                             st.recent.push(text.clone());
                                             if st.recent.len() > 5 {
@@ -974,6 +1001,7 @@ fn spawn_command_poller<R: RuntimeClient + 'static>(
                                             );
                                             (
                                                 format_title_focus(&st.original_prompt, &st.recent),
+                                                st.original_prompt.clone(),
                                                 st.llm_env.clone(),
                                                 skip,
                                             )
@@ -988,6 +1016,7 @@ fn spawn_command_poller<R: RuntimeClient + 'static>(
                                                     &fence,
                                                     &focus,
                                                     current_title.as_deref(),
+                                                    &source_prompt,
                                                     llm_env,
                                                 )
                                                 .await
@@ -1037,6 +1066,9 @@ async fn run_runtime_session<R: RuntimeClient + 'static>(
         let session_id = runtime.session_id().await?;
         persist_runtime_session(client, cli, run_id, fence, &session_id).await?;
     }
+    let cancelled = Arc::new(AtomicBool::new(false));
+    let last_activity = Arc::new(tokio::sync::Mutex::new(tokio::time::Instant::now()));
+    let turn_busy = Arc::new(AtomicBool::new(false));
     let (pump, event_error) = spawn_event_pump(
         runtime.clone(),
         client.clone(),
@@ -1045,10 +1077,8 @@ async fn run_runtime_session<R: RuntimeClient + 'static>(
         run_id,
         (*fence).clone(),
         outbox,
+        last_activity.clone(),
     );
-    let cancelled = Arc::new(AtomicBool::new(false));
-    let last_activity = Arc::new(tokio::sync::Mutex::new(tokio::time::Instant::now()));
-    let turn_busy = Arc::new(AtomicBool::new(false));
     let title_state = Arc::new(tokio::sync::Mutex::new(TitleRefresh {
         seed: claimed.run.title.clone(),
         original_prompt: claimed.run.prompt.clone(),
@@ -1076,9 +1106,41 @@ async fn run_runtime_session<R: RuntimeClient + 'static>(
             .context("runtime set_mode")?;
     }
 
-    if resume_without_prompt {
-        info!(run_id = %run_id, "resuming session without initial prompt");
-    } else {
+    if !resume_without_prompt {
+        if let Some(llm_env) = llm_env {
+            let title_state = title_state.clone();
+            let client = client.clone();
+            let api_url = cli.api_url.clone();
+            let token = cli.worker_token.clone();
+            let fence = fence.clone();
+            let focus = format_title_focus(&claimed.run.prompt, &[]);
+            let current_title = claimed.run.title.clone();
+            let source_prompt = claimed.run.prompt.clone();
+            let llm_env = llm_env.clone();
+            tokio::spawn(async move {
+                match maybe_refresh_run_title(
+                    &client,
+                    &api_url,
+                    &token,
+                    run_id,
+                    &fence,
+                    &focus,
+                    Some(current_title.as_str()),
+                    &source_prompt,
+                    &llm_env,
+                )
+                .await
+                {
+                    Ok(Some(title)) => {
+                        title_state.lock().await.last_auto = Some(title);
+                    }
+                    Ok(None) => {}
+                    Err(err) => {
+                        warn!(run_id = %run_id, error = %err, "run title refresh failed");
+                    }
+                }
+            });
+        }
         turn_busy.store(true, Ordering::SeqCst);
         let prompt_result = runtime
             .send(RuntimeCommand::Prompt {
@@ -1092,34 +1154,11 @@ async fn run_runtime_session<R: RuntimeClient + 'static>(
             let mut ts = last_activity.lock().await;
             *ts = tokio::time::Instant::now();
         }
+    } else {
+        info!(run_id = %run_id, "resuming session without initial prompt");
     }
     if !cancelled.load(Ordering::SeqCst) {
         set_status(client, cli, run_id, fence, RunStatus::WaitingForUser, None, None).await?;
-        if !resume_without_prompt {
-            if let Some(llm_env) = llm_env {
-                let focus = format_title_focus(&claimed.run.prompt, &[]);
-                match maybe_refresh_run_title(
-                    client,
-                    &cli.api_url,
-                    &cli.worker_token,
-                    run_id,
-                    fence,
-                    &focus,
-                    Some(claimed.run.title.as_str()),
-                    llm_env,
-                )
-                .await
-                {
-                    Ok(Some(title)) => {
-                        title_state.lock().await.last_auto = Some(title);
-                    }
-                    Ok(None) => {}
-                    Err(err) => {
-                        warn!(run_id = %run_id, error = %err, "run title refresh failed");
-                    }
-                }
-            }
-        }
     }
 
     let hold_exit = loop {
@@ -1139,7 +1178,7 @@ async fn run_runtime_session<R: RuntimeClient + 'static>(
             break HoldExit::RuntimeInterrupted;
         }
         let elapsed = last_activity.lock().await.elapsed();
-        if elapsed >= idle {
+        if idle_hold_elapsed(turn_busy.load(Ordering::SeqCst), elapsed, idle) {
             info!(run_id = %run_id, idle_secs = idle.as_secs(), "runtime idle timeout");
             break HoldExit::IdleTimeout;
         }
@@ -1357,6 +1396,28 @@ async fn run_with_real_acp(
 }
 
 
+struct ResolvedPermission {
+    decision: ApprovalDecision,
+    option_id: Option<String>,
+    answer: Option<String>,
+}
+
+fn permission_outcome(approval: &ApprovalRequest) -> ResolvedPermission {
+    ResolvedPermission {
+        decision: approval.decision.unwrap_or(ApprovalDecision::AllowOnce),
+        option_id: approval
+            .payload
+            .get("optionId")
+            .and_then(|value| value.as_str())
+            .map(str::to_string),
+        answer: approval
+            .payload
+            .get("answer")
+            .and_then(|value| value.as_str())
+            .map(str::to_string),
+    }
+}
+
 async fn resolve_permission(
     client: &reqwest::Client,
     api_url: &str,
@@ -1366,7 +1427,7 @@ async fn resolve_permission(
     kind: ApprovalKind,
     allowed_decisions: Vec<ApprovalDecision>,
     payload: &ApprovalEventPayload,
-) -> Result<ApprovalDecision> {
+) -> Result<ResolvedPermission> {
     let body = CreateApprovalRequest {
         request_key: request_key.to_string(),
         kind,
@@ -1388,7 +1449,7 @@ async fn resolve_permission(
 
     let approval_id = created.id;
     if created.status != ApprovalStatus::Pending {
-        return Ok(created.decision.unwrap_or(ApprovalDecision::AllowOnce));
+        return Ok(permission_outcome(&created));
     }
 
     // Poll until resolved.
@@ -1405,7 +1466,7 @@ async fn resolve_permission(
             .json()
             .await?;
         if approval.status != ApprovalStatus::Pending {
-            return Ok(approval.decision.unwrap_or(ApprovalDecision::AllowOnce));
+            return Ok(permission_outcome(&approval));
         }
     }
     bail!("approval {approval_id} timed out")
@@ -1651,6 +1712,16 @@ fn chat_completions_url(base_url: &str) -> String {
     }
 }
 
+const TITLE_SYSTEM: &str = "Write a short agent session title in the user's language. \
+2–8 words, a topic label or noun phrase. Name the subject and the work. \
+Do not copy the user's wording. Do not write a question. \
+No quotes, markdown, or trailing punctuation. Return only the title.";
+
+const TITLE_REWRITE_SYSTEM: &str = "The last title copied the user's request or was a question. \
+Rewrite it as a short topic label (noun phrase) in the user's language, 2–8 words. \
+Example: 'sglang 目前性能怎么样' → 'SGLang 性能分析'. \
+No questions, quotes, or punctuation wrapping. Return only the title.";
+
 fn sanitize_run_title(raw: &str) -> String {
     let cleaned = raw
         .trim()
@@ -1662,6 +1733,84 @@ fn sanitize_run_title(raw: &str) -> String {
         .trim_start_matches(['#', '-', '*', ' '])
         .trim();
     cleaned.chars().take(56).collect()
+}
+
+fn normalize_title_text(value: &str) -> String {
+    value
+        .chars()
+        .filter(|c| c.is_alphanumeric())
+        .flat_map(char::to_lowercase)
+        .collect()
+}
+
+fn title_looks_like_question(title: &str) -> bool {
+    let trimmed = title.trim();
+    if trimmed.ends_with('?') || trimmed.ends_with('？') {
+        return true;
+    }
+    let lower = trimmed.to_lowercase();
+    lower.contains("怎么样")
+        || lower.contains("如何")
+        || lower.contains("怎么")
+        || lower.starts_with("what ")
+        || lower.starts_with("what's ")
+        || lower.starts_with("how ")
+        || lower.starts_with("why ")
+        || lower.starts_with("can you")
+        || lower.starts_with("could you")
+}
+
+fn title_echoes_source(title: &str, sources: &[&str]) -> bool {
+    let title_n = normalize_title_text(title);
+    if title_n.is_empty() {
+        return true;
+    }
+    sources.iter().any(|source| {
+        zene_cloud_domain::title_is_prompt_echo(title, source)
+            || {
+                let source_n = normalize_title_text(source);
+                !source_n.is_empty() && title_n == source_n
+            }
+    })
+}
+
+fn title_needs_rewrite(title: &str, sources: &[&str]) -> bool {
+    title_echoes_source(title, sources)
+        || title_looks_like_question(title)
+        || title.trim_start().starts_with("请用")
+        || title.trim_start().starts_with("请帮")
+        || title.trim_start().starts_with("请深入")
+        || title.trim_start().starts_with("帮我")
+}
+
+fn title_from_chat_response(value: &serde_json::Value) -> String {
+    let message = value.pointer("/choices/0/message");
+    let content = message
+        .and_then(|m| m.get("content"))
+        .and_then(|content| match content {
+            serde_json::Value::String(text) => Some(text.clone()),
+            serde_json::Value::Array(parts) => {
+                let text = parts
+                    .iter()
+                    .filter_map(|part| {
+                        part.get("text")
+                            .and_then(|t| t.as_str())
+                            .or_else(|| part.as_str())
+                    })
+                    .collect::<Vec<_>>()
+                    .join("");
+                (!text.is_empty()).then_some(text)
+            }
+            _ => None,
+        })
+        .or_else(|| {
+            value
+                .pointer("/choices/0/text")
+                .and_then(|v| v.as_str())
+                .map(str::to_string)
+        })
+        .unwrap_or_default();
+    sanitize_run_title(&content)
 }
 
 struct TitleRefresh {
@@ -1696,6 +1845,82 @@ fn title_is_user_locked(current: &str, last_auto: Option<&str>, seed: &str) -> b
     }
 }
 
+fn title_chat_body(model: &str, snippet: &str, rewrite: bool) -> serde_json::Value {
+    serde_json::json!({
+        "model": model,
+        "temperature": 0.2,
+        "max_tokens": 64,
+        "thinking": { "type": "disabled" },
+        "messages": [
+            {
+                "role": "system",
+                "content": if rewrite { TITLE_REWRITE_SYSTEM } else { TITLE_SYSTEM }
+            },
+            {
+                "role": "user",
+                "content": snippet
+            }
+        ]
+    })
+}
+
+async fn request_run_title(
+    client: &reqwest::Client,
+    url: &str,
+    api_key: &str,
+    model: &str,
+    snippet: &str,
+    rewrite: bool,
+) -> Result<Option<String>> {
+    let mut body = title_chat_body(model, snippet, rewrite);
+    let mut resp = client
+        .post(url)
+        .bearer_auth(api_key)
+        .json(&body)
+        .timeout(Duration::from_secs(20))
+        .send()
+        .await
+        .context("title llm request")?;
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let err_body = resp.text().await.unwrap_or_default();
+        // Providers that reject unknown `thinking` get one retry without it.
+        let thinking_rejected = status.as_u16() == 400
+            && (err_body.contains("thinking")
+                || err_body.contains("unknown")
+                || err_body.contains("Unrecognized"));
+        if thinking_rejected {
+            body.as_object_mut().map(|o| o.remove("thinking"));
+            // Give thinking models enough room if disable isn't supported.
+            body["max_tokens"] = serde_json::json!(256);
+            resp = client
+                .post(url)
+                .bearer_auth(api_key)
+                .json(&body)
+                .timeout(Duration::from_secs(20))
+                .send()
+                .await
+                .context("title llm retry")?;
+        } else {
+            warn!(%status, body = %err_body.chars().take(240).collect::<String>(), "title llm failed");
+            return Ok(None);
+        }
+    }
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let err_body = resp.text().await.unwrap_or_default();
+        warn!(%status, body = %err_body.chars().take(240).collect::<String>(), "title llm failed");
+        return Ok(None);
+    }
+    let value: serde_json::Value = resp.json().await.context("title llm json")?;
+    let title = title_from_chat_response(&value);
+    if title.is_empty() {
+        warn!("title llm returned empty content");
+        return Ok(None);
+    }
+    Ok(Some(title))
+}
+
 async fn maybe_refresh_run_title(
     client: &reqwest::Client,
     api_url: &str,
@@ -1704,6 +1929,7 @@ async fn maybe_refresh_run_title(
     fence: &WorkerFence,
     focus: &str,
     current_title: Option<&str>,
+    source_prompt: &str,
     llm_env: &HashMap<String, String>,
 ) -> Result<Option<String>> {
     let api_key = llm_env
@@ -1728,71 +1954,26 @@ async fn maybe_refresh_run_title(
     }
     let url = chat_completions_url(&base_url);
     let snippet: String = focus.chars().take(1200).collect();
-    // DeepSeek V4 (and similar) enable thinking by default; with a tiny max_tokens budget
-    // all tokens go to reasoning_content and message.content stays empty.
-    let mut body = serde_json::json!({
-        "model": model,
-        "temperature": 0.2,
-        "max_tokens": 64,
-        "thinking": { "type": "disabled" },
-        "messages": [
-            {
-                "role": "system",
-                "content": "Return only a concise agent session title in the user's language. Max 8 words. Focus on the current work, not the original request if the conversation has moved on. No quotes or punctuation wrapping."
-            },
-            {
-                "role": "user",
-                "content": snippet
+    let sources = [source_prompt, current_title.unwrap_or("")];
+    let mut title = match request_run_title(client, &url, &api_key, &model, &snippet, false).await? {
+        Some(title) => title,
+        None => zene_cloud_domain::summarize_prompt_title(source_prompt),
+    };
+    if title_needs_rewrite(&title, &sources) {
+        if let Some(rewritten) =
+            request_run_title(client, &url, &api_key, &model, &snippet, true).await?
+        {
+            if !title_needs_rewrite(&rewritten, &sources) {
+                title = rewritten;
+            } else {
+                title = zene_cloud_domain::summarize_prompt_title(source_prompt);
             }
-        ]
-    });
-    let mut resp = client
-        .post(&url)
-        .bearer_auth(&api_key)
-        .json(&body)
-        .timeout(Duration::from_secs(20))
-        .send()
-        .await
-        .context("title llm request")?;
-    if !resp.status().is_success() {
-        let status = resp.status();
-        let err_body = resp.text().await.unwrap_or_default();
-        // Providers that reject unknown `thinking` get one retry without it.
-        let thinking_rejected = status.as_u16() == 400
-            && (err_body.contains("thinking")
-                || err_body.contains("unknown")
-                || err_body.contains("Unrecognized"));
-        if thinking_rejected {
-            body.as_object_mut().map(|o| o.remove("thinking"));
-            // Give thinking models enough room if disable isn't supported.
-            body["max_tokens"] = serde_json::json!(256);
-            resp = client
-                .post(&url)
-                .bearer_auth(&api_key)
-                .json(&body)
-                .timeout(Duration::from_secs(20))
-                .send()
-                .await
-                .context("title llm retry")?;
         } else {
-            warn!(%status, body = %err_body.chars().take(240).collect::<String>(), "title llm failed");
-            return Ok(None);
+            title = zene_cloud_domain::summarize_prompt_title(source_prompt);
         }
     }
-    if !resp.status().is_success() {
-        let status = resp.status();
-        let err_body = resp.text().await.unwrap_or_default();
-        warn!(%status, body = %err_body.chars().take(240).collect::<String>(), "title llm failed");
-        return Ok(None);
-    }
-    let value: serde_json::Value = resp.json().await.context("title llm json")?;
-    let title = value
-        .pointer("/choices/0/message/content")
-        .and_then(|v| v.as_str())
-        .map(sanitize_run_title)
-        .unwrap_or_default();
-    if title.is_empty() {
-        warn!(run_id = %run_id, "title llm returned empty content");
+    if title_needs_rewrite(&title, &sources) {
+        warn!(run_id = %run_id, echo = %title, "title still echoed the prompt");
         return Ok(None);
     }
     if current_title.is_some_and(|cur| cur.trim() == title) {
@@ -1874,79 +2055,6 @@ async fn post_run_status(
     Ok(())
 }
 
-async fn post_push(client: &reqwest::Client, cli: &Cli, run_id: Uuid) -> Result<()> {
-    client
-        .post(format!(
-            "{}/internal/v1/runs/{run_id}/git/push",
-            cli.api_url
-        ))
-        .bearer_auth(&cli.worker_token)
-        .json(&WorkerPushRequest {
-            force: false,
-            // Stable across retries of this run; the broker persists the key.
-            idempotency_key: Some(format!("worker-push-{run_id}")),
-        })
-        .send()
-        .await?
-        .error_for_status()?;
-    Ok(())
-}
-
-async fn post_pull_request(
-    client: &reqwest::Client,
-    cli: &Cli,
-    run_id: Uuid,
-    title: &str,
-) -> Result<()> {
-    client
-        .post(format!(
-            "{}/internal/v1/runs/{run_id}/git/pull-request",
-            cli.api_url
-        ))
-        .bearer_auth(&cli.worker_token)
-        .json(&WorkerPullRequestRequest {
-            title: Some(title.to_string()),
-            body: Some("Created by Zene Cloud worker".into()),
-            draft: true,
-            idempotency_key: None,
-        })
-        .send()
-        .await?
-        .error_for_status()?;
-    Ok(())
-}
-
-async fn git_commit_all(workspace: &Path, title: &str) -> Result<Option<String>> {
-    let status = run_git_output(workspace, &["status", "--porcelain"]).await?;
-    if status.trim().is_empty() {
-        let sha = run_git_output(workspace, &["rev-parse", "HEAD"])
-            .await
-            .ok()
-            .map(|s| s.trim().to_string());
-        return Ok(sha);
-    }
-    run_git(workspace, &["add", "-A"]).await?;
-    let msg = format!("zene: {}", title.chars().take(72).collect::<String>());
-    run_git(
-        workspace,
-        &[
-            "-c",
-            "user.email=zene-cloud@localhost",
-            "-c",
-            "user.name=Zene Cloud",
-            "commit",
-            "-m",
-            &msg,
-        ],
-    )
-    .await?;
-    let sha = run_git_output(workspace, &["rev-parse", "HEAD"])
-        .await?
-        .trim()
-        .to_string();
-    Ok(Some(sha))
-}
-
 async fn run_git(workspace: &Path, args: &[&str]) -> Result<()> {
     let output = git_command()
         .current_dir(workspace)
@@ -1994,9 +2102,10 @@ async fn drain_stderr_lines(stderr: tokio::process::ChildStderr) {
 #[cfg(test)]
 mod title_tests {
     use super::{
-        chat_completions_url, event_file_key, format_title_focus, git_command, outcome_for_hold,
-        prepare_workspace, sanitize_run_title, title_is_user_locked, workspace_ready, EventOutbox,
-        HoldExit, RunOutcome,
+        chat_completions_url, event_file_key, format_title_focus, git_command, idle_hold_elapsed,
+        outcome_for_hold, prepare_workspace, sanitize_run_title, title_echoes_source,
+        title_from_chat_response, title_is_user_locked, title_looks_like_question,
+        title_needs_rewrite, workspace_ready, EventOutbox, HoldExit, RunOutcome,
     };
     use futures::StreamExt;
     use std::future::IntoFuture;
@@ -2029,6 +2138,56 @@ mod title_tests {
     }
 
     #[test]
+    fn title_rejects_prompt_echo_and_questions() {
+        assert!(title_echoes_source(
+            "sglang 目前性能怎么样",
+            &["sglang 目前性能怎么样"]
+        ));
+        assert!(title_echoes_source(
+            "SGLang 目前性能怎么样？",
+            &["sglang 目前性能怎么样"]
+        ));
+        assert!(!title_echoes_source(
+            "SGLang 性能分析",
+            &["sglang 目前性能怎么样"]
+        ));
+        let long = "请用 Rust 逐步分析多线程 Tokio 异步队列可能出现的死锁根因，并给出推导证明与完整的重构代码";
+        assert!(title_echoes_source(
+            "请用 Rust 逐步分析多线程 Tokio 异步队列可…",
+            &[long]
+        ));
+        assert!(title_needs_rewrite(
+            "请用 Rust 逐步分析多线程 Tokio 异步队列",
+            &[long]
+        ));
+        assert!(title_looks_like_question("sglang 目前性能怎么样"));
+        assert!(title_needs_rewrite(
+            "sglang 目前性能怎么样",
+            &["sglang 目前性能怎么样"]
+        ));
+        assert!(!title_needs_rewrite(
+            "SGLang 性能分析",
+            &["sglang 目前性能怎么样"]
+        ));
+    }
+
+    #[test]
+    fn title_from_chat_reads_string_or_parts() {
+        assert_eq!(
+            title_from_chat_response(&json!({
+                "choices": [{ "message": { "content": "SGLang 性能分析" } }]
+            })),
+            "SGLang 性能分析"
+        );
+        assert_eq!(
+            title_from_chat_response(&json!({
+                "choices": [{ "message": { "content": [{ "type": "text", "text": "SGLang 性能分析" }] } }]
+            })),
+            "SGLang 性能分析"
+        );
+    }
+
+    #[test]
     fn title_focus_includes_recent_follow_ups() {
         let focus = format_title_focus("检查一下项目", &["服务器不动，继续用".into()]);
         assert!(focus.contains("Original task:\n检查一下项目"));
@@ -2049,6 +2208,14 @@ mod title_tests {
             outcome_for_hold(true, HoldExit::IdleTimeout),
             RunOutcome::Completed
         );
+    }
+
+    #[test]
+    fn idle_hold_does_not_fire_while_a_turn_is_busy() {
+        let idle = Duration::from_secs(600);
+        assert!(!idle_hold_elapsed(true, Duration::from_secs(601), idle));
+        assert!(idle_hold_elapsed(false, Duration::from_secs(601), idle));
+        assert!(!idle_hold_elapsed(false, Duration::from_secs(10), idle));
     }
 
     #[test]

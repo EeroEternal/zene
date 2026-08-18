@@ -114,6 +114,38 @@ export function composerChrome(phase: SessionPhase): ComposerChrome {
   };
 }
 
+function formatWaitClock(elapsedMs: number): string {
+  const secs = Math.max(1, Math.round(elapsedMs / 1000));
+  if (secs < 60) return `${secs}s`;
+  const m = Math.floor(secs / 60);
+  const s = secs % 60;
+  return s ? `${m}m ${s}s` : `${m}m`;
+}
+
+/** Copy shown after send while the run is busy but no thought/tool has arrived. */
+export function waitingTurnCopy(
+  elapsedMs: number,
+  status?: string | null,
+): { title: string; detail: string } {
+  const key = normalizeRunStatus(status);
+  if (SETUP_STATUSES.has(key)) {
+    return setupStatusCopy(key);
+  }
+  const secs = Math.max(0, Math.floor(elapsedMs / 1000));
+  const detail =
+    secs < 5
+      ? "Connecting to the model…"
+      : secs < 14
+        ? "Waiting for the first tokens. A slow network can take a while."
+        : secs < 30
+          ? "Still working — the session did not stop."
+          : "Taking longer than usual. The worker is still attached.";
+  return {
+    title: `Thinking · ${formatWaitClock(elapsedMs)}`,
+    detail,
+  };
+}
+
 export function setupStatusCopy(
   status: RunStatus | string,
   repo?: string,

@@ -10,7 +10,9 @@ pub fn tool_kind(name: &str) -> &'static str {
         "Write" | "Edit" => "edit",
         "Bash" | "Task" | "TaskOutput" => "execute",
         "FetchUrl" | "WebSearch" => "fetch",
-        "TodoWrite" | "AskUser" | "EnterPlanMode" | "ExitPlanMode" | "Skill" => "think",
+        "TodoWrite" | "AskUser" | "AskUserQuestion" | "EnterPlanMode" | "ExitPlanMode" | "Skill" => {
+            "think"
+        }
         _ if name.starts_with("mcp__") => "execute",
         _ => "other",
     }
@@ -56,7 +58,7 @@ pub fn tool_title(name: &str, arguments: &str) -> String {
         "TodoWrite" => "Updated todos".to_string(),
         "Task" => "Ran a subtask".to_string(),
         "TaskOutput" => "Checked task output".to_string(),
-        "AskUser" => "Asked a question".to_string(),
+        "AskUser" | "AskUserQuestion" => "Asked a question".to_string(),
         "EnterPlanMode" => "Entered plan mode".to_string(),
         "ExitPlanMode" => "Exited plan mode".to_string(),
         "Skill" => format!(
@@ -629,6 +631,11 @@ mod tests {
         );
         assert_eq!(tool_title("RepoMap", "{}"), "Mapped repository structure");
         assert_eq!(tool_title("TodoWrite", r#"{"todos":[]}"#), "Updated todos");
+        assert_eq!(
+            tool_title("AskUserQuestion", r#"{"question":"Ship the PR?"}"#),
+            "Asked a question"
+        );
+        assert_eq!(tool_kind("AskUserQuestion"), "think");
         assert!(!tool_title("Bash", r#"{"command":"ls -la /tmp/foo"}"#).contains('/'));
     }
 

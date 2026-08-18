@@ -30,8 +30,17 @@ export const runsApi = {
   retry: (runId: string, text?: string) =>
     postJson<Run>(`/api/v1/runs/${runId}/retry`, text ? { text } : {}),
   approvals: (runId: string) => getJson<Approval[]>(`/api/v1/runs/${runId}/approvals`),
-  decideApproval: (runId: string, approvalId: string, decision: ApprovalDecision) =>
-    postJson(`/api/v1/runs/${runId}/approvals/${approvalId}/decide`, { decision }),
+  decideApproval: (
+    runId: string,
+    approvalId: string,
+    decision: ApprovalDecision,
+    extra?: { optionId?: string; answer?: string },
+  ) =>
+    postJson(`/api/v1/runs/${runId}/approvals/${approvalId}/decide`, {
+      decision,
+      optionId: extra?.optionId,
+      answer: extra?.answer,
+    }),
   files: (runId: string) => getJson<WorkspaceFile[]>(`/api/v1/runs/${runId}/files`),
   file: (runId: string, path: string) =>
     getJson<{ path: string; content?: string; truncated?: boolean }>(

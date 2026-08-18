@@ -616,6 +616,14 @@ pub struct ApprovalEventPayload {
     pub raw_input: Option<serde_json::Value>,
 }
 
+impl ApprovalEventPayload {
+    pub fn is_ask_user(&self) -> bool {
+        self.raw_input.as_ref().is_some_and(|value| {
+            value.get("askUser").and_then(|flag| flag.as_bool()) == Some(true)
+        })
+    }
+}
+
 /// Product payload stored on `event_type = "platform"` rows.
 /// Wire JSON keeps the `event` discriminator and camelCase fields.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -846,13 +854,32 @@ pub struct WorkerEventRequest {
 #[cfg(test)]
 mod tests {
     use super::{
-        ApprovalDecision, ApprovalEventPayload, ApprovalKind, ApprovalRisk, ApprovalStatus,
-        CloudEventKind, CreateApprovalRequest, GithubAccountType, GithubInstallationStatus,
+        github_account_view, ApprovalDecision, ApprovalEventPayload, ApprovalKind, ApprovalRisk,
+        ApprovalStatus, CloudEventKind, CreateApprovalRequest, DecideApprovalRequest, GithubAccount,
+        GithubAccountType, GithubInstallationStatus,
         GithubMode, MessageRole, PermissionMode, PlatformEvent, ProjectionPayload,
         PullRequestState, RunEventKind, RunStatus, TextEventPayload, ToolCallPayload,
         WorkerClaimRequest, WorkerCommand, WorkerCommandAckRequest, WorkerCommandKind,
         WorkerEventRequest, WorkerFence, WorkerPushRequest, WorkerSessionRequest,
     };
+
+    #[test]
+    fn github_account_view_omits_access_token() {
+        let view = github_account_view(&GithubAccount {
+            id: uuid::Uuid::nil(),
+            user_id: uuid::Uuid::nil(),
+            github_user_id: "1".into(),
+            login: "octocat".into(),
+            access_token_enc: "gho_secret".into(),
+            token_type: "bearer".into(),
+            scope: None,
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+        });
+        assert_eq!(view["login"], "octocat");
+        assert!(view.get("accessTokenEnc").is_none());
+        assert!(view.get("access_token_enc").is_none());
+    }
 
     #[test]
     fn worker_command_ack_round_trips_fence() {
@@ -1231,6 +1258,32 @@ mod tests {
                 "rawInput": { "path": "notes.md" }
             })
         );
+        assert!(
+            !ApprovalEventPayload {
+                request_id: "call-7".into(),
+                raw_input: Some(serde_json::json!({ "path": "notes.md" })),
+                ..ApprovalEventPayload::default()
+            }
+            .is_ask_user()
+        );
+        assert!(
+            ApprovalEventPayload {
+                request_id: "ask-1".into(),
+                raw_input: Some(serde_json::json!({
+                    "askUser": true,
+                    "question": "Ship this PR?"
+                })),
+                ..ApprovalEventPayload::default()
+            }
+            .is_ask_user()
+        );
+        let parsed: DecideApprovalRequest = serde_json::from_value(serde_json::json!({
+            "decision": "allow-once",
+            "optionId": "ask-0"
+        }))
+        .expect("ask-user decide");
+        assert_eq!(parsed.decision, ApprovalDecision::AllowOnce);
+        assert_eq!(parsed.option_id.as_deref(), Some("ask-0"));
         let encoded = serde_json::to_value(PlatformEvent::RunStatusChanged {
             status: RunStatus::Completed,
             head_sha: Some("abc123".into()),
@@ -1546,6 +1599,10 @@ pub struct ApprovalRequest {
 #[serde(rename_all = "camelCase")]
 pub struct DecideApprovalRequest {
     pub decision: ApprovalDecision,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub option_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub answer: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1676,6 +1733,20 @@ pub struct GithubAccount {
     pub scope: Option<String>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+}
+
+/// Public GitHub account. Never includes `access_token_enc`.
+pub fn github_account_view(account: &GithubAccount) -> serde_json::Value {
+    serde_json::json!({
+        "id": account.id,
+        "userId": account.user_id,
+        "githubUserId": account.github_user_id,
+        "login": account.login,
+        "tokenType": account.token_type,
+        "scope": account.scope,
+        "createdAt": account.created_at,
+        "updatedAt": account.updated_at,
+    })
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -2055,5 +2126,161 @@ impl UserLlmSettings {
             has_api_key,
             api_key_hint,
         }
+    }
+}
+
+/// Immediate session title from a user prompt: a short topic, not the request dump.
+pub fn summarize_prompt_title(prompt: &str) -> String {
+    let line = prompt
+        .lines()
+        .map(str::trim)
+        .find(|l| !l.is_empty())
+        .unwrap_or("")
+        .trim_start_matches(['#', '-', '*', ' '])
+        .trim();
+    if line.is_empty() {
+        return "Untitled agent".into();
+    }
+
+    let mut s = line.to_string();
+    for prefix in [
+        "请你帮我",
+        "请帮我",
+        "请你",
+        "帮我",
+        "麻烦",
+        "请深入分析",
+        "请分析一下",
+        "请分析",
+        "深入分析",
+        "请用 Rust 逐步",
+        "请用Rust逐步",
+        "请用 Rust ",
+        "请用Rust",
+        "请用 ",
+        "请",
+        "Please use Rust to step-by-step ",
+        "Please use Rust to ",
+        "Please ",
+        "please ",
+    ] {
+        if let Some(rest) = s.strip_prefix(prefix) {
+            s = rest.trim_start().to_string();
+            break;
+        }
+    }
+    for prefix in ["逐步", "分析"] {
+        if let Some(rest) = s.strip_prefix(prefix) {
+            s = rest.trim_start().to_string();
+        }
+    }
+    for sep in [
+        "时，为什么",
+        "时为什么",
+        "？请给出",
+        "？请",
+        "为什么",
+        "，并给出",
+        "，并提供",
+        "，并设计",
+        "，并",
+        "，以及",
+        ", and provide",
+        ", and give",
+        ", and ",
+    ] {
+        if let Some((head, _)) = s.split_once(sep) {
+            s = head.trim().to_string();
+            break;
+        }
+    }
+    for sep in ["在面对", "在遭遇"] {
+        if let Some((head, _)) = s.split_once(sep) {
+            let head = head.trim();
+            if !head.is_empty() {
+                s = head.to_string();
+            }
+            break;
+        }
+    }
+    for suffix in ["怎么样", "如何", "吗", "呢"] {
+        if let Some(rest) = s.strip_suffix(suffix) {
+            s = rest.trim_end().to_string();
+        }
+    }
+    s = s
+        .trim()
+        .trim_end_matches(['。', '.', '，', ',', '？', '?', '！', '!'])
+        .trim()
+        .to_string();
+    if s.is_empty() {
+        s = line.to_string();
+    }
+    let mut title: String = s.chars().take(28).collect();
+    if s.chars().count() > 28 {
+        title.push('…');
+    }
+    if title.is_empty() {
+        "Untitled agent".into()
+    } else {
+        title
+    }
+}
+
+/// True when `title` is just the prompt (or its truncated prefix), not a summary.
+pub fn title_is_prompt_echo(title: &str, prompt: &str) -> bool {
+    let title_n: String = title
+        .chars()
+        .filter(|c| c.is_alphanumeric())
+        .flat_map(char::to_lowercase)
+        .collect();
+    let prompt_n: String = prompt
+        .chars()
+        .filter(|c| c.is_alphanumeric())
+        .flat_map(char::to_lowercase)
+        .collect();
+    if title_n.is_empty() || prompt_n.is_empty() {
+        return title_n.is_empty();
+    }
+    if title_n == prompt_n {
+        return true;
+    }
+    let n = title_n.chars().count();
+    n >= 8 && prompt_n.starts_with(&title_n)
+}
+
+#[cfg(test)]
+mod title_tests {
+    use super::{summarize_prompt_title, title_is_prompt_echo};
+
+    #[test]
+    fn summarizes_long_chinese_request() {
+        let prompt = "请用 Rust 逐步分析多线程 Tokio 异步队列可能出现的死锁根因，并给出推导证明与完整的重构代码";
+        let title = summarize_prompt_title(prompt);
+        assert_ne!(title, prompt);
+        assert!(!title.starts_with("请用"));
+        assert!(title.contains("Tokio") || title.contains("死锁") || title.contains("异步队列"));
+        assert!(title.chars().count() <= 29);
+        assert!(title_is_prompt_echo(
+            "请用 Rust 逐步分析多线程 Tokio 异步队列可…",
+            prompt
+        ));
+        assert!(!title_is_prompt_echo("Tokio异步队列死锁根因分析", prompt));
+    }
+
+    #[test]
+    fn strips_question_tail() {
+        assert_eq!(summarize_prompt_title("sglang 目前性能怎么样"), "sglang 目前性能");
+    }
+
+    #[test]
+    fn summarizes_deep_analysis_request() {
+        let prompt = "请深入分析 Raft 共识算法在面对不对称网络分区 (Asymmetric Network Partition) 和脑裂边缘场景时，为什么单纯依赖 Term 递增可能引发幽灵日志写入 (Phantom Log Writes) 或提交回滚？请给出形式化状态机推导证明，并设计一个防范该边缘 Bug 的 Pre-Vote 状态迁移算法与 Rust 实现。";
+        let title = summarize_prompt_title(prompt);
+        assert!(!title.starts_with("请"));
+        assert!(title.contains("Raft"));
+        assert!(!title.contains("请给出"));
+        assert!(title.chars().count() <= 29);
+        assert_ne!(title, prompt.chars().take(56).collect::<String>());
     }
 }

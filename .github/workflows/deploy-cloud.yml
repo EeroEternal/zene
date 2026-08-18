@@ -23,6 +23,10 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
 
+      - name: Test cloud workspace
+        working-directory: cloud
+        run: cargo test --workspace --locked
+
       - name: Build cloud API and worker
         working-directory: cloud
         run: cargo build --release -p zene-cloud-api -p zene-cloud-worker --locked

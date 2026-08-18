@@ -40,12 +40,12 @@ impl AppState {
         }
     }
 
-    /// On-disk checkout the worker actually uses (`ws/{workspace_id}`).
+    /// On-disk checkout the worker actually uses (`ws/{workspace_id}/runs/{run_id}`).
     pub fn run_checkout_dir(&self, run: &Run) -> PathBuf {
         if run.workspace_id.is_nil() {
             self.workspace_root.join(run.id.to_string())
         } else {
-            Db::workspace_checkout_dir(&self.workspace_root, run.workspace_id)
+            Db::run_checkout_dir(&self.workspace_root, run.workspace_id, run.id)
         }
     }
 

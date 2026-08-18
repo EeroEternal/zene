@@ -1,15 +1,17 @@
 "use client";
 
-import { useCallback, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   IconArchive,
+  IconChevronDown,
+  IconChevronRight,
   IconDots,
   IconFilter,
   IconHelp,
   IconLogout,
   IconPencil,
+  IconRepo,
   IconSettings,
-  IconShield,
   IconSquarePen,
   IconTrash,
 } from "@/lib/icons";
@@ -25,6 +27,25 @@ import { SidebarPanelToggle } from "./PanelToggleButton";
 import { Menu, MenuItem, MenuLabel, MenuSep, useDismiss } from "./ui";
 
 export { filterLabelText, filterRuns, repoLabel } from "@/lib/listPrefs";
+
+const COLLAPSED_GROUPS_KEY = "zc.sidebarCollapsedGroups";
+
+function loadCollapsedGroups(): Set<string> {
+  try {
+    const raw = localStorage.getItem(COLLAPSED_GROUPS_KEY);
+    if (!raw) return new Set();
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? new Set(parsed.filter((x) => typeof x === "string")) : new Set();
+  } catch {
+    return new Set();
+  }
+}
+
+function splitGroupLabel(label: string): { owner: string; name: string } {
+  const i = label.lastIndexOf("/");
+  if (i <= 0 || i === label.length - 1) return { owner: "", name: label };
+  return { owner: label.slice(0, i), name: label.slice(i + 1) };
+}
 
 function userInitials(name: string): string {
   const parts = String(name || "U").trim().split(/\s+/).filter(Boolean);
@@ -106,6 +127,25 @@ export function Sidebar(props: SidebarProps) {
   const [ctx, setCtx] = useState<CtxMenu | null>(null);
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const [renameDraft, setRenameDraft] = useState("");
+  const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(() => new Set());
+
+  useEffect(() => {
+    setCollapsedGroups(loadCollapsedGroups());
+  }, []);
+
+  const toggleGroup = useCallback((key: string) => {
+    setCollapsedGroups((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      try {
+        localStorage.setItem(COLLAPSED_GROUPS_KEY, JSON.stringify(Array.from(next)));
+      } catch {
+        /* ignore */
+      }
+      return next;
+    });
+  }, []);
   const footRef = useRef<HTMLDivElement>(null);
   const ctxRef = useRef<HTMLDivElement>(null);
 
@@ -170,7 +210,7 @@ export function Sidebar(props: SidebarProps) {
         </div>
       </div>
 
-      <div className="min-h-0 flex-1 overflow-auto px-2 pb-2 pt-1">
+      <div className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden px-2 pb-2 pt-1 [scrollbar-gutter:stable]">
         <div className="mb-1.5 px-2 text-[11px] font-medium tracking-[0.01em] text-placeholder">
           Task history
         </div>
@@ -180,15 +220,36 @@ export function Sidebar(props: SidebarProps) {
           </div>
         )}
         {groups.map((group, gi) => {
-          const indented = group.label != null;
+          const groupKey = group.label ?? `ungrouped-${gi}`;
+          const hasHeader = group.label != null;
+          const collapsed = hasHeader && collapsedGroups.has(groupKey);
+          const { owner, name } = hasHeader ? splitGroupLabel(group.label as string) : { owner: "", name: "" };
+          const byProject = listGroup === "project" && Boolean(owner);
           return (
-            <div key={gi} className={gi === 0 ? "mb-2" : "mb-2 mt-3"}>
-              {group.label != null && (
-                <div className="mb-1.5 px-2.5 text-[11px] font-medium tracking-[0.01em] text-placeholder">
-                  {group.label}
-                </div>
+            <div key={groupKey} className={gi === 0 ? "mb-2" : "mb-2 mt-3"}>
+              {hasHeader && (
+                <button
+                  type="button"
+                  className="mb-1 flex w-full items-center gap-1 rounded-sm px-1.5 py-0.5 text-left hover:bg-canvas/40"
+                  aria-expanded={!collapsed}
+                  onClick={() => toggleGroup(groupKey)}
+                >
+                  {collapsed ? (
+                    <IconChevronRight className="h-3 w-3 shrink-0 text-placeholder" />
+                  ) : (
+                    <IconChevronDown className="h-3 w-3 shrink-0 text-placeholder" />
+                  )}
+                  {byProject ? <IconRepo className="h-3 w-3 shrink-0 text-placeholder" /> : null}
+                  <span
+                    className="min-w-0 flex-1 truncate text-[11px] font-semibold tracking-[0.02em] text-muted"
+                    title={group.label || undefined}
+                  >
+                    {byProject ? name : group.label}
+                  </span>
+                </button>
               )}
-              <div className={`flex flex-col ${listCompact ? "gap-0.5" : "gap-1"}`}>
+              {!collapsed && (
+              <div className={`flex flex-col ${hasHeader ? "ml-3 border-l border-line pl-1.5" : ""} ${listCompact ? "gap-0.5" : "gap-1"}`}>
                 {group.runs.map((run) => {
                   const active = run.id === currentRunId;
                   const renaming = renamingId === run.id;
@@ -197,7 +258,6 @@ export function Sidebar(props: SidebarProps) {
                       key={run.id}
                       className={[
                         "group flex w-full items-center gap-1.5 rounded-sm text-left text-[12.5px] text-ink transition-colors duration-150",
-                        indented ? "ml-1 pl-2" : "",
                         listCompact ? "px-2 py-1" : "px-2 py-1.5",
                         active ? "nav-item-active" : "hover:bg-canvas/60",
                       ].join(" ")}
@@ -242,7 +302,7 @@ export function Sidebar(props: SidebarProps) {
                           </button>
                           <button
                             type="button"
-                            className="hidden h-6 w-6 shrink-0 items-center justify-center rounded-sm text-muted hover:bg-active hover:text-ink group-hover:inline-flex"
+                            className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-sm text-muted opacity-0 hover:bg-active hover:text-ink group-hover:opacity-100 group-focus-within:opacity-100 focus-visible:opacity-100"
                             title="Task actions"
                             aria-label="Task actions"
                             onClick={(e) => {
@@ -259,6 +319,7 @@ export function Sidebar(props: SidebarProps) {
                   );
                 })}
               </div>
+              )}
             </div>
           );
         })}
@@ -310,18 +371,6 @@ export function Sidebar(props: SidebarProps) {
           </Menu>
         </div>
       )}
-      <div className="px-2 pb-1">
-        <div className="mx-1 mb-1.5 h-px bg-line" />
-        <div className="mb-1 px-2 text-[11px] font-medium tracking-[0.01em] text-placeholder">
-          Context
-        </div>
-        <NavItem
-          icon={IconShield}
-          label="Tools & permissions"
-          active={view === "settings"}
-          onClick={() => props.onSettings()}
-        />
-      </div>
       <div ref={footRef} className="relative px-2 pb-2.5 pt-1" onClick={(e) => e.stopPropagation()}>
         <div
           className="flex w-full cursor-pointer items-center gap-2 rounded-lg px-1.5 py-1.5 text-left hover:bg-canvas/80"

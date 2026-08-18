@@ -18,7 +18,7 @@ use zene_cloud_domain::{
     CloneAuthResponse, CreateApprovalRequest, CreateRepositoryRequest, CreateRunRequest,
     LoginRequest, MessageRole, Organization, PermissionMode, PlatformEvent, QueueActive, QueueHold,
     QueueStats, RegisterRequest, Repository, Run, RunEvent, RunEventKind, RunMessage, RunStatus,
-    User, WorkerCommand, WorkerFence,
+    User, WorkerCommand, WorkerFence, summarize_prompt_title,
 };
 
 /// Worker attempt lease renewed by heartbeat (seconds).
@@ -547,6 +547,18 @@ impl Db {
         workspace_root.join("ws").join(workspace_id.to_string())
     }
 
+    /// On-disk git worktree for one run. Same org+repo still share a workspace
+    /// row and bare cache; they must not share a working directory.
+    pub fn run_checkout_dir(
+        workspace_root: &Path,
+        workspace_id: Uuid,
+        run_id: Uuid,
+    ) -> std::path::PathBuf {
+        Self::workspace_checkout_dir(workspace_root, workspace_id)
+            .join("runs")
+            .join(run_id.to_string())
+    }
+
     pub async fn create_run(
         &self,
         org_id: Uuid,
@@ -996,7 +1008,7 @@ impl Db {
                 .execute(&self.pool)
                 .await?;
         }
-        let workspace_dir = Self::workspace_checkout_dir(workspace_root, workspace_id)
+        let workspace_dir = Self::run_checkout_dir(workspace_root, workspace_id, run.id)
             .to_string_lossy()
             .to_string();
         let mut run = self
@@ -2019,7 +2031,7 @@ impl Db {
 
         let id = Uuid::new_v4();
         let now = Utc::now();
-        let auto = run.permission_mode.auto_resolves_approvals();
+        let auto = run.permission_mode.auto_resolves_approvals() && !req.payload.is_ask_user();
         let status = if auto {
             ApprovalStatus::Resolved
         } else {
@@ -2153,6 +2165,18 @@ impl Db {
         decision: ApprovalDecision,
         resolved_by: Option<&str>,
     ) -> Result<ApprovalRequest> {
+        self.decide_approval_with_outcome(approval_id, decision, resolved_by, None, None)
+            .await
+    }
+
+    pub async fn decide_approval_with_outcome(
+        &self,
+        approval_id: Uuid,
+        decision: ApprovalDecision,
+        resolved_by: Option<&str>,
+        option_id: Option<&str>,
+        answer: Option<&str>,
+    ) -> Result<ApprovalRequest> {
         let existing = self
             .get_approval(approval_id)
             .await?
@@ -2162,15 +2186,24 @@ impl Db {
         }
         let now = Utc::now();
         let status = decision.status();
+        let mut payload = existing.payload;
+        if let Some(option_id) = option_id.filter(|value| !value.is_empty()) {
+            payload["optionId"] = serde_json::Value::String(option_id.to_string());
+        }
+        if let Some(answer) = answer {
+            payload["answer"] = serde_json::Value::String(answer.to_string());
+        }
+        let payload_json = serde_json::to_string(&payload)?;
         let updated = sqlx::query(
             "UPDATE approval_requests
-             SET status = ?, decision = ?, resolved_by = ?, resolved_at = ?
+             SET status = ?, decision = ?, resolved_by = ?, resolved_at = ?, payload_json = ?
              WHERE id = ? AND status = 'pending'",
         )
         .bind(status.as_str())
         .bind(decision.as_str())
         .bind(resolved_by)
         .bind(now.to_rfc3339())
+        .bind(&payload_json)
         .bind(approval_id.to_string())
         .execute(&self.pool)
         .await?;
@@ -2416,22 +2449,7 @@ pub(crate) fn parse_time(value: &str) -> chrono::DateTime<Utc> {
 }
 
 fn title_from_prompt(prompt: &str) -> String {
-    let cleaned = prompt
-        .lines()
-        .map(str::trim)
-        .find(|l| !l.is_empty())
-        .unwrap_or("Untitled agent")
-        .trim_start_matches(['#', '-', '*', ' '])
-        .trim();
-    let mut title: String = cleaned.chars().take(56).collect();
-    if cleaned.chars().count() > 56 {
-        title.push('…');
-    }
-    if title.is_empty() {
-        "Untitled agent".into()
-    } else {
-        title
-    }
+    summarize_prompt_title(prompt)
 }
 
 fn slugify(input: &str) -> String {

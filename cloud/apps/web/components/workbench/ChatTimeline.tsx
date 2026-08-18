@@ -2,13 +2,23 @@
 
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { IconChevronDown, IconChevronRight, IconLoader, IconSkills } from "@/lib/icons";
-import { allowsDeny, allowsOnce, approvalCardBody, extraDecisions } from "@/lib/approval";
-import type { ApprovalDecision, RunMessage } from "@/lib/types";
+import {
+  allowsDeny,
+  allowsOnce,
+  approvalCardBody,
+  extraDecisions,
+  isAskUserApproval,
+  matchAskUserApproval,
+  parseAskUser,
+} from "@/lib/approval";
+import { isBusyStatus, waitingTurnCopy } from "@/lib/sessionPhase";
+import type { Approval, ApprovalDecision, RunMessage } from "@/lib/types";
 import {
   activitySummary,
   clusterActivityItems,
   formatElapsed,
   groupTimeline,
+  isAskUserTool,
   thoughtBunchSummary,
   thoughtDurationMs,
   toolCommand,
@@ -39,6 +49,46 @@ function lastUserBubbleId(items: TimelineItem[]): number | null {
   return null;
 }
 
+function lastTurnIsWaitingForReply(items: TimelineItem[]): boolean {
+  for (let i = items.length - 1; i >= 0; i--) {
+    const it = items[i];
+    if (it.kind === "bubble" && it.role === "user") return true;
+    if (it.kind === "bubble" && it.role === "assistant") return false;
+    if (it.kind === "thought" || it.kind === "tool" || it.kind === "approval") return false;
+  }
+  return false;
+}
+
+function lastThoughtText(items: { kind: string; text?: string }[]): string {
+  for (let i = items.length - 1; i >= 0; i--) {
+    const it = items[i];
+    if (it.kind === "thought" && it.text) return it.text;
+  }
+  return "";
+}
+
+function ThoughtLivePreview({ text, nested }: { text: string; nested: boolean }) {
+  const scrollerRef = useRef<HTMLDivElement>(null);
+  useLayoutEffect(() => {
+    const el = scrollerRef.current;
+    if (!el) return;
+    el.scrollTop = el.scrollHeight;
+  }, [text]);
+  if (!text) return null;
+  return (
+    <div
+      ref={scrollerRef}
+      className={
+        nested
+          ? "mt-0.5 h-[10.85em] overflow-hidden rounded-md border border-line bg-tertiary px-2.5 text-[13px] leading-[1.55] text-muted"
+          : "mt-0.5 h-[10.85em] overflow-hidden text-[13px] leading-[1.55] text-muted"
+      }
+    >
+      <div className="whitespace-pre-wrap break-words [overflow-wrap:anywhere]">{text}</div>
+    </div>
+  );
+}
+
 /** Leave room to park the latest user bubble near the top while a turn is open. */
 function lastTurnNeedsSpacer(
   items: TimelineItem[],
@@ -57,6 +107,135 @@ import { buildConversationTurns, turnIndexByEndItemId } from "@/lib/turnActions"
 import { Markdown } from "../Markdown";
 import { TurnActions } from "../TurnActions";
 
+export type ApprovalChoice = {
+  optionId?: string;
+  answer?: string;
+};
+
+function pairAskUserApprovals(items: TimelineItem[]) {
+  const byToolId = new Map<number, { approval: Approval; itemId: number }>();
+  const pairedApprovalItemIds = new Set<number>();
+  const used = new Set<string>();
+  const approvals = items
+    .filter((it): it is Extract<TimelineItem, { kind: "approval" }> => it.kind === "approval")
+    .filter((it) => isAskUserApproval(it.approval));
+  for (const item of items) {
+    if (item.kind !== "tool" || !isAskUserTool(item)) continue;
+    const hit = matchAskUserApproval(
+      item.input,
+      approvals.map((row) => row.approval),
+      used,
+    );
+    if (!hit) continue;
+    used.add(hit.id);
+    const row = approvals.find((ap) => ap.approval.id === hit.id);
+    if (!row) continue;
+    byToolId.set(item.id, { approval: hit, itemId: row.id });
+    pairedApprovalItemIds.add(row.id);
+  }
+  return { byToolId, pairedApprovalItemIds };
+}
+
+function AskUserCard({
+  itemId,
+  questionSource,
+  output,
+  approval,
+  approvalItemId,
+  decided,
+  onDecide,
+}: {
+  itemId: number;
+  questionSource: unknown;
+  output?: string;
+  approval?: Approval;
+  approvalItemId?: number;
+  decided: boolean;
+  onDecide: (
+    itemId: number,
+    approvalId: string,
+    decision: ApprovalDecision,
+    extra?: ApprovalChoice,
+  ) => void;
+}) {
+  const prompt = parseAskUser(questionSource) || (approval ? parseAskUser(approval.payload) : null);
+  const question = prompt?.question || "The agent asked a question";
+  const options = prompt?.options || [];
+  const [draft, setDraft] = useState("");
+  const answered = decided || Boolean(output?.trim());
+  const answer = (output || "").trim();
+  const targetItemId = approvalItemId ?? itemId;
+
+  const send = (extra: ApprovalChoice) => {
+    if (!approval) return;
+    onDecide(targetItemId, approval.id, "allow-once", extra);
+  };
+
+  return (
+    <div className="self-stretch rounded-md border-l-2 border-primary bg-tint p-3.5 min-[981px]:ml-9">
+      <h4 className="mb-2 text-[13px] font-semibold text-ink">{question}</h4>
+      {answered ? (
+        answer ? (
+          <div className="text-[13px] leading-[1.5] text-muted [overflow-wrap:anywhere]">
+            {answer}
+          </div>
+        ) : (
+          <div className="text-[12px] text-muted">Answered</div>
+        )
+      ) : (
+        <div className="space-y-2">
+          {options.length > 0 && (
+            <div className="flex flex-col gap-1.5">
+              {options.map((opt) => (
+                <button
+                  key={opt.id}
+                  type="button"
+                  className="btn btn-sm h-auto min-h-7 w-full justify-start whitespace-normal py-1.5 text-left"
+                  disabled={!approval}
+                  onClick={() => send({ optionId: opt.id })}
+                >
+                  <span className="font-medium">{opt.label}</span>
+                  {opt.description ? (
+                    <span className="ml-2 font-normal text-muted">{opt.description}</span>
+                  ) : null}
+                </button>
+              ))}
+            </div>
+          )}
+          {approval ? (
+            <div className="flex gap-2">
+              <input
+                className="field-input min-h-7 py-1.5 text-[13px]"
+                value={draft}
+                placeholder="Type an answer"
+                onChange={(event) => setDraft(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter" && draft.trim()) {
+                    event.preventDefault();
+                    send({ optionId: "free-text", answer: draft.trim() });
+                  }
+                }}
+              />
+              <button
+                type="button"
+                className="btn btn-primary btn-sm shrink-0"
+                disabled={!draft.trim()}
+                onClick={() => send({ optionId: "free-text", answer: draft.trim() })}
+              >
+                Send
+              </button>
+            </div>
+          ) : (
+            <p className="text-[12px] text-muted">
+              This question is no longer waiting. Reply in the follow-up box below.
+            </p>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 interface ChatTimelineProps {
   runId: string;
   items: TimelineItem[];
@@ -64,12 +243,18 @@ interface ChatTimelineProps {
   setupCopy?: { title: string; detail: string } | null;
   /** Epoch ms when the user sent a turn that has not produced activity yet. */
   pendingSince?: number | null;
+  runStatus?: string | null;
   assistantLive: boolean;
   runMessages: RunMessage[];
   forkingTurn: number | null;
   onFork?: (turnIndex: number) => void;
   onToggleItem: (id: number) => void;
-  onDecideApproval: (itemId: number, approvalId: string, decision: ApprovalDecision) => void;
+  onDecideApproval: (
+    itemId: number,
+    approvalId: string,
+    decision: ApprovalDecision,
+    extra?: { optionId?: string; answer?: string },
+  ) => void;
 }
 
 export function ChatTimeline({
@@ -78,6 +263,7 @@ export function ChatTimeline({
   historyReady,
   setupCopy,
   pendingSince = null,
+  runStatus = null,
   assistantLive,
   runMessages,
   forkingTurn,
@@ -108,10 +294,32 @@ export function ChatTimeline({
   }, []);
 
   const segments = useMemo(() => groupTimeline(items), [items]);
+  const askUserPairs = useMemo(() => pairAskUserApprovals(items), [items]);
   const hasLiveMeta = useMemo(
     () => segments.some((s) => s.type === "activity" && s.live),
     [segments],
   );
+  const waitingForReply =
+    historyReady &&
+    !hasLiveMeta &&
+    !setupCopy &&
+    lastTurnIsWaitingForReply(items) &&
+    (pendingSince != null ||
+      assistantLive ||
+      isBusyStatus(runStatus) ||
+      (runStatus || "").toLowerCase() === "created");
+  const waitOriginRef = useRef<number | null>(null);
+  if (waitingForReply) {
+    if (waitOriginRef.current == null) {
+      waitOriginRef.current = pendingSince ?? Date.now();
+    }
+  } else {
+    waitOriginRef.current = null;
+  }
+  const waitCopy =
+    waitingForReply && waitOriginRef.current != null
+      ? waitingTurnCopy(nowTick - waitOriginRef.current, runStatus)
+      : null;
   const conversationTurns = useMemo(
     () => buildConversationTurns(items, runMessages),
     [items, runMessages],
@@ -173,10 +381,10 @@ export function ChatTimeline({
   }, [runId]);
 
   useEffect(() => {
-    if (!hasLiveMeta && pendingSince == null) return;
+    if (!hasLiveMeta && pendingSince == null && !waitingForReply) return;
     const id = window.setInterval(() => setNowTick(Date.now()), 1000);
     return () => window.clearInterval(id);
-  }, [hasLiveMeta, pendingSince]);
+  }, [hasLiveMeta, pendingSince, waitingForReply]);
 
   const scrollSig = useMemo(() => timelineScrollSig(items), [items]);
   const latestUserBubbleId = useMemo(() => lastUserBubbleId(items), [items]);
@@ -248,7 +456,10 @@ export function ChatTimeline({
 
   const renderThoughtRow = (item: ThoughtItem, nested: boolean) => {
     const elapsed = formatElapsed(thoughtDurationMs(item, nowTick));
-    const thoughtLabel = item.sealed ? `Thought for ${elapsed}` : `Thinking · ${elapsed}`;
+    const live = !item.sealed;
+    const thoughtLabel = live ? `Thinking · ${elapsed}` : `Thought for ${elapsed}`;
+    const preview = live && !item.expanded;
+    const showFull = item.expanded && Boolean(item.text);
     return (
       <div key={item.id}>
         <button
@@ -258,18 +469,18 @@ export function ChatTimeline({
               ? "flex w-full items-center gap-1.5 rounded-md px-1 py-0.5 text-left text-[12px] text-muted hover:bg-secondary hover:text-ink"
               : "relative flex w-full items-center gap-1.5 rounded-md py-1 text-left text-[12px] text-muted hover:bg-secondary hover:text-ink"
           }
-          aria-expanded={item.expanded}
+          aria-expanded={item.expanded || live}
           onClick={() => onToggleItem(item.id)}
         >
           {nested ? (
-            item.expanded ? (
+            item.expanded || live ? (
               <IconChevronDown className="h-3 w-3 shrink-0" />
             ) : (
               <IconChevronRight className="h-3 w-3 shrink-0" />
             )
           ) : (
             <span className="pointer-events-none absolute right-full top-1/2 mr-1 -translate-y-1/2 text-placeholder">
-              {item.expanded ? (
+              {item.expanded || live ? (
                 <IconChevronDown className="h-3.5 w-3.5" />
               ) : (
                 <IconChevronRight className="h-3.5 w-3.5" />
@@ -278,21 +489,22 @@ export function ChatTimeline({
           )}
           {nested ? <IconSkills className="h-3 w-3 shrink-0" /> : null}
           <span className="min-w-0 flex-1 truncate font-medium">{thoughtLabel}</span>
-          {!item.sealed && (
+          {live && (
             <IconLoader className="h-3 w-3 shrink-0 animate-spin text-primary" />
           )}
         </button>
-        {item.expanded && (
+        {preview && item.text ? <ThoughtLivePreview text={item.text} nested={nested} /> : null}
+        {showFull ? (
           <div
             className={
               nested
                 ? "mt-0.5 whitespace-pre-wrap break-words rounded-md border border-line bg-tertiary px-2.5 py-1.5 text-[12px] leading-[1.5] text-muted [overflow-wrap:anywhere]"
-                : "mt-0.5 ml-1.5 whitespace-pre-wrap break-words border-l border-line pl-2.5 text-[12px] leading-[1.5] text-muted [overflow-wrap:anywhere]"
+                : "mt-0.5 whitespace-pre-wrap break-words text-[12px] leading-[1.5] text-muted [overflow-wrap:anywhere]"
             }
           >
             {item.text}
           </div>
-        )}
+        ) : null}
       </div>
     );
   };
@@ -364,8 +576,26 @@ export function ChatTimeline({
                   </div>
                 );
               }
+              if (only?.kind === "tool" && isAskUserTool(only)) {
+                const paired = askUserPairs.byToolId.get(only.id);
+                return (
+                  <div key={seg.key} className="self-stretch">
+                    <AskUserCard
+                      itemId={only.id}
+                      questionSource={only.input}
+                      output={only.output}
+                      approval={paired?.approval}
+                      approvalItemId={paired?.itemId}
+                      decided={Boolean(paired?.approval && items.some((it) => it.kind === "approval" && it.approval.id === paired.approval.id && it.decision))}
+                      onDecide={onDecideApproval}
+                    />
+                    {turnEndActions(only.id)}
+                  </div>
+                );
+              }
               const open = openGroups.has(seg.key);
               const summary = activitySummary(seg.items, nowTick);
+              const liveThoughtPreview = !open && seg.live ? lastThoughtText(seg.items) : "";
               return (
                 <div key={seg.key} className="self-stretch">
                   <button
@@ -386,6 +616,9 @@ export function ChatTimeline({
                       <IconLoader className="h-3 w-3 shrink-0 animate-spin text-primary" />
                     ) : null}
                   </button>
+                  {liveThoughtPreview ? (
+                    <ThoughtLivePreview text={liveThoughtPreview} nested={false} />
+                  ) : null}
                   {open && (
                     <div className="mt-0.5 ml-1.5 space-y-0.5 border-l border-line pl-2.5">
                       {clusterActivityItems(seg.items, nowTick).map((row) => {
@@ -396,15 +629,19 @@ export function ChatTimeline({
                         if (row.type === "thought-bunch") {
                           const bunchOpen = openBunches.has(row.key);
                           const liveThought = row.items.some((t) => !t.sealed);
+                          const liveText =
+                            [...row.items].reverse().find((t) => !t.sealed)?.text ||
+                            row.items[row.items.length - 1]?.text ||
+                            "";
                           return (
                             <div key={row.key}>
                               <button
                                 type="button"
                                 className="flex w-full items-center gap-1.5 rounded-md px-1 py-0.5 text-left text-[12px] text-muted hover:bg-secondary hover:text-ink"
-                                aria-expanded={bunchOpen}
+                                aria-expanded={bunchOpen || liveThought}
                                 onClick={() => toggleBunch(row.key)}
                               >
-                                {bunchOpen ? (
+                                {bunchOpen || liveThought ? (
                                   <IconChevronDown className="h-3 w-3 shrink-0" />
                                 ) : (
                                   <IconChevronRight className="h-3 w-3 shrink-0" />
@@ -417,6 +654,9 @@ export function ChatTimeline({
                                   <IconLoader className="ml-auto h-3 w-3 shrink-0 animate-spin" />
                                 )}
                               </button>
+                              {liveThought && !bunchOpen && liveText ? (
+                                <ThoughtLivePreview text={liveText} nested />
+                              ) : null}
                               {bunchOpen && (
                                 <div className="mt-0.5 space-y-1 rounded-md border border-line bg-tertiary px-2.5 py-1.5 text-[12px] leading-[1.5] text-muted [overflow-wrap:anywhere]">
                                   {row.items.map((t, idx) => (
@@ -590,7 +830,50 @@ export function ChatTimeline({
             }
 
             const item = seg.item;
+            if (item.kind === "tool" && isAskUserTool(item)) {
+              const paired = askUserPairs.byToolId.get(item.id);
+              return (
+                <div key={item.id} className="self-stretch">
+                  <AskUserCard
+                    itemId={item.id}
+                    questionSource={item.input}
+                    output={item.output}
+                    approval={paired?.approval}
+                    approvalItemId={paired?.itemId}
+                    decided={Boolean(
+                      paired &&
+                        items.some(
+                          (it) =>
+                            it.kind === "approval" &&
+                            it.approval.id === paired.approval.id &&
+                            it.decision,
+                        ),
+                    )}
+                    onDecide={onDecideApproval}
+                  />
+                  {turnEndActions(item.id)}
+                </div>
+              );
+            }
             if (item.kind === "approval") {
+              if (askUserPairs.pairedApprovalItemIds.has(item.id)) {
+                return null;
+              }
+              if (isAskUserApproval(item.approval)) {
+                return (
+                  <div key={item.id} className="self-stretch">
+                    <AskUserCard
+                      itemId={item.id}
+                      questionSource={item.approval.payload}
+                      approval={item.approval}
+                      approvalItemId={item.id}
+                      decided={Boolean(item.decision)}
+                      onDecide={onDecideApproval}
+                    />
+                    {turnEndActions(item.id)}
+                  </div>
+                );
+              }
               const ap = item.approval;
               const summary = approvalCardBody(ap.payload);
               const allowed = ap.allowedDecisions || ["allow-once", "reject-once"];
@@ -672,14 +955,18 @@ export function ChatTimeline({
 
             return null;
           })}
-        {historyReady && pendingSince != null && !hasLiveMeta && !setupCopy && (
+        {waitCopy && (
           <div className="self-stretch" role="status" aria-live="polite">
-            <div className="flex w-full items-center gap-1.5 py-1 text-[12px] text-muted">
-              <span className="min-w-0 flex-1 truncate font-medium">
-                Thinking · {formatElapsed(nowTick - pendingSince)}
+            <div className="relative flex w-full items-center gap-1.5 py-1 text-[12px] text-muted">
+              <span className="pointer-events-none absolute right-full top-1/2 mr-1 -translate-y-1/2 text-placeholder">
+                <IconChevronDown className="h-3.5 w-3.5" />
               </span>
+              <span className="min-w-0 flex-1 truncate font-medium">{waitCopy.title}</span>
               <IconLoader className="h-3 w-3 shrink-0 animate-spin text-primary" />
             </div>
+            <p className="m-0 mt-0.5 text-[12.5px] leading-[1.45] text-muted">
+              {waitCopy.detail}
+            </p>
           </div>
         )}
         <div ref={spacerRef} aria-hidden className="pointer-events-none shrink-0" style={{ height: spacerPx }} />

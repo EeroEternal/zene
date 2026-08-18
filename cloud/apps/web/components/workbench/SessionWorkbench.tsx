@@ -26,6 +26,7 @@ import { platformEventFromPayload } from "@/lib/platformEvent";
 import { timelineProductFromEvent, timelineToolOutput, type TimelineProduct } from "@/lib/runtimeEvent";
 import {
   composerChrome,
+  isBusyStatus,
   isSetupStatus,
   isTerminalStatus,
   sessionPhase,
@@ -44,14 +45,10 @@ import { buildConversationTurns, buildForkPrompt } from "@/lib/turnActions";
 import {
   fetchGitCompare,
   fetchRunPullRequests,
-  hasUnpublishedChanges,
   isActivePullRequest,
-  type PublishResult,
 } from "@/lib/gitPublish";
-import { readSessionUi, writeSessionUi } from "@/lib/sessionUi";
 import { CodePanel, useCodePanelWidth } from "../CodePanel";
 import { PullRequestCard } from "../PullRequestCard";
-import { PushPromptCard } from "../PushPromptCard";
 import { repoLabel } from "../Sidebar";
 import { useToast } from "../Toast";
 import { ChatTimeline } from "./ChatTimeline";
@@ -104,10 +101,6 @@ export function SessionWorkbench({
   const [retrying, setRetrying] = useState(false);
   const [gitCompare, setGitCompare] = useState<GitCompare | null>(null);
   const [runPullRequests, setRunPullRequests] = useState<PullRequest[]>([]);
-  const [pushPublished, setPushPublished] = useState(false);
-  const [pushDismissedHead, setPushDismissedHead] = useState<string | null>(() =>
-    readSessionUi(runId).pushPromptDismissedHead ?? null,
-  );
 
   const nextId = useRef(1);
   const afterSeq = useRef(0);
@@ -435,6 +428,9 @@ export function SessionWorkbench({
         nextId.current = draft.nextId;
         hasAssistantTail.current = draft.hasAssistantTail;
         setItems(draft.items);
+        if (isBusyStatus(r.status) && !timelineHasLiveMeta(draft.items)) {
+          setPendingSince(Date.parse(r.startedAt || r.createdAt || "") || Date.now());
+        }
         setHistoryReady(true);
         await refreshApprovals();
         onRunsChanged();
@@ -517,8 +513,6 @@ export function SessionWorkbench({
   }, [runId]);
 
   useEffect(() => {
-    setPushDismissedHead(readSessionUi(runId).pushPromptDismissedHead ?? null);
-    setPushPublished(false);
     setGitCompare(null);
     setRunPullRequests([]);
     setPromptQueue([]);
@@ -541,7 +535,6 @@ export function SessionWorkbench({
       if (cancelled) return;
       setGitCompare(compare);
       setRunPullRequests(prs);
-      if (prs.some((pr) => pr.url)) setPushPublished(true);
     })().catch(() => undefined);
 
     return () => {
@@ -571,12 +564,21 @@ export function SessionWorkbench({
 
   const pickerModels = useMemo(() => modelsForPicker(llmSettings), [llmSettings]);
   const hasLiveMeta = useMemo(() => timelineHasLiveMeta(items), [items]);
+  useEffect(() => {
+    if (!run) return;
+    const status = (run.status || "").toLowerCase();
+    const busy = isBusyStatus(status) || status === "created";
+    if (busy && !hasLiveMeta) {
+      setPendingSince((prev) => prev ?? Date.now());
+      return;
+    }
+    if (!busy) setPendingSince(null);
+  }, [run?.status, hasLiveMeta]);
   const phase = sessionPhase(run?.status, hasLiveMeta, pendingSince != null);
   const chrome = composerChrome(phase);
   const repoName = run ? repoLabel(repos, run.repositoryId) : "";
   const headBranch = run?.headBranch || gitCompare?.head || "";
   const setupCopy = phase === "setup" ? setupStatusCopy(run?.status || "", repoName) : null;
-  const pushHeadKey = run?.headSha || gitCompare?.head || "";
 
   const flushPromptQueue = useCallback(() => {
     setPromptQueue((prev) => {
@@ -594,37 +596,9 @@ export function SessionWorkbench({
     flushPromptQueue();
   }, [chrome.queueFollowUp, flushPromptQueue]);
 
-  const showPushPrompt =
-    historyReady &&
-    !pushPublished &&
-    hasUnpublishedChanges(gitCompare, runPullRequests) &&
-    pushDismissedHead !== pushHeadKey;
-
-  const dismissPushPrompt = useCallback(() => {
-    const head = pushHeadKey || "dismissed";
-    writeSessionUi(runId, { pushPromptDismissedHead: head });
-    setPushDismissedHead(head);
-  }, [runId, pushHeadKey]);
-
   const activePullRequest = useMemo(
     () => runPullRequests.find(isActivePullRequest) ?? null,
     [runPullRequests],
-  );
-
-  const onPushPublished = useCallback(
-    (result: PublishResult) => {
-      setPushPublished(true);
-      if (result.pullRequest) {
-        setRunPullRequests((prev) => {
-          const rest = prev.filter((p) => p.id !== result.pullRequest?.id);
-          return [result.pullRequest!, ...rest];
-        });
-      } else {
-        void fetchRunPullRequests(runId).then(setRunPullRequests).catch(() => undefined);
-      }
-      onRunsChanged();
-    },
-    [runId, onRunsChanged],
   );
 
   const commitTitleEdit = useCallback(async () => {
@@ -721,16 +695,31 @@ export function SessionWorkbench({
   }, [runId, onRunsChanged, toast, sealOnStop]);
 
   const decideApproval = useCallback(
-    async (itemId: number, approvalId: string, decision: ApprovalDecision) => {
+    async (
+      itemId: number,
+      approvalId: string,
+      decision: ApprovalDecision,
+      extra?: { optionId?: string; answer?: string },
+    ) => {
       try {
         await api(`/api/v1/runs/${runId}/approvals/${approvalId}/decide`, {
           method: "POST",
-          body: JSON.stringify({ decision }),
+          body: JSON.stringify({
+            decision,
+            optionId: extra?.optionId,
+            answer: extra?.answer,
+          }),
         });
         setItems((prev) =>
-          prev.map((it) => (it.id === itemId && it.kind === "approval" ? { ...it, decision } : it)),
+          prev.map((it) => {
+            if (it.kind !== "approval") return it;
+            if (it.id === itemId || it.approval.id === approvalId) {
+              return { ...it, decision };
+            }
+            return it;
+          }),
         );
-        toast(`Approval: ${decision}`, "ok");
+        toast(extra?.optionId || extra?.answer ? "Answer sent" : `Approval: ${decision}`, "ok");
       } catch (err) {
         toast(err instanceof Error ? err.message : String(err), "error");
       }
@@ -815,6 +804,7 @@ export function SessionWorkbench({
           historyReady={historyReady}
           setupCopy={setupCopy}
           pendingSince={pendingSince}
+          runStatus={run?.status}
           assistantLive={phase === "live" || phase === "approval"}
           runMessages={runMessages}
           forkingTurn={forkingTurn}
@@ -830,18 +820,6 @@ export function SessionWorkbench({
               onUpdated={(pr) =>
                 setRunPullRequests((prev) => prev.map((item) => (item.id === pr.id ? pr : item)))
               }
-            />
-          </div>
-        ) : showPushPrompt && gitCompare ? (
-          <div className="mx-auto w-full max-w-[720px] px-3.5 pb-2">
-            <PushPromptCard
-              runId={runId}
-              title={run?.title}
-              baseRef={run?.baseRef}
-              headBranch={run?.headBranch}
-              compare={gitCompare}
-              onPublished={onPushPublished}
-              onDismiss={dismissPushPrompt}
             />
           </div>
         ) : null}

@@ -38,6 +38,7 @@ h6MGk70dY9y6rTcjiP1XXuw=\n\
 
 #[tokio::test]
 async fn live_clone_and_draft_pr_flow() {
+    std::env::set_var("NO_PROXY", "127.0.0.1,localhost");
     let app = axum::Router::new()
         .route(
             "/app/installations/1/access_tokens",

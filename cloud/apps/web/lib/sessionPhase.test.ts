@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { composerChrome, sessionPhase } from "./sessionPhase.ts";
+import { composerChrome, sessionPhase, waitingTurnCopy } from "./sessionPhase.ts";
 
 test("sessionPhase treats a pending follow-up as live so Stop is available", () => {
   assert.equal(sessionPhase("waiting_for_user", false, true), "live");
@@ -20,4 +20,11 @@ test("sessionPhase stays idle when nothing is pending", () => {
   assert.equal(sessionPhase("waiting_for_user"), "idle");
   assert.equal(sessionPhase("completed"), "idle");
   assert.equal(composerChrome(sessionPhase("completed")).primaryAction, "send");
+});
+
+test("waitingTurnCopy rotates while the first tokens are late", () => {
+  assert.match(waitingTurnCopy(800, "running").detail, /Connecting/);
+  assert.match(waitingTurnCopy(8000, "running").detail, /first tokens|network/i);
+  assert.match(waitingTurnCopy(20000, "running").detail, /did not stop/);
+  assert.equal(waitingTurnCopy(3000, "cloning").title.includes("Cloning") || waitingTurnCopy(3000, "cloning").detail.length > 0, true);
 });

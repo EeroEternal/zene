@@ -131,8 +131,7 @@ impl Tool for PublishGithubTool {
             .post(&push_url)
             .bearer_auth(&cfg.token)
             .json(&json!({
-                "force": false,
-                "idempotencyKey": format!("agent-publish-{}", cfg.run_id)
+                "force": false
             }))
             .send()
             .await

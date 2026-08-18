@@ -1103,6 +1103,10 @@ fn acp_ask_user_prompt(
         .and_then(|v| v.as_str())
         .unwrap_or("free-text");
 
+    if option_id == "reject-once" || option_id == "deny" {
+        return Ok(String::new());
+    }
+
     if option_id == "free-text" {
         let answer = result
             .pointer("/outcome/answer")

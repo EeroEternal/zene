@@ -7,7 +7,7 @@ The agent makes outbound HTTPS calls to an external LLM (OpenAI-compatible or An
 
 Agent `gh` / git must not inherit the worker host login (`GH_TOKEN`, `~/.config/gh`). The worker writes a run-private installation token under the git workspace (`.zene/github/`, gitignored, refreshed via clone-auth) so clone/fetch can use it if needed. **Publish has one path:** the `PublishGithub` tool (and Console **Commit & Create PR**) call git-broker on `ws/{workspace_id}` — commit dirty files, push the session branch, open a draft PR. Cloud Bash hard-denies `git push` / `gh`; the workspace `pre-push` hook also rejects local pushes. Do not SSH to another host to publish.
 
-A Cloud **workspace** is one on-disk checkout per organization + repository (`{workspace_root}/ws/{workspace_id}`). New sessions (runs) for that repo reuse it and skip clone; they only `git checkout -B` a session branch from the current HEAD. Concurrent live agents on the same checkout can conflict.
+A Cloud **workspace** is a logical grouping per organization + repository (bare cache `{workspace_root}/.repo-cache/{repository_id}`). Each run gets its own git worktree at `{workspace_root}/ws/{workspace_id}/runs/{run_id}`, created from `origin/<base_ref>`. Concurrent runs must not share a working directory or inherit another run's dirty files.
 
 ## UI HMR
 

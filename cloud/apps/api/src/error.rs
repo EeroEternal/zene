@@ -79,7 +79,11 @@ impl AppError {
 
 impl From<anyhow::Error> for AppError {
     fn from(value: anyhow::Error) -> Self {
-        let msg = value.to_string();
+        let msg = value
+            .chain()
+            .map(|cause| cause.to_string())
+            .collect::<Vec<_>>()
+            .join(": ");
         if msg.contains("invalid credentials") || msg.contains("password") {
             return Self::unauthorized(msg);
         }
@@ -95,7 +99,7 @@ impl From<anyhow::Error> for AppError {
         if msg.contains("stale_attempt") {
             return Self::stale_attempt(msg);
         }
-        if msg.contains("already exist") {
+        if msg.contains("already exist") || msg.contains("another organization") {
             return Self::conflict(msg);
         }
         Self::internal(msg)

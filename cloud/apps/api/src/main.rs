@@ -12,6 +12,24 @@ use zene_cloud_github::GithubClient;
 
 use zene_cloud_api::{router, AppState};
 
+fn reject_weak_worker_token(token: &str) -> Result<()> {
+    let allow_dev = std::env::var("ZENE_CLOUD_ALLOW_DEV_TOKEN")
+        .ok()
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false);
+    let trimmed = token.trim();
+    let weak = trimmed.is_empty()
+        || trimmed == "dev-worker-token"
+        || trimmed == "dev-worker-token-change-me"
+        || trimmed.len() < 16;
+    if weak && !allow_dev {
+        anyhow::bail!(
+            "refusing weak ZENE_CLOUD_WORKER_TOKEN; set a random secret or ZENE_CLOUD_ALLOW_DEV_TOKEN=1 for local dev"
+        );
+    }
+    Ok(())
+}
+
 #[derive(Debug, Parser)]
 #[command(name = "zene-cloud-api")]
 struct Cli {
@@ -45,6 +63,7 @@ async fn main() -> Result<()> {
         .init();
 
     let cli = Cli::parse();
+    reject_weak_worker_token(&cli.worker_token)?;
     std::fs::create_dir_all(&cli.workspace_root)?;
 
     let db = Db::connect(&cli.database_url).await?;

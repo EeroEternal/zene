@@ -2,14 +2,18 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { llmApi } from "@/lib/cloud";
+import { githubApi } from "@/cap/github";
 import { findPreset, LLM_PRESETS } from "@/lib/llmPresets";
 import {
   IconCpu,
   IconGithub,
   IconLayoutList,
+  IconPlus,
+  IconTrash,
   IconUser,
 } from "@/lib/icons";
 import type {
+  GithubProviderConfigView,
   ListFilter,
   ListGroup,
   LlmSettingsView,
@@ -127,6 +131,12 @@ export function Settings(props: SettingsProps) {
   const [apiKey, setApiKey] = useState("");
   const [hasApiKey, setHasApiKey] = useState(false);
   const [apiKeyHint, setApiKeyHint] = useState<string | null>(null);
+  const [serviceOpen, setServiceOpen] = useState(false);
+  const [ghProvider, setGhProvider] = useState<GithubProviderConfigView | null>(null);
+  const [ghAppId, setGhAppId] = useState("");
+  const [ghAppSlug, setGhAppSlug] = useState("");
+  const [ghAppKey, setGhAppKey] = useState("");
+  const [ghSaving, setGhSaving] = useState(false);
 
   const applyLlmView = useCallback((view: LlmSettingsView) => {
     setProviderId(view.providerId || "custom");
@@ -141,6 +151,27 @@ export function Settings(props: SettingsProps) {
   useEffect(() => {
     if (focusSection) setSection(focusSection);
   }, [focusSection]);
+
+  useEffect(() => {
+    if (section !== "github") return;
+    let cancelled = false;
+    githubApi
+      .settings()
+      .then((view) => {
+        if (cancelled) return;
+        const provider = view.provider || {};
+        setGhProvider(provider);
+        setGhAppId(provider.appId || "");
+        setGhAppSlug(provider.appSlug || "");
+        setGhAppKey("");
+      })
+      .catch((err) => {
+        if (!cancelled) toast(err instanceof Error ? err.message : String(err), "error");
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [section, toast]);
 
   useEffect(() => {
     let cancelled = false;
@@ -168,7 +199,7 @@ export function Settings(props: SettingsProps) {
     setModelsText(preset.suggestedModels.join("\n"));
   };
 
-  const saveLlm = async () => {
+  const saveLlm = async (): Promise<boolean> => {
     setLlmSaving(true);
     try {
       const models = modelsText
@@ -185,8 +216,10 @@ export function Settings(props: SettingsProps) {
       const view = await llmApi.update(body);
       applyLlmView(view);
       toast("Models settings saved", "ok");
+      return true;
     } catch (err) {
       toast(err instanceof Error ? err.message : String(err), "error");
+      return false;
     } finally {
       setLlmSaving(false);
     }
@@ -196,6 +229,29 @@ export function Settings(props: SettingsProps) {
   const filterLabel = filterLabelText(listFilter, listRepoFilter, repos, selectedRepoId);
   const preset = findPreset(providerId);
   const activeNav = NAV.find((n) => n.id === section) || NAV[0];
+  const configuredModels = modelsText
+    .split(/\r?\n/)
+    .map((m) => m.trim())
+    .filter(Boolean);
+
+  const persistModels = async (nextModels: string[], nextDefault = defaultModel) => {
+    const unique = Array.from(new Set(nextModels));
+    const fallback = unique.includes(nextDefault) ? nextDefault : unique[0] || "";
+    setLlmSaving(true);
+    try {
+      const view = await llmApi.update({
+        providerId,
+        baseUrl: baseUrl.trim(),
+        defaultModel: fallback,
+        models: unique,
+      });
+      applyLlmView(view);
+    } catch (err) {
+      toast(err instanceof Error ? err.message : String(err), "error");
+    } finally {
+      setLlmSaving(false);
+    }
+  };
 
   return (
     <div className="flex h-full min-h-0 bg-canvas-bg">
@@ -246,96 +302,107 @@ export function Settings(props: SettingsProps) {
 
           {section === "models" && (
             <div className="flex flex-col gap-4">
-              <SectionCard>
-                <p className="mb-3 text-xs leading-relaxed text-muted">
-                  Bring your own OpenAI-compatible API key. Runs use this credential via the cloud worker.
+              <div className="flex items-center justify-between gap-3">
+                <p className="m-0 text-xs leading-relaxed text-muted">
+                  Models available to new tasks and follow-ups.
                 </p>
+                <button
+                  type="button"
+                  className="btn btn-primary btn-sm"
+                  onClick={() => setServiceOpen(true)}
+                >
+                  <IconPlus className="mr-1 h-3.5 w-3.5" />
+                  {hasApiKey || configuredModels.length ? "Edit service" : "Add model service"}
+                </button>
+              </div>
+              <SectionCard>
                 {llmLoading ? (
                   <p className="m-0 text-xs text-muted">Loading…</p>
+                ) : configuredModels.length === 0 ? (
+                  <div className="py-6 text-center">
+                    <p className="m-0 text-[13px] text-ink">No models yet</p>
+                    <p className="mt-1 text-xs text-muted">
+                      Add a model service with an API key, base URL, and model ids.
+                    </p>
+                    <button
+                      type="button"
+                      className="btn btn-primary btn-sm mt-4"
+                      onClick={() => setServiceOpen(true)}
+                    >
+                      Add model service
+                    </button>
+                  </div>
                 ) : (
-                  <>
-                    <div className="mb-3">
-                      <FieldLabel>Provider preset</FieldLabel>
-                      <FieldSelect
-                        aria-label="Provider preset"
-                        value={providerId}
-                        options={LLM_PRESETS.map((p) => ({ id: p.id, label: p.label }))}
-                        onChange={selectPreset}
-                      />
-                    </div>
-
-                    <div className="mb-3">
-                      <FieldLabel>API Key</FieldLabel>
-                      <input
-                        className={INPUT_CLASS}
-                        type="password"
-                        autoComplete="off"
-                        placeholder={
-                          hasApiKey
-                            ? `Saved ${apiKeyHint || "••••"} — enter to replace`
-                            : "Enter your API key"
-                        }
-                        value={apiKey}
-                        onChange={(e) => setApiKey(e.target.value)}
-                      />
-                    </div>
-
-                    <div className="mb-3">
-                      <FieldLabel>Base URL</FieldLabel>
-                      <input
-                        className={INPUT_CLASS}
-                        type="url"
-                        autoComplete="off"
-                        placeholder={preset.baseUrl || "https://api.example.com/v1"}
-                        value={baseUrl}
-                        onChange={(e) => setBaseUrl(e.target.value)}
-                      />
-                    </div>
-
-                    <div className="mb-3">
-                      <FieldLabel>Default model</FieldLabel>
-                      <input
-                        className={INPUT_CLASS}
-                        type="text"
-                        autoComplete="off"
-                        placeholder={preset.suggestedModels[0] || "model-id"}
-                        value={defaultModel}
-                        onChange={(e) => setDefaultModel(e.target.value)}
-                      />
-                    </div>
-
-                    <div className="mb-3">
-                      <FieldLabel>Models (one per line)</FieldLabel>
-                      <textarea
-                        className={`${INPUT_CLASS} min-h-[96px] resize-y`}
-                        placeholder={
-                          preset.suggestedModels.length
-                            ? preset.suggestedModels.join("\n")
-                            : "model-a\nmodel-b"
-                        }
-                        value={modelsText}
-                        onChange={(e) => setModelsText(e.target.value)}
-                      />
-                    </div>
-
-                    <div className="flex flex-wrap items-center gap-2">
-                      <button
-                        type="button"
-                        className="btn btn-primary btn-sm"
-                        disabled={llmSaving}
-                        onClick={saveLlm}
-                      >
-                        {llmSaving ? "Saving…" : "Save models"}
-                      </button>
-                      {hasApiKey && (
-                        <span className="text-xs text-muted">
-                          Key on file{apiKeyHint ? ` · ${apiKeyHint}` : ""}
-                        </span>
-                      )}
-                    </div>
-                  </>
+                  <div>
+                    {configuredModels.map((model, idx) => {
+                      const isDefault = model === defaultModel;
+                      return (
+                        <div
+                          key={model}
+                          className={`flex items-center gap-2 py-2.5 ${idx === 0 ? "pt-0" : "border-t border-line"}`}
+                        >
+                          <div className="min-w-0 flex-1">
+                            <div className="truncate font-mono text-[13px] text-ink">{model}</div>
+                            {isDefault ? (
+                              <div className="mt-0.5 text-[11px] font-medium text-primary">Default</div>
+                            ) : null}
+                          </div>
+                          {!isDefault && (
+                            <button
+                              type="button"
+                              className="btn btn-sm"
+                              disabled={llmSaving}
+                              onClick={() => void persistModels(configuredModels, model)}
+                            >
+                              Set default
+                            </button>
+                          )}
+                          <button
+                            type="button"
+                            className="inline-flex h-7 w-7 items-center justify-center rounded-sm text-muted hover:bg-danger-soft hover:text-danger"
+                            title="Remove model"
+                            aria-label={`Remove ${model}`}
+                            disabled={llmSaving}
+                            onClick={() =>
+                              void persistModels(configuredModels.filter((item) => item !== model))
+                            }
+                          >
+                            <IconTrash className="h-3.5 w-3.5" />
+                          </button>
+                        </div>
+                      );
+                    })}
+                    {(hasApiKey || baseUrl) && (
+                      <p className="mb-0 mt-3 border-t border-line pt-3 text-xs text-muted">
+                        {preset.label}
+                        {baseUrl ? ` · ${baseUrl}` : ""}
+                        {hasApiKey ? ` · Key ${apiKeyHint || "saved"}` : ""}
+                      </p>
+                    )}
+                  </div>
                 )}
               </SectionCard>
+              {serviceOpen && (
+                <ModelServiceDialog
+                  providerId={providerId}
+                  baseUrl={baseUrl}
+                  defaultModel={defaultModel}
+                  modelsText={modelsText}
+                  apiKey={apiKey}
+                  hasApiKey={hasApiKey}
+                  apiKeyHint={apiKeyHint}
+                  saving={llmSaving}
+                  onProviderChange={selectPreset}
+                  onBaseUrlChange={setBaseUrl}
+                  onDefaultModelChange={setDefaultModel}
+                  onModelsTextChange={setModelsText}
+                  onApiKeyChange={setApiKey}
+                  onCancel={() => setServiceOpen(false)}
+                  onSave={async () => {
+                    if (await saveLlm()) setServiceOpen(false);
+                  }}
+                />
+              )}
             </div>
           )}
 
@@ -348,22 +415,93 @@ export function Settings(props: SettingsProps) {
                   hint={
                     githubConnected
                       ? `Connected${githubDisplayLogin ? ` · @${githubDisplayLogin}` : ""}`
-                      : "Not connected"
+                      : ghProvider?.configured
+                        ? "App configured · not connected"
+                        : "GitHub App not configured"
                   }
                 />
                 <SettingsRow
                   label="Account"
                   hint={githubDisplayLogin ? `@${githubDisplayLogin}` : "—"}
                 />
+                {!ghProvider?.configured && (
+                  <div className="mt-3 flex flex-col gap-2.5">
+                    <p className="m-0 text-xs leading-relaxed text-muted">
+                      Connect needs a GitHub App. Setup URL:{" "}
+                      <span className="font-mono text-[11px]">
+                        {typeof window !== "undefined"
+                          ? `${window.location.origin}/api/v1/github/install/callback`
+                          : "/api/v1/github/install/callback"}
+                      </span>
+                    </p>
+                    <div>
+                      <FieldLabel>App ID</FieldLabel>
+                      <input
+                        className={INPUT_CLASS}
+                        value={ghAppId}
+                        onChange={(e) => setGhAppId(e.target.value)}
+                        placeholder="123456"
+                        autoComplete="off"
+                      />
+                    </div>
+                    <div>
+                      <FieldLabel>App slug</FieldLabel>
+                      <input
+                        className={INPUT_CLASS}
+                        value={ghAppSlug}
+                        onChange={(e) => setGhAppSlug(e.target.value)}
+                        placeholder="zene-cloud"
+                        autoComplete="off"
+                      />
+                    </div>
+                    <div>
+                      <FieldLabel>Private key (PEM)</FieldLabel>
+                      <textarea
+                        className={`${INPUT_CLASS} min-h-[120px] resize-y`}
+                        value={ghAppKey}
+                        onChange={(e) => setGhAppKey(e.target.value)}
+                        placeholder={"-----BEGIN RSA PRIVATE KEY-----\n…"}
+                        spellCheck={false}
+                      />
+                    </div>
+                    <button
+                      type="button"
+                      className="btn btn-sm self-start"
+                      disabled={ghSaving}
+                      onClick={async () => {
+                        setGhSaving(true);
+                        try {
+                          const view = await githubApi.updateSettings({
+                            appId: ghAppId.trim(),
+                            appSlug: ghAppSlug.trim(),
+                            appPrivateKey: ghAppKey.trim() || undefined,
+                          });
+                          setGhProvider(view.provider || {});
+                          setGhAppKey("");
+                          toast("GitHub App saved", "ok");
+                        } catch (err) {
+                          toast(err instanceof Error ? err.message : String(err), "error");
+                        } finally {
+                          setGhSaving(false);
+                        }
+                      }}
+                    >
+                      {ghSaving ? "Saving…" : "Save GitHub App"}
+                    </button>
+                  </div>
+                )}
                 <p className="mt-2 text-xs leading-relaxed text-muted">
                   {githubConnected
                     ? "Repositories sync from your GitHub App installation."
-                    : "Opens github.com to authorize with your current GitHub session."}
+                    : ghProvider?.configured
+                      ? "Opens github.com to install the GitHub App on your account or org."
+                      : "Save the GitHub App first, then connect."}
                 </p>
                 <div className="mt-3 flex flex-wrap gap-2">
                   <button
                     type="button"
                     className="btn btn-primary btn-sm"
+                    disabled={!githubConnected && !ghProvider?.configured}
                     onClick={async () => {
                       const msg = await props.onConnectGithub();
                       if (msg) toast(msg, "error");
@@ -435,6 +573,148 @@ export function Settings(props: SettingsProps) {
               </SectionCard>
             </div>
           )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function ModelServiceDialog({
+  providerId,
+  baseUrl,
+  defaultModel,
+  modelsText,
+  apiKey,
+  hasApiKey,
+  apiKeyHint,
+  saving,
+  onProviderChange,
+  onBaseUrlChange,
+  onDefaultModelChange,
+  onModelsTextChange,
+  onApiKeyChange,
+  onCancel,
+  onSave,
+}: {
+  providerId: string;
+  baseUrl: string;
+  defaultModel: string;
+  modelsText: string;
+  apiKey: string;
+  hasApiKey: boolean;
+  apiKeyHint: string | null;
+  saving: boolean;
+  onProviderChange: (id: string) => void;
+  onBaseUrlChange: (value: string) => void;
+  onDefaultModelChange: (value: string) => void;
+  onModelsTextChange: (value: string) => void;
+  onApiKeyChange: (value: string) => void;
+  onCancel: () => void;
+  onSave: () => void;
+}) {
+  const preset = findPreset(providerId);
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        e.preventDefault();
+        onCancel();
+      }
+    };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [onCancel]);
+
+  return (
+    <div
+      className="fixed inset-0 z-[70] grid place-items-center bg-[rgba(46,52,54,0.45)]"
+      onClick={onCancel}
+    >
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="model-service-title"
+        className="max-h-[min(720px,calc(100vh-32px))] w-[min(480px,calc(100vw-32px))] overflow-auto rounded-md bg-canvas p-5 shadow-card"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <h2 id="model-service-title" className="m-0 text-[15px] font-semibold text-ink">
+          {hasApiKey || modelsText.trim() ? "Edit model service" : "Add model service"}
+        </h2>
+        <p className="mt-1 text-[12.5px] leading-relaxed text-muted">
+          OpenAI-compatible endpoint used by Cloud workers.
+        </p>
+
+        <div className="mt-4">
+          <FieldLabel>Provider preset</FieldLabel>
+          <FieldSelect
+            aria-label="Provider preset"
+            value={providerId}
+            options={LLM_PRESETS.map((p) => ({ id: p.id, label: p.label }))}
+            onChange={onProviderChange}
+          />
+        </div>
+        <div className="mt-3">
+          <FieldLabel>API Key</FieldLabel>
+          <input
+            className={INPUT_CLASS}
+            type="password"
+            autoComplete="off"
+            placeholder={
+              hasApiKey
+                ? `Saved ${apiKeyHint || "••••"} — enter to replace`
+                : "Enter your API key"
+            }
+            value={apiKey}
+            onChange={(e) => onApiKeyChange(e.target.value)}
+          />
+        </div>
+        <div className="mt-3">
+          <FieldLabel>Base URL</FieldLabel>
+          <input
+            className={INPUT_CLASS}
+            type="url"
+            autoComplete="off"
+            placeholder={preset.baseUrl || "https://api.example.com/v1"}
+            value={baseUrl}
+            onChange={(e) => onBaseUrlChange(e.target.value)}
+          />
+        </div>
+        <div className="mt-3">
+          <FieldLabel>Default model</FieldLabel>
+          <input
+            className={INPUT_CLASS}
+            type="text"
+            autoComplete="off"
+            placeholder={preset.suggestedModels[0] || "model-id"}
+            value={defaultModel}
+            onChange={(e) => onDefaultModelChange(e.target.value)}
+          />
+        </div>
+        <div className="mt-3">
+          <FieldLabel>Models (one per line)</FieldLabel>
+          <textarea
+            className={`${INPUT_CLASS} min-h-[96px] resize-y`}
+            placeholder={
+              preset.suggestedModels.length
+                ? preset.suggestedModels.join("\n")
+                : "model-a\nmodel-b"
+            }
+            value={modelsText}
+            onChange={(e) => onModelsTextChange(e.target.value)}
+          />
+        </div>
+
+        <div className="mt-5 flex justify-end gap-2">
+          <button type="button" className="btn" onClick={onCancel}>
+            Cancel
+          </button>
+          <button
+            type="button"
+            className="btn btn-primary"
+            disabled={saving}
+            onClick={onSave}
+          >
+            {saving ? "Saving…" : "Save service"}
+          </button>
         </div>
       </div>
     </div>

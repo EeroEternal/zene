@@ -25,12 +25,13 @@ fi
 
 export ZENE_CLOUD_DATABASE_URL="${ZENE_CLOUD_DATABASE_URL:-sqlite:$ROOT/data/zene-cloud.db}"
 export ZENE_CLOUD_WORKER_TOKEN="${ZENE_CLOUD_WORKER_TOKEN:-dev-worker-token}"
+export ZENE_CLOUD_ALLOW_DEV_TOKEN="${ZENE_CLOUD_ALLOW_DEV_TOKEN:-1}"
 export ZENE_CLOUD_WEB_DIR="${ZENE_CLOUD_WEB_DIR:-$ROOT/apps/web/dist}"
 export ZENE_CLOUD_WORKSPACE_ROOT="${ZENE_CLOUD_WORKSPACE_ROOT:-$ROOT/data/workspaces}"
 export ZENE_CLOUD_API_URL="${ZENE_CLOUD_API_URL:-http://127.0.0.1:8788}"
 export ZENE_CLOUD_PUBLIC_BASE_URL="${ZENE_CLOUD_PUBLIC_BASE_URL:-http://127.0.0.1:8788}"
 export ZENE_CLOUD_GITHUB_MODE="${ZENE_CLOUD_GITHUB_MODE:-live}"
-export ZENE_CLOUD_PUSH_PR="${ZENE_CLOUD_PUSH_PR:-1}"
+export ZENE_CLOUD_PUSH_PR="${ZENE_CLOUD_PUSH_PR:-false}"
 export ZENE_CLOUD_ALLOW_MOCK="${ZENE_CLOUD_ALLOW_MOCK:-1}"
 export ZENE_CLOUD_ACP_YOLO="${ZENE_CLOUD_ACP_YOLO:-1}"
 # Supervisor pool (1B+2B): warm claimers + scale for queue; holds don't consume active slots.
@@ -111,7 +112,6 @@ WORKER_ARGS=(
   --workspace-root "$ZENE_CLOUD_WORKSPACE_ROOT"
   --zene-bin "$ZENE_BIN"
   --acp-yolo
-  --push-pr
   --min-warm "$ZENE_CLOUD_WORKER_MIN_WARM"
   --max-active "$ZENE_CLOUD_WORKER_MAX_ACTIVE"
   --max-hold "$ZENE_CLOUD_WORKER_MAX_HOLD"
@@ -119,6 +119,9 @@ WORKER_ARGS=(
 )
 if [[ "$ZENE_CLOUD_ALLOW_MOCK" == "1" || "$ZENE_CLOUD_ALLOW_MOCK" == "true" ]]; then
   WORKER_ARGS+=(--allow-mock)
+fi
+if [[ "$ZENE_CLOUD_PUSH_PR" == "1" || "$ZENE_CLOUD_PUSH_PR" == "true" ]]; then
+  WORKER_ARGS+=(--push-pr)
 fi
 ./target/debug/zene-cloud-worker "${WORKER_ARGS[@]}" &
 WORKER_PID=$!

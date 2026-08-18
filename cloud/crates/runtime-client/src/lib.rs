@@ -29,8 +29,27 @@ pub fn to_permission_decision(decision: ApprovalDecision) -> PermissionDecision 
     }
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
 fn acp_permission_result(decision: ApprovalDecision) -> Value {
-    to_permission_decision(decision).to_result()
+    acp_permission_outcome(decision, None, None)
+}
+
+fn acp_permission_outcome(
+    decision: ApprovalDecision,
+    option_id: Option<&str>,
+    answer: Option<&str>,
+) -> Value {
+    let option_id = option_id.unwrap_or(match decision {
+        ApprovalDecision::AllowOnce => "allow-once",
+        ApprovalDecision::AllowSession => "allow-always",
+        ApprovalDecision::Deny => "reject-once",
+    });
+    let mut outcome = serde_json::Map::new();
+    outcome.insert("optionId".into(), serde_json::Value::String(option_id.to_string()));
+    if let Some(answer) = answer {
+        outcome.insert("answer".into(), serde_json::Value::String(answer.to_string()));
+    }
+    serde_json::json!({ "outcome": outcome })
 }
 
 /// ACP `sessionUpdate` strings stay inside this adapter; product kinds live on
@@ -88,7 +107,12 @@ pub enum RuntimeCommand {
     Prompt { text: String },
     Steer { text: String },
     Cancel,
-    Approval { request_id: String, decision: ApprovalDecision },
+    Approval {
+        request_id: String,
+        decision: ApprovalDecision,
+        option_id: Option<String>,
+        answer: Option<String>,
+    },
     SetMode { mode_id: String },
     Shutdown,
 }
@@ -731,7 +755,12 @@ impl RuntimeClient for AcpRuntimeClient {
                     .cancel(&self.session_id)
                     .await
             }
-            RuntimeCommand::Approval { request_id, decision } => {
+            RuntimeCommand::Approval {
+                request_id,
+                decision,
+                option_id,
+                answer,
+            } => {
                 let id = self
                     .pending_approvals
                     .lock()
@@ -742,7 +771,14 @@ impl RuntimeClient for AcpRuntimeClient {
                 guard
                     .as_ref()
                     .context("runtime bridge missing")?
-                    .respond(&id, acp_permission_result(decision))
+                    .respond(
+                        &id,
+                        acp_permission_outcome(
+                            decision,
+                            option_id.as_deref(),
+                            answer.as_deref(),
+                        ),
+                    )
                     .await
             }
             RuntimeCommand::SetMode { mode_id } => {
@@ -916,7 +952,11 @@ impl RuntimeClient for MockRuntimeClient {
                 self.agent.emit_steer(text, msg_tx)
             }
             RuntimeCommand::Cancel => Ok(()),
-            RuntimeCommand::Approval { request_id, decision } => {
+            RuntimeCommand::Approval {
+                request_id,
+                decision,
+                ..
+            } => {
                 let respond = self
                     .pending_approvals
                     .lock()
@@ -1597,12 +1637,15 @@ mod tests {
         let command = RuntimeCommand::Approval {
             request_id: "call-7".into(),
             decision: ApprovalDecision::AllowOnce,
+            option_id: None,
+            answer: None,
         };
         assert!(matches!(
             command,
             RuntimeCommand::Approval {
                 request_id,
                 decision: ApprovalDecision::AllowOnce,
+                ..
             } if request_id == "call-7"
         ));
     }
@@ -1620,6 +1663,24 @@ mod tests {
         assert_eq!(
             acp_permission_result(ApprovalDecision::Deny),
             serde_json::json!({ "outcome": { "optionId": "reject-once" } })
+        );
+        assert_eq!(
+            acp_permission_outcome(
+                ApprovalDecision::AllowOnce,
+                Some("ask-0"),
+                None,
+            ),
+            serde_json::json!({ "outcome": { "optionId": "ask-0" } })
+        );
+        assert_eq!(
+            acp_permission_outcome(
+                ApprovalDecision::AllowOnce,
+                Some("free-text"),
+                Some("open a draft PR"),
+            ),
+            serde_json::json!({
+                "outcome": { "optionId": "free-text", "answer": "open a draft PR" }
+            })
         );
     }
 
@@ -1709,6 +1770,8 @@ mod tests {
                         pump.send(RuntimeCommand::Approval {
                             request_id,
                             decision: ApprovalDecision::AllowOnce,
+                            option_id: None,
+                            answer: None,
                         })
                         .await
                         .expect("resolve mock approval");

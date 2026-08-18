@@ -4,7 +4,8 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde::Deserialize;
 use zene_cloud_domain::{
-    GithubInstallationStatus, GithubProviderConfigView, UpdateGithubProviderConfigRequest,
+    github_account_view, GithubInstallationStatus, GithubProviderConfigView,
+    UpdateGithubProviderConfigRequest,
 };
 
 use crate::auth::AuthUser;
@@ -64,7 +65,7 @@ async fn get_github_settings(
     Ok(Json(serde_json::json!({
         "provider": view,
         "connected": account.is_some(),
-        "account": account,
+        "account": account.as_ref().map(github_account_view),
         "installUrl": github.install_url(),
         "redirectUri": format!("{}/api/v1/github/oauth/callback", state.public_base_url),
     })))
@@ -85,7 +86,7 @@ async fn update_github_settings(
     Ok(Json(serde_json::json!({
         "provider": github_provider_view(&github),
         "connected": account.is_some(),
-        "account": account,
+        "account": account.as_ref().map(github_account_view),
         "installUrl": github.install_url(),
         "redirectUri": format!("{}/api/v1/github/oauth/callback", state.public_base_url),
     })))
@@ -111,7 +112,7 @@ async fn github_status(
         "mode": github.mode(),
         "configured": github.config().is_app_configured(),
         "connected": connected,
-        "account": account,
+        "account": account.as_ref().map(github_account_view),
         "displayLogin": display_login,
         "installations": installations,
         "installUrl": github.install_url(),
@@ -130,7 +131,7 @@ async fn github_connect_start(
         .map_err(AppError::from)?;
     if !github.config().is_app_configured() {
         return Err(AppError::bad_request(
-            "GitHub App is not configured on this server (set GITHUB_APP_ID, GITHUB_APP_PRIVATE_KEY_PATH, GITHUB_APP_SLUG)",
+            "GitHub App is not configured. Add App ID, slug, and private key in Settings → GitHub.",
         ));
     }
     let oauth_state = zene_cloud_github::new_oauth_state();
@@ -197,10 +198,36 @@ async fn github_install_callback(
         .map_err(AppError::from)?;
     state.db.sync_repos_from_github(org.id, &listed).await?;
     let _ = query.setup_action;
-    Ok(Redirect::temporary(&format!(
-        "{}/?github=connected",
-        state.public_base_url.trim_end_matches('/')
-    )))
+    Ok(github_connected_page(&state.public_base_url))
+}
+
+fn github_connected_page(public_base_url: &str) -> impl IntoResponse {
+    let origin = public_base_url.trim_end_matches('/');
+    let origin_js = serde_json::to_string(origin).unwrap_or_else(|_| "\"*\"".into());
+    let html = format!(
+        r#"<!doctype html>
+<meta charset="utf-8">
+<title>GitHub connected</title>
+<script>
+(function () {{
+  var origin = {origin_js};
+  if (window.opener) {{
+    window.opener.postMessage({{ type: "github-connected" }}, origin);
+    window.close();
+  }} else {{
+    location.replace(origin + "/?github=connected");
+  }}
+}})();
+</script>
+<p>GitHub connected. You can close this window.</p>"#
+    );
+    (
+        [(
+            axum::http::header::CONTENT_TYPE,
+            "text/html; charset=utf-8",
+        )],
+        html,
+    )
 }
 
 async fn github_oauth_start(
