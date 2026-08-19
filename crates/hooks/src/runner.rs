@@ -26,18 +26,17 @@ impl HookRunner {
     }
 
     pub fn with_bash(hooks: Vec<HookSpec>, workdir: std::path::PathBuf) -> Self {
-        Self::new(hooks, Arc::new(crate::executor::BashHookExecutor::new(workdir)))
+        Self::new(
+            hooks,
+            Arc::new(crate::executor::BashHookExecutor::new(workdir)),
+        )
     }
 
     pub fn is_empty(&self) -> bool {
         self.engine.is_empty()
     }
 
-    pub async fn run_pre_tool_use(
-        &self,
-        tool: &str,
-        args: &str,
-    ) -> Result<Option<HookBlock>> {
+    pub async fn run_pre_tool_use(&self, tool: &str, args: &str) -> Result<Option<HookBlock>> {
         for request in self.engine.plan_pre_tool_use(tool, args)? {
             match self.executor.run(&request).await? {
                 HookOutcome::Allow => {}
@@ -82,8 +81,10 @@ mod tests {
     #[tokio::test]
     async fn pre_tool_use_blocks_on_non_zero_exit() {
         let _guard = TEST_LOCK.lock().expect("test lock");
-        let (_temp, runner) =
-            sample_hook("PreToolUse", r#"cat >/dev/null; echo "not allowed" >&2; exit 1"#);
+        let (_temp, runner) = sample_hook(
+            "PreToolUse",
+            r#"cat >/dev/null; echo "not allowed" >&2; exit 1"#,
+        );
         let block = runner
             .run_pre_tool_use("Write", r#"{"path":"foo.txt"}"#)
             .await

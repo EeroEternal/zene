@@ -1,4 +1,4 @@
-import type { AcpSessionUpdate, CloudEventKind, RunEvent, RunEventType } from "@/lib/types";
+import type { AcpSessionUpdate, CloudEventKind, RunEvent, RunEventType } from "./types.ts";
 
 /** Classified product kinds that already have a Console timeline surface. */
 export const TIMELINE_EVENT_KINDS = [

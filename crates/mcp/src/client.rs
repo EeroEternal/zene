@@ -111,8 +111,8 @@ impl McpStdioClient {
             .unwrap_or_default();
         let mut parsed = Vec::new();
         for tool in tools {
-            let info: McpToolInfo = serde_json::from_value(tool)
-                .context("parse MCP tool definition")?;
+            let info: McpToolInfo =
+                serde_json::from_value(tool).context("parse MCP tool definition")?;
             parsed.push(info);
         }
         Ok(parsed)
@@ -211,7 +211,10 @@ impl McpStdioClient {
             .write_all(line.as_bytes())
             .await
             .context("write MCP message")?;
-        self.stdin.write_all(b"\n").await.context("write MCP newline")?;
+        self.stdin
+            .write_all(b"\n")
+            .await
+            .context("write MCP newline")?;
         self.stdin.flush().await.context("flush MCP stdin")?;
         Ok(())
     }
@@ -311,9 +314,6 @@ mod tests {
 
     #[test]
     fn registry_name_is_prefixed() {
-        assert_eq!(
-            mcp_tool_registry_name("git", "status"),
-            "mcp__git__status"
-        );
+        assert_eq!(mcp_tool_registry_name("git", "status"), "mcp__git__status");
     }
 }

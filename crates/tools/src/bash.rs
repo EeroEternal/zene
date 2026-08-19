@@ -60,11 +60,7 @@ impl Tool for BashTool {
 
         let result = ctx
             .sandbox
-            .exec(
-                &args.command,
-                args.cwd.as_deref(),
-                ctx.cancel.as_ref(),
-            )
+            .exec(&args.command, args.cwd.as_deref(), ctx.cancel.as_ref())
             .await?;
         Ok(format_exec_result_for_command(&args.command, result))
     }
@@ -157,12 +153,7 @@ async fn exec_with_timeout(
     }
 
     sandbox
-        .exec_with_timeout(
-            command,
-            cwd,
-            cancel,
-            Duration::from_secs(timeout_secs),
-        )
+        .exec_with_timeout(command, cwd, cancel, Duration::from_secs(timeout_secs))
         .await
 }
 
@@ -178,5 +169,3 @@ fn format_exec_result_for_command(command: &str, result: zene_sandbox::ExecResul
         is_error: result.exit_code != 0,
     }
 }
-
-

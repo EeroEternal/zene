@@ -68,9 +68,7 @@ impl McpHttpClient {
             .await
             .context("mcp http initialize")?;
         debug!(server = %self.server_name, ?result, "mcp http initialized");
-        let _ = self
-            .notify("notifications/initialized", json!({}))
-            .await;
+        let _ = self.notify("notifications/initialized", json!({})).await;
         Ok(())
     }
 
@@ -238,7 +236,8 @@ mod tests {
 
     #[test]
     fn parses_sse_data() {
-        let raw = "event: message\ndata: {\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"tools\":[]}}\n\n";
+        let raw =
+            "event: message\ndata: {\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"tools\":[]}}\n\n";
         let v = parse_json_or_sse(raw).unwrap();
         assert!(v["result"]["tools"].is_array());
     }

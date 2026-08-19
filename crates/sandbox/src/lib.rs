@@ -5,18 +5,18 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 pub use options::{url_host_port, SandboxOptions};
-pub use path_policy::{check_read_allowed, check_write_allowed};
 use path_policy::{canonical_workdir, resolve_existing, resolve_for_create, verify_resolved_path};
+pub use path_policy::{check_read_allowed, check_write_allowed};
 use std::process::Stdio;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use globset::GlobBuilder;
-#[cfg(not(any(target_os = "linux", target_os = "macos")))]
-use keel_core::backend_process_guard;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 use keel_core::backend_local_process;
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+use keel_core::backend_process_guard;
 use keel_core::{
     check_egress, ManagedProcess, NetworkPolicy, Space, SpaceHandle, SpawnRequest, StdioMode,
     TerminationReason,

@@ -23,7 +23,10 @@ impl AnthropicProvider {
     pub fn from_config(config: &ZeneConfig) -> Result<Self> {
         Ok(Self {
             client: reqwest::Client::new(),
-            base_url: config.anthropic_base_url().trim_end_matches('/').to_string(),
+            base_url: config
+                .anthropic_base_url()
+                .trim_end_matches('/')
+                .to_string(),
             api_key: config.anthropic_api_key()?,
         })
     }
@@ -89,16 +92,13 @@ impl AnthropicProvider {
         let byte_stream = response.bytes_stream();
         let stream = byte_stream
             .map(|chunk| chunk.map_err(|err| anyhow!("{err}")))
-            .scan(
-                AnthropicStreamState::default(),
-                |state, chunk| {
-                    let result = match chunk {
-                        Ok(bytes) => state.push_chunk(bytes),
-                        Err(_) => None,
-                    };
-                    std::future::ready(result)
-                },
-            )
+            .scan(AnthropicStreamState::default(), |state, chunk| {
+                let result = match chunk {
+                    Ok(bytes) => state.push_chunk(bytes),
+                    Err(_) => None,
+                };
+                std::future::ready(result)
+            })
             .flat_map(|events| futures::stream::iter(events.into_iter().map(Ok)));
 
         Ok(Box::pin(stream))
@@ -126,10 +126,7 @@ fn anthropic_headers(api_key: &str) -> Result<HeaderMap> {
         "x-api-key",
         HeaderValue::from_str(api_key).context("invalid anthropic api key header")?,
     );
-    headers.insert(
-        "anthropic-version",
-        HeaderValue::from_static("2023-06-01"),
-    );
+    headers.insert("anthropic-version", HeaderValue::from_static("2023-06-01"));
     Ok(headers)
 }
 
@@ -320,10 +317,7 @@ fn parse_anthropic_response(raw: &Value) -> Result<ChatResponse> {
     let message = if tool_calls.is_empty() {
         Message::assistant(text)
     } else {
-        Message::assistant_with_tools(
-            if text.is_empty() { None } else { Some(text) },
-            tool_calls,
-        )
+        Message::assistant_with_tools(if text.is_empty() { None } else { Some(text) }, tool_calls)
     };
 
     Ok(ChatResponse { message, usage })
@@ -368,10 +362,7 @@ impl AnthropicStreamState {
 
             match parsed.get("type").and_then(Value::as_str) {
                 Some("content_block_delta") => {
-                    let index = parsed
-                        .get("index")
-                        .and_then(Value::as_u64)
-                        .unwrap_or(0) as usize;
+                    let index = parsed.get("index").and_then(Value::as_u64).unwrap_or(0) as usize;
                     if let Some(delta) = parsed.get("delta") {
                         match delta.get("type").and_then(Value::as_str) {
                             Some("text_delta") => {
@@ -424,10 +415,7 @@ impl AnthropicStreamState {
                     }
                 }
                 Some("content_block_start") => {
-                    let index = parsed
-                        .get("index")
-                        .and_then(Value::as_u64)
-                        .unwrap_or(0) as usize;
+                    let index = parsed.get("index").and_then(Value::as_u64).unwrap_or(0) as usize;
                     if let Some(block) = parsed.get("content_block") {
                         if block.get("type").and_then(Value::as_str) == Some("tool_use") {
                             while self.tool_calls.len() <= index {

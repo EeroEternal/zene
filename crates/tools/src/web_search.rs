@@ -61,7 +61,9 @@ impl Tool for WebSearchTool {
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
             name: "WebSearch".to_string(),
-            description: "Search the web for current information. Returns titles, URLs, and snippets.".to_string(),
+            description:
+                "Search the web for current information. Returns titles, URLs, and snippets."
+                    .to_string(),
             parameters: json!({
                 "type": "object",
                 "properties": {
@@ -207,8 +209,7 @@ fn http_client() -> Result<reqwest::Client> {
 }
 
 pub fn parse_tavily_response(raw: &str) -> Result<Vec<SearchResult>> {
-    let parsed: TavilyResponse =
-        serde_json::from_str(raw).context("parse Tavily JSON response")?;
+    let parsed: TavilyResponse = serde_json::from_str(raw).context("parse Tavily JSON response")?;
     Ok(parsed
         .results
         .into_iter()
@@ -259,7 +260,11 @@ pub fn parse_duckduckgo_html(html: &str) -> Result<Vec<SearchResult>> {
 }
 
 fn strip_tags(input: &str, tag_re: &Regex) -> String {
-    tag_re.replace_all(input, " ").into_owned().trim().to_string()
+    tag_re
+        .replace_all(input, " ")
+        .into_owned()
+        .trim()
+        .to_string()
 }
 
 fn decode_duckduckgo_url(raw: &str) -> String {

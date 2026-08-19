@@ -96,7 +96,10 @@ async fn fetch_url_text(url: &str) -> Result<String> {
 
     let response = client
         .get(url)
-        .header(reqwest::header::USER_AGENT, "Zene/0.1 (+https://github.com/zene)")
+        .header(
+            reqwest::header::USER_AGENT,
+            "Zene/0.1 (+https://github.com/zene)",
+        )
         .send()
         .await
         .with_context(|| format!("network error fetching {url}"))?;
@@ -113,10 +116,7 @@ async fn fetch_url_text(url: &str) -> Result<String> {
         .unwrap_or("")
         .to_string();
 
-    let bytes = response
-        .bytes()
-        .await
-        .context("read response body")?;
+    let bytes = response.bytes().await.context("read response body")?;
     let truncated = if bytes.len() > MAX_BODY_BYTES {
         &bytes[..MAX_BODY_BYTES]
     } else {
@@ -163,7 +163,11 @@ pub fn html_to_text(html: &str) -> String {
     text = decode_basic_entities(&text);
     text = ws_re.replace_all(&text, " ").into_owned();
     text = blank_re.replace_all(&text, "\n\n").into_owned();
-    text.lines().map(str::trim).filter(|l| !l.is_empty()).collect::<Vec<_>>().join("\n")
+    text.lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 fn decode_basic_entities(input: &str) -> String {

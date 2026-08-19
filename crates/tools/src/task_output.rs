@@ -142,10 +142,7 @@ impl Tool for TaskOutputTool {
                 };
                 if task.status != BackgroundTaskStatus::Running {
                     return Ok(ToolResult {
-                        content: format!(
-                            "Task `{id}` is already {}.",
-                            task.status.as_str()
-                        ),
+                        content: format!("Task `{id}` is already {}.", task.status.as_str()),
                         is_error: false,
                     });
                 }

@@ -24,7 +24,8 @@ impl Tool for WriteTool {
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
             name: "Write".to_string(),
-            description: "Write content to a file, creating parent directories if needed.".to_string(),
+            description: "Write content to a file, creating parent directories if needed."
+                .to_string(),
             parameters: json!({
                 "type": "object",
                 "properties": {

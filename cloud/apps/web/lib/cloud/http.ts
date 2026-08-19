@@ -1,4 +1,4 @@
-import { api } from "@/lib/api";
+import { api } from "../api.ts";
 
 /** Typed JSON GET. Path strings live in the matching `*Api` object. */
 export function getJson<T>(path: string): Promise<T> {

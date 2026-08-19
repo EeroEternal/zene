@@ -64,7 +64,8 @@ impl Tool for TodoWriteTool {
     }
 
     async fn execute(&self, arguments: &str, ctx: &ToolContext) -> Result<ToolResult> {
-        let args: TodoWriteArgs = serde_json::from_str(arguments).context("parse TodoWrite args")?;
+        let args: TodoWriteArgs =
+            serde_json::from_str(arguments).context("parse TodoWrite args")?;
         let Some(store) = ctx.todos.as_ref() else {
             return Ok(ToolResult {
                 content: "Todo store unavailable.".to_string(),

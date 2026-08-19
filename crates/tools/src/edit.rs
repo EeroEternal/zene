@@ -114,8 +114,7 @@ impl Tool for EditTool {
             }
 
             let new_content = replace_once_literal(content, &args.old_string, &args.new_string);
-            let materialized =
-                materialize_model_text(&new_content, model_view.line_ending_style);
+            let materialized = materialize_model_text(&new_content, model_view.line_ending_style);
             ctx.sandbox.write_text(&args.path, &materialized).await?;
             return Ok(ToolResult {
                 content: format!("Replaced 1 occurrence in {}", args.path),

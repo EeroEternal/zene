@@ -301,7 +301,9 @@ impl AgentRecordWriter {
                 .with_context(|| format!("create session record dir: {}", dir.display()))?;
         }
         let locks = RECORD_APPEND_LOCKS.get_or_init(|| Mutex::new(HashMap::new()));
-        let mut locks = locks.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut locks = locks
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let append_lock = locks
             .entry(path.clone())
             .or_insert_with(|| Arc::new(Mutex::new(())))
@@ -416,9 +418,8 @@ impl AgentRecordWriter {
             .parent()
             .unwrap_or_else(|| Path::new("."))
             .join("resume-fences");
-        fs::create_dir_all(&fence_dir).with_context(|| {
-            format!("create resume fence dir: {}", fence_dir.display())
-        })?;
+        fs::create_dir_all(&fence_dir)
+            .with_context(|| format!("create resume fence dir: {}", fence_dir.display()))?;
         let fence_path = fence_dir.join(format!("{}.claim", resume_fence_key(candidate)));
         match OpenOptions::new()
             .write(true)
@@ -437,9 +438,8 @@ impl AgentRecordWriter {
             }
             Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => return Ok(false),
             Err(err) => {
-                return Err(err).with_context(|| {
-                    format!("create resume fence: {}", fence_path.display())
-                });
+                return Err(err)
+                    .with_context(|| format!("create resume fence: {}", fence_path.display()));
             }
         }
 
@@ -691,10 +691,7 @@ fn resume_fence_key(candidate: &ResumeCandidate) -> String {
     // deterministic FNV-1a digest over the candidate identity instead.
     let identity = format!(
         "{}\0{}\0{:?}\0{:?}",
-        candidate.turn_id,
-        candidate.prompt,
-        candidate.context_epoch,
-        candidate.model_request_hash
+        candidate.turn_id, candidate.prompt, candidate.context_epoch, candidate.model_request_hash
     );
     let mut hash = 0xcbf29ce484222325u64;
     for byte in identity.as_bytes() {
@@ -1119,7 +1116,10 @@ mod tests {
                 }
             });
             let writer = AgentRecordWriter::from_path(&path).expect("reader");
-            assert_eq!(writer.execution_checkpoints().expect("checkpoints").len(), 1);
+            assert_eq!(
+                writer.execution_checkpoints().expect("checkpoints").len(),
+                1
+            );
         });
     }
 
@@ -1150,7 +1150,9 @@ mod tests {
 
             let candidate = writer.resume_candidate().expect("candidate").expect("safe");
             assert!(writer.claim_safe_resume(&candidate).expect("first claim"));
-            assert!(!writer.claim_safe_resume(&candidate).expect("duplicate claim"));
+            assert!(!writer
+                .claim_safe_resume(&candidate)
+                .expect("duplicate claim"));
             assert!(writer.resume_candidate().expect("recovery read").is_none());
             let snapshot = writer.recovery_snapshot().expect("claimed recovery");
             assert!(snapshot.has_incomplete_execution());

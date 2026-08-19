@@ -166,12 +166,7 @@ async fn spawn_background_task(
         match result {
             Ok(text) => {
                 let report = format_subagent_report(profile, &text);
-                guard.finish(
-                    &id_worker,
-                    BackgroundTaskStatus::Completed,
-                    report,
-                    Some(0),
-                );
+                guard.finish(&id_worker, BackgroundTaskStatus::Completed, report, Some(0));
             }
             Err(err) => {
                 let msg = err.to_string();
@@ -194,9 +189,7 @@ async fn spawn_background_task(
 }
 
 fn format_subagent_report(profile: SubagentProfile, text: &str) -> String {
-    format!(
-        "<subagent-report profile=\"{profile:?}\">\n{text}\n</subagent-report>"
-    )
+    format!("<subagent-report profile=\"{profile:?}\">\n{text}\n</subagent-report>")
 }
 
 fn truncate(s: &str, max: usize) -> String {

@@ -1,4 +1,4 @@
-import type { ListFilter, ListGroup, Repo, Run } from "./types";
+import type { ListFilter, ListGroup, Repo, Run } from "./types.ts";
 
 export const LIST_GROUPS: { id: ListGroup; label: string }[] = [
   { id: "project", label: "Project" },

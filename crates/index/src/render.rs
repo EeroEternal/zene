@@ -11,9 +11,7 @@ pub fn render_map(
     token_budget: u32,
     path_prefix: Option<&str>,
 ) -> String {
-    let prefix = path_prefix
-        .map(normalize_prefix)
-        .filter(|p| !p.is_empty());
+    let prefix = path_prefix.map(normalize_prefix).filter(|p| !p.is_empty());
     let scores = score_files(index, query);
     let mut ranked: Vec<(&String, f64)> = scores
         .iter()

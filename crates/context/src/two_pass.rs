@@ -129,7 +129,8 @@ pub fn note_for_pass2(pass1_raw: &str) -> String {
 
 pub fn pass2_user_prompt(note1: &str, hint: Option<&str>) -> String {
     let note1 = note_for_pass2(note1);
-    let guidance = hint.unwrap_or("Merge prior summary with recent turns into one self-contained note.");
+    let guidance =
+        hint.unwrap_or("Merge prior summary with recent turns into one self-contained note.");
     format!(
         "This is a two-pass / hierarchical compaction.\n\
          You are writing the *final* compaction note a successor assistant will rely on.\n\n\

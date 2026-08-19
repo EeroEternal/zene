@@ -1,5 +1,5 @@
-import type { GithubSettingsView, GithubStatus, Repo } from "@/lib/types";
-import { getJson, postJson, putJson } from "./http";
+import type { GithubSettingsView, GithubStatus, Repo } from "../types.ts";
+import { getJson, postJson, putJson } from "./http.ts";
 
 export const githubApi = {
   status: () => getJson<GithubStatus>("/api/v1/github/status"),

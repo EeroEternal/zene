@@ -49,8 +49,8 @@ pub use zene_context::{
 use crate::agent_turn::AgentTurnPorts;
 pub use agent_builder::AgentBuilder;
 pub use events::{emit_event, runtime_event_handler, AgentEvent, EventHandler};
+use plan_mode::tool_visible_in_definitions;
 pub use plan_mode::PlanApprovalPrompter;
-use plan_mode::{tool_visible_in_definitions};
 pub use subagent::{run_subagent, CoreSubagentRunner};
 pub use tool_dedup::{append_reminder, ToolDedup};
 pub use tool_scheduler::{classify_tool_accesses, ToolScheduler};
@@ -61,9 +61,7 @@ pub use zene_permission::{
     PolicyDecision, PromptChoice, RuleAction, SharedApprovalBroker, SharedToolPermission,
     TerminalApprovalBroker, ToolPermission,
 };
-use zene_turn::{
-    RuntimeEventHandler, SessionId, SteerBuffer, StepId, TurnId, TurnState,
-};
+use zene_turn::{RuntimeEventHandler, SessionId, SteerBuffer, StepId, TurnId, TurnState};
 pub use zene_workspace::{build_system_prompt, FsWorkspaceProvider, WorkspaceProvider};
 
 pub(crate) fn make_context_deps<'a>(
@@ -1020,11 +1018,8 @@ impl Agent {
             state_name,
             &idempotency_key,
         );
-        self.record_writer.append_execution_link(
-            &idempotency_key,
-            &event.id,
-            event.sequence,
-        )?;
+        self.record_writer
+            .append_execution_link(&idempotency_key, &event.id, event.sequence)?;
         self.record_writer
             .append_execution_checkpoint(&RecordEntry::ExecutionCheckpoint {
                 turn_id: turn_id.to_string(),

@@ -1,5 +1,5 @@
-import type { Organization, User } from "@/lib/types";
-import { getJson, postJson } from "./http";
+import type { Organization, User } from "../types.ts";
+import { getJson, postJson } from "./http.ts";
 
 export const meApi = {
   get: () => getJson<{ user: User; organization: Organization }>("/api/v1/me"),

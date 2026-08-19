@@ -1180,8 +1180,7 @@ fn apply_full_replace_to_session<S: ContextSession + ?Sized>(
     };
     // Volatile todos / memory reminders are projected at the request tail.
     // Persisting them here would freeze a resize-prone block in the body.
-    let projected =
-        assemble_full_replace_history(system, last_user, recent, summary.clone(), None);
+    let projected = assemble_full_replace_history(system, last_user, recent, summary.clone(), None);
     session.commit_compaction_snapshot(
         reason,
         compacted_count,

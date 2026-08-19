@@ -68,7 +68,9 @@ fn flatten_tool_result(message: &Message) -> Message {
     if out.role == Role::Tool {
         let name = out.name.as_deref().unwrap_or("tool");
         let bytes = out.content.as_ref().map(|c| c.len()).unwrap_or(0);
-        out.content = Some(format!("[{name} result omitted for compaction; {bytes} bytes]"));
+        out.content = Some(format!(
+            "[{name} result omitted for compaction; {bytes} bytes]"
+        ));
     }
     out
 }

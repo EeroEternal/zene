@@ -19,9 +19,7 @@ fn memory_root(workdir: &Path) -> PathBuf {
 
 fn daily_log_path(workdir: &Path) -> PathBuf {
     let day = chrono::Utc::now().format("%Y-%m-%d");
-    memory_root(workdir)
-        .join("daily")
-        .join(format!("{day}.md"))
+    memory_root(workdir).join("daily").join(format!("{day}.md"))
 }
 
 fn last_flush_hash_path(workdir: &Path) -> PathBuf {
@@ -65,7 +63,10 @@ impl MemoryStore for FsMemoryStore {
         }
 
         // Load active agent notes (.zene/notes/active or docs/notes/active)
-        for notes_parent in &[self.workdir.join(".zene").join("notes"), self.workdir.join("docs").join("notes")] {
+        for notes_parent in &[
+            self.workdir.join(".zene").join("notes"),
+            self.workdir.join("docs").join("notes"),
+        ] {
             let active_dir = notes_parent.join("active");
             if let Ok(entries) = std::fs::read_dir(&active_dir) {
                 let mut note_files: Vec<PathBuf> = entries
@@ -77,7 +78,10 @@ impl MemoryStore for FsMemoryStore {
                     if let Ok(text) = std::fs::read_to_string(&path) {
                         let trimmed = text.trim();
                         if !trimmed.is_empty() {
-                            chunks.push(format!("### Invariant Note ({})\n\n{trimmed}", path.file_name().unwrap_or_default().to_string_lossy()));
+                            chunks.push(format!(
+                                "### Invariant Note ({})\n\n{trimmed}",
+                                path.file_name().unwrap_or_default().to_string_lossy()
+                            ));
                         }
                     }
                 }

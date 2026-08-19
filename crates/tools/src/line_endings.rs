@@ -74,12 +74,18 @@ mod tests {
 
     #[test]
     fn detect_crlf() {
-        assert_eq!(detect_line_ending_style("a\r\nb\r\n"), LineEndingStyle::Crlf);
+        assert_eq!(
+            detect_line_ending_style("a\r\nb\r\n"),
+            LineEndingStyle::Crlf
+        );
     }
 
     #[test]
     fn detect_mixed() {
-        assert_eq!(detect_line_ending_style("a\r\nb\nc"), LineEndingStyle::Mixed);
+        assert_eq!(
+            detect_line_ending_style("a\r\nb\nc"),
+            LineEndingStyle::Mixed
+        );
     }
 
     #[test]

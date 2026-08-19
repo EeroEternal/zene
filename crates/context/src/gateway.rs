@@ -41,10 +41,8 @@ pub async fn publish_prefix(session_id: &str, epoch: u64, messages: &[Message]) 
         return;
     };
     let url = format!("{base}/v1/zene/sessions/{session_id}/publish");
-    let api_messages: Vec<serde_json::Value> = messages
-        .iter()
-        .map(message_to_publish_json)
-        .collect();
+    let api_messages: Vec<serde_json::Value> =
+        messages.iter().map(message_to_publish_json).collect();
     let pinned_boundary = stable_system_boundary(messages) as u64;
     let fingerprint_value = format!("{:016x}", fingerprint_messages(messages));
     let body = serde_json::json!({
@@ -57,12 +55,7 @@ pub async fn publish_prefix(session_id: &str, epoch: u64, messages: &[Message]) 
             "value": fingerprint_value,
         },
     });
-    match reqwest::Client::new()
-        .post(&url)
-        .json(&body)
-        .send()
-        .await
-    {
+    match reqwest::Client::new().post(&url).json(&body).send().await {
         Ok(resp) if resp.status().is_success() => {
             info_gateway("publish", session_id, epoch, resp.status().as_u16());
         }
@@ -93,10 +86,16 @@ fn message_to_publish_json(message: &Message) -> serde_json::Value {
         serde_json::Value::String(role.to_string()),
     )]);
     if let Some(content) = &message.content {
-        obj.insert("content".to_string(), serde_json::Value::String(content.clone()));
+        obj.insert(
+            "content".to_string(),
+            serde_json::Value::String(content.clone()),
+        );
     }
     if let Some(id) = &message.tool_call_id {
-        obj.insert("tool_call_id".to_string(), serde_json::Value::String(id.clone()));
+        obj.insert(
+            "tool_call_id".to_string(),
+            serde_json::Value::String(id.clone()),
+        );
     }
     if let Some(name) = &message.name {
         obj.insert("name".to_string(), serde_json::Value::String(name.clone()));

@@ -83,9 +83,6 @@ mod tests {
             sanitize_smartgate_session_id("run-abc_123:1"),
             "run-abc_123:1"
         );
-        assert_eq!(
-            sanitize_smartgate_session_id("bad chars!@#"),
-            "badchars"
-        );
+        assert_eq!(sanitize_smartgate_session_id("bad chars!@#"), "badchars");
     }
 }

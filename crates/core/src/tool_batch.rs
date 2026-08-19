@@ -9,6 +9,7 @@ use std::sync::Arc;
 use anyhow::{bail, Result};
 use tokio_util::sync::CancellationToken;
 use zene_config::ZeneConfig;
+use zene_hooks::HookRunner;
 use zene_llm::{Message, ToolCall};
 use zene_permission::SharedApprovalBroker;
 use zene_sandbox::Sandbox;
@@ -18,7 +19,6 @@ use zene_tools::{
     SharedToolPermission, ToolRegistry,
 };
 use zene_turn::ToolBatchOutcome;
-use zene_hooks::HookRunner;
 
 use crate::plan_mode::PlanApprovalPrompter;
 use crate::subagent::CoreSubagentRunner;

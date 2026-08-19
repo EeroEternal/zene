@@ -899,7 +899,10 @@ impl SessionRecord {
                 });
             }
         }
-        if let Some(message) = messages.first_mut().filter(|m| m.role == zene_llm::Role::System) {
+        if let Some(message) = messages
+            .first_mut()
+            .filter(|m| m.role == zene_llm::Role::System)
+        {
             if message.content.as_deref() == Some(content) {
                 self.messages = messages;
                 return;
@@ -1291,7 +1294,9 @@ mod tests {
 
         session.update_system_prefix("updated");
 
-        let view = session.try_view().expect("system prefix event is projectable");
+        let view = session
+            .try_view()
+            .expect("system prefix event is projectable");
         assert_eq!(view.messages[0].content.as_deref(), Some("updated"));
         assert_eq!(view.messages[1].content.as_deref(), Some("request"));
         assert_eq!(session.messages[0].content.as_deref(), Some("updated"));
@@ -1559,13 +1564,8 @@ mod tests {
     fn conversation_event_identity_tracks_id_and_sequence() {
         let mut session = SessionRecord::new(Path::new("."));
         let first = session.record_turn_started("turn-1", "hello");
-        let second = session.record_checkpoint(
-            Some("turn-1"),
-            None,
-            None,
-            "turn_started",
-            "turn-1/started",
-        );
+        let second =
+            session.record_checkpoint(Some("turn-1"), None, None, "turn_started", "turn-1/started");
         assert_ne!(first.id, second.id);
         assert!(first.sequence < second.sequence);
         assert_eq!(session.events()[0].sequence(), first.sequence);

@@ -44,7 +44,10 @@ pub async fn resolve_upstream_kind(upstream_url: &str) -> UpstreamKind {
 
     match probe_smartgate_capabilities(upstream_url).await {
         Ok(true) => {
-            info!(upstream_url, "upstream SmartGate detected via capabilities probe");
+            info!(
+                upstream_url,
+                "upstream SmartGate detected via capabilities probe"
+            );
             UpstreamKind::SmartGate
         }
         Ok(false) => {
@@ -107,15 +110,18 @@ async fn probe_smartgate_capabilities(upstream_url: &str) -> anyhow::Result<bool
         .timeout(PROBE_TIMEOUT)
         .build()
         .context("build capabilities probe client")?;
-    let resp = client.get(&url).send().await.with_context(|| {
-        format!("GET {url}")
-    })?;
+    let resp = client
+        .get(&url)
+        .send()
+        .await
+        .with_context(|| format!("GET {url}"))?;
     if !resp.status().is_success() {
         anyhow::bail!("capabilities probe returned {}", resp.status());
     }
-    let body: SmartGateCapabilities = resp.json().await.with_context(|| {
-        format!("parse capabilities JSON from {url}")
-    })?;
+    let body: SmartGateCapabilities = resp
+        .json()
+        .await
+        .with_context(|| format!("parse capabilities JSON from {url}"))?;
     if is_smartgate_capabilities(&body) {
         info!(
             url,
@@ -158,13 +164,13 @@ pub fn apply_smartgate_upstream_metadata(request: &mut ProxyChatRequest) {
         .and_then(Value::as_str)
         .unwrap_or("full");
 
-    request.metadata.insert(
-        SMARTGATE_HEADER_SESSION_ID.to_string(),
-        session_id.clone(),
-    );
     request
         .metadata
-        .insert(SMARTGATE_HEADER_CONTEXT_EPOCH.to_string(), epoch.to_string());
+        .insert(SMARTGATE_HEADER_SESSION_ID.to_string(), session_id.clone());
+    request.metadata.insert(
+        SMARTGATE_HEADER_CONTEXT_EPOCH.to_string(),
+        epoch.to_string(),
+    );
     request.metadata.insert(
         SMARTGATE_HEADER_CONTEXT_DELIVERY.to_string(),
         delivery.to_string(),
@@ -299,7 +305,7 @@ mod tests {
 
     #[tokio::test]
     async fn probe_detects_smartgate_from_capabilities_endpoint() {
-        use axum::{Json, Router, routing::get};
+        use axum::{routing::get, Json, Router};
         use tokio::net::TcpListener;
 
         let app = Router::new().route(

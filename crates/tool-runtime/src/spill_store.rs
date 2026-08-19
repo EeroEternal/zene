@@ -74,12 +74,7 @@ pub fn apply_tool_bound_plan(
                 content: content.clone(),
                 total_bytes: total,
             });
-            format_bounded_output(
-                &content,
-                max,
-                saved_path.as_deref(),
-                total,
-            )
+            format_bounded_output(&content, max, saved_path.as_deref(), total)
         }
     }
 }

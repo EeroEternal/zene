@@ -523,8 +523,10 @@ mod tests {
             _cancel: Option<&CancellationToken>,
         ) -> Result<StepResult> {
             let call = self.model_calls.fetch_add(1, Ordering::SeqCst);
-            *self.seen_user.lock().expect("seen_user") =
-                context.messages.first().and_then(|message| message.content.clone());
+            *self.seen_user.lock().expect("seen_user") = context
+                .messages
+                .first()
+                .and_then(|message| message.content.clone());
             Ok(if call == 0 {
                 StepResult {
                     message: Message::assistant("direct"),

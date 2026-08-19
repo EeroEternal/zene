@@ -237,7 +237,7 @@ fn normalize_tool_calls(mut calls: Vec<ToolCall>) -> Vec<ToolCall> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use futures::{StreamExt, stream};
+    use futures::{stream, StreamExt};
 
     struct FakeExecutor;
     #[async_trait]

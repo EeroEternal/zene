@@ -10,9 +10,8 @@ pub fn tool_kind(name: &str) -> &'static str {
         "Write" | "Edit" => "edit",
         "Bash" | "Task" | "TaskOutput" => "execute",
         "FetchUrl" | "WebSearch" => "fetch",
-        "TodoWrite" | "AskUser" | "AskUserQuestion" | "EnterPlanMode" | "ExitPlanMode" | "Skill" => {
-            "think"
-        }
+        "TodoWrite" | "AskUser" | "AskUserQuestion" | "EnterPlanMode" | "ExitPlanMode"
+        | "Skill" => "think",
         _ if name.starts_with("mcp__") => "execute",
         _ => "other",
     }
@@ -624,7 +623,10 @@ mod tests {
             tool_title("Bash", r#"{"command":"ls -la && find . -name '*.rs'"}"#),
             "Listed files"
         );
-        assert_eq!(tool_title("Grep", r#"{"pattern":"tool_title"}"#), "Searched code for tool_title");
+        assert_eq!(
+            tool_title("Grep", r#"{"pattern":"tool_title"}"#),
+            "Searched code for tool_title"
+        );
         assert_eq!(
             tool_title("RepoMap", r#"{"query":"ContextEngine"}"#),
             "Mapped repo for ContextEngine"

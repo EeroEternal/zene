@@ -222,7 +222,9 @@ mod tests {
             .collect();
         assert!(names.contains(&"Read".into()));
         assert!(names.contains(&"AskUserQuestion".into()));
-        assert!(!names.iter().any(|name| name == "Write" || name == "Edit" || name == "Bash"));
+        assert!(!names
+            .iter()
+            .any(|name| name == "Write" || name == "Edit" || name == "Bash"));
         // Agent Explore includes plan/collaboration; Subagent Explore does not include Task.
         assert!(!names.iter().any(|name| name == "Task"));
     }

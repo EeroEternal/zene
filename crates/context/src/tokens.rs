@@ -1,7 +1,5 @@
-use tiktoken_rs::tokenizer::{Tokenizer, get_tokenizer};
-use tiktoken_rs::{
-    CoreBPE, cl100k_base_singleton, o200k_base_singleton, o200k_harmony_singleton,
-};
+use tiktoken_rs::tokenizer::{get_tokenizer, Tokenizer};
+use tiktoken_rs::{cl100k_base_singleton, o200k_base_singleton, o200k_harmony_singleton, CoreBPE};
 use zene_llm::{Message, MessageKind, Role, ToolDefinition};
 
 /// Provider family for token estimation heuristics.
@@ -209,7 +207,10 @@ impl TokenEstimator {
     }
 
     pub fn estimate_messages_tokens(&self, messages: &[Message]) -> u32 {
-        messages.iter().map(|m| self.estimate_message_tokens(m)).sum()
+        messages
+            .iter()
+            .map(|m| self.estimate_message_tokens(m))
+            .sum()
     }
 
     pub fn estimate_tools_tokens(&self, tools: &[ToolDefinition]) -> u32 {
@@ -350,7 +351,9 @@ mod tests {
                 arguments: r#"{"path":"a.rs"}"#.into(),
             }],
         );
-        assert!(estimate_message_tokens(&message) > estimate_message_tokens(&Message::assistant("hi")));
+        assert!(
+            estimate_message_tokens(&message) > estimate_message_tokens(&Message::assistant("hi"))
+        );
     }
 
     #[test]
@@ -383,7 +386,9 @@ mod tests {
         let estimator = TokenEstimator::default();
         let system = Message::system("hi");
         let user = Message::user("hi");
-        assert!(estimator.estimate_message_tokens(&system) > estimator.estimate_message_tokens(&user));
+        assert!(
+            estimator.estimate_message_tokens(&system) > estimator.estimate_message_tokens(&user)
+        );
     }
 
     #[test]
@@ -409,13 +414,18 @@ mod tests {
         let estimator = TokenEstimator::default();
         let plain = Message::assistant("summary text");
         let summary = Message::compaction_summary("summary text");
-        assert!(estimator.estimate_message_tokens(&summary) > estimator.estimate_message_tokens(&plain));
+        assert!(
+            estimator.estimate_message_tokens(&summary) > estimator.estimate_message_tokens(&plain)
+        );
     }
 
     #[test]
     fn openai_gpt4o_uses_o200k_tiktoken() {
         let est = TokenEstimator::for_provider(EstimateProvider::OpenAi, "gpt-4o", 4.0);
-        assert_eq!(est.mode, EstimateMode::Tiktoken(TiktokenEncoding::O200kBase));
+        assert_eq!(
+            est.mode,
+            EstimateMode::Tiktoken(TiktokenEncoding::O200kBase)
+        );
         // cl100k/o200k: "hello world" → 2 tokens
         assert_eq!(est.estimate_chars_as_tokens("hello world"), 2);
     }
@@ -423,7 +433,10 @@ mod tests {
     #[test]
     fn openai_gpt4_uses_cl100k_tiktoken() {
         let est = TokenEstimator::for_provider(EstimateProvider::OpenAi, "gpt-4", 4.0);
-        assert_eq!(est.mode, EstimateMode::Tiktoken(TiktokenEncoding::Cl100kBase));
+        assert_eq!(
+            est.mode,
+            EstimateMode::Tiktoken(TiktokenEncoding::Cl100kBase)
+        );
         assert_eq!(est.estimate_chars_as_tokens("hello world"), 2);
     }
 
@@ -435,7 +448,8 @@ mod tests {
 
     #[test]
     fn anthropic_keeps_heuristic() {
-        let est = TokenEstimator::for_provider(EstimateProvider::Anthropic, "claude-sonnet-4-5", 4.0);
+        let est =
+            TokenEstimator::for_provider(EstimateProvider::Anthropic, "claude-sonnet-4-5", 4.0);
         assert_eq!(est.mode, EstimateMode::ScriptAware);
     }
 

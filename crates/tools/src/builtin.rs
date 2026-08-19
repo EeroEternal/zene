@@ -54,7 +54,9 @@ pub fn tools_for_profile(profile: SubagentProfile) -> ToolRegistry {
     }
 }
 
-fn with_cloud_publish(mut tools: Vec<Box<dyn crate::registry::Tool>>) -> Vec<Box<dyn crate::registry::Tool>> {
+fn with_cloud_publish(
+    mut tools: Vec<Box<dyn crate::registry::Tool>>,
+) -> Vec<Box<dyn crate::registry::Tool>> {
     if PublishGithubTool::available() {
         tools.push(Box::new(PublishGithubTool));
     }

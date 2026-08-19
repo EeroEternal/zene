@@ -1,4 +1,4 @@
-import type { Approval, ApprovalDecision } from "@/lib/types";
+import type { Approval, ApprovalDecision } from "./types.ts";
 
 const ALLOW_ONCE: ApprovalDecision[] = ["allow-once", "allow"];
 const DENY_ONCE: ApprovalDecision[] = ["reject-once", "deny"];

@@ -8,13 +8,21 @@ use uuid::Uuid;
 pub struct SessionId(String);
 
 impl SessionId {
-    pub fn new() -> Self { Self(Uuid::new_v4().to_string()) }
-    pub fn from_string(value: impl Into<String>) -> Self { Self(value.into()) }
-    pub fn as_str(&self) -> &str { &self.0 }
+    pub fn new() -> Self {
+        Self(Uuid::new_v4().to_string())
+    }
+    pub fn from_string(value: impl Into<String>) -> Self {
+        Self(value.into())
+    }
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
 }
 
 impl fmt::Display for SessionId {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result { f.write_str(&self.0) }
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
+    }
 }
 
 /// Stable identity for a model tool call.
@@ -22,13 +30,21 @@ impl fmt::Display for SessionId {
 pub struct ToolCallId(String);
 
 impl ToolCallId {
-    pub fn new() -> Self { Self(Uuid::new_v4().to_string()) }
-    pub fn from_string(value: impl Into<String>) -> Self { Self(value.into()) }
-    pub fn as_str(&self) -> &str { &self.0 }
+    pub fn new() -> Self {
+        Self(Uuid::new_v4().to_string())
+    }
+    pub fn from_string(value: impl Into<String>) -> Self {
+        Self(value.into())
+    }
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
 }
 
 impl fmt::Display for ToolCallId {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result { f.write_str(&self.0) }
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
+    }
 }
 
 /// Identifier for one user prompt → final assistant response cycle.

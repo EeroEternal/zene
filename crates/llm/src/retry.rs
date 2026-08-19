@@ -43,9 +43,7 @@ pub fn is_context_overflow(err: &str) -> bool {
 }
 
 fn is_rate_limited(lower: &str) -> bool {
-    lower.contains("429")
-        || lower.contains("too many requests")
-        || lower.contains("rate limit")
+    lower.contains("429") || lower.contains("too many requests") || lower.contains("rate limit")
 }
 
 fn is_auth_or_client_fatal(lower: &str) -> bool {

@@ -16,7 +16,9 @@ pub fn check_write_allowed(path: &str) -> Result<(), String> {
     }
 
     if is_sensitive_credential_name(trimmed) {
-        return Err(format!("writes are denied for credential-like path: {path}"));
+        return Err(format!(
+            "writes are denied for credential-like path: {path}"
+        ));
     }
 
     Ok(())
@@ -34,7 +36,9 @@ pub fn check_read_allowed(path: &str) -> Result<(), String> {
         return Err(format!("reads are denied for credential-like path: {path}"));
     }
     if is_under_secret_home_dir(trimmed) {
-        return Err(format!("reads are denied under protected credential directory: {path}"));
+        return Err(format!(
+            "reads are denied under protected credential directory: {path}"
+        ));
     }
     Ok(())
 }
@@ -60,7 +64,9 @@ pub fn check_read_allowed_resolved(resolved: &Path) -> Result<(), String> {
         }
     }
     if is_sensitive_env_file(&normalized) || is_sensitive_credential_name(&normalized) {
-        return Err(format!("reads are denied for credential-like path: {normalized}"));
+        return Err(format!(
+            "reads are denied for credential-like path: {normalized}"
+        ));
     }
     Ok(())
 }

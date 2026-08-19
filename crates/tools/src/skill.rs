@@ -119,6 +119,8 @@ fn split_frontmatter(content: &str) -> Option<(&str, &str)> {
     let rest = trimmed.strip_prefix('\n').or(Some(trimmed))?;
     let end = rest.find("\n---")?;
     let frontmatter = &rest[..end];
-    let body = rest[end + 4..].strip_prefix('\n').unwrap_or(&rest[end + 4..]);
+    let body = rest[end + 4..]
+        .strip_prefix('\n')
+        .unwrap_or(&rest[end + 4..]);
     Some((frontmatter, body))
 }

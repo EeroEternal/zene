@@ -11,9 +11,7 @@ pub fn is_cloud_run() -> bool {
 }
 
 pub fn deny_cloud_github_cli(command: &str) -> Option<String> {
-    blocked_kind(command).map(|kind| {
-        format!("Policy denied `{kind}`: {DENIED}")
-    })
+    blocked_kind(command).map(|kind| format!("Policy denied `{kind}`: {DENIED}"))
 }
 
 fn blocked_kind(command: &str) -> Option<&'static str> {
@@ -249,12 +247,17 @@ mod tests {
         assert_eq!(blocked_kind("git push origin HEAD"), Some("git push"));
         assert_eq!(blocked_kind("git -C /tmp push --force"), Some("git push"));
         assert_eq!(blocked_kind("sudo git push"), Some("git push"));
-        assert_eq!(blocked_kind("ssh host git push origin main"), Some("git push"));
+        assert_eq!(
+            blocked_kind("ssh host git push origin main"),
+            Some("git push")
+        );
         assert_eq!(
             blocked_kind("ssh host 'cd /src && git push'"),
             Some("git push")
         );
-        assert!(deny_cloud_github_cli("git push").unwrap().contains("Commit & Create PR"));
+        assert!(deny_cloud_github_cli("git push")
+            .unwrap()
+            .contains("Commit & Create PR"));
     }
 
     #[test]

@@ -41,12 +41,12 @@ impl McpServerConfig {
     pub fn validate(&self, name: &str) -> Result<()> {
         match (self.is_stdio(), self.is_http()) {
             (true, false) | (false, true) => Ok(()),
-            (true, true) => bail!(
-                "MCP server `{name}` sets both `command` and `url`; choose one transport"
-            ),
-            (false, false) => bail!(
-                "MCP server `{name}` needs either `command` (stdio) or `url` (HTTP)"
-            ),
+            (true, true) => {
+                bail!("MCP server `{name}` sets both `command` and `url`; choose one transport")
+            }
+            (false, false) => {
+                bail!("MCP server `{name}` needs either `command` (stdio) or `url` (HTTP)")
+            }
         }
     }
 }
@@ -86,8 +86,7 @@ impl McpConfig {
 fn parse_config_file(path: &Path) -> Result<McpConfig> {
     let raw = fs::read_to_string(path)
         .with_context(|| format!("read MCP config at {}", path.display()))?;
-    serde_json::from_str(&raw)
-        .with_context(|| format!("parse MCP config at {}", path.display()))
+    serde_json::from_str(&raw).with_context(|| format!("parse MCP config at {}", path.display()))
 }
 
 #[cfg(test)]
@@ -198,7 +197,10 @@ mod tests {
         let loaded = load_mcp_config(&workdir).unwrap();
         assert_eq!(loaded.servers.len(), 2);
         assert_eq!(loaded.servers["shared"].command.as_deref(), Some("project"));
-        assert_eq!(loaded.servers["local"].command.as_deref(), Some("local-cmd"));
+        assert_eq!(
+            loaded.servers["local"].command.as_deref(),
+            Some("local-cmd")
+        );
     }
 
     struct EnvOverride;

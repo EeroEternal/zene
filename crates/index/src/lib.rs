@@ -72,7 +72,11 @@ mod tests {
         assert_eq!(first.parsed, 2);
         assert_eq!(first.cached, 0);
 
-        fs::write(dir.path().join("b.rs"), "pub fn beta() {}\npub fn gamma() {}\n").unwrap();
+        fs::write(
+            dir.path().join("b.rs"),
+            "pub fn beta() {}\npub fn gamma() {}\n",
+        )
+        .unwrap();
         let (index, second) = refresh_index(dir.path()).unwrap();
         assert_eq!(second.parsed, 1);
         assert_eq!(second.cached, 1);
@@ -95,4 +99,3 @@ mod tests {
         assert!(map.contains("Personalized to: process_refund"));
     }
 }
-

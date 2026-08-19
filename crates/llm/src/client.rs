@@ -17,9 +17,7 @@ pub struct ChatClient {
 impl ChatClient {
     pub async fn from_config(config: &ZeneConfig) -> Result<Self> {
         let inner: Box<dyn Provider> = match config.provider_kind() {
-            ProviderKind::OpenAi => {
-                Box::new(OpenAiCompatibleProvider::from_config(config).await?)
-            }
+            ProviderKind::OpenAi => Box::new(OpenAiCompatibleProvider::from_config(config).await?),
             ProviderKind::Anthropic => Box::new(AnthropicProvider::from_config(config)?),
         };
         Ok(Self { inner })

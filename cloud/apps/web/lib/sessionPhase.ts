@@ -1,4 +1,4 @@
-import type { RunStatus } from "./types";
+import type { RunStatus } from "./types.ts";
 
 export type SessionPhase =
   | "loading"

@@ -1,7 +1,7 @@
-import { api } from "@/lib/api";
-import { runsApi } from "@/lib/cloud";
-import { buildDefaultPrBody } from "@/lib/prBody";
-import type { GitCompare, PullRequest } from "@/lib/types";
+import { api } from "./api.ts";
+import { runsApi } from "./cloud/index.ts";
+import { buildDefaultPrBody } from "./prBody.ts";
+import type { GitCompare, PullRequest } from "./types.ts";
 
 export interface PushResult {
   headSha?: string;

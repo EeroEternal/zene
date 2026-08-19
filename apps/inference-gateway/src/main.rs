@@ -3,7 +3,7 @@ use std::net::SocketAddr;
 use anyhow::Context;
 use tokio::net::TcpListener;
 use tracing::info;
-use zene_inference_gateway::{GatewayOptions, build_gateway};
+use zene_inference_gateway::{build_gateway, GatewayOptions};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {

@@ -108,7 +108,10 @@ mod tests {
     #[test]
     fn hook_event_parsing() {
         assert_eq!(HookEvent::parse("PreToolUse"), Some(HookEvent::PreToolUse));
-        assert_eq!(HookEvent::parse("PostToolUse"), Some(HookEvent::PostToolUse));
+        assert_eq!(
+            HookEvent::parse("PostToolUse"),
+            Some(HookEvent::PostToolUse)
+        );
         assert_eq!(HookEvent::parse("Unknown"), None);
     }
 

@@ -17,7 +17,9 @@ pub fn sessions_dir() -> PathBuf {
 }
 
 pub fn workdir_slug(workdir: &Path) -> String {
-    let canonical = workdir.canonicalize().unwrap_or_else(|_| workdir.to_path_buf());
+    let canonical = workdir
+        .canonicalize()
+        .unwrap_or_else(|_| workdir.to_path_buf());
     let raw = canonical.display().to_string();
     raw.chars()
         .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })

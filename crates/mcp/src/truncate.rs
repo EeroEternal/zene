@@ -46,7 +46,13 @@ pub fn truncate_mcp_output(content: String, workdir: &Path, tool_name: &str) -> 
         .unwrap_or(0);
     let safe_name = tool_name
         .chars()
-        .map(|c| if c.is_ascii_alphanumeric() || c == '_' || c == '-' { c } else { '_' })
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '_' || c == '-' {
+                c
+            } else {
+                '_'
+            }
+        })
         .collect::<String>();
     let ext = if content.trim_start().starts_with('{') || content.trim_start().starts_with('[') {
         "json"
