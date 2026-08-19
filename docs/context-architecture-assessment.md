@@ -32,7 +32,7 @@ Zene 当前最有辨识度的架构，是 Agent 持有语义状态，ContextEngi
 | `zene-session` | 保存 events、兼容 messages cache、checkpoint、todos，并生成 active view | 主路径可用，仍有 legacy fallback 与双写 |
 | `zene-context` | estimate、compact、memory、三区投影、epoch、full/delta、explain | 已实现 |
 | `zene-llm` | 将 `ContextMetadata` 放入 OpenAI-compatible 请求 | 已实现；不是所有 provider 路径都具备相同协议 |
-| inference-gateway | 保存 canonical prefix、校验版本、拼装 delta、代理上游 | 已实现；属于消息级 Warm tier |
+| inference-gateway | 保存 canonical prefix、校验版本、拼装 delta、代理上游 | 已实现；属于消息级 prefix 缓存层（设计文档称 Warm tier） |
 | 推理引擎 | Provider prompt cache 或未来按 session 续 KV | Provider cache 可用；自研 KV 续算未实现 |
 | Cloud API / Worker / ACP | 控制面、run 调度、stdio JSON-RPC、Agent 进程环境 | 已实现；Cloud API 不代理 LLM 推理 |
 
@@ -76,7 +76,7 @@ OpenAI-compatible 路径定义以下元数据：
 | `delivery` | `full` 或 `delta` |
 | `tail_start` | delta 对应的消息切分位置 |
 
-启用 inference-gateway 时，Agent 默认选择 delta。Agent 先向 `/v1/zene/sessions/{id}/publish` 发送 canonical prefix，再由网关的 session middleware 组装 `prefix || tail`。没有新增 tail或无法形成有效 delta 时，Agent 会回退到 full。
+启用 inference-gateway 时，Agent 默认选择 delta。Agent 先向 `/v1/zene/sessions/{id}/publish` 发送 canonical prefix，再由网关的 session middleware 组装 `prefix || tail`。没有新增 tail 或无法形成有效 delta 时，Agent 会回退到 full。当前 publish 不等待可反馈给 ContextEngine 的确认，故障闭环属于下文明确列出的缺口。
 
 网关保存 prefix 的消息副本，但不拥有 compaction、memory、branch 或 transcript 语义。它不是第二个 Session SoT。
 
@@ -125,6 +125,8 @@ ContextEngine 会在 emit publish 前更新 `initial_publish_done`、`pending_pu
 现有 E2E 覆盖 publish prefix 后 delta 请求在上游组装成 `prefix + tail`。仍缺少 compact 后 epoch 提升与 republish、stale epoch、hash mismatch、publish 不可用、Redis 多实例和 SmartGate 全链路验证。
 
 当前 session 元数据协议主要位于 OpenAI-compatible 路径。Provider 能力差异需要显式建模，不能假设所有 provider 都接受同一套 header 与 gateway 行为。
+
+`on_system_prefix_changed` 已提供 epoch 提升入口，但 runtime 中的 system/memory 变更尚未全部统一经过该入口。动态 prefix 修改需要与 epoch 和 republish 建立同一不变量。
 
 ## 优化原则
 
