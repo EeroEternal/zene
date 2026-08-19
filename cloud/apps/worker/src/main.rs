@@ -1,47 +1,60 @@
 mod event_outbox;
+pub(crate) mod git;
 mod github_auth;
 mod supervisor;
+pub(crate) mod title;
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::process::Stdio;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
 use clap::Parser;
-use tokio::io::{AsyncBufReadExt, BufReader};
-use tokio::process::Command;
+use git::{bare_cache_ready, prepare_workspace, workspace_ready};
+use title::{format_title_focus, maybe_refresh_run_title, title_is_user_locked, TitleRefresh};
 use tracing::{error, info, warn};
 use tracing_subscriber::EnvFilter;
 use uuid::Uuid;
 use zene_cloud_acp_bridge::resolve_zene_bin;
-use zene_cloud_runtime_client::{
-    AcpRuntimeClient, MockRuntimeClient, RuntimeClient, RuntimeCommand, RuntimeEvent,
-    RuntimeNotification, RuntimeRequest,
-};
 use zene_cloud_domain::{
     ApprovalDecision, ApprovalEventPayload, ApprovalKind, ApprovalRequest, ApprovalRisk,
     ApprovalStatus, ClaimedRun, CloneAuthResponse, CreateApprovalRequest, LlmAuthResponse,
-    PermissionMode, RunStatus, WorkerClaimRequest, WorkerCommandAckRequest,
-    WorkerCommandKind, WorkerCommandsResponse, WorkerEventRequest, WorkerFence,
-    WorkerSessionRequest, WorkerStatusRequest, WorkerTitleRequest,
+    PermissionMode, RunStatus, WorkerClaimRequest, WorkerCommandAckRequest, WorkerCommandKind,
+    WorkerCommandsResponse, WorkerEventRequest, WorkerFence, WorkerSessionRequest,
+    WorkerStatusRequest,
+};
+use zene_cloud_runtime_client::{
+    AcpRuntimeClient, MockRuntimeClient, RuntimeClient, RuntimeCommand, RuntimeEvent,
+    RuntimeNotification, RuntimeRequest,
 };
 
 #[derive(Debug, Clone, Parser)]
 #[command(name = "zene-cloud-worker")]
 pub(crate) struct Cli {
-    #[arg(long, env = "ZENE_CLOUD_API_URL", default_value = "http://127.0.0.1:8788")]
+    #[arg(
+        long,
+        env = "ZENE_CLOUD_API_URL",
+        default_value = "http://127.0.0.1:8788"
+    )]
     pub(crate) api_url: String,
 
-    #[arg(long, env = "ZENE_CLOUD_WORKER_TOKEN", default_value = "dev-worker-token")]
+    #[arg(
+        long,
+        env = "ZENE_CLOUD_WORKER_TOKEN",
+        default_value = "dev-worker-token"
+    )]
     pub(crate) worker_token: String,
 
     #[arg(long, env = "ZENE_CLOUD_WORKER_ID")]
     pub(crate) worker_id: Option<String>,
 
-    #[arg(long, env = "ZENE_CLOUD_WORKSPACE_ROOT", default_value = "./data/workspaces")]
+    #[arg(
+        long,
+        env = "ZENE_CLOUD_WORKSPACE_ROOT",
+        default_value = "./data/workspaces"
+    )]
     pub(crate) workspace_root: PathBuf,
 
     #[arg(long, env = "ZENE_BIN")]
@@ -83,7 +96,11 @@ pub(crate) struct Cli {
     pub(crate) max_hold: u64,
 
     /// Supervisor scale loop interval.
-    #[arg(long, env = "ZENE_CLOUD_WORKER_SCALE_INTERVAL_MS", default_value_t = 1000)]
+    #[arg(
+        long,
+        env = "ZENE_CLOUD_WORKER_SCALE_INTERVAL_MS",
+        default_value_t = 1000
+    )]
     pub(crate) scale_interval_ms: u64,
 
     /// Forward to zene acp for inference-gateway delta assembly (optional).
@@ -165,7 +182,10 @@ async fn run_executor(cli: Cli) -> Result<()> {
             "using real zene acp"
         );
     } else if cli.allow_mock {
-        warn!(agent_mode = "mock", "zene binary missing; using MockAgent (ZENE_CLOUD_ALLOW_MOCK=1)");
+        warn!(
+            agent_mode = "mock",
+            "zene binary missing; using MockAgent (ZENE_CLOUD_ALLOW_MOCK=1)"
+        );
     } else {
         bail!(
             "zene binary not found and ZENE_CLOUD_ALLOW_MOCK is disabled; set ZENE_BIN or build zene"
@@ -243,14 +263,13 @@ pub(crate) fn spawn_shutdown_listener(shutdown: Arc<AtomicBool>) {
         #[cfg(unix)]
         {
             use tokio::signal::unix::{signal, SignalKind};
-            let mut sigterm =
-                match signal(SignalKind::terminate()) {
-                    Ok(s) => s,
-                    Err(err) => {
-                        warn!(error = %err, "failed to install SIGTERM handler");
-                        return;
-                    }
-                };
+            let mut sigterm = match signal(SignalKind::terminate()) {
+                Ok(s) => s,
+                Err(err) => {
+                    warn!(error = %err, "failed to install SIGTERM handler");
+                    return;
+                }
+            };
             let mut sigint = match signal(SignalKind::interrupt()) {
                 Ok(s) => s,
                 Err(err) => {
@@ -477,12 +496,7 @@ async fn fetch_clone_auth(
             let backoff = Duration::from_secs(1_u64 << attempt.min(3));
             tokio::time::sleep(backoff).await;
         }
-        match client
-            .get(&url)
-            .bearer_auth(&cli.worker_token)
-            .send()
-            .await
-        {
+        match client.get(&url).bearer_auth(&cli.worker_token).send().await {
             Ok(response) if response.status().is_success() => {
                 return Ok(response.json().await.context("decode clone-auth")?);
             }
@@ -514,245 +528,6 @@ fn is_recoverable_worker_error(err: &anyhow::Error, claimed: &ClaimedRun) -> boo
         || std::path::Path::new(&claimed.workspace_dir)
             .join(".git")
             .exists()
-}
-
-async fn workspace_ready(workspace: &Path) -> bool {
-    if !workspace.join(".git").exists() {
-        return false;
-    }
-    // Partial/interrupted clones leave a .git dir with no usable checkout.
-    match run_git_output(workspace, &["rev-parse", "--verify", "HEAD"]).await {
-        Ok(sha) => !sha.trim().is_empty(),
-        Err(_) => false,
-    }
-}
-
-async fn bare_cache_ready(cache: &Path) -> bool {
-    // A bare repo has HEAD at the root (no nested .git).
-    if !cache.join("HEAD").exists() {
-        return false;
-    }
-    match run_git_output(cache, &["rev-parse", "--verify", "HEAD"]).await {
-        Ok(sha) => !sha.trim().is_empty(),
-        Err(_) => false,
-    }
-}
-
-fn git_command() -> Command {
-    let mut cmd = Command::new("git");
-    // HTTP/2 framing errors stall github.com clones on some developer networks.
-    cmd.args(["-c", "http.version=HTTP/1.1"]);
-    for key in [
-        "HTTP_PROXY",
-        "HTTPS_PROXY",
-        "ALL_PROXY",
-        "http_proxy",
-        "https_proxy",
-        "all_proxy",
-    ] {
-        cmd.env_remove(key);
-    }
-    cmd
-}
-
-fn authenticated_clone_url(auth: &CloneAuthResponse) -> String {
-    let mut clone_url = auth.clone_url.clone();
-    if let Some(token) = &auth.token {
-        if let Some(rest) = clone_url.strip_prefix("https://") {
-            let user = auth.username.as_deref().unwrap_or("x-access-token");
-            clone_url = format!("https://{user}:{token}@{rest}");
-        }
-    }
-    clone_url
-}
-
-async fn fetch_cache_base_ref(cache: &Path, auth: &CloneAuthResponse) -> Result<()> {
-    let clone_url = authenticated_clone_url(auth);
-    let status = git_command()
-        .args([
-            "-C",
-            &cache.display().to_string(),
-            "fetch",
-            "--depth",
-            "1",
-            clone_url.as_str(),
-            &format!("+refs/heads/{0}:refs/heads/{0}", auth.base_ref),
-        ])
-        .status()
-        .await
-        .context("git fetch base_ref")?;
-    if !status.success() {
-        bail!("git fetch base_ref failed with {status}");
-    }
-    Ok(())
-}
-
-async fn ensure_repo_cache(cache: &Path, auth: &CloneAuthResponse) -> Result<()> {
-    if bare_cache_ready(cache).await {
-        info!(
-            path = %cache.display(),
-            repository_id = %auth.repository_id,
-            "repo cache ready; fetching latest base_ref"
-        );
-        let _ = fetch_cache_base_ref(cache, auth).await;
-        return Ok(());
-    }
-    if cache.exists() {
-        warn!(path = %cache.display(), "removing incomplete repo cache");
-        let _ = tokio::fs::remove_dir_all(cache).await;
-    }
-
-    let clone_url = authenticated_clone_url(auth);
-    std::fs::create_dir_all(cache.parent().unwrap_or_else(|| Path::new(".")))?;
-    info!(
-        url = %auth.clone_url,
-        path = %cache.display(),
-        repository_id = %auth.repository_id,
-        "cloning repository into cache (shallow bare)"
-    );
-    let clone = git_command()
-        .args([
-            "clone",
-            "--bare",
-            "--depth",
-            "1",
-            "--single-branch",
-            "--branch",
-            &auth.base_ref,
-            &clone_url,
-            &cache.display().to_string(),
-        ])
-        .status();
-    let status = tokio::time::timeout(Duration::from_secs(10 * 60), clone)
-        .await
-        .context("git clone --bare timed out")?
-        .context("git clone --bare")?;
-    if !status.success() {
-        bail!("git bare clone failed with {status}");
-    }
-    Ok(())
-}
-
-async fn prepare_workspace(
-    workspace_root: &Path,
-    workspace: &Path,
-    auth: &CloneAuthResponse,
-) -> Result<()> {
-    if workspace_ready(workspace).await {
-        info!(path = %workspace.display(), "workspace already initialized");
-        return Ok(());
-    }
-    if workspace.exists() {
-        warn!(path = %workspace.display(), "removing incomplete workspace before clone");
-        let _ = tokio::fs::remove_dir_all(workspace).await;
-    }
-
-    if auth.mock {
-        std::fs::create_dir_all(workspace)?;
-        info!(path = %workspace.display(), "preparing mock git workspace");
-        run_git(workspace, &["init"]).await?;
-        if run_git(workspace, &["checkout", "-b", &auth.head_branch])
-            .await
-            .is_err()
-        {
-            // git init may already be on main/master
-            let _ = run_git(workspace, &["branch", "-M", &auth.head_branch]).await;
-        }
-        tokio::fs::write(
-            workspace.join("README.md"),
-            format!(
-                "# {}/{}\n\nMock workspace for Zene Cloud Phase 0.\n\nBase ref: `{}`\n",
-                "repo", "workspace", auth.base_ref
-            ),
-        )
-        .await?;
-        tokio::fs::create_dir_all(workspace.join("src")).await?;
-        tokio::fs::write(
-            workspace.join("src/main.rs"),
-            "fn main() {\n    println!(\"hello cloud\");\n}\n",
-        )
-        .await?;
-        run_git(workspace, &["add", "."]).await?;
-        run_git(
-            workspace,
-            &[
-                "-c",
-                "user.email=zene-cloud@localhost",
-                "-c",
-                "user.name=Zene Cloud",
-                "commit",
-                "-m",
-                "chore: initial mock workspace",
-            ],
-        )
-        .await?;
-        return Ok(());
-    }
-
-    let cache = workspace_root
-        .join(".repo-cache")
-        .join(auth.repository_id.to_string());
-    ensure_repo_cache(&cache, auth).await?;
-
-    std::fs::create_dir_all(
-        workspace
-            .parent()
-            .unwrap_or_else(|| Path::new(".")),
-    )?;
-    info!(
-        cache = %cache.display(),
-        path = %workspace.display(),
-        "attaching worktree from local repo cache"
-    );
-
-    // Try adding git worktree from the local bare cache
-    let worktree_status = git_command()
-        .args([
-            "-C",
-            &cache.display().to_string(),
-            "worktree",
-            "add",
-            "--force",
-            "--detach",
-            &workspace.display().to_string(),
-            auth.base_ref.as_str(),
-        ])
-        .status()
-        .await;
-
-    let worktree_ok = match worktree_status {
-        Ok(s) if s.success() => true,
-        other => {
-            warn!(status = ?other, "git worktree add failed; falling back to git clone --local");
-            false
-        }
-    };
-
-    if !worktree_ok {
-        if workspace.exists() {
-            let _ = tokio::fs::remove_dir_all(workspace).await;
-        }
-        let status = git_command()
-            .args([
-                "clone",
-                "--local",
-                &cache.display().to_string(),
-                &workspace.display().to_string(),
-            ])
-            .status()
-            .await
-            .context("git clone --local")?;
-        if !status.success() {
-            bail!("git local clone failed with {status}");
-        }
-    }
-
-    let _ = run_git(
-        workspace,
-        &["checkout", "-B", &auth.head_branch, &auth.base_ref],
-    )
-    .await;
-    Ok(())
 }
 
 fn spawn_event_pump<R: RuntimeClient + 'static>(
@@ -878,10 +653,8 @@ fn spawn_command_poller<R: RuntimeClient + 'static>(
                     if let Some(mode_id) = response.mode_id {
                         if turn_busy.load(Ordering::SeqCst) {
                             // SetMode is idle-only; put the mode back until the turn ends.
-                            let _ = set_pending_mode(
-                                &client, &api_url, &token, run_id, &mode_id,
-                            )
-                            .await;
+                            let _ =
+                                set_pending_mode(&client, &api_url, &token, run_id, &mode_id).await;
                         } else {
                             match runtime
                                 .send(RuntimeCommand::SetMode {
@@ -917,18 +690,11 @@ fn spawn_command_poller<R: RuntimeClient + 'static>(
                                 }
                                 let busy = turn_busy.load(Ordering::SeqCst);
                                 if busy {
-                                    match runtime
-                                        .send(RuntimeCommand::Steer { text })
-                                        .await
-                                    {
+                                    match runtime.send(RuntimeCommand::Steer { text }).await {
                                         Ok(()) => {
                                             if let Some(message_id) = cmd.message_id {
                                                 if let Err(err) = ack_command(
-                                                    &client,
-                                                    &api_url,
-                                                    &token,
-                                                    run_id,
-                                                    &fence,
+                                                    &client, &api_url, &token, run_id, &fence,
                                                     message_id,
                                                 )
                                                 .await
@@ -952,15 +718,14 @@ fn spawn_command_poller<R: RuntimeClient + 'static>(
                                     )
                                     .await;
                                     turn_busy.store(true, Ordering::SeqCst);
-                                    match runtime.send(RuntimeCommand::Prompt { text: text.clone() }).await {
+                                    match runtime
+                                        .send(RuntimeCommand::Prompt { text: text.clone() })
+                                        .await
+                                    {
                                         Ok(()) => {
                                             if let Some(message_id) = cmd.message_id {
                                                 if let Err(err) = ack_command(
-                                                    &client,
-                                                    &api_url,
-                                                    &token,
-                                                    run_id,
-                                                    &fence,
+                                                    &client, &api_url, &token, run_id, &fence,
                                                     message_id,
                                                 )
                                                 .await
@@ -1022,7 +787,8 @@ fn spawn_command_poller<R: RuntimeClient + 'static>(
                                                 .await
                                                 {
                                                     Ok(Some(title)) => {
-                                                        title_state.lock().await.last_auto = Some(title);
+                                                        title_state.lock().await.last_auto =
+                                                            Some(title);
                                                     }
                                                     Ok(None) => {}
                                                     Err(err) => {
@@ -1158,7 +924,16 @@ async fn run_runtime_session<R: RuntimeClient + 'static>(
         info!(run_id = %run_id, "resuming session without initial prompt");
     }
     if !cancelled.load(Ordering::SeqCst) {
-        set_status(client, cli, run_id, fence, RunStatus::WaitingForUser, None, None).await?;
+        set_status(
+            client,
+            cli,
+            run_id,
+            fence,
+            RunStatus::WaitingForUser,
+            None,
+            None,
+        )
+        .await?;
     }
 
     let hold_exit = loop {
@@ -1215,7 +990,13 @@ async fn run_with_mock(
 ) -> Result<RunOutcome> {
     let outbox = EventOutbox::open(outbox_root, claimed.run.id).await?;
     outbox
-        .flush(client, &cli.api_url, &cli.worker_token, claimed.run.id, fence)
+        .flush(
+            client,
+            &cli.api_url,
+            &cli.worker_token,
+            claimed.run.id,
+            fence,
+        )
         .await
         .context("flush recovered event outbox")?;
     let runtime = Arc::new(MockRuntimeClient::connect(workspace));
@@ -1272,9 +1053,17 @@ fn inject_run_max_turns(env: &mut HashMap<String, String>, max_turns: u32) {
     env.insert("ZENE_MAX_TURNS".into(), max_turns.to_string());
 }
 
-fn inject_run_context(env: &mut HashMap<String, String>, run_id: Uuid, api_url: &str, worker_token: &str) {
+fn inject_run_context(
+    env: &mut HashMap<String, String>,
+    run_id: Uuid,
+    api_url: &str,
+    worker_token: &str,
+) {
     env.insert("ZENE_RUN_ID".into(), run_id.to_string());
-    env.insert("ZENE_CLOUD_API_URL".into(), api_url.trim_end_matches('/').to_string());
+    env.insert(
+        "ZENE_CLOUD_API_URL".into(),
+        api_url.trim_end_matches('/').to_string(),
+    );
     env.insert("ZENE_CLOUD_WORKER_TOKEN".into(), worker_token.to_string());
 }
 
@@ -1395,7 +1184,6 @@ async fn run_with_real_acp(
     .await
 }
 
-
 struct ResolvedPermission {
     decision: ApprovalDecision,
     option_id: Option<String>,
@@ -1484,7 +1272,10 @@ async fn persist_runtime_session(
         fence: Some(fence.clone()),
     };
     client
-        .post(format!("{}/internal/v1/runs/{run_id}/runtime-session", cli.api_url))
+        .post(format!(
+            "{}/internal/v1/runs/{run_id}/runtime-session",
+            cli.api_url
+        ))
         .bearer_auth(&cli.worker_token)
         .json(&request)
         .send()
@@ -1647,9 +1438,9 @@ fn heartbeat_loop(
     })
 }
 
-use event_outbox::EventOutbox;
 #[cfg(test)]
 use event_outbox::event_file_key;
+use event_outbox::EventOutbox;
 
 async fn deliver_event(
     outbox: &EventOutbox,
@@ -1700,299 +1491,6 @@ async fn post_event_raw(
         delay = delay.saturating_mul(2);
     }
     unreachable!("event retry loop returns on success or final failure")
-}
-
-fn chat_completions_url(base_url: &str) -> String {
-    let base = base_url.trim().trim_end_matches('/');
-    if base.ends_with("/chat/completions") {
-        base.to_string()
-    } else {
-        // Presets already include the API root (/v1, /compatible-mode/v1, /paas/v4, …).
-        format!("{base}/chat/completions")
-    }
-}
-
-const TITLE_SYSTEM: &str = "Write a short agent session title in the user's language. \
-2–8 words, a topic label or noun phrase. Name the subject and the work. \
-Do not copy the user's wording. Do not write a question. \
-No quotes, markdown, or trailing punctuation. Return only the title.";
-
-const TITLE_REWRITE_SYSTEM: &str = "The last title copied the user's request or was a question. \
-Rewrite it as a short topic label (noun phrase) in the user's language, 2–8 words. \
-Example: 'sglang 目前性能怎么样' → 'SGLang 性能分析'. \
-No questions, quotes, or punctuation wrapping. Return only the title.";
-
-fn sanitize_run_title(raw: &str) -> String {
-    let cleaned = raw
-        .trim()
-        .trim_matches(|c| c == '"' || c == '\'' || c == '`' || c == '「' || c == '」')
-        .lines()
-        .next()
-        .unwrap_or("")
-        .trim()
-        .trim_start_matches(['#', '-', '*', ' '])
-        .trim();
-    cleaned.chars().take(56).collect()
-}
-
-fn normalize_title_text(value: &str) -> String {
-    value
-        .chars()
-        .filter(|c| c.is_alphanumeric())
-        .flat_map(char::to_lowercase)
-        .collect()
-}
-
-fn title_looks_like_question(title: &str) -> bool {
-    let trimmed = title.trim();
-    if trimmed.ends_with('?') || trimmed.ends_with('？') {
-        return true;
-    }
-    let lower = trimmed.to_lowercase();
-    lower.contains("怎么样")
-        || lower.contains("如何")
-        || lower.contains("怎么")
-        || lower.starts_with("what ")
-        || lower.starts_with("what's ")
-        || lower.starts_with("how ")
-        || lower.starts_with("why ")
-        || lower.starts_with("can you")
-        || lower.starts_with("could you")
-}
-
-fn title_echoes_source(title: &str, sources: &[&str]) -> bool {
-    let title_n = normalize_title_text(title);
-    if title_n.is_empty() {
-        return true;
-    }
-    sources.iter().any(|source| {
-        zene_cloud_domain::title_is_prompt_echo(title, source)
-            || {
-                let source_n = normalize_title_text(source);
-                !source_n.is_empty() && title_n == source_n
-            }
-    })
-}
-
-fn title_needs_rewrite(title: &str, sources: &[&str]) -> bool {
-    title_echoes_source(title, sources)
-        || title_looks_like_question(title)
-        || title.trim_start().starts_with("请用")
-        || title.trim_start().starts_with("请帮")
-        || title.trim_start().starts_with("请深入")
-        || title.trim_start().starts_with("帮我")
-}
-
-fn title_from_chat_response(value: &serde_json::Value) -> String {
-    let message = value.pointer("/choices/0/message");
-    let content = message
-        .and_then(|m| m.get("content"))
-        .and_then(|content| match content {
-            serde_json::Value::String(text) => Some(text.clone()),
-            serde_json::Value::Array(parts) => {
-                let text = parts
-                    .iter()
-                    .filter_map(|part| {
-                        part.get("text")
-                            .and_then(|t| t.as_str())
-                            .or_else(|| part.as_str())
-                    })
-                    .collect::<Vec<_>>()
-                    .join("");
-                (!text.is_empty()).then_some(text)
-            }
-            _ => None,
-        })
-        .or_else(|| {
-            value
-                .pointer("/choices/0/text")
-                .and_then(|v| v.as_str())
-                .map(str::to_string)
-        })
-        .unwrap_or_default();
-    sanitize_run_title(&content)
-}
-
-struct TitleRefresh {
-    seed: String,
-    original_prompt: String,
-    llm_env: Option<HashMap<String, String>>,
-    recent: Vec<String>,
-    last_auto: Option<String>,
-}
-
-fn format_title_focus(original: &str, recent: &[String]) -> String {
-    let orig: String = original.chars().take(400).collect();
-    if recent.is_empty() {
-        return format!("Original task:\n{orig}");
-    }
-    let mut out = format!("Original task:\n{orig}\n\nRecent user requests:");
-    for (i, turn) in recent.iter().take(5).enumerate() {
-        let snippet: String = turn.chars().take(240).collect();
-        out.push_str(&format!("\n{}. {snippet}", i + 1));
-    }
-    out
-}
-
-fn title_is_user_locked(current: &str, last_auto: Option<&str>, seed: &str) -> bool {
-    let cur = current.trim();
-    if cur.is_empty() || cur == seed {
-        return false;
-    }
-    match last_auto {
-        Some(auto) => cur != auto,
-        None => true,
-    }
-}
-
-fn title_chat_body(model: &str, snippet: &str, rewrite: bool) -> serde_json::Value {
-    serde_json::json!({
-        "model": model,
-        "temperature": 0.2,
-        "max_tokens": 64,
-        "thinking": { "type": "disabled" },
-        "messages": [
-            {
-                "role": "system",
-                "content": if rewrite { TITLE_REWRITE_SYSTEM } else { TITLE_SYSTEM }
-            },
-            {
-                "role": "user",
-                "content": snippet
-            }
-        ]
-    })
-}
-
-async fn request_run_title(
-    client: &reqwest::Client,
-    url: &str,
-    api_key: &str,
-    model: &str,
-    snippet: &str,
-    rewrite: bool,
-) -> Result<Option<String>> {
-    let mut body = title_chat_body(model, snippet, rewrite);
-    let mut resp = client
-        .post(url)
-        .bearer_auth(api_key)
-        .json(&body)
-        .timeout(Duration::from_secs(20))
-        .send()
-        .await
-        .context("title llm request")?;
-    if !resp.status().is_success() {
-        let status = resp.status();
-        let err_body = resp.text().await.unwrap_or_default();
-        // Providers that reject unknown `thinking` get one retry without it.
-        let thinking_rejected = status.as_u16() == 400
-            && (err_body.contains("thinking")
-                || err_body.contains("unknown")
-                || err_body.contains("Unrecognized"));
-        if thinking_rejected {
-            body.as_object_mut().map(|o| o.remove("thinking"));
-            // Give thinking models enough room if disable isn't supported.
-            body["max_tokens"] = serde_json::json!(256);
-            resp = client
-                .post(url)
-                .bearer_auth(api_key)
-                .json(&body)
-                .timeout(Duration::from_secs(20))
-                .send()
-                .await
-                .context("title llm retry")?;
-        } else {
-            warn!(%status, body = %err_body.chars().take(240).collect::<String>(), "title llm failed");
-            return Ok(None);
-        }
-    }
-    if !resp.status().is_success() {
-        let status = resp.status();
-        let err_body = resp.text().await.unwrap_or_default();
-        warn!(%status, body = %err_body.chars().take(240).collect::<String>(), "title llm failed");
-        return Ok(None);
-    }
-    let value: serde_json::Value = resp.json().await.context("title llm json")?;
-    let title = title_from_chat_response(&value);
-    if title.is_empty() {
-        warn!("title llm returned empty content");
-        return Ok(None);
-    }
-    Ok(Some(title))
-}
-
-async fn maybe_refresh_run_title(
-    client: &reqwest::Client,
-    api_url: &str,
-    worker_token: &str,
-    run_id: Uuid,
-    fence: &WorkerFence,
-    focus: &str,
-    current_title: Option<&str>,
-    source_prompt: &str,
-    llm_env: &HashMap<String, String>,
-) -> Result<Option<String>> {
-    let api_key = llm_env
-        .get("ZENE_API_KEY")
-        .cloned()
-        .or_else(|| llm_env.get("OPENAI_API_KEY").cloned())
-        .or_else(|| std::env::var("ZENE_API_KEY").ok())
-        .or_else(|| std::env::var("OPENAI_API_KEY").ok())
-        .unwrap_or_default();
-    let base_url = llm_env
-        .get("ZENE_BASE_URL")
-        .cloned()
-        .or_else(|| std::env::var("ZENE_BASE_URL").ok())
-        .unwrap_or_else(|| "https://api.openai.com/v1".into());
-    let model = llm_env
-        .get("ZENE_MODEL")
-        .cloned()
-        .or_else(|| std::env::var("ZENE_MODEL").ok())
-        .unwrap_or_else(|| "gpt-4o-mini".into());
-    if api_key.trim().is_empty() {
-        return Ok(None);
-    }
-    let url = chat_completions_url(&base_url);
-    let snippet: String = focus.chars().take(1200).collect();
-    let sources = [source_prompt, current_title.unwrap_or("")];
-    let mut title = match request_run_title(client, &url, &api_key, &model, &snippet, false).await? {
-        Some(title) => title,
-        None => zene_cloud_domain::summarize_prompt_title(source_prompt),
-    };
-    if title_needs_rewrite(&title, &sources) {
-        if let Some(rewritten) =
-            request_run_title(client, &url, &api_key, &model, &snippet, true).await?
-        {
-            if !title_needs_rewrite(&rewritten, &sources) {
-                title = rewritten;
-            } else {
-                title = zene_cloud_domain::summarize_prompt_title(source_prompt);
-            }
-        } else {
-            title = zene_cloud_domain::summarize_prompt_title(source_prompt);
-        }
-    }
-    if title_needs_rewrite(&title, &sources) {
-        warn!(run_id = %run_id, echo = %title, "title still echoed the prompt");
-        return Ok(None);
-    }
-    if current_title.is_some_and(|cur| cur.trim() == title) {
-        return Ok(Some(title));
-    }
-    let req = WorkerTitleRequest {
-        title: title.clone(),
-        fence: Some(fence.clone()),
-    };
-    client
-        .post(format!("{api_url}/internal/v1/runs/{run_id}/title"))
-        .bearer_auth(worker_token)
-        .json(&req)
-        .send()
-        .await?
-        .error_for_status()
-        .context("post title")?;
-    info!(run_id = %run_id, %title, "refreshed run title");
-    Ok(Some(title))
 }
 
 async fn set_status(
@@ -2055,62 +1553,21 @@ async fn post_run_status(
     Ok(())
 }
 
-async fn run_git(workspace: &Path, args: &[&str]) -> Result<()> {
-    let output = git_command()
-        .current_dir(workspace)
-        .args(args)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .output()
-        .await
-        .with_context(|| format!("git {}", args.join(" ")))?;
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        bail!("git {} failed: {stderr}", args.join(" "));
-    }
-    Ok(())
-}
-
-async fn run_git_output(workspace: &Path, args: &[&str]) -> Result<String> {
-    let output = git_command()
-        .current_dir(workspace)
-        .args(args)
-        .output()
-        .await
-        .with_context(|| format!("git {}", args.join(" ")))?;
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        bail!("git {} failed: {stderr}", args.join(" "));
-    }
-    Ok(String::from_utf8_lossy(&output.stdout).to_string())
-}
-
-#[allow(dead_code)]
-async fn drain_stderr_lines(stderr: tokio::process::ChildStderr) {
-    let mut reader = BufReader::new(stderr);
-    let mut line = String::new();
-    loop {
-        line.clear();
-        match reader.read_line(&mut line).await {
-            Ok(0) => break,
-            Ok(_) => {}
-            Err(_) => break,
-        }
-    }
-}
-
 #[cfg(test)]
 mod title_tests {
     use super::{
-        chat_completions_url, event_file_key, format_title_focus, git_command, idle_hold_elapsed,
-        outcome_for_hold, prepare_workspace, sanitize_run_title, title_echoes_source,
+        event_file_key, idle_hold_elapsed, outcome_for_hold, EventOutbox, HoldExit, RunOutcome,
+    };
+    use crate::git::{git_command, prepare_workspace, workspace_ready};
+    use crate::title::{
+        chat_completions_url, format_title_focus, sanitize_run_title, title_echoes_source,
         title_from_chat_response, title_is_user_locked, title_looks_like_question,
-        title_needs_rewrite, workspace_ready, EventOutbox, HoldExit, RunOutcome,
+        title_needs_rewrite,
     };
     use futures::StreamExt;
+    use serde_json::json;
     use std::future::IntoFuture;
     use std::time::Duration;
-    use serde_json::json;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use uuid::Uuid;
     use zene_cloud_domain::{CloneAuthResponse, RunEventKind, WorkerEventRequest, WorkerFence};
@@ -2198,8 +1655,16 @@ mod title_tests {
     fn user_rename_locks_auto_title() {
         assert!(!title_is_user_locked("检查一下项目", None, "检查一下项目"));
         assert!(title_is_user_locked("我改的标题", None, "检查一下项目"));
-        assert!(!title_is_user_locked("SSH 优化服务器", Some("SSH 优化服务器"), "检查一下项目"));
-        assert!(title_is_user_locked("手动标题", Some("SSH 优化服务器"), "检查一下项目"));
+        assert!(!title_is_user_locked(
+            "SSH 优化服务器",
+            Some("SSH 优化服务器"),
+            "检查一下项目"
+        ));
+        assert!(title_is_user_locked(
+            "手动标题",
+            Some("SSH 优化服务器"),
+            "检查一下项目"
+        ));
     }
 
     #[test]
@@ -2304,7 +1769,17 @@ mod title_tests {
         let (left, right) = tokio::join!(outbox.enqueue(&event), outbox.enqueue(&event));
         left.unwrap();
         right.unwrap();
-        assert_eq!(outbox.stats().await.unwrap(), (1, outbox.event_path("concurrent-event").metadata().unwrap().len()));
+        assert_eq!(
+            outbox.stats().await.unwrap(),
+            (
+                1,
+                outbox
+                    .event_path("concurrent-event")
+                    .metadata()
+                    .unwrap()
+                    .len()
+            )
+        );
         tokio::fs::remove_dir_all(root).await.unwrap();
     }
 
@@ -2320,7 +1795,10 @@ mod title_tests {
         )
         .await
         .unwrap();
-        let error = outbox.enqueue(&first).await.expect_err("collision must fail");
+        let error = outbox
+            .enqueue(&first)
+            .await
+            .expect_err("collision must fail");
         assert!(error.to_string().contains("collision"));
         tokio::fs::remove_dir_all(root).await.unwrap();
     }
@@ -2332,7 +1810,9 @@ mod title_tests {
         let outbox = EventOutbox::open(&root, run_id).await.unwrap();
         outbox.enqueue(&event("retry-event")).await.unwrap();
 
-        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .unwrap();
         let address = listener.local_addr().unwrap();
         let server = tokio::spawn(async move {
             for response in [
@@ -2379,14 +1859,18 @@ mod title_tests {
         let queued = event("rejected-event");
         outbox.enqueue(&queued).await.unwrap();
 
-        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .unwrap();
         let address = listener.local_addr().unwrap();
         let server = tokio::spawn(async move {
             let (mut stream, _) = listener.accept().await.unwrap();
             let mut buffer = [0_u8; 4096];
             let _ = stream.read(&mut buffer).await.unwrap();
             stream
-                .write_all(b"HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+                .write_all(
+                    b"HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                )
                 .await
                 .unwrap();
         });
@@ -2441,11 +1925,11 @@ mod title_tests {
             workspace_root.clone(),
             "http://127.0.0.1".into(),
         );
-        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .unwrap();
         let address = listener.local_addr().unwrap();
-        let api_task = tokio::spawn(
-            axum::serve(listener, router(state.clone())).into_future(),
-        );
+        let api_task = tokio::spawn(axum::serve(listener, router(state.clone())).into_future());
         let api_url = format!("http://{address}");
         let client = reqwest::Client::new();
 
@@ -2575,7 +2059,13 @@ mod title_tests {
             .unwrap();
         assert_eq!(replacement_outbox.stats().await.unwrap(), (0, 0));
 
-        let first: RunEvent = db.events_after(run.id, 0).await.unwrap().into_iter().find(|event| event.event_type == "runtime").unwrap();
+        let first: RunEvent = db
+            .events_after(run.id, 0)
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|event| event.event_type == "runtime")
+            .unwrap();
         let second_event = WorkerEventRequest {
             source_event_id: "real-provider-event-2".into(),
             cursor: Some(22),
@@ -2624,7 +2114,9 @@ mod title_tests {
         first_worker.enqueue(&event("restart-event")).await.unwrap();
         drop(first_worker);
 
-        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .unwrap();
         let address = listener.local_addr().unwrap();
         let server = tokio::spawn(async move {
             let (mut stream, _) = listener.accept().await.unwrap();
@@ -2634,14 +2126,18 @@ mod title_tests {
                 let read = stream.read(&mut buffer).await.unwrap();
                 assert!(read > 0, "client closed before sending request");
                 request.extend_from_slice(&buffer[..read]);
-                if let Some(position) = request.windows(4).position(|window| window == b"\r\n\r\n") {
+                if let Some(position) = request.windows(4).position(|window| window == b"\r\n\r\n")
+                {
                     break position + 4;
                 }
             };
             let headers = String::from_utf8_lossy(&request[..body_start]);
             let content_length = headers
                 .lines()
-                .find_map(|line| line.strip_prefix("Content-Length:").or_else(|| line.strip_prefix("content-length:")))
+                .find_map(|line| {
+                    line.strip_prefix("Content-Length:")
+                        .or_else(|| line.strip_prefix("content-length:"))
+                })
                 .and_then(|value| value.trim().parse::<usize>().ok())
                 .expect("event POST should include content length");
             while request.len() < body_start + content_length {
@@ -2694,13 +2190,27 @@ mod title_tests {
         std::fs::create_dir_all(&cache).unwrap();
 
         // Initialize a dummy bare repo
-        let _ = git_command().args(["-C", &cache.display().to_string(), "init", "--bare"]).status().await.unwrap();
+        let _ = git_command()
+            .args(["-C", &cache.display().to_string(), "init", "--bare"])
+            .status()
+            .await
+            .unwrap();
         // Create an initial commit in a temp worktree to have a valid HEAD
         let init_wt = root.join("init-wt");
         std::fs::create_dir_all(&init_wt).unwrap();
-        let _ = git_command().args(["-C", &init_wt.display().to_string(), "init"]).status().await.unwrap();
-        tokio::fs::write(init_wt.join("hello.txt"), "hello").await.unwrap();
-        let _ = git_command().args(["-C", &init_wt.display().to_string(), "add", "."]).status().await.unwrap();
+        let _ = git_command()
+            .args(["-C", &init_wt.display().to_string(), "init"])
+            .status()
+            .await
+            .unwrap();
+        tokio::fs::write(init_wt.join("hello.txt"), "hello")
+            .await
+            .unwrap();
+        let _ = git_command()
+            .args(["-C", &init_wt.display().to_string(), "add", "."])
+            .status()
+            .await
+            .unwrap();
         let _ = git_command()
             .args([
                 "-C",
@@ -2727,7 +2237,17 @@ mod title_tests {
             .status()
             .await
             .unwrap();
-        let _ = git_command().args(["-C", &cache.display().to_string(), "symbolic-ref", "HEAD", "refs/heads/main"]).status().await.unwrap();
+        let _ = git_command()
+            .args([
+                "-C",
+                &cache.display().to_string(),
+                "symbolic-ref",
+                "HEAD",
+                "refs/heads/main",
+            ])
+            .status()
+            .await
+            .unwrap();
 
         let auth = CloneAuthResponse {
             run_id: Uuid::new_v4(),
