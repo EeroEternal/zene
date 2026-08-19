@@ -1,4 +1,4 @@
-import type { RunStatus } from "@/lib/types";
+import type { RunStatus } from "./types.ts";
 
 let authToken = "";
 

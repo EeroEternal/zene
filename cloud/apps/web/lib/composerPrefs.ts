@@ -1,4 +1,4 @@
-import type { McpServer, PermissionMode, Skill } from "./types";
+import type { McpServer, PermissionMode, Skill } from "./types.ts";
 
 export const COMPOSER_SKILLS: Skill[] = [
   { id: "review", label: "Code review", insert: "/review " },

@@ -9,8 +9,8 @@ import type {
   RunEvent,
   RunMessage,
   WorkspaceFile,
-} from "@/lib/types";
-import { deleteJson, getJson, patchJson, postJson } from "./http";
+} from "../types.ts";
+import { deleteJson, getJson, patchJson, postJson } from "./http.ts";
 
 export const runsApi = {
   list: () => getJson<Run[]>("/api/v1/runs"),

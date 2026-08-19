@@ -1,4 +1,4 @@
-import type { GitCompare } from "@/lib/types";
+import type { GitCompare } from "./types.ts";
 
 /** Default markdown body for a draft PR from diff stats. */
 export function buildDefaultPrBody(compare?: GitCompare | null): string {

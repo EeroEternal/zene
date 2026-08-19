@@ -1,6 +1,6 @@
-import type { Approval, ApprovalDecision, MessageRole, RunEvent } from "./types";
-import { platformEventFromPayload } from "./platformEvent";
-import { timelineProductFromEvent, timelineToolOutput, type TimelineProduct } from "./runtimeEvent";
+import type { Approval, ApprovalDecision, MessageRole, RunEvent } from "./types.ts";
+import { platformEventFromPayload } from "./platformEvent.ts";
+import { timelineProductFromEvent, timelineToolOutput, type TimelineProduct } from "./runtimeEvent.ts";
 
 export type TimelineItem =
   | { kind: "bubble"; id: number; role: "user" | "assistant"; text: string }

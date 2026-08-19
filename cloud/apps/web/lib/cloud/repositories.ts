@@ -1,5 +1,5 @@
-import type { Branch, CreateRepositoryRequest, Repo } from "@/lib/types";
-import { getJson, postJson } from "./http";
+import type { Branch, CreateRepositoryRequest, Repo } from "../types.ts";
+import { getJson, postJson } from "./http.ts";
 
 export const repositoriesApi = {
   list: () => getJson<Repo[]>("/api/v1/repositories"),

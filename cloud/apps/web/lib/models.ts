@@ -1,5 +1,5 @@
-import { findPreset, LLM_PRESETS } from "./llmPresets";
-import type { LlmSettingsView } from "./types";
+import { findPreset, LLM_PRESETS } from "./llmPresets.ts";
+import type { LlmSettingsView } from "./types.ts";
 
 export const DEFAULT_MODEL_ID = "default";
 export const MODEL_STORAGE_KEY = "zc.model";

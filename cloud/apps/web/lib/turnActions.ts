@@ -1,4 +1,4 @@
-import type { MessageRole, RunMessage } from "@/lib/types";
+import type { MessageRole, RunMessage } from "./types.ts";
 
 export type TurnRating = "up" | "down";
 

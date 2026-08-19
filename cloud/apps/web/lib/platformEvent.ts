@@ -1,4 +1,4 @@
-import type { PlatformEvent, RunEvent } from "@/lib/types";
+import type { PlatformEvent, RunEvent } from "./types.ts";
 
 const PLATFORM_EVENTS = new Set<PlatformEvent["event"]>([
   "run.created",
