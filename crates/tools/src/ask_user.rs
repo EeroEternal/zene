@@ -100,7 +100,8 @@ impl Tool for AskUserQuestionTool {
     }
 
     async fn execute(&self, arguments: &str, ctx: &ToolContext) -> Result<ToolResult> {
-        let args: AskUserArgs = serde_json::from_str(arguments).context("parse AskUserQuestion args")?;
+        let args: AskUserArgs =
+            serde_json::from_str(arguments).context("parse AskUserQuestion args")?;
         if args.question.trim().is_empty() {
             return Ok(ToolResult {
                 content: "AskUserQuestion requires a non-empty `question`.".to_string(),

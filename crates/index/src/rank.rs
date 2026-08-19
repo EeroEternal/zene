@@ -15,9 +15,7 @@ pub fn score_files(index: &SymbolIndex, query: Option<&str>) -> HashMap<String, 
     let mut defs: HashMap<&str, Vec<&String>> = HashMap::new();
     for (path, file) in &index.files {
         for symbol in &file.defs {
-            defs.entry(symbol.name.as_str())
-                .or_default()
-                .push(path);
+            defs.entry(symbol.name.as_str()).or_default().push(path);
         }
     }
 
@@ -79,11 +77,7 @@ fn personalization(index: &SymbolIndex, query: Option<&str>) -> HashMap<String, 
     let sum: f64 = weights.values().sum();
     if sum <= 0.0 {
         let n = index.files.len() as f64;
-        return index
-            .files
-            .keys()
-            .map(|p| (p.clone(), 1.0 / n))
-            .collect();
+        return index.files.keys().map(|p| (p.clone(), 1.0 / n)).collect();
     }
     for v in weights.values_mut() {
         *v /= sum;

@@ -56,12 +56,7 @@ impl Tool for RepoMapTool {
         let path = args.path.filter(|p| !p.trim().is_empty());
         let budget = args.token_budget.unwrap_or(DEFAULT_TOKEN_BUDGET);
         let map = tokio::task::spawn_blocking(move || {
-            zene_index::build_repo_map(
-                &workdir,
-                query.as_deref(),
-                budget,
-                path.as_deref(),
-            )
+            zene_index::build_repo_map(&workdir, query.as_deref(), budget, path.as_deref())
         })
         .await
         .context("RepoMap worker")?

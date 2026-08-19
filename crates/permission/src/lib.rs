@@ -260,12 +260,7 @@ impl PermissionGate {
     }
 
     /// Record a prompt decision. `AllowSession` is remembered for this gate.
-    pub fn apply_choice(
-        &mut self,
-        tool_name: &str,
-        arguments: &str,
-        choice: PromptChoice,
-    ) -> bool {
+    pub fn apply_choice(&mut self, tool_name: &str, arguments: &str, choice: PromptChoice) -> bool {
         match choice {
             PromptChoice::AllowOnce => true,
             PromptChoice::AllowSession => {
@@ -296,8 +291,7 @@ impl PermissionGate {
     }
 
     pub fn permission_denied_message(tool_name: &str, arguments: &str) -> String {
-        policy_denied(tool_name, arguments)
-            .unwrap_or_else(|| Self::denied_message(tool_name))
+        policy_denied(tool_name, arguments).unwrap_or_else(|| Self::denied_message(tool_name))
     }
 }
 
@@ -381,11 +375,9 @@ pub async fn resolve_permission(
                     .lock()
                     .approve_tool_call(&request.tool_name, &request.arguments);
             };
-            Ok(permission.lock().apply_choice(
-                &request.tool_name,
-                &request.arguments,
-                choice,
-            ))
+            Ok(permission
+                .lock()
+                .apply_choice(&request.tool_name, &request.arguments, choice))
         }
     }
 }
@@ -409,9 +401,7 @@ fn path_has_segment(path: &str, segment: &str) -> bool {
 }
 
 pub(crate) fn default_prompter(tool_name: &str, args_preview: &str) -> io::Result<PromptChoice> {
-    eprint!(
-        "\nAllow {tool_name}({args_preview})? [y]es / [n]o / [a]pprove for session: "
-    );
+    eprint!("\nAllow {tool_name}({args_preview})? [y]es / [n]o / [a]pprove for session: ");
     let _ = io::stderr().flush();
     let mut line = String::new();
     io::stdin().read_line(&mut line)?;
@@ -511,9 +501,7 @@ mod tests {
     #[test]
     fn dont_ask_denies_gated_tools() {
         let mut gate = PermissionGate::new(PermissionMode::DontAsk);
-        assert!(!gate
-            .check("Bash", r#"{"command":"ls"}"#)
-            .unwrap());
+        assert!(!gate.check("Bash", r#"{"command":"ls"}"#).unwrap());
         assert!(gate.check("Read", r#"{"path":"a.txt"}"#).unwrap());
     }
 
@@ -545,9 +533,7 @@ mod tests {
             pattern: "mcp__*".into(),
             action: RuleAction::Allow,
         }]);
-        assert!(gate
-            .check("mcp__git__status", r#"{"repo":"."}"#)
-            .unwrap());
+        assert!(gate.check("mcp__git__status", r#"{"repo":"."}"#).unwrap());
         assert_eq!(calls.load(Ordering::SeqCst), 0);
     }
 
@@ -566,9 +552,7 @@ mod tests {
         let mut gate = PermissionGate::with_prompter(PermissionMode::Manual, {
             Box::new(|_tool, _args| Ok(PromptChoice::Deny))
         });
-        assert!(!gate
-            .check("Bash", r#"{"command":"rm -rf /"}"#)
-            .unwrap());
+        assert!(!gate.check("Bash", r#"{"command":"rm -rf /"}"#).unwrap());
     }
 
     #[test]
@@ -580,10 +564,16 @@ mod tests {
     fn policy_denies_node_modules_and_git_writes() {
         let mut gate = PermissionGate::new(PermissionMode::Yolo);
         assert!(!gate
-            .check("Write", r#"{"path":"node_modules/pkg/index.js","content":"x"}"#)
+            .check(
+                "Write",
+                r#"{"path":"node_modules/pkg/index.js","content":"x"}"#
+            )
             .unwrap());
         assert!(!gate
-            .check("Edit", r#"{"path":"foo/.git/config","old_string":"a","new_string":"b"}"#)
+            .check(
+                "Edit",
+                r#"{"path":"foo/.git/config","old_string":"a","new_string":"b"}"#
+            )
             .unwrap());
         assert!(gate
             .check("Write", r#"{"path":"src/main.rs","content":"x"}"#)
@@ -592,10 +582,8 @@ mod tests {
 
     #[test]
     fn policy_denied_message_is_specific() {
-        let msg = PermissionGate::permission_denied_message(
-            "Write",
-            r#"{"path":"node_modules/x"}"#,
-        );
+        let msg =
+            PermissionGate::permission_denied_message("Write", r#"{"path":"node_modules/x"}"#);
         assert!(msg.contains("node_modules"));
     }
 
@@ -623,8 +611,14 @@ mod tests {
 
     #[test]
     fn parse_aliases() {
-        assert_eq!(PermissionMode::parse("yolo"), PermissionMode::BypassPermissions);
-        assert_eq!(PermissionMode::parse("accept_edits"), PermissionMode::AcceptEdits);
+        assert_eq!(
+            PermissionMode::parse("yolo"),
+            PermissionMode::BypassPermissions
+        );
+        assert_eq!(
+            PermissionMode::parse("accept_edits"),
+            PermissionMode::AcceptEdits
+        );
         assert_eq!(PermissionMode::parse("dont_ask"), PermissionMode::DontAsk);
         assert_eq!(PermissionMode::parse("manual"), PermissionMode::Default);
     }
@@ -679,8 +673,9 @@ mod tests {
 
     #[tokio::test]
     async fn resolve_permission_records_session_approval() {
-        let permission: SharedToolPermission =
-            Arc::new(parking_lot::Mutex::new(PermissionGate::new(PermissionMode::Default)));
+        let permission: SharedToolPermission = Arc::new(parking_lot::Mutex::new(
+            PermissionGate::new(PermissionMode::Default),
+        ));
         let broker: SharedApprovalBroker = Arc::new(AutoApprovalBroker {
             choice: PromptChoice::AllowSession,
         });
@@ -690,9 +685,11 @@ mod tests {
             arguments: r#"{"path":"src/foo.rs","content":"x"}"#.into(),
             tool_call_id: None,
         };
-        assert!(resolve_permission(&permission, Some(&broker), request.clone())
-            .await
-            .unwrap());
+        assert!(
+            resolve_permission(&permission, Some(&broker), request.clone())
+                .await
+                .unwrap()
+        );
         assert_eq!(
             permission
                 .lock()

@@ -263,10 +263,9 @@ pub(crate) fn to_proxy_request(request: &ChatRequest, stream: bool) -> Result<Pr
                 "value": hash,
             });
         }
-        proxy.gateway_fields.insert(
-            SESSION_GATEWAY_FIELD.to_string(),
-            session_context,
-        );
+        proxy
+            .gateway_fields
+            .insert(SESSION_GATEWAY_FIELD.to_string(), session_context);
     }
     Ok(proxy)
 }
@@ -286,10 +285,7 @@ pub(crate) fn message_to_api(message: &Message) -> Result<Value> {
             .ok_or_else(|| anyhow!("tool message missing tool_call_id"))?;
         let mut object = serde_json::Map::from_iter([
             ("role".to_string(), Value::String(role.to_string())),
-            (
-                "tool_call_id".to_string(),
-                Value::String(tool_call_id),
-            ),
+            ("tool_call_id".to_string(), Value::String(tool_call_id)),
             (
                 "content".to_string(),
                 Value::String(message.content.clone().unwrap_or_default()),
@@ -304,10 +300,8 @@ pub(crate) fn message_to_api(message: &Message) -> Result<Value> {
         return Ok(Value::Object(object));
     }
 
-    let mut object = serde_json::Map::from_iter([(
-        "role".to_string(),
-        Value::String(role.to_string()),
-    )]);
+    let mut object =
+        serde_json::Map::from_iter([("role".to_string(), Value::String(role.to_string()))]);
 
     if let Some(content) = &message.content {
         object.insert("content".to_string(), Value::String(content.clone()));
@@ -334,17 +328,12 @@ pub(crate) fn message_to_api(message: &Message) -> Result<Value> {
 }
 
 fn final_to_message(response: ChatResponseFinal) -> Message {
-    parse_message_from_raw(&response.raw).unwrap_or_else(|| {
-        Message::assistant(response.output_text.unwrap_or_default())
-    })
+    parse_message_from_raw(&response.raw)
+        .unwrap_or_else(|| Message::assistant(response.output_text.unwrap_or_default()))
 }
 
 fn parse_message_from_raw(raw: &Value) -> Option<Message> {
-    let message = raw
-        .get("choices")?
-        .as_array()?
-        .first()?
-        .get("message")?;
+    let message = raw.get("choices")?.as_array()?.first()?.get("message")?;
 
     let role = match message.get("role")?.as_str()? {
         "system" => Role::System,
@@ -353,13 +342,11 @@ fn parse_message_from_raw(raw: &Value) -> Option<Message> {
         _ => Role::User,
     };
 
-    let content = message
-        .get("content")
-        .and_then(|value| match value {
-            Value::String(text) => Some(text.clone()),
-            Value::Null => None,
-            other => Some(other.to_string()),
-        });
+    let content = message.get("content").and_then(|value| match value {
+        Value::String(text) => Some(text.clone()),
+        Value::Null => None,
+        other => Some(other.to_string()),
+    });
 
     let tool_calls = message.get("tool_calls").and_then(|calls| {
         calls.as_array().map(|items| {
@@ -421,7 +408,9 @@ fn chunk_to_events(chunk: &ChatResponseChunk) -> Vec<StreamEvent> {
         }
     }
 
-    if let Some(tool_calls) = delta_obj.and_then(|delta| delta.get("tool_calls")).and_then(Value::as_array)
+    if let Some(tool_calls) = delta_obj
+        .and_then(|delta| delta.get("tool_calls"))
+        .and_then(Value::as_array)
     {
         for call in tool_calls {
             events.push(StreamEvent::ToolCallDelta {

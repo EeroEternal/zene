@@ -119,7 +119,12 @@ impl ToolRegistry {
         self.tools.iter().any(|tool| tool.name() == name)
     }
 
-    pub async fn execute(&self, name: &str, arguments: &str, ctx: &ToolContext) -> Result<ToolResult> {
+    pub async fn execute(
+        &self,
+        name: &str,
+        arguments: &str,
+        ctx: &ToolContext,
+    ) -> Result<ToolResult> {
         let tool = self
             .tools
             .iter()

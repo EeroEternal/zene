@@ -36,7 +36,9 @@ impl PublishGithubTool {
 }
 
 fn cloud_publish_config() -> Option<CloudPublishConfig> {
-    let run_id = std::env::var("ZENE_RUN_ID").ok().filter(|s| !s.trim().is_empty())?;
+    let run_id = std::env::var("ZENE_RUN_ID")
+        .ok()
+        .filter(|s| !s.trim().is_empty())?;
     let api_url = std::env::var("ZENE_CLOUD_API_URL")
         .ok()
         .filter(|s| !s.trim().is_empty())?;
@@ -123,10 +125,7 @@ impl Tool for PublishGithubTool {
             .build()
             .context("publish http client")?;
 
-        let push_url = format!(
-            "{}/internal/v1/runs/{}/git/push",
-            cfg.api_url, cfg.run_id
-        );
+        let push_url = format!("{}/internal/v1/runs/{}/git/push", cfg.api_url, cfg.run_id);
         let push_resp = client
             .post(&push_url)
             .bearer_auth(&cfg.token)

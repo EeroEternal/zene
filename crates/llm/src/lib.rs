@@ -18,7 +18,6 @@ pub use context::{
 };
 pub use message::{ContentPart, Message, MessageKind, Role, ToolCall};
 pub use models::context_window_for_model;
-pub use zene_config::default_context_window_for_model;
 pub use provider::{ChatRequest, ChatResponse, Provider, StreamEvent};
 pub use retry::{
     classify_llm_error, is_context_overflow, is_retryable, with_llm_retry, LlmErrorClass,
@@ -26,3 +25,4 @@ pub use retry::{
 };
 pub use tool::ToolDefinition;
 pub use usage::{parse_usage_from_raw, TokenUsage};
+pub use zene_config::default_context_window_for_model;

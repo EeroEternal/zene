@@ -3,7 +3,12 @@ pub struct OutputSanitizer;
 
 impl OutputSanitizer {
     /// Sanitize terminal command outputs (e.g., cargo test, npm test, pytest)
-    pub fn sanitize_exec_output(command: &str, stdout: &str, stderr: &str, exit_code: i32) -> String {
+    pub fn sanitize_exec_output(
+        command: &str,
+        stdout: &str,
+        stderr: &str,
+        exit_code: i32,
+    ) -> String {
         let is_test_command = command.contains("cargo test")
             || command.contains("npm test")
             || command.contains("pytest")

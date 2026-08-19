@@ -1,8 +1,8 @@
 use std::sync::Arc;
 
 use tempfile::tempdir;
-use zene_sandbox::LocalSandbox;
 use zene_config::WebSearchConfig;
+use zene_sandbox::LocalSandbox;
 use zene_tools::{builtin_tools, ToolContext};
 
 fn ctx(workdir: &std::path::Path) -> ToolContext {

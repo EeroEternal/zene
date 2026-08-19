@@ -1,6 +1,7 @@
 use std::path::Path;
 use std::sync::Arc;
 
+use crate::tool_executor::execute_subagent_tool_batch;
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use tokio_util::sync::CancellationToken;
@@ -14,20 +15,18 @@ use zene_tools::{
     RuntimeScope, SubagentEnv, SubagentProfile, SubagentRunner, ToolCatalog, ToolContext,
     ToolRegistry,
 };
-use crate::tool_executor::execute_subagent_tool_batch;
 
-use zene_context::{
-    compact_message_list_with_chat, estimate_context, should_compact,
-    subagent_compaction_config, TokenEstimator,
-};
 use crate::context_config;
+use zene_context::{
+    compact_message_list_with_chat, estimate_context, should_compact, subagent_compaction_config,
+    TokenEstimator,
+};
 use zene_permission::SharedToolPermission;
 use zene_turn::{
     aborted_error, max_turns_notice, ContextAssemblerPort, EventSinkPort, ModelExecutorPort,
     PreparedContext, StepResult, ToolBatchOutcome, ToolExecutorPort, TurnEngine, TurnEnginePorts,
     TurnRequest, TurnRuntime, TurnSessionPort, TurnState,
 };
-
 
 pub struct CoreSubagentRunner {
     config: ZeneConfig,
@@ -48,12 +47,10 @@ impl CoreSubagentRunner {
     }
 }
 
-
 async fn model_executor_from_config(config: &ZeneConfig) -> Result<Arc<dyn ModelExecutor>> {
     let client = ChatClient::from_config(config).await?;
     Ok(Arc::new(ChatClientExecutor::new(Arc::new(client))))
 }
-
 
 #[async_trait]
 impl SubagentRunner for CoreSubagentRunner {
@@ -352,11 +349,7 @@ impl ModelExecutorPort<()> for SubagentTurnRuntime<'_> {
         self.invoke_model(context, cancel).await
     }
 
-    async fn on_step_usage(
-        &mut self,
-        _usage: &TokenUsage,
-        _options: &(),
-    ) -> Result<()> {
+    async fn on_step_usage(&mut self, _usage: &TokenUsage, _options: &()) -> Result<()> {
         Ok(())
     }
 }
@@ -420,11 +413,7 @@ impl TurnRuntime for SubagentTurnRuntime<'_> {
         self.invoke_model(context, cancel).await
     }
 
-    async fn on_step_usage(
-        &mut self,
-        _usage: &TokenUsage,
-        _options: &Self::Options,
-    ) -> Result<()> {
+    async fn on_step_usage(&mut self, _usage: &TokenUsage, _options: &Self::Options) -> Result<()> {
         Ok(())
     }
 
@@ -541,7 +530,10 @@ async fn maybe_compact_subagent_messages(
 }
 
 fn ensure_subagent_system_message(messages: &mut Vec<Message>) {
-    if messages.first().is_some_and(|m| m.role == zene_llm::Role::System) {
+    if messages
+        .first()
+        .is_some_and(|m| m.role == zene_llm::Role::System)
+    {
         return;
     }
     if let Some(system) = messages.iter().find(|m| m.role == zene_llm::Role::System) {
@@ -559,9 +551,9 @@ mod tests {
 
     use parking_lot::Mutex;
 
-    use zene_permission::{PermissionGate, PermissionMode, PromptChoice, SharedToolPermission};
     use tempfile::tempdir;
     use zene_llm::ToolCall;
+    use zene_permission::{PermissionGate, PermissionMode, PromptChoice, SharedToolPermission};
     use zene_sandbox::LocalSandbox;
     use zene_tools::{default_builtin_tools, DEFAULT_SUBAGENT_MAX_DEPTH};
 
@@ -681,22 +673,22 @@ mod tests {
 
         let backend = ScriptedBackend::with_first_call_check(
             vec![
-            ModelResponse {
-                message: Message::assistant_with_tools(
-                    None,
-                    vec![ToolCall {
-                        id: "call_glob".to_string(),
-                        name: "Glob".to_string(),
-                        arguments: r#"{"pattern":"**/*.txt"}"#.to_string(),
-                    }],
-                ),
-                usage: None,
-            },
-            ModelResponse {
-                message: Message::assistant("Found alpha.txt and beta.txt"),
-                usage: None,
-            },
-        ],
+                ModelResponse {
+                    message: Message::assistant_with_tools(
+                        None,
+                        vec![ToolCall {
+                            id: "call_glob".to_string(),
+                            name: "Glob".to_string(),
+                            arguments: r#"{"pattern":"**/*.txt"}"#.to_string(),
+                        }],
+                    ),
+                    usage: None,
+                },
+                ModelResponse {
+                    message: Message::assistant("Found alpha.txt and beta.txt"),
+                    usage: None,
+                },
+            ],
             |request| {
                 let tool_names: Vec<_> = request
                     .tools
@@ -708,8 +700,7 @@ mod tests {
                 assert!(!tool_names.contains(&"Task"));
                 assert!(
                     request.messages.iter().any(|message| {
-                        message.content.as_deref()
-                            == Some("List all .txt files in the workspace")
+                        message.content.as_deref() == Some("List all .txt files in the workspace")
                     }),
                     "subagent model must consume PreparedContext messages"
                 );
@@ -753,12 +744,10 @@ mod tests {
             )
             .await;
         assert!(write_attempt.is_err());
-        assert!(
-            write_attempt
-                .unwrap_err()
-                .to_string()
-                .contains("unknown tool")
-        );
+        assert!(write_attempt
+            .unwrap_err()
+            .to_string()
+            .contains("unknown tool"));
     }
 
     #[tokio::test]
@@ -822,11 +811,7 @@ mod tests {
         };
 
         let result = default_builtin_tools()
-            .execute(
-                "Task",
-                r#"{"prompt":"nested","agent":"explore"}"#,
-                &ctx,
-            )
+            .execute("Task", r#"{"prompt":"nested","agent":"explore"}"#, &ctx)
             .await
             .expect("task execution");
 

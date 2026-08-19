@@ -121,10 +121,7 @@ fn file_operations_conflict(left: FileOperation, right: FileOperation) -> bool {
 }
 
 fn file_operation_writes(operation: FileOperation) -> bool {
-    matches!(
-        operation,
-        FileOperation::Write | FileOperation::ReadWrite
-    )
+    matches!(operation, FileOperation::Write | FileOperation::ReadWrite)
 }
 
 fn file_accesses_overlap(
@@ -273,10 +270,7 @@ fn start_queued_tasks<T>(
                 accesses,
                 future,
             } = task;
-            active.push(ActiveTask {
-                index,
-                accesses,
-            });
+            active.push(ActiveTask { index, accesses });
             in_flight.push(Box::pin(async move { (index, future.await) }));
         }
     }
@@ -307,7 +301,10 @@ mod tests {
     #[test]
     fn write_same_file_conflicts() {
         let a = classify_tool_accesses("Write", r#"{"path":"x.rs"}"#);
-        let b = classify_tool_accesses("Edit", r#"{"path":"x.rs","old_string":"a","new_string":"b"}"#);
+        let b = classify_tool_accesses(
+            "Edit",
+            r#"{"path":"x.rs","old_string":"a","new_string":"b"}"#,
+        );
         assert!(accesses_conflict(&a, &b));
     }
 
@@ -357,15 +354,14 @@ mod tests {
             let max_concurrent = Arc::clone(&max_concurrent);
             let path = path.to_string();
             let accesses = classify_tool_accesses("Read", &format!(r#"{{"path":"{path}"}}"#));
-            let future: std::pin::Pin<
-                Box<dyn std::future::Future<Output = String> + Send>,
-            > = Box::pin(async move {
-                let now = concurrent.fetch_add(1, Ordering::SeqCst) + 1;
-                max_concurrent.fetch_max(now, Ordering::SeqCst);
-                tokio::time::sleep(Duration::from_millis(50)).await;
-                concurrent.fetch_sub(1, Ordering::SeqCst);
-                path
-            });
+            let future: std::pin::Pin<Box<dyn std::future::Future<Output = String> + Send>> =
+                Box::pin(async move {
+                    let now = concurrent.fetch_add(1, Ordering::SeqCst) + 1;
+                    max_concurrent.fetch_max(now, Ordering::SeqCst);
+                    tokio::time::sleep(Duration::from_millis(50)).await;
+                    concurrent.fetch_sub(1, Ordering::SeqCst);
+                    path
+                });
             tasks.push((accesses, future));
         }
 
@@ -381,13 +377,12 @@ mod tests {
         for index in 0..2 {
             let order = Arc::clone(&order);
             let accesses = classify_tool_accesses("Write", r#"{"path":"same.rs"}"#);
-            let future: std::pin::Pin<
-                Box<dyn std::future::Future<Output = usize> + Send>,
-            > = Box::pin(async move {
-                order.lock().unwrap().push(index);
-                tokio::time::sleep(Duration::from_millis(20)).await;
-                index
-            });
+            let future: std::pin::Pin<Box<dyn std::future::Future<Output = usize> + Send>> =
+                Box::pin(async move {
+                    order.lock().unwrap().push(index);
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                    index
+                });
             tasks.push((accesses, future));
         }
 

@@ -9,34 +9,30 @@ use std::sync::Arc;
 
 use anyhow::Context;
 use axum::{
-    Json, Router,
     body::Body,
     extract::State,
-    http::{HeaderMap, StatusCode, header},
+    http::{header, HeaderMap, StatusCode},
     response::{IntoResponse, Response},
     routing::{get, post},
+    Json, Router,
 };
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 use session_config::{open_session_store, spawn_purge_task};
 use session_http::session_routes;
+use smartgate::{apply_smartgate_upstream_metadata, resolve_upstream_kind, UpstreamKind};
 use tower_http::trace::TraceLayer;
 use unigateway_sdk::core::{
-    Endpoint, EndpointCapabilities, ModelPolicy, ProviderKind, ProxyChatRequest, SecretString,
-    UniGatewayEngine,
-    pool::ProviderPool,
-    retry::LoadBalancingStrategy,
+    pool::ProviderPool, retry::LoadBalancingStrategy, Endpoint, EndpointCapabilities, ModelPolicy,
+    ProviderKind, ProxyChatRequest, SecretString, UniGatewayEngine,
 };
 use unigateway_sdk::host::{
-    HostContext, HostDispatchOutcome, HostDispatchTarget, HostMiddleware, HostProtocol,
-    HostRequest, PoolHost, PoolLookupOutcome, PoolLookupResult, dispatch_request_with_middleware,
+    dispatch_request_with_middleware, HostContext, HostDispatchOutcome, HostDispatchTarget,
+    HostMiddleware, HostProtocol, HostRequest, PoolHost, PoolLookupOutcome, PoolLookupResult,
 };
 use unigateway_sdk::protocol::{
-    ProtocolHttpResponse, ProtocolResponseBody, openai_payload_to_chat_request,
+    openai_payload_to_chat_request, ProtocolHttpResponse, ProtocolResponseBody,
 };
-use unigateway_session::{
-    DeltaAssemblyMiddleware, SessionHttpConfig, SessionKey,
-};
-use smartgate::{apply_smartgate_upstream_metadata, resolve_upstream_kind, UpstreamKind};
+use unigateway_session::{DeltaAssemblyMiddleware, SessionHttpConfig, SessionKey};
 use zene_llm::{
     BODY_ZENE_CONTEXT, HEADER_CONTEXT_DELIVERY, HEADER_CONTEXT_EPOCH, HEADER_PREFIX_HASH,
     HEADER_SESSION_ID, HEADER_TAIL_START, SESSION_GATEWAY_FIELD,
@@ -144,9 +140,11 @@ pub async fn build_gateway(options: GatewayOptions) -> anyhow::Result<Router> {
         spawn_purge_task(session_store.clone(), interval);
     }
 
-    let middleware_config = options.session_config.middleware_config(Arc::new(|_host, ctx| {
-        SessionKey::new(SESSION_NAMESPACE, ctx.session_id.clone())
-    }));
+    let middleware_config = options
+        .session_config
+        .middleware_config(Arc::new(|_host, ctx| {
+            SessionKey::new(SESSION_NAMESPACE, ctx.session_id.clone())
+        }));
     let delta = Arc::new(DeltaAssemblyMiddleware::with_store(
         session_store.clone(),
         middleware_config,
@@ -344,15 +342,9 @@ mod tests {
         let mut headers = HeaderMap::new();
         headers.insert(HEADER_SESSION_ID, HeaderValue::from_static("run-1"));
         headers.insert(HEADER_CONTEXT_EPOCH, HeaderValue::from_static("2"));
-        headers.insert(
-            HEADER_CONTEXT_DELIVERY,
-            HeaderValue::from_static("delta"),
-        );
+        headers.insert(HEADER_CONTEXT_DELIVERY, HeaderValue::from_static("delta"));
         headers.insert(HEADER_TAIL_START, HeaderValue::from_static("5"));
-        headers.insert(
-            HEADER_PREFIX_HASH,
-            HeaderValue::from_static("abc123"),
-        );
+        headers.insert(HEADER_PREFIX_HASH, HeaderValue::from_static("abc123"));
         let mut request = ProxyChatRequest {
             model: "gpt-4o-mini".to_string(),
             messages: vec![],

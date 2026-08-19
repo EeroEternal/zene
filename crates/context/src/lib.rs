@@ -6,8 +6,8 @@ mod engine;
 mod event_handler;
 mod events;
 mod hooks;
-mod layout;
 mod input_ladder;
+mod layout;
 mod memory_store;
 mod segment_store;
 mod session;
@@ -51,11 +51,6 @@ pub use engine::{
     InjectedSource, OverflowHandleResult, PrefireClientFactory, PrepareStepResult,
     ProjectionExplain, StepContext, ToolOutputProvenance,
 };
-pub use layout::{
-    apply_tail_decorations, classify_prefix_break, content_is_reminder, is_step_decoration,
-    prefix_adjacent_decoration_index, prefix_fingerprint, relocate_prefix_adjacent_decorations,
-    split_layout, InjectionZone, PrefixCacheBreakKind, PrefixCacheExplain, ProjectionLayout,
-};
 pub use event_handler::{
     write_compaction_segment_via, ContextEventHandler, EventOutcome, NoopContextEventHandler,
     RecordingContextEventHandler,
@@ -71,6 +66,11 @@ pub use gateway_stub::{
 };
 pub use hooks::{ContextHooks, NoContextHooks};
 pub use input_ladder::{fit_messages_to_budget, prepare_summary_input, InputLadderStage};
+pub use layout::{
+    apply_tail_decorations, classify_prefix_break, content_is_reminder, is_step_decoration,
+    prefix_adjacent_decoration_index, prefix_fingerprint, relocate_prefix_adjacent_decorations,
+    split_layout, InjectionZone, PrefixCacheBreakKind, PrefixCacheExplain, ProjectionLayout,
+};
 #[cfg(feature = "memory")]
 pub use memory::{
     append_daily_log, conversation_has_memory_context, daily_log_path, ensure_memory_in_system,

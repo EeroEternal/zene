@@ -24,8 +24,12 @@ fn ctx(workdir: &std::path::Path) -> ToolContext {
 #[tokio::test]
 async fn parallel_read_calls_both_succeed() {
     let dir = tempdir().unwrap();
-    tokio::fs::write(dir.path().join("a.txt"), "alpha").await.unwrap();
-    tokio::fs::write(dir.path().join("b.txt"), "beta").await.unwrap();
+    tokio::fs::write(dir.path().join("a.txt"), "alpha")
+        .await
+        .unwrap();
+    tokio::fs::write(dir.path().join("b.txt"), "beta")
+        .await
+        .unwrap();
 
     let tools = Arc::new(default_builtin_tools());
     let tool_ctx = ctx(dir.path());
@@ -76,8 +80,12 @@ async fn parallel_read_calls_both_succeed() {
 #[tokio::test]
 async fn parallel_read_results_preserve_provider_order() {
     let dir = tempdir().unwrap();
-    tokio::fs::write(dir.path().join("first.txt"), "one").await.unwrap();
-    tokio::fs::write(dir.path().join("second.txt"), "two").await.unwrap();
+    tokio::fs::write(dir.path().join("first.txt"), "one")
+        .await
+        .unwrap();
+    tokio::fs::write(dir.path().join("second.txt"), "two")
+        .await
+        .unwrap();
 
     let tools = Arc::new(default_builtin_tools());
     let base_ctx = ctx(dir.path());

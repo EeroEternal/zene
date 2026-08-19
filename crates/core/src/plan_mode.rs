@@ -13,8 +13,7 @@ pub const PLAN_MODE_REMINDER_BODY: &str = "You are in Plan mode. Only read-only 
 #[allow(dead_code)] // tagged form kept for tests; projection uses PLAN_MODE_REMINDER_BODY
 pub const PLAN_MODE_REMINDER: &str = "<system_reminder>\nYou are in Plan mode. Only read-only tools (Read, Grep, Glob, RepoMap, Skill, WebSearch, FetchUrl) and ExitPlanMode are available. Do not use Write, Edit, Bash, or Task until you call ExitPlanMode with your plan and the user approves it.\n</system_reminder>";
 
-pub type PlanApprovalPrompter =
-    Arc<dyn Fn(&Path, &str) -> io::Result<bool> + Send + Sync>;
+pub type PlanApprovalPrompter = Arc<dyn Fn(&Path, &str) -> io::Result<bool> + Send + Sync>;
 
 #[derive(Debug, Deserialize)]
 pub struct EnterPlanModeArgs {
@@ -76,10 +75,7 @@ fn parent_writable(path: &Path) -> bool {
         .unwrap_or(false)
 }
 
-pub fn handle_enter_plan_mode(
-    state: &mut PlanModeState,
-    arguments: &str,
-) -> ToolResult {
+pub fn handle_enter_plan_mode(state: &mut PlanModeState, arguments: &str) -> ToolResult {
     if state.is_active() {
         return ToolResult {
             content: "Already in plan mode.".to_string(),
@@ -120,8 +116,8 @@ pub fn handle_exit_plan_mode(
         });
     }
 
-    let args: ExitPlanModeArgs = serde_json::from_str(arguments)
-        .context("parse ExitPlanMode args")?;
+    let args: ExitPlanModeArgs =
+        serde_json::from_str(arguments).context("parse ExitPlanMode args")?;
     if args.plan.trim().is_empty() {
         return Ok(ToolResult {
             content: "ExitPlanMode requires a non-empty `plan`.".to_string(),
@@ -133,7 +129,11 @@ pub fn handle_exit_plan_mode(
     fs::write(&plan_path, &args.plan)
         .with_context(|| format!("write plan to {}", plan_path.display()))?;
 
-    eprintln!("\n--- Plan ({}) ---\n{}\n--- end plan ---\n", plan_path.display(), args.plan);
+    eprintln!(
+        "\n--- Plan ({}) ---\n{}\n--- end plan ---\n",
+        plan_path.display(),
+        args.plan
+    );
 
     let approved = prompter(&plan_path, &args.plan)?;
     if !approved {
@@ -164,10 +164,7 @@ pub fn default_plan_approval_prompter(plan_path: &Path, _plan_body: &str) -> io:
     let _ = io::stderr().flush();
     let mut line = String::new();
     io::stdin().read_line(&mut line)?;
-    Ok(matches!(
-        line.trim().to_lowercase().as_str(),
-        "y" | "yes"
-    ))
+    Ok(matches!(line.trim().to_lowercase().as_str(), "y" | "yes"))
 }
 
 pub fn tool_visible_in_definitions(name: &str, plan_active: bool) -> bool {
@@ -245,8 +242,7 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let mut state = PlanModeState::default();
         state.enter();
-        let prompter: PlanApprovalPrompter =
-            Arc::new(|_path, _body| Ok(true));
+        let prompter: PlanApprovalPrompter = Arc::new(|_path, _body| Ok(true));
         let result = handle_exit_plan_mode(
             &mut state,
             r##"{"plan":"# Plan\n\nDo thing."}"##,

@@ -152,10 +152,7 @@ impl AgentBuilder {
     }
 
     /// Inject a runtime model executor instead of wrapping [`ChatClient`].
-    pub fn model_executor(
-        mut self,
-        executor: Arc<dyn zene_model_executor::ModelExecutor>,
-    ) -> Self {
+    pub fn model_executor(mut self, executor: Arc<dyn zene_model_executor::ModelExecutor>) -> Self {
         self.model_executor = Some(executor);
         self
     }
@@ -238,7 +235,9 @@ impl AgentBuilder {
         let projected = self.session.view().messages;
         if !conversation_has_memory_context(&projected) {
             if let (Some(system), Some(memory)) = (
-                projected.first().filter(|message| message.role == zene_llm::Role::System),
+                projected
+                    .first()
+                    .filter(|message| message.role == zene_llm::Role::System),
                 memory_reminder_from_store(&memory_store),
             ) {
                 let existing = system.content.clone().unwrap_or_default();

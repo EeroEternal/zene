@@ -16,9 +16,7 @@ use zene_context::{
 };
 use zene_llm::{ChatClient, ToolDefinition};
 use zene_session::{AgentRecordWriter, RecordEntry, SessionRecord};
-use zene_tools::{
-    SharedBackgroundTasks, SharedTodoStore, ToolCatalog, ToolPolicy, ToolRegistry,
-};
+use zene_tools::{SharedBackgroundTasks, SharedTodoStore, ToolCatalog, ToolPolicy, ToolRegistry};
 use zene_turn::PreparedContext;
 
 use crate::context_config;
@@ -204,7 +202,9 @@ mod tests {
         let active = tool_definitions_for_llm(&tools, true);
         let names: Vec<_> = active.iter().map(|t| t.name.as_str()).collect();
         assert!(names.contains(&"Read"));
-        assert!(!names.iter().any(|n| *n == "Write" || *n == "Edit" || *n == "Bash"));
+        assert!(!names
+            .iter()
+            .any(|n| *n == "Write" || *n == "Edit" || *n == "Bash"));
     }
 
     #[test]

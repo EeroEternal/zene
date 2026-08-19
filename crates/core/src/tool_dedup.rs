@@ -1,5 +1,5 @@
-use std::collections::VecDeque;
 use std::collections::hash_map::DefaultHasher;
+use std::collections::VecDeque;
 use std::hash::{Hash, Hasher};
 
 use serde_json::Value;
@@ -115,10 +115,7 @@ mod tests {
         );
         let mut dedup2 = ToolDedup::new();
         assert!(dedup2.on_call("Read", r#"{"path":"x"}"#).is_none());
-        assert_eq!(
-            dedup2.on_call("Read", r#"{"path":"x","offset":1}"#),
-            None
-        );
+        assert_eq!(dedup2.on_call("Read", r#"{"path":"x","offset":1}"#), None);
     }
 
     #[test]

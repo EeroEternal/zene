@@ -111,7 +111,8 @@ async fn main() -> Result<()> {
             Ok(())
         }
         Some(Commands::Config) => {
-            let config = ZeneConfig::load(&workdir).map_err(|err| anyhow::anyhow!(err.to_string()))?;
+            let config =
+                ZeneConfig::load(&workdir).map_err(|err| anyhow::anyhow!(err.to_string()))?;
             println!("config: {}", zene_config::config_path().display());
             println!(
                 "project config: {}",
@@ -130,7 +131,10 @@ async fn main() -> Result<()> {
             if !config.sandbox.allow_hosts.is_empty() {
                 println!("sandbox.allow_hosts: {:?}", config.sandbox.allow_hosts);
             }
-            println!("sandbox.auto_allow_bash: {}", config.sandbox.auto_allow_bash);
+            println!(
+                "sandbox.auto_allow_bash: {}",
+                config.sandbox.auto_allow_bash
+            );
             Ok(())
         }
         Some(Commands::Export { session, output }) => {

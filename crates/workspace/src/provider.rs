@@ -60,7 +60,10 @@ impl WorkspaceProvider for FsWorkspaceProvider {
             .canonicalize()
             .unwrap_or_else(|_| self.workdir.clone());
 
-        let mut parts = vec![format!("# Workspace\n\nWorking directory: `{}`", canonical.display())];
+        let mut parts = vec![format!(
+            "# Workspace\n\nWorking directory: `{}`",
+            canonical.display()
+        )];
 
         if let Some(listing) = top_level_listing(&canonical) {
             parts.push(format!("## Top-level entries\n\n{listing}"));

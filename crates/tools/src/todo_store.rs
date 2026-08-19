@@ -42,7 +42,11 @@ impl TodoStore {
             .iter()
             .map(|t| format!("  [{}] {} — {}", status_label(t.status), t.id, t.content))
             .collect();
-        format!("Current todo list ({} items):\n{}", self.items.len(), lines.join("\n"))
+        format!(
+            "Current todo list ({} items):\n{}",
+            self.items.len(),
+            lines.join("\n")
+        )
     }
 }
 

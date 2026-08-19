@@ -129,20 +129,22 @@ fn merge_config_toml(global_path: &Path, project_path: &Path) -> Result<toml::Va
         path: global_path.to_path_buf(),
         source,
     })?;
-    let mut merged: toml::Value = toml::from_str(&global_raw).map_err(|source| ConfigError::Parse {
-        path: global_path.to_path_buf(),
-        source,
-    })?;
+    let mut merged: toml::Value =
+        toml::from_str(&global_raw).map_err(|source| ConfigError::Parse {
+            path: global_path.to_path_buf(),
+            source,
+        })?;
 
     if project_path.exists() {
         let project_raw = fs::read_to_string(project_path).map_err(|source| ConfigError::Read {
             path: project_path.to_path_buf(),
             source,
         })?;
-        let project: toml::Value = toml::from_str(&project_raw).map_err(|source| ConfigError::Parse {
-            path: project_path.to_path_buf(),
-            source,
-        })?;
+        let project: toml::Value =
+            toml::from_str(&project_raw).map_err(|source| ConfigError::Parse {
+                path: project_path.to_path_buf(),
+                source,
+            })?;
         merge_toml_values(&mut merged, project);
     }
 
@@ -292,7 +294,12 @@ pub struct SandboxSettings {
 impl SandboxSettings {
     /// Resolve the effective profile name.
     pub fn effective_profile(&self, agent_profile: AgentProfile) -> String {
-        if let Some(profile) = self.profile.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+        if let Some(profile) = self
+            .profile
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        {
             return normalize_sandbox_profile(profile);
         }
         match agent_profile {
@@ -455,8 +462,7 @@ impl ZeneConfig {
     }
 
     pub fn provider_kind(&self) -> ProviderKind {
-        self.provider_kind_parse()
-            .unwrap_or(ProviderKind::OpenAi)
+        self.provider_kind_parse().unwrap_or(ProviderKind::OpenAi)
     }
 
     pub fn provider_kind_parse(&self) -> Result<ProviderKind, String> {
@@ -687,9 +693,15 @@ impl ZeneConfig {
             toml::map::Map::new()
         };
 
-        table.insert("provider".into(), toml::Value::String(self.provider.clone()));
+        table.insert(
+            "provider".into(),
+            toml::Value::String(self.provider.clone()),
+        );
         table.insert("model".into(), toml::Value::String(self.model.clone()));
-        table.insert("base_url".into(), toml::Value::String(self.base_url.clone()));
+        table.insert(
+            "base_url".into(),
+            toml::Value::String(self.base_url.clone()),
+        );
         if let Some(ref key) = self.api_key {
             if !key.is_empty() {
                 table.insert("api_key".into(), toml::Value::String(key.clone()));
@@ -705,18 +717,12 @@ impl ZeneConfig {
         }
         if let Some(ref key) = self.anthropic_api_key {
             if !key.is_empty() {
-                table.insert(
-                    "anthropic_api_key".into(),
-                    toml::Value::String(key.clone()),
-                );
+                table.insert("anthropic_api_key".into(), toml::Value::String(key.clone()));
             }
         }
 
         let raw = toml::to_string_pretty(&toml::Value::Table(table)).expect("config serializes");
-        fs::write(&path, raw).map_err(|source| ConfigError::Write {
-            path,
-            source,
-        })?;
+        fs::write(&path, raw).map_err(|source| ConfigError::Write { path, source })?;
         Ok(())
     }
 }
@@ -729,10 +735,11 @@ pub fn load_hooks(from_config: &[HookEntry]) -> Result<Vec<HookEntry>, ConfigErr
             path: path.clone(),
             source,
         })?;
-        let file: HooksFile = serde_json::from_str(&raw).map_err(|source| ConfigError::ParseJson {
-            path: path.clone(),
-            source,
-        })?;
+        let file: HooksFile =
+            serde_json::from_str(&raw).map_err(|source| ConfigError::ParseJson {
+                path: path.clone(),
+                source,
+            })?;
         hooks.extend(file.hooks);
     }
     Ok(hooks)
@@ -742,7 +749,9 @@ pub fn default_context_window_for_model(model: &str) -> u32 {
     match model {
         "gpt-4o" | "gpt-4o-mini" | "gpt-4-turbo" | "gpt-4" => 128_000,
         "gpt-3.5-turbo" => 16_385,
-        "deepseek-v4-flash" | "deepseek-v4-pro" | "deepseek-chat" | "deepseek-reasoner" => 1_000_000,
+        "deepseek-v4-flash" | "deepseek-v4-pro" | "deepseek-chat" | "deepseek-reasoner" => {
+            1_000_000
+        }
         m if m.starts_with("moonshot-") || m.starts_with("kimi-") => 128_000,
         "glm-4" | "glm-4-flash" | "glm-4-plus" | "glm-4-air" => 128_000,
         "claude-3-5-sonnet-20241022"
@@ -878,10 +887,7 @@ mod provider_tests {
 
     #[test]
     fn provider_kind_parsing() {
-        assert_eq!(
-            ProviderKind::parse("openai").unwrap(),
-            ProviderKind::OpenAi
-        );
+        assert_eq!(ProviderKind::parse("openai").unwrap(), ProviderKind::OpenAi);
         assert_eq!(
             ProviderKind::parse("openai-compatible").unwrap(),
             ProviderKind::OpenAi
@@ -897,7 +903,10 @@ mod provider_tests {
     fn web_search_config_defaults_to_duckduckgo() {
         let config = WebSearchConfig::default();
         assert_eq!(config.provider, "duckduckgo");
-        assert_eq!(config.effective_provider(), WebSearchProviderKind::DuckDuckGo);
+        assert_eq!(
+            config.effective_provider(),
+            WebSearchProviderKind::DuckDuckGo
+        );
     }
 
     #[test]
@@ -922,7 +931,10 @@ mod provider_tests {
     #[test]
     fn agent_profile_parsing() {
         assert_eq!(AgentProfile::parse("full").unwrap(), AgentProfile::Full);
-        assert_eq!(AgentProfile::parse("explore").unwrap(), AgentProfile::Explore);
+        assert_eq!(
+            AgentProfile::parse("explore").unwrap(),
+            AgentProfile::Explore
+        );
         assert_eq!(AgentProfile::parse("coder").unwrap(), AgentProfile::Coder);
         assert!(AgentProfile::parse("unknown").is_err());
     }
@@ -930,10 +942,7 @@ mod provider_tests {
     #[test]
     fn sandbox_effective_profile_defaults() {
         let settings = SandboxSettings::default();
-        assert_eq!(
-            settings.effective_profile(AgentProfile::Full),
-            "workspace"
-        );
+        assert_eq!(settings.effective_profile(AgentProfile::Full), "workspace");
         assert_eq!(
             settings.effective_profile(AgentProfile::Explore),
             "read-only"
@@ -942,10 +951,7 @@ mod provider_tests {
             profile: Some("strict".into()),
             ..SandboxSettings::default()
         };
-        assert_eq!(
-            strict.effective_profile(AgentProfile::Explore),
-            "strict"
-        );
+        assert_eq!(strict.effective_profile(AgentProfile::Explore), "strict");
     }
 }
 
@@ -993,7 +999,9 @@ pub fn ensure_home() -> Result<(), ConfigError> {
 }
 
 pub fn workdir_slug(workdir: &Path) -> String {
-    let canonical = workdir.canonicalize().unwrap_or_else(|_| workdir.to_path_buf());
+    let canonical = workdir
+        .canonicalize()
+        .unwrap_or_else(|_| workdir.to_path_buf());
     let raw = canonical.display().to_string();
     raw.chars()
         .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })

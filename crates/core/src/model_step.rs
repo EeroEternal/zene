@@ -16,7 +16,8 @@ use tokio_util::sync::CancellationToken;
 use tracing::debug;
 use zene_config::ZeneConfig;
 use zene_context::{
-    ContextEngine, ContextModel, EstimateProvider, PrefireClientFactory, StepContext, TokenEstimator,
+    ContextEngine, ContextModel, EstimateProvider, PrefireClientFactory, StepContext,
+    TokenEstimator,
 };
 use zene_llm::{ChatClient, Message, StreamEvent, TokenUsage, ToolDefinition};
 use zene_model_executor::{ModelExecutor, ModelRequest};
@@ -282,7 +283,10 @@ mod tests {
 
     #[async_trait]
     impl ModelExecutor for TextThenDone {
-        async fn complete(&self, _request: ModelRequest) -> Result<zene_model_executor::ModelResponse> {
+        async fn complete(
+            &self,
+            _request: ModelRequest,
+        ) -> Result<zene_model_executor::ModelResponse> {
             unreachable!("complete not used")
         }
 

@@ -3,18 +3,18 @@
 use std::sync::{Arc, Mutex};
 
 use axum::{
-    Json, Router,
     body::Body,
     extract::State,
     http::{Request, StatusCode},
     routing::post,
+    Json, Router,
 };
 use http_body_util::BodyExt;
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 use tokio::net::TcpListener;
 use tower::{Service, ServiceExt};
 use unigateway_session::FingerprintPolicy;
-use zene_inference_gateway::{GatewayOptions, SessionRuntimeConfig, build_gateway};
+use zene_inference_gateway::{build_gateway, GatewayOptions, SessionRuntimeConfig};
 
 type CapturedBody = Arc<Mutex<Option<Value>>>;
 
@@ -49,7 +49,9 @@ async fn publish_then_delta_chat_assembles_prefix_and_tail() {
         .route("/v1/chat/completions", post(mock_upstream_chat))
         .with_state(captured.clone());
 
-    let upstream_listener = TcpListener::bind("127.0.0.1:0").await.expect("bind upstream");
+    let upstream_listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind upstream");
     let upstream_addr = upstream_listener.local_addr().expect("upstream addr");
     tokio::spawn(async move {
         axum::serve(upstream_listener, upstream).await.ok();
@@ -83,7 +85,10 @@ async fn publish_then_delta_chat_assembles_prefix_and_tail() {
         session_config,
     };
 
-    let mut app = build_gateway(options).await.expect("build gateway").into_service();
+    let mut app = build_gateway(options)
+        .await
+        .expect("build gateway")
+        .into_service();
 
     let fingerprint = json!({ "algorithm": "zene-v1", "value": "deadbeef00000001" });
 

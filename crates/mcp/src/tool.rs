@@ -7,7 +7,7 @@ use tokio::sync::Mutex;
 use zene_llm::ToolDefinition;
 use zene_tools::{Tool, ToolContext, ToolResult};
 
-use crate::client::{McpToolInfo, mcp_tool_registry_name};
+use crate::client::{mcp_tool_registry_name, McpToolInfo};
 use crate::transport::McpClientHandle;
 
 pub struct McpTool {
@@ -55,8 +55,11 @@ impl Tool for McpTool {
         let args: Value = serde_json::from_str(arguments).unwrap_or(json!({}));
         let mut client = self.client.lock().await;
         let (content, is_error) = client.call_tool(&self.tool_name, args).await?;
-        let content =
-            crate::truncate::truncate_mcp_output(content, ctx.sandbox.workdir(), &self.registry_name);
+        let content = crate::truncate::truncate_mcp_output(
+            content,
+            ctx.sandbox.workdir(),
+            &self.registry_name,
+        );
         Ok(ToolResult { content, is_error })
     }
 }

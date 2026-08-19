@@ -22,10 +22,7 @@ pub enum RpcId {
 impl RpcId {
     pub fn from_value(v: &Value) -> Self {
         match v {
-            Value::Number(n) => n
-                .as_u64()
-                .map(RpcId::Number)
-                .unwrap_or(RpcId::Null),
+            Value::Number(n) => n.as_u64().map(RpcId::Number).unwrap_or(RpcId::Null),
             Value::String(s) => RpcId::String(s.clone()),
             _ => RpcId::Null,
         }
@@ -96,7 +93,9 @@ pub fn prompt_text_from_params(params: &Value) -> String {
                             .or_else(|| block.get("uri"))
                             .and_then(Value::as_str)
                             .unwrap_or("resource");
-                        parts.push(format!("<embedded resource uri=\"{uri}\">\n{text}\n</embedded resource>"));
+                        parts.push(format!(
+                            "<embedded resource uri=\"{uri}\">\n{text}\n</embedded resource>"
+                        ));
                     } else if let Some(uri) = block
                         .pointer("/resource/uri")
                         .or_else(|| block.get("uri"))
@@ -176,8 +175,12 @@ mod tests {
 
     #[test]
     fn classifies_jsonrpc_shapes() {
-        assert!(is_request(&json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{}})));
-        assert!(is_notification(&json!({"jsonrpc":"2.0","method":"session/cancel","params":{}})));
+        assert!(is_request(
+            &json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{}})
+        ));
+        assert!(is_notification(
+            &json!({"jsonrpc":"2.0","method":"session/cancel","params":{}})
+        ));
         assert!(is_response(&json!({"jsonrpc":"2.0","id":1,"result":{}})));
     }
 }

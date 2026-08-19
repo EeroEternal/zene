@@ -52,12 +52,10 @@ fn projection_injected_labels(messages: &[Message]) -> Vec<String> {
     {
         labels.push("compaction_summary".to_string());
     }
-    if messages.iter().any(|message| {
-        message
-            .content
-            .as_deref()
-            .is_some_and(content_is_reminder)
-    }) {
+    if messages
+        .iter()
+        .any(|message| message.content.as_deref().is_some_and(content_is_reminder))
+    {
         labels.push("system_reminder".to_string());
     }
     labels
