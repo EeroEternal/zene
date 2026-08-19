@@ -5,7 +5,7 @@ use tokio::io::AsyncWriteExt;
 use uuid::Uuid;
 use zene_cloud_domain::{WorkerEventRequest, WorkerFence};
 
-use super::post_event_raw;
+use crate::api::post_event_raw;
 
 const MAX_OUTBOX_EVENTS: usize = 10_000;
 const MAX_OUTBOX_BYTES: u64 = 128 * 1024 * 1024;
@@ -62,9 +62,9 @@ impl EventOutbox {
                 continue;
             };
             if name.starts_with('.') && name.contains(".tmp-") {
-                tokio::fs::remove_file(&path)
-                    .await
-                    .with_context(|| format!("remove orphaned event outbox file {}", path.display()))?;
+                tokio::fs::remove_file(&path).await.with_context(|| {
+                    format!("remove orphaned event outbox file {}", path.display())
+                })?;
             }
         }
         Ok(())
@@ -118,7 +118,10 @@ impl EventOutbox {
         match tokio::fs::hard_link(&tmp, &path).await {
             Ok(()) => {
                 tokio::fs::remove_file(&tmp).await.with_context(|| {
-                    format!("remove committed event outbox temporary file {}", tmp.display())
+                    format!(
+                        "remove committed event outbox temporary file {}",
+                        tmp.display()
+                    )
                 })?;
                 sync_outbox_directory(&self.dir).await?;
                 Ok(())
@@ -203,7 +206,8 @@ impl EventOutbox {
     }
 
     pub(crate) fn event_path(&self, source_event_id: &str) -> PathBuf {
-        self.dir.join(format!("{}.json", event_file_key(source_event_id)))
+        self.dir
+            .join(format!("{}.json", event_file_key(source_event_id)))
     }
 }
 
