@@ -39,6 +39,8 @@ export function GitPanel({
   onPullRequestChange,
   onCommitAndCreatePr,
   commitBusy,
+  refreshSignal,
+  onRefresh,
 }: {
   runId: string;
   defaultTitle?: string;
@@ -48,6 +50,8 @@ export function GitPanel({
   onPullRequestChange?: (pr: PullRequest | null) => void;
   onCommitAndCreatePr?: () => void | Promise<void>;
   commitBusy?: boolean;
+  refreshSignal?: number;
+  onRefresh?: () => void;
 }) {
   const toast = useToast();
   const [subTab, setSubTabState] = useState<GitSubTab>(() => {
@@ -55,6 +59,7 @@ export function GitPanel({
     return saved === "review" || saved === "commits" || saved === "diff" ? saved : "diff";
   });
   const [actionBusy, setActionBusy] = useState(false);
+  const [localRefreshSignal, setLocalRefreshSignal] = useState(0);
   const setSubTab = useCallback(
     (next: GitSubTab) => {
       setSubTabState(next);
@@ -68,19 +73,25 @@ export function GitPanel({
   const prUrl = pullRequest?.url;
   const prId = pullRequest?.id;
 
+  const triggerRefresh = useCallback(() => {
+    setLocalRefreshSignal((n) => n + 1);
+    onRefresh?.();
+  }, [onRefresh]);
+
   const markReady = useCallback(async () => {
     if (!prId) return;
     setActionBusy(true);
     try {
       const updated = await markPullRequestReady(runId, prId);
       onPullRequestChange?.(updated);
+      triggerRefresh();
       toast("Pull request marked as ready", "ok");
     } catch (err) {
       toast(err instanceof Error ? err.message : String(err), "error");
     } finally {
       setActionBusy(false);
     }
-  }, [prId, runId, onPullRequestChange, toast]);
+  }, [prId, runId, onPullRequestChange, triggerRefresh, toast]);
 
   const merge = useCallback(async () => {
     if (!prId) return;
@@ -88,13 +99,14 @@ export function GitPanel({
     try {
       const updated = await mergePullRequest(runId, prId);
       onPullRequestChange?.(updated);
+      triggerRefresh();
       toast("Pull request merged", "ok");
     } catch (err) {
       toast(err instanceof Error ? err.message : String(err), "error");
     } finally {
       setActionBusy(false);
     }
-  }, [prId, runId, onPullRequestChange, toast]);
+  }, [prId, runId, onPullRequestChange, triggerRefresh, toast]);
 
   const isDraft = pullRequest ? isDraftPullRequest(pullRequest) : false;
   const isMerged = prState === "merged";
@@ -203,9 +215,27 @@ export function GitPanel({
         ) : null}
       </div>
       <div className="min-h-0 overflow-hidden">
-        {subTab === "diff" && <ChangesPanel runId={runId} baseRef={defaultBaseRef} />}
-        {subTab === "review" && <ReviewPanel runId={runId} baseRef={defaultBaseRef} />}
-        {subTab === "commits" && <CommitsPanel runId={runId} baseRef={defaultBaseRef} />}
+        {subTab === "diff" && (
+          <ChangesPanel
+            runId={runId}
+            baseRef={defaultBaseRef}
+            refreshSignal={(refreshSignal || 0) + localRefreshSignal}
+          />
+        )}
+        {subTab === "review" && (
+          <ReviewPanel
+            runId={runId}
+            baseRef={defaultBaseRef}
+            refreshSignal={(refreshSignal || 0) + localRefreshSignal}
+          />
+        )}
+        {subTab === "commits" && (
+          <CommitsPanel
+            runId={runId}
+            baseRef={defaultBaseRef}
+            refreshSignal={(refreshSignal || 0) + localRefreshSignal}
+          />
+        )}
       </div>
     </div>
   );

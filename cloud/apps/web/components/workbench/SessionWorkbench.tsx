@@ -290,6 +290,10 @@ export function SessionWorkbench({
         onRunsChanged();
       }
 
+      if (platform?.event === "approval.created") {
+        void refreshApprovals();
+      }
+
       if (platform?.event === "run.created" && typeof platform.prompt === "string") {
         const prompt = platform.prompt || "";
         if (prompt) {
@@ -348,11 +352,8 @@ export function SessionWorkbench({
 
   useEffect(() => {
     let stopped = false;
-    const timers: {
-      poll?: ReturnType<typeof setInterval>;
-      approval?: ReturnType<typeof setInterval>;
-      status?: ReturnType<typeof setInterval>;
-    } = {};
+    let abortCtrl: AbortController | null = null;
+    let fallbackTimer: ReturnType<typeof setInterval> | null = null;
     nextId.current = 1;
     afterSeq.current = 0;
     seenApprovals.current = new Set();
@@ -436,65 +437,73 @@ export function SessionWorkbench({
         onRunsChanged();
 
         if (stopped) return;
-        timers.poll = setInterval(async () => {
+
+        // SSE via fetch (supports Authorization headers; falls back to polling)
+        const startSSE = async () => {
+          if (stopped) return;
+          const token = localStorage.getItem("zc.token") || "";
+          const headers: Record<string, string> = {};
+          if (token) headers.Authorization = `Bearer ${token}`;
+          const ac = new AbortController();
+          abortCtrl = ac;
           try {
+            const res = await fetch(
+              `/api/v1/runs/${runId}/events/stream?afterSeq=${afterSeq.current}`,
+              { headers, signal: ac.signal },
+            );
+            if (!res.ok || !res.body) throw new Error(`SSE ${res.status}`);
+            const reader = res.body.getReader();
+            const decoder = new TextDecoder();
+            let buffer = "";
             for (;;) {
-              const live = await api<{ events?: RunEvent[]; nextSeq?: number }>(
-                `/api/v1/runs/${runId}/events?afterSeq=${afterSeq.current}`,
-              );
-              const batch = live.events || [];
-              if (!batch.length) {
-                if (live.nextSeq != null) afterSeq.current = live.nextSeq;
-                break;
+              const { done, value } = await reader.read();
+              if (done || stopped) break;
+              buffer += decoder.decode(value, { stream: true });
+              const lines = buffer.split("\n");
+              buffer = lines.pop() || "";
+              for (const line of lines) {
+                if (stopped) break;
+                if (!line.startsWith("data: ")) continue;
+                const raw = line.slice(6).trim();
+                if (!raw) continue;
+                try {
+                  const event = JSON.parse(raw) as RunEvent;
+                  handleEvent(event);
+                  afterSeq.current = event.seq;
+                } catch { /* ignore parse errors */ }
               }
-              for (const e of batch) {
-                handleEvent(e);
-                afterSeq.current = e.seq;
-              }
-              if (live.nextSeq != null) afterSeq.current = live.nextSeq;
-              if (batch.length < 500) break;
             }
-          } catch (err) {
-            console.warn(err);
-          }
-        }, 1000);
-        timers.approval = setInterval(refreshApprovals, 2000);
-        timers.status = setInterval(async () => {
-          try {
-            const next = await api<Run>(`/api/v1/runs/${runId}`);
+          } catch {
             if (stopped) return;
-            const titleChanged = Boolean(next.title && next.title !== lastKnownTitle.current);
-            if (next.title) lastKnownTitle.current = next.title;
-            let statusChanged = false;
-            setRun((prev) => {
-              if (!prev) return next;
-              statusChanged = prev.status !== next.status;
-              if (
-                prev.status === next.status &&
-                prev.headSha === next.headSha &&
-                prev.title === next.title
-              ) {
-                return prev;
-              }
-              return { ...prev, ...next };
-            });
-            if (isTerminalStatus(next.status)) sealOnStop();
-            const ended = (next.status || "").toLowerCase();
-            if (ended === "failed" || ended === "timed_out" || ended === "cancelled") {
-              setPendingSince(null);
+            // SSE failed — fall back to polling
+            if (!fallbackTimer) {
+              fallbackTimer = setInterval(async () => {
+                if (stopped) return;
+                try {
+                  for (;;) {
+                    const live = await api<{ events?: RunEvent[]; nextSeq?: number }>(
+                      `/api/v1/runs/${runId}/events?afterSeq=${afterSeq.current}`,
+                    );
+                    const batch = live.events || [];
+                    if (!batch.length) {
+                      if (live.nextSeq != null) afterSeq.current = live.nextSeq;
+                      break;
+                    }
+                    for (const e of batch) {
+                      handleEvent(e);
+                      afterSeq.current = e.seq;
+                    }
+                    if (live.nextSeq != null) afterSeq.current = live.nextSeq;
+                    if (batch.length < 500) break;
+                  }
+                } catch (err) {
+                  console.warn(err);
+                }
+              }, 2000);
             }
-            if (titleChanged || isSetupStatus(next.status) || statusChanged) {
-              onRunsChanged();
-            }
-          } catch (err) {
-            console.warn(err);
           }
-        }, 2000);
-        if (stopped) {
-          if (timers.poll) clearInterval(timers.poll);
-          if (timers.approval) clearInterval(timers.approval);
-          if (timers.status) clearInterval(timers.status);
-        }
+        };
+        startSSE();
       } catch (err) {
         if (!stopped) {
           setHistoryReady(true);
@@ -505,9 +514,12 @@ export function SessionWorkbench({
 
     return () => {
       stopped = true;
-      if (timers.poll) clearInterval(timers.poll);
-      if (timers.approval) clearInterval(timers.approval);
-      if (timers.status) clearInterval(timers.status);
+      abortCtrl?.abort();
+      abortCtrl = null;
+      if (fallbackTimer) {
+        clearInterval(fallbackTimer);
+        fallbackTimer = null;
+      }
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [runId]);
@@ -518,6 +530,23 @@ export function SessionWorkbench({
     setPromptQueue([]);
     queuedTextsRef.current.clear();
     setPendingSince(null);
+  }, [runId]);
+
+  const [gitRefreshSignal, setGitRefreshSignal] = useState(0);
+
+  const refreshGitStatus = useCallback(async () => {
+    if (!runId) return;
+    try {
+      const [compare, prs] = await Promise.all([
+        fetchGitCompare(runId),
+        fetchRunPullRequests(runId),
+      ]);
+      setGitCompare(compare);
+      setRunPullRequests(prs);
+      setGitRefreshSignal((n) => n + 1);
+    } catch {
+      /* ignore */
+    }
   }, [runId]);
 
   useEffect(() => {
@@ -535,6 +564,7 @@ export function SessionWorkbench({
       if (cancelled) return;
       setGitCompare(compare);
       setRunPullRequests(prs);
+      setGitRefreshSignal((n) => n + 1);
     })().catch(() => undefined);
 
     return () => {
@@ -578,6 +608,7 @@ export function SessionWorkbench({
   const chrome = composerChrome(phase);
   const repoName = run ? repoLabel(repos, run.repositoryId) : "";
   const headBranch = run?.headBranch || gitCompare?.head || "";
+  const branch = run?.baseRef || gitCompare?.base || "";
   const setupCopy = phase === "setup" ? setupStatusCopy(run?.status || "", repoName) : null;
 
   const flushPromptQueue = useCallback(() => {
@@ -636,6 +667,7 @@ export function SessionWorkbench({
       toast(err instanceof Error ? err.message : String(err), "error");
     } finally {
       setRetrying(false);
+      composerRef.current?.focus();
     }
   }, [followUp, runId, appendBubble, toast, onRunsChanged]);
 
@@ -673,6 +705,7 @@ export function SessionWorkbench({
       toast(err instanceof Error ? err.message : String(err), "error");
     } finally {
       setSending(false);
+      composerRef.current?.focus();
     }
   }, [followUp, runId, appendBubble, toast, chrome.submitVia, chrome.queueFollowUp, retryRun]);
 
@@ -778,8 +811,7 @@ export function SessionWorkbench({
         <SessionHeader
           title={run?.title || "Agent"}
           repoName={repoName}
-          headBranch={headBranch}
-          model={run?.model || selectedModel}
+          branch={branch}
           editingTitle={editingTitle}
           titleDraft={titleDraft}
           onTitleDraftChange={setTitleDraft}
@@ -817,9 +849,12 @@ export function SessionWorkbench({
             <PullRequestCard
               runId={runId}
               pullRequest={activePullRequest}
-              onUpdated={(pr) =>
-                setRunPullRequests((prev) => prev.map((item) => (item.id === pr.id ? pr : item)))
-              }
+              onUpdated={(pr) => {
+                setRunPullRequests((prev) =>
+                  prev.map((item) => (item.id === pr.id ? pr : item)),
+                );
+                void refreshGitStatus();
+              }}
             />
           </div>
         ) : null}
@@ -874,6 +909,8 @@ export function SessionWorkbench({
           onWidthChange={setCodeWidth}
           onCollapse={onToggleCodePanel}
           equalSplit={sidebarCollapsed}
+          refreshSignal={gitRefreshSignal}
+          onRefresh={refreshGitStatus}
         />
       )}
     </div>

@@ -132,13 +132,34 @@ async fn install_pre_push_hook(workspace: &Path) -> Result<()> {
 }
 
 async fn ensure_git_exclude(workspace: &Path) -> Result<()> {
-    let exclude = workspace.join(".git").join("info").join("exclude");
-    if let Some(parent) = exclude.parent() {
+    let output = Command::new("git")
+        .current_dir(workspace)
+        .args(["rev-parse", "--git-path", "info/exclude"])
+        .output()
+        .await;
+
+    let exclude_path = if let Ok(out) = output {
+        if out.status.success() {
+            let path_str = String::from_utf8_lossy(&out.stdout).trim().to_string();
+            let p = PathBuf::from(path_str);
+            if p.is_absolute() {
+                p
+            } else {
+                workspace.join(p)
+            }
+        } else {
+            workspace.join(".git").join("info").join("exclude")
+        }
+    } else {
+        workspace.join(".git").join("info").join("exclude")
+    };
+
+    if let Some(parent) = exclude_path.parent() {
         tokio::fs::create_dir_all(parent).await?;
     }
     let marker = ".zene/";
-    let existing = tokio::fs::read_to_string(&exclude).await.unwrap_or_default();
-    if existing.lines().any(|line| line.trim() == marker) {
+    let existing = tokio::fs::read_to_string(&exclude_path).await.unwrap_or_default();
+    if existing.lines().any(|line| line.trim() == marker || line.trim() == ".zene") {
         return Ok(());
     }
     let mut next = existing;
@@ -147,7 +168,7 @@ async fn ensure_git_exclude(workspace: &Path) -> Result<()> {
     }
     next.push_str(marker);
     next.push('\n');
-    tokio::fs::write(&exclude, next).await?;
+    tokio::fs::write(&exclude_path, next).await?;
     Ok(())
 }
 

@@ -9,26 +9,44 @@ import {
   IconGithub,
   IconLayoutList,
   IconPlus,
+  IconSettings,
   IconTrash,
   IconUser,
 } from "@/lib/icons";
 import type {
+  CreateLlmProviderRequest,
   GithubProviderConfigView,
   ListFilter,
   ListGroup,
+  LlmProviderView,
   LlmSettingsView,
   Organization,
   Repo,
+  UpdateLlmProviderRequest,
   UpdateLlmSettingsRequest,
   User,
 } from "@/lib/types";
 import { filterLabelText, LIST_GROUPS, LIST_STATUS_FILTERS } from "@/lib/listPrefs";
 import { FieldSelect, Switch } from "./ui";
 import { useToast } from "./Toast";
+import { ProviderDialog } from "./ProviderDialog";
 
-export type SettingsSection = "account" | "models" | "github" | "agents";
+export type SettingsSection = "account" | "models" | "github" | "agent-list";
 
-interface SettingsProps {
+interface NavItem {
+  id: SettingsSection;
+  label: string;
+  icon: React.ComponentType<{ className?: string }>;
+}
+
+const NAV: NavItem[] = [
+  { id: "account", label: "Account", icon: IconUser },
+  { id: "models", label: "Models", icon: IconCpu },
+  { id: "github", label: "GitHub", icon: IconGithub },
+  { id: "agent-list", label: "Agent list", icon: IconLayoutList },
+];
+
+export interface SettingsProps {
   user: User | null;
   org: Organization | null;
   githubConnected: boolean;
@@ -48,44 +66,26 @@ interface SettingsProps {
   onLogout: () => void;
 }
 
-const GROUP_LABELS: Record<ListGroup, string> = {
-  project: "Project",
-  date: "Date",
-  status: "Status",
-  none: "None",
-};
-
-const NAV: {
-  id: SettingsSection;
-  label: string;
-  icon: React.ComponentType<{ className?: string; size?: number | string }>;
-}[] = [
-  { id: "account", label: "Account", icon: IconUser },
-  { id: "models", label: "Models", icon: IconCpu },
-  { id: "github", label: "GitHub", icon: IconGithub },
-  { id: "agents", label: "Agent list", icon: IconLayoutList },
-];
-
 function SettingsRow({
   label,
   hint,
-  action,
-  first,
+  children,
+  first = false,
 }: {
   label: string;
   hint?: string;
-  action?: React.ReactNode;
+  children?: React.ReactNode;
   first?: boolean;
 }) {
   return (
     <div
-      className={`flex items-center justify-between gap-3 py-2.5 last:pb-0 ${first ? "pt-0" : "border-t border-line"}`}
+      className={`flex items-center justify-between gap-4 py-3 ${first ? "pt-0" : "border-t border-line"}`}
     >
-      <div>
-        <div className="text-[13px] text-ink">{label}</div>
-        {hint != null && <div className="mt-0.5 text-xs text-muted">{hint}</div>}
+      <div className="min-w-0">
+        <div className="text-[13px] font-medium text-ink">{label}</div>
+        {hint ? <div className="mt-0.5 text-xs text-muted">{hint}</div> : null}
       </div>
-      {action}
+      {children}
     </div>
   );
 }
@@ -124,28 +124,45 @@ export function Settings(props: SettingsProps) {
 
   const [llmLoading, setLlmLoading] = useState(true);
   const [llmSaving, setLlmSaving] = useState(false);
-  const [providerId, setProviderId] = useState("deepseek");
-  const [baseUrl, setBaseUrl] = useState("");
-  const [defaultModel, setDefaultModel] = useState("");
-  const [modelsText, setModelsText] = useState("");
-  const [apiKey, setApiKey] = useState("");
-  const [hasApiKey, setHasApiKey] = useState(false);
-  const [apiKeyHint, setApiKeyHint] = useState<string | null>(null);
+  const [testingId, setTestingId] = useState<string | null>(null);
+  const [providers, setProviders] = useState<LlmProviderView[]>([]);
+  const [editingProvider, setEditingProvider] = useState<LlmProviderView | null>(null);
   const [serviceOpen, setServiceOpen] = useState(false);
+
   const [ghProvider, setGhProvider] = useState<GithubProviderConfigView | null>(null);
   const [ghAppId, setGhAppId] = useState("");
   const [ghAppSlug, setGhAppSlug] = useState("");
   const [ghAppKey, setGhAppKey] = useState("");
   const [ghSaving, setGhSaving] = useState(false);
 
-  const applyLlmView = useCallback((view: LlmSettingsView) => {
-    setProviderId(view.providerId || "custom");
-    setBaseUrl(view.baseUrl || "");
-    setDefaultModel(view.defaultModel || "");
-    setModelsText((view.models || []).join("\n"));
-    setHasApiKey(Boolean(view.hasApiKey));
-    setApiKeyHint(view.apiKeyHint || null);
-    setApiKey("");
+  const refreshProviders = useCallback(async () => {
+    try {
+      const list = await llmApi.listProviders();
+      setProviders(list);
+    } catch {
+      try {
+        const single = await llmApi.get();
+        if (single && (single.baseUrl || single.hasApiKey)) {
+          setProviders([
+            {
+              id: "default",
+              providerId: single.providerId || "custom",
+              name: findPreset(single.providerId).label,
+              baseUrl: single.baseUrl,
+              defaultModel: single.defaultModel,
+              models: single.models,
+              hasApiKey: single.hasApiKey,
+              apiKeyHint: single.apiKeyHint,
+              isDefault: true,
+              createdAt: "",
+              updatedAt: "",
+            },
+          ]);
+        } else {
+          setProviders([]);
+        }
+      } catch {}
+    }
   }, []);
 
   useEffect(() => {
@@ -178,8 +195,7 @@ export function Settings(props: SettingsProps) {
     (async () => {
       setLlmLoading(true);
       try {
-        const view = await llmApi.get();
-        if (!cancelled) applyLlmView(view);
+        await refreshProviders();
       } catch (err) {
         if (!cancelled) toast(err instanceof Error ? err.message : String(err), "error");
       } finally {
@@ -189,33 +205,124 @@ export function Settings(props: SettingsProps) {
     return () => {
       cancelled = true;
     };
-  }, [applyLlmView, toast]);
+  }, [refreshProviders, toast]);
 
-  const selectPreset = (id: string) => {
-    const preset = findPreset(id);
-    setProviderId(preset.id);
-    setBaseUrl(preset.baseUrl);
-    setDefaultModel(preset.suggestedModels[0] || "");
-    setModelsText(preset.suggestedModels.join("\n"));
+  const openAddProvider = () => {
+    setEditingProvider(null);
+    setServiceOpen(true);
   };
 
-  const saveLlm = async (): Promise<boolean> => {
+  const openEditProvider = (p: LlmProviderView) => {
+    setEditingProvider(p);
+    setServiceOpen(true);
+  };
+
+  const setDefaultProvider = async (id: string) => {
     setLlmSaving(true);
     try {
-      const models = modelsText
-        .split(/\r?\n/)
-        .map((m) => m.trim())
-        .filter(Boolean);
-      const body: UpdateLlmSettingsRequest = {
-        providerId,
-        baseUrl: baseUrl.trim(),
-        defaultModel: defaultModel.trim(),
-        models,
-      };
-      if (apiKey.trim()) body.apiKey = apiKey.trim();
-      const view = await llmApi.update(body);
-      applyLlmView(view);
-      toast("Models settings saved", "ok");
+      if (id === "default") {
+        // Fallback for legacy single-settings mode
+        const cur = providers.find((p) => p.id === id);
+        if (cur) {
+          await llmApi.update({
+            providerId: cur.providerId,
+            baseUrl: cur.baseUrl,
+            defaultModel: cur.defaultModel,
+            models: cur.models,
+          });
+        }
+      } else {
+        await llmApi.updateProvider(id, { isDefault: true });
+      }
+      await refreshProviders();
+      toast("Default provider updated", "ok");
+    } catch (err) {
+      toast(err instanceof Error ? err.message : String(err), "error");
+    } finally {
+      setLlmSaving(false);
+    }
+  };
+
+  const deleteProvider = async (id: string) => {
+    setLlmSaving(true);
+    try {
+      if (id === "default") {
+        await llmApi.update({
+          providerId: "custom",
+          baseUrl: "",
+          defaultModel: "",
+          models: [],
+          apiKey: "",
+        });
+      } else {
+        await llmApi.deleteProvider(id);
+      }
+      await refreshProviders();
+      toast("Provider deleted", "ok");
+    } catch (err) {
+      toast(err instanceof Error ? err.message : String(err), "error");
+    } finally {
+      setLlmSaving(false);
+    }
+  };
+
+  const testProvider = async (id: string) => {
+    setTestingId(id);
+    try {
+      const res = await llmApi.testProvider(id);
+      toast(res.message, res.ok ? "ok" : "error");
+    } catch (err) {
+      toast(err instanceof Error ? err.message : String(err), "error");
+    } finally {
+      setTestingId(null);
+    }
+  };
+
+  const saveProvider = async (data: {
+    providerId: string;
+    name: string;
+    baseUrl: string;
+    defaultModel: string;
+    models: string[];
+    apiKey?: string;
+  }): Promise<boolean> => {
+    setLlmSaving(true);
+    try {
+      if (editingProvider) {
+        if (editingProvider.id === "default") {
+          await llmApi.update({
+            providerId: data.providerId,
+            baseUrl: data.baseUrl,
+            defaultModel: data.defaultModel,
+            models: data.models,
+            apiKey: data.apiKey,
+          });
+        } else {
+          await llmApi.updateProvider(editingProvider.id, {
+            providerId: data.providerId,
+            name: data.name,
+            baseUrl: data.baseUrl,
+            defaultModel: data.defaultModel,
+            models: data.models,
+            apiKey: data.apiKey,
+          });
+        }
+        toast("Provider updated", "ok");
+      } else {
+        await llmApi.createProvider({
+          providerId: data.providerId,
+          name: data.name,
+          baseUrl: data.baseUrl,
+          defaultModel: data.defaultModel,
+          models: data.models,
+          apiKey: data.apiKey,
+          isDefault: providers.length === 0,
+        });
+        toast("Provider created", "ok");
+      }
+      await refreshProviders();
+      setServiceOpen(false);
+      setEditingProvider(null);
       return true;
     } catch (err) {
       toast(err instanceof Error ? err.message : String(err), "error");
@@ -227,31 +334,7 @@ export function Settings(props: SettingsProps) {
 
   const name = user?.displayName || user?.email?.split("@")[0] || "User";
   const filterLabel = filterLabelText(listFilter, listRepoFilter, repos, selectedRepoId);
-  const preset = findPreset(providerId);
   const activeNav = NAV.find((n) => n.id === section) || NAV[0];
-  const configuredModels = modelsText
-    .split(/\r?\n/)
-    .map((m) => m.trim())
-    .filter(Boolean);
-
-  const persistModels = async (nextModels: string[], nextDefault = defaultModel) => {
-    const unique = Array.from(new Set(nextModels));
-    const fallback = unique.includes(nextDefault) ? nextDefault : unique[0] || "";
-    setLlmSaving(true);
-    try {
-      const view = await llmApi.update({
-        providerId,
-        baseUrl: baseUrl.trim(),
-        defaultModel: fallback,
-        models: unique,
-      });
-      applyLlmView(view);
-    } catch (err) {
-      toast(err instanceof Error ? err.message : String(err), "error");
-    } finally {
-      setLlmSaving(false);
-    }
-  };
 
   return (
     <div className="flex h-full min-h-0 bg-canvas-bg">
@@ -304,103 +387,145 @@ export function Settings(props: SettingsProps) {
             <div className="flex flex-col gap-4">
               <div className="flex items-center justify-between gap-3">
                 <p className="m-0 text-xs leading-relaxed text-muted">
-                  Models available to new tasks and follow-ups.
+                  Model provider endpoints and models available to tasks.
                 </p>
                 <button
                   type="button"
                   className="btn btn-primary btn-sm"
-                  onClick={() => setServiceOpen(true)}
+                  onClick={openAddProvider}
                 >
                   <IconPlus className="mr-1 h-3.5 w-3.5" />
-                  {hasApiKey || configuredModels.length ? "Edit service" : "Add model service"}
+                  Add provider
                 </button>
               </div>
-              <SectionCard>
-                {llmLoading ? (
-                  <p className="m-0 text-xs text-muted">Loading…</p>
-                ) : configuredModels.length === 0 ? (
+
+              {llmLoading ? (
+                <SectionCard>
+                  <p className="m-0 text-xs text-muted">Loading providers…</p>
+                </SectionCard>
+              ) : providers.length === 0 ? (
+                <SectionCard>
                   <div className="py-6 text-center">
-                    <p className="m-0 text-[13px] text-ink">No models yet</p>
+                    <p className="m-0 text-[13px] text-ink">No model providers configured</p>
                     <p className="mt-1 text-xs text-muted">
-                      Add a model service with an API key, base URL, and model ids.
+                      Add a provider endpoint (OpenAI, DeepSeek, SmartGate, etc.) with API key and model IDs.
                     </p>
                     <button
                       type="button"
                       className="btn btn-primary btn-sm mt-4"
-                      onClick={() => setServiceOpen(true)}
+                      onClick={openAddProvider}
                     >
-                      Add model service
+                      <IconPlus className="mr-1 h-3.5 w-3.5" />
+                      Add provider
                     </button>
                   </div>
-                ) : (
-                  <div>
-                    {configuredModels.map((model, idx) => {
-                      const isDefault = model === defaultModel;
-                      return (
-                        <div
-                          key={model}
-                          className={`flex items-center gap-2 py-2.5 ${idx === 0 ? "pt-0" : "border-t border-line"}`}
-                        >
+                </SectionCard>
+              ) : (
+                <div className="flex flex-col gap-3">
+                  {providers.map((p) => {
+                    const preset = findPreset(p.providerId);
+                    const providerModels = Array.from(
+                      new Set([
+                        ...(p.defaultModel ? [p.defaultModel] : []),
+                        ...(p.models || []),
+                      ]),
+                    );
+                    return (
+                      <SectionCard key={p.id}>
+                        <div className="flex items-start justify-between gap-3">
                           <div className="min-w-0 flex-1">
-                            <div className="truncate font-mono text-[13px] text-ink">{model}</div>
-                            {isDefault ? (
-                              <div className="mt-0.5 text-[11px] font-medium text-primary">Default</div>
-                            ) : null}
+                            <div className="flex items-center gap-2">
+                              <span className="text-[14px] font-semibold text-ink">
+                                {p.name || preset.label}
+                              </span>
+                              {p.isDefault && (
+                                <span className="rounded bg-primary/10 px-1.5 py-0.5 text-[10.5px] font-semibold text-primary">
+                                  Default
+                                </span>
+                              )}
+                            </div>
+                            <div className="mt-0.5 font-mono text-[11.5px] text-muted">
+                              {p.baseUrl}
+                              {p.hasApiKey ? ` · Key ${p.apiKeyHint || "saved"}` : " · No key"}
+                            </div>
                           </div>
-                          {!isDefault && (
+                          <div className="flex items-center gap-1.5">
+                            {!p.isDefault && (
+                              <button
+                                type="button"
+                                className="btn btn-sm"
+                                disabled={llmSaving}
+                                onClick={() => void setDefaultProvider(p.id)}
+                              >
+                                Set default
+                              </button>
+                            )}
+                            <button
+                              type="button"
+                              className="btn btn-sm"
+                              disabled={testingId === p.id}
+                              onClick={() => void testProvider(p.id)}
+                            >
+                              {testingId === p.id ? "Testing…" : "Test"}
+                            </button>
                             <button
                               type="button"
                               className="btn btn-sm"
                               disabled={llmSaving}
-                              onClick={() => void persistModels(configuredModels, model)}
+                              onClick={() => openEditProvider(p)}
                             >
-                              Set default
+                              Edit
                             </button>
-                          )}
-                          <button
-                            type="button"
-                            className="inline-flex h-7 w-7 items-center justify-center rounded-sm text-muted hover:bg-danger-soft hover:text-danger"
-                            title="Remove model"
-                            aria-label={`Remove ${model}`}
-                            disabled={llmSaving}
-                            onClick={() =>
-                              void persistModels(configuredModels.filter((item) => item !== model))
-                            }
-                          >
-                            <IconTrash className="h-3.5 w-3.5" />
-                          </button>
+                            <button
+                              type="button"
+                              className="inline-flex h-7 w-7 items-center justify-center rounded-sm text-muted hover:bg-danger-soft hover:text-danger"
+                              title={`Delete ${p.name || preset.label}`}
+                              aria-label={`Delete ${p.name || preset.label}`}
+                              disabled={llmSaving}
+                              onClick={() => void deleteProvider(p.id)}
+                            >
+                              <IconTrash className="h-3.5 w-3.5" />
+                            </button>
+                          </div>
                         </div>
-                      );
-                    })}
-                    {(hasApiKey || baseUrl) && (
-                      <p className="mb-0 mt-3 border-t border-line pt-3 text-xs text-muted">
-                        {preset.label}
-                        {baseUrl ? ` · ${baseUrl}` : ""}
-                        {hasApiKey ? ` · Key ${apiKeyHint || "saved"}` : ""}
-                      </p>
-                    )}
-                  </div>
-                )}
-              </SectionCard>
+
+                        <div className="mt-3 border-t border-line pt-2.5">
+                          <div className="mb-1 text-[11px] font-medium uppercase tracking-[.04em] text-muted">
+                            Available Models
+                          </div>
+                          <div className="flex flex-wrap gap-1.5">
+                            {providerModels.length ? (
+                              providerModels.map((m) => (
+                                <span
+                                  key={m}
+                                  className="inline-flex items-center gap-1 rounded bg-secondary px-2 py-0.5 font-mono text-[12px] text-ink"
+                                >
+                                  {m}
+                                  {m === p.defaultModel && (
+                                    <span className="text-[10px] text-primary">(default)</span>
+                                  )}
+                                </span>
+                              ))
+                            ) : (
+                              <span className="text-[12px] text-placeholder">No models listed</span>
+                            )}
+                          </div>
+                        </div>
+                      </SectionCard>
+                    );
+                  })}
+                </div>
+              )}
+
               {serviceOpen && (
-                <ModelServiceDialog
-                  providerId={providerId}
-                  baseUrl={baseUrl}
-                  defaultModel={defaultModel}
-                  modelsText={modelsText}
-                  apiKey={apiKey}
-                  hasApiKey={hasApiKey}
-                  apiKeyHint={apiKeyHint}
+                <ProviderDialog
+                  editingProvider={editingProvider}
                   saving={llmSaving}
-                  onProviderChange={selectPreset}
-                  onBaseUrlChange={setBaseUrl}
-                  onDefaultModelChange={setDefaultModel}
-                  onModelsTextChange={setModelsText}
-                  onApiKeyChange={setApiKey}
-                  onCancel={() => setServiceOpen(false)}
-                  onSave={async () => {
-                    if (await saveLlm()) setServiceOpen(false);
+                  onCancel={() => {
+                    setServiceOpen(false);
+                    setEditingProvider(null);
                   }}
+                  onSave={saveProvider}
                 />
               )}
             </div>
@@ -529,192 +654,37 @@ export function Settings(props: SettingsProps) {
             </div>
           )}
 
-          {section === "agents" && (
+          {section === "agent-list" && (
             <div className="flex flex-col gap-4">
               <SectionCard>
-                <SettingsRow
-                  first
-                  label="Group by"
-                  hint={GROUP_LABELS[listGroup] || "Date"}
-                  action={
-                    <FieldSelect
-                      className="w-[140px]"
-                      aria-label="Group by"
-                      value={listGroup}
-                      options={LIST_GROUPS}
-                      onChange={props.onSetListGroup}
-                    />
-                  }
-                />
-                <SettingsRow
-                  label="Filter"
-                  hint={filterLabel}
-                  action={
-                    <FieldSelect
-                      className="w-[140px]"
-                      aria-label="Filter"
-                      value={listFilter === "project" ? "project" : listFilter}
-                      options={[...LIST_STATUS_FILTERS, { id: "project", label: "Project" }]}
-                      onChange={(id) => props.onSetListFilter(id)}
-                    />
-                  }
-                />
-                <SettingsRow
-                  label="Compact mode"
-                  hint="Denser agent list in sidebar"
-                  action={
-                    <Switch
-                      checked={listCompact}
-                      label="Compact mode"
-                      onChange={props.onSetListCompact}
-                    />
-                  }
-                />
+                <SettingsRow first label="Group by" hint={listGroup}>
+                  <FieldSelect
+                    className="w-[140px]"
+                    aria-label="Group by"
+                    value={listGroup}
+                    options={LIST_GROUPS}
+                    onChange={props.onSetListGroup}
+                  />
+                </SettingsRow>
+                <SettingsRow label="Filter" hint={filterLabel}>
+                  <FieldSelect
+                    className="w-[140px]"
+                    aria-label="Filter"
+                    value={listFilter === "project" ? "project" : listFilter}
+                    options={[...LIST_STATUS_FILTERS, { id: "project", label: "Project" }]}
+                    onChange={(id) => props.onSetListFilter(id as ListFilter)}
+                  />
+                </SettingsRow>
+                <SettingsRow label="Compact mode" hint="Denser agent list in sidebar">
+                  <Switch
+                    checked={listCompact}
+                    label="Compact mode"
+                    onChange={props.onSetListCompact}
+                  />
+                </SettingsRow>
               </SectionCard>
             </div>
           )}
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function ModelServiceDialog({
-  providerId,
-  baseUrl,
-  defaultModel,
-  modelsText,
-  apiKey,
-  hasApiKey,
-  apiKeyHint,
-  saving,
-  onProviderChange,
-  onBaseUrlChange,
-  onDefaultModelChange,
-  onModelsTextChange,
-  onApiKeyChange,
-  onCancel,
-  onSave,
-}: {
-  providerId: string;
-  baseUrl: string;
-  defaultModel: string;
-  modelsText: string;
-  apiKey: string;
-  hasApiKey: boolean;
-  apiKeyHint: string | null;
-  saving: boolean;
-  onProviderChange: (id: string) => void;
-  onBaseUrlChange: (value: string) => void;
-  onDefaultModelChange: (value: string) => void;
-  onModelsTextChange: (value: string) => void;
-  onApiKeyChange: (value: string) => void;
-  onCancel: () => void;
-  onSave: () => void;
-}) {
-  const preset = findPreset(providerId);
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") {
-        e.preventDefault();
-        onCancel();
-      }
-    };
-    document.addEventListener("keydown", onKey);
-    return () => document.removeEventListener("keydown", onKey);
-  }, [onCancel]);
-
-  return (
-    <div
-      className="fixed inset-0 z-[70] grid place-items-center bg-[rgba(46,52,54,0.45)]"
-      onClick={onCancel}
-    >
-      <div
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="model-service-title"
-        className="max-h-[min(720px,calc(100vh-32px))] w-[min(480px,calc(100vw-32px))] overflow-auto rounded-md bg-canvas p-5 shadow-card"
-        onClick={(e) => e.stopPropagation()}
-      >
-        <h2 id="model-service-title" className="m-0 text-[15px] font-semibold text-ink">
-          {hasApiKey || modelsText.trim() ? "Edit model service" : "Add model service"}
-        </h2>
-        <p className="mt-1 text-[12.5px] leading-relaxed text-muted">
-          OpenAI-compatible endpoint used by Cloud workers.
-        </p>
-
-        <div className="mt-4">
-          <FieldLabel>Provider preset</FieldLabel>
-          <FieldSelect
-            aria-label="Provider preset"
-            value={providerId}
-            options={LLM_PRESETS.map((p) => ({ id: p.id, label: p.label }))}
-            onChange={onProviderChange}
-          />
-        </div>
-        <div className="mt-3">
-          <FieldLabel>API Key</FieldLabel>
-          <input
-            className={INPUT_CLASS}
-            type="password"
-            autoComplete="off"
-            placeholder={
-              hasApiKey
-                ? `Saved ${apiKeyHint || "••••"} — enter to replace`
-                : "Enter your API key"
-            }
-            value={apiKey}
-            onChange={(e) => onApiKeyChange(e.target.value)}
-          />
-        </div>
-        <div className="mt-3">
-          <FieldLabel>Base URL</FieldLabel>
-          <input
-            className={INPUT_CLASS}
-            type="url"
-            autoComplete="off"
-            placeholder={preset.baseUrl || "https://api.example.com/v1"}
-            value={baseUrl}
-            onChange={(e) => onBaseUrlChange(e.target.value)}
-          />
-        </div>
-        <div className="mt-3">
-          <FieldLabel>Default model</FieldLabel>
-          <input
-            className={INPUT_CLASS}
-            type="text"
-            autoComplete="off"
-            placeholder={preset.suggestedModels[0] || "model-id"}
-            value={defaultModel}
-            onChange={(e) => onDefaultModelChange(e.target.value)}
-          />
-        </div>
-        <div className="mt-3">
-          <FieldLabel>Models (one per line)</FieldLabel>
-          <textarea
-            className={`${INPUT_CLASS} min-h-[96px] resize-y`}
-            placeholder={
-              preset.suggestedModels.length
-                ? preset.suggestedModels.join("\n")
-                : "model-a\nmodel-b"
-            }
-            value={modelsText}
-            onChange={(e) => onModelsTextChange(e.target.value)}
-          />
-        </div>
-
-        <div className="mt-5 flex justify-end gap-2">
-          <button type="button" className="btn" onClick={onCancel}>
-            Cancel
-          </button>
-          <button
-            type="button"
-            className="btn btn-primary"
-            disabled={saving}
-            onClick={onSave}
-          >
-            {saving ? "Saving…" : "Save service"}
-          </button>
         </div>
       </div>
     </div>

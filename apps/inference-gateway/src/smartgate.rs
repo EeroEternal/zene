@@ -86,7 +86,7 @@ fn upstream_kind_from_env_override() -> Option<UpstreamKind> {
 
 fn upstream_kind_from_url_heuristic(url: &str) -> UpstreamKind {
     let lower = url.to_ascii_lowercase();
-    if lower.contains("smartgate") || lower.contains("xgate") {
+    if lower.contains("smartgate") {
         UpstreamKind::SmartGate
     } else {
         UpstreamKind::Generic
@@ -275,8 +275,8 @@ mod tests {
     #[test]
     fn capabilities_url_appends_path_to_upstream_base() {
         assert_eq!(
-            capabilities_url("https://api.xgate.sh/v1"),
-            "https://api.xgate.sh/v1/zene/capabilities"
+            capabilities_url("https://api.smartgate.run/v1"),
+            "https://api.smartgate.run/v1/zene/capabilities"
         );
     }
 
@@ -292,9 +292,9 @@ mod tests {
     }
 
     #[test]
-    fn url_heuristic_detects_xgate() {
+    fn url_heuristic_detects_smartgate() {
         assert_eq!(
-            upstream_kind_from_url_heuristic("https://api.xgate.sh/v1"),
+            upstream_kind_from_url_heuristic("https://api.smartgate.run/v1"),
             UpstreamKind::SmartGate
         );
         assert_eq!(

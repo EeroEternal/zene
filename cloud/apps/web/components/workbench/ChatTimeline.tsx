@@ -1,5 +1,6 @@
 "use client";
 
+import hljs from "highlight.js/lib/core";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { IconChevronDown, IconChevronRight, IconLoader, IconSkills } from "@/lib/icons";
 import {
@@ -11,7 +12,7 @@ import {
   matchAskUserApproval,
   parseAskUser,
 } from "@/lib/approval";
-import { isBusyStatus, waitingTurnCopy } from "@/lib/sessionPhase";
+import { isBusyStatus, liveThoughtPhaseCopy, waitingTurnCopy } from "@/lib/sessionPhase";
 import type { Approval, ApprovalDecision, RunMessage } from "@/lib/types";
 import {
   activitySummary,
@@ -28,6 +29,23 @@ import {
   type ThoughtItem,
   type ToolItem,
 } from "@/lib/timeline";
+
+function HighlightedPre({ text, className }: { text: string; className?: string }) {
+  const html = useMemo(() => {
+    if (!text) return "";
+    try {
+      if (text.length < 100_000) {
+        return hljs.highlightAuto(text).value;
+      }
+    } catch { /* fall through */ }
+    return text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  }, [text]);
+  return (
+    <pre className={`code-viewer ${className || ""}`}>
+      <code className="hljs" dangerouslySetInnerHTML={{ __html: html }} />
+    </pre>
+  );
+}
 
 function timelineScrollSig(items: TimelineItem[]): string {
   return items
@@ -52,9 +70,8 @@ function lastUserBubbleId(items: TimelineItem[]): number | null {
 function lastTurnIsWaitingForReply(items: TimelineItem[]): boolean {
   for (let i = items.length - 1; i >= 0; i--) {
     const it = items[i];
-    if (it.kind === "bubble" && it.role === "user") return true;
     if (it.kind === "bubble" && it.role === "assistant") return false;
-    if (it.kind === "thought" || it.kind === "tool" || it.kind === "approval") return false;
+    if (it.kind === "bubble" && it.role === "user") return true;
   }
   return false;
 }
@@ -67,29 +84,50 @@ function lastThoughtText(items: { kind: string; text?: string }[]): string {
   return "";
 }
 
-function ThoughtLivePreview({ text, nested }: { text: string; nested: boolean }) {
+function ThoughtLivePreview({
+  text,
+  nested,
+  phaseHint,
+}: {
+  text: string;
+  nested: boolean;
+  phaseHint?: string;
+}) {
   const scrollerRef = useRef<HTMLDivElement>(null);
   useLayoutEffect(() => {
     const el = scrollerRef.current;
     if (!el) return;
     el.scrollTop = el.scrollHeight;
   }, [text]);
-  if (!text) return null;
+  if (!text && !phaseHint) return null;
   return (
-    <div
-      ref={scrollerRef}
-      className={
-        nested
-          ? "mt-0.5 h-[10.85em] overflow-hidden rounded-md border border-line bg-tertiary px-2.5 text-[13px] leading-[1.55] text-muted"
-          : "mt-0.5 h-[10.85em] overflow-hidden text-[13px] leading-[1.55] text-muted"
-      }
-    >
-      <div className="whitespace-pre-wrap break-words [overflow-wrap:anywhere]">{text}</div>
+    <div className="mt-1 flex flex-col gap-1">
+      {text ? (
+        <div
+          ref={scrollerRef}
+          className={
+            nested
+              ? "max-h-[10.85em] overflow-hidden rounded-md border border-line bg-tertiary px-2.5 py-1 text-[13px] leading-[1.55] text-muted"
+              : "max-h-[10.85em] overflow-hidden text-[13px] leading-[1.55] text-muted"
+          }
+        >
+          <div className="whitespace-pre-wrap break-words [overflow-wrap:anywhere]">{text}</div>
+        </div>
+      ) : null}
+      {phaseHint && (
+        <div className="flex items-center gap-1.5 px-1 py-0.5 text-[11.5px] text-muted transition-opacity duration-300">
+          <span className="relative flex h-2 w-2 shrink-0">
+            <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-primary opacity-60" />
+            <span className="relative inline-flex h-2 w-2 rounded-full bg-primary" />
+          </span>
+          <span className="truncate font-medium text-ink/75">{phaseHint}</span>
+        </div>
+      )}
     </div>
   );
 }
 
-/** Leave room to park the latest user bubble near the top while a turn is open. */
+/** Leave room to park the latest user bubble centered in the viewport while a turn is open. */
 function lastTurnNeedsSpacer(
   items: TimelineItem[],
   pendingSince: number | null,
@@ -345,7 +383,11 @@ export function ChatTimeline({
       bubble.getBoundingClientRect().top -
       container.getBoundingClientRect().top +
       container.scrollTop;
-    container.scrollTop = Math.max(0, bubbleTop - 8);
+    const targetOffset = Math.max(16, Math.floor((container.clientHeight - bubble.offsetHeight) / 2));
+    container.scrollTo({
+      top: Math.max(0, bubbleTop - targetOffset),
+      behavior: "smooth",
+    });
   }, []);
 
   const updateSpacer = useCallback(() => {
@@ -366,7 +408,8 @@ export function ChatTimeline({
       return;
     }
     const following = spacer.offsetTop - bubble.offsetTop;
-    const next = Math.max(0, Math.floor(container.clientHeight - 8 - following));
+    const targetOffset = Math.max(16, Math.floor((container.clientHeight - bubble.offsetHeight) / 2));
+    const next = Math.max(0, Math.floor(container.clientHeight - targetOffset - following));
     setSpacerPx((prev) => (Math.abs(prev - next) < 2 ? prev : next));
   }, [items, pendingSince, assistantLive]);
 
@@ -455,11 +498,13 @@ export function ChatTimeline({
   }, []);
 
   const renderThoughtRow = (item: ThoughtItem, nested: boolean) => {
-    const elapsed = formatElapsed(thoughtDurationMs(item, nowTick));
+    const durationMs = thoughtDurationMs(item, nowTick);
+    const elapsed = formatElapsed(durationMs);
     const live = !item.sealed;
     const thoughtLabel = live ? `Thinking · ${elapsed}` : `Thought for ${elapsed}`;
     const preview = live && !item.expanded;
     const showFull = item.expanded && Boolean(item.text);
+    const phaseHint = live ? liveThoughtPhaseCopy(durationMs) : undefined;
     return (
       <div key={item.id}>
         <button
@@ -493,7 +538,9 @@ export function ChatTimeline({
             <IconLoader className="h-3 w-3 shrink-0 animate-spin text-primary" />
           )}
         </button>
-        {preview && item.text ? <ThoughtLivePreview text={item.text} nested={nested} /> : null}
+        {preview && item.text ? (
+          <ThoughtLivePreview text={item.text} nested={nested} phaseHint={phaseHint} />
+        ) : null}
         {showFull ? (
           <div
             className={
@@ -528,7 +575,7 @@ export function ChatTimeline({
   return (
     <div
       ref={messagesRef}
-      className="flex flex-col gap-3 overflow-auto px-4 pb-2 pt-1"
+      className="flex flex-col gap-3 overflow-y-auto no-scrollbar px-4 pb-2 pt-1"
       onScroll={() => {
         const el = messagesRef.current;
         if (!el) return;
@@ -617,7 +664,11 @@ export function ChatTimeline({
                     ) : null}
                   </button>
                   {liveThoughtPreview ? (
-                    <ThoughtLivePreview text={liveThoughtPreview} nested={false} />
+                    (() => {
+                      const lt = [...seg.items].reverse().find((t): t is ThoughtItem => t.kind === "thought" && !t.sealed);
+                      const ltHint = lt ? liveThoughtPhaseCopy(thoughtDurationMs(lt, nowTick)) : undefined;
+                      return <ThoughtLivePreview text={liveThoughtPreview} nested={false} phaseHint={ltHint} />;
+                    })()
                   ) : null}
                   {open && (
                     <div className="mt-0.5 ml-1.5 space-y-0.5 border-l border-line pl-2.5">
@@ -633,6 +684,8 @@ export function ChatTimeline({
                             [...row.items].reverse().find((t) => !t.sealed)?.text ||
                             row.items[row.items.length - 1]?.text ||
                             "";
+                          const liveItem = row.items.find((t) => !t.sealed);
+                          const liveHint = liveItem ? liveThoughtPhaseCopy(thoughtDurationMs(liveItem, nowTick)) : undefined;
                           return (
                             <div key={row.key}>
                               <button
@@ -655,7 +708,7 @@ export function ChatTimeline({
                                 )}
                               </button>
                               {liveThought && !bunchOpen && liveText ? (
-                                <ThoughtLivePreview text={liveText} nested />
+                                <ThoughtLivePreview text={liveText} nested phaseHint={liveHint} />
                               ) : null}
                               {bunchOpen && (
                                 <div className="mt-0.5 space-y-1 rounded-md border border-line bg-tertiary px-2.5 py-1.5 text-[12px] leading-[1.5] text-muted [overflow-wrap:anywhere]">
@@ -725,22 +778,22 @@ export function ChatTimeline({
                               {item.expanded && (
                                 <div className="mt-0.5 space-y-1 rounded-md border border-line bg-tertiary px-2.5 py-1.5">
                                   {detailCmd && (
-                                    <pre className="m-0 max-h-36 overflow-auto whitespace-pre-wrap break-words font-mono text-[11px] leading-[1.45] text-muted [overflow-wrap:anywhere]">
-                                      {detailCmd}
-                                    </pre>
+                                    <HighlightedPre
+                                      text={detailCmd}
+                                      className="m-0 max-h-36 overflow-y-auto whitespace-pre-wrap break-all font-mono text-[11px] leading-[1.45] text-muted"
+                                    />
                                   )}
                                   {output && (
                                     <div>
-                                      <pre
+                                      <HighlightedPre
+                                        text={output}
                                         className={[
-                                          "m-0 overflow-auto whitespace-pre-wrap break-words font-mono text-[11px] leading-[1.45] [overflow-wrap:anywhere]",
+                                          "m-0 overflow-y-auto whitespace-pre-wrap break-all font-mono text-[11px] leading-[1.45]",
                                           showFull ? "max-h-[500px]" : "max-h-40",
                                           detailCmd ? "border-t border-line pt-1.5" : "",
                                           failed ? "text-danger" : "text-muted",
                                         ].join(" ")}
-                                      >
-                                        {output}
-                                      </pre>
+                                      />
                                       {isLongOutput && (
                                         <button
                                           type="button"
@@ -888,7 +941,7 @@ export function ChatTimeline({
                     Permission · {ap.kind || "tool"} · {ap.risk || ""}
                     {item.decision ? ` · ${item.decision}` : ""}
                   </h4>
-                  <div className="mb-3 max-h-40 overflow-auto whitespace-pre-wrap break-words rounded-md border border-line bg-canvas p-2.5 font-mono text-xs text-muted">
+                  <div className="mb-3 max-h-40 overflow-y-auto whitespace-pre-wrap break-all rounded-md border border-line bg-canvas p-2.5 font-mono text-xs text-muted [overflow-wrap:anywhere]">
                     {summary}
                   </div>
                   <div className="flex flex-wrap gap-2">

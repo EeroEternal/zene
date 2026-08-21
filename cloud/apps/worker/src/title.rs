@@ -16,25 +16,60 @@ pub(crate) fn chat_completions_url(base_url: &str) -> String {
     }
 }
 
-const TITLE_SYSTEM: &str = "Write a short agent session title in the user's language. \
+const TITLE_SYSTEM: &str = "Write a short title for this task in the user's language. \
 2–8 words, a topic label or noun phrase. Name the subject and the work. \
 Do not copy the user's wording. Do not write a question. \
-No quotes, markdown, or trailing punctuation. Return only the title.";
+Do not include prefixes like 'Title:' or 'Agent Session:'. \
+No quotes, markdown, or trailing punctuation. Return only the title text.";
 
-const TITLE_REWRITE_SYSTEM: &str = "The last title copied the user's request or was a question. \
+const TITLE_REWRITE_SYSTEM: &str = "The last title copied the user's request, was a question, or included a prefix. \
 Rewrite it as a short topic label (noun phrase) in the user's language, 2–8 words. \
 Example: 'sglang 目前性能怎么样' → 'SGLang 性能分析'. \
-No questions, quotes, or punctuation wrapping. Return only the title.";
+Do not include prefixes like 'Title:' or 'Agent Session:'. \
+No questions, quotes, or punctuation wrapping. Return only the title text.";
+
+pub(crate) fn strip_title_prefix(raw: &str) -> &str {
+    let lower = raw.to_lowercase();
+    const PREFIX_WORDS: &[&str] = &[
+        "agent session",
+        "session title",
+        "session",
+        "task title",
+        "run title",
+        "title",
+        "topic",
+        "会话标题",
+        "会话",
+        "任务标题",
+        "任务",
+        "标题",
+        "主题",
+    ];
+    for word in PREFIX_WORDS {
+        if lower.starts_with(word) {
+            let rest = &raw[word.len()..];
+            let rest_trimmed = rest.trim_start();
+            if let Some(after_delim) = rest_trimmed.strip_prefix(|c| c == ':' || c == '：' || c == '-' || c == '—' || c == '–') {
+                return after_delim.trim();
+            }
+        }
+    }
+    raw
+}
 
 pub(crate) fn sanitize_run_title(raw: &str) -> String {
-    let cleaned = raw
+    let mut cleaned = raw
         .trim()
-        .trim_matches(|c| c == '"' || c == '\'' || c == '`' || c == '「' || c == '」')
+        .trim_matches(|c| c == '"' || c == '\'' || c == '`' || c == '「' || c == '」' || c == '“' || c == '”' || c == '‘' || c == '’')
         .lines()
         .next()
         .unwrap_or("")
         .trim()
         .trim_start_matches(['#', '-', '*', ' '])
+        .trim();
+    cleaned = strip_title_prefix(cleaned);
+    cleaned = cleaned
+        .trim_matches(|c| c == '"' || c == '\'' || c == '`' || c == '「' || c == '」' || c == '“' || c == '”' || c == '‘' || c == '’')
         .trim();
     cleaned.chars().take(56).collect()
 }
@@ -297,4 +332,119 @@ pub(crate) async fn maybe_refresh_run_title(
         .context("post title")?;
     info!(run_id = %run_id, %title, "refreshed run title");
     Ok(Some(title))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        chat_completions_url, format_title_focus, sanitize_run_title, title_echoes_source,
+        title_from_chat_response, title_is_user_locked, title_looks_like_question,
+        title_needs_rewrite,
+    };
+    use serde_json::json;
+
+    #[test]
+    fn completions_url_appends_path() {
+        assert_eq!(
+            chat_completions_url("https://api.deepseek.com/v1"),
+            "https://api.deepseek.com/v1/chat/completions"
+        );
+        assert_eq!(
+            chat_completions_url("https://open.bigmodel.cn/api/paas/v4/"),
+            "https://open.bigmodel.cn/api/paas/v4/chat/completions"
+        );
+        assert_eq!(
+            chat_completions_url("https://api.openai.com/v1/chat/completions"),
+            "https://api.openai.com/v1/chat/completions"
+        );
+    }
+
+    #[test]
+    fn sanitize_strips_wrapping() {
+        assert_eq!(sanitize_run_title("  \"项目总结\"  "), "项目总结");
+        assert_eq!(sanitize_run_title("# Fix login bug\nmore"), "Fix login bug");
+        assert_eq!(
+            sanitize_run_title("Agent Session: Task Check"),
+            "Task Check"
+        );
+        assert_eq!(
+            sanitize_run_title("agent session - Task Check"),
+            "Task Check"
+        );
+        assert_eq!(sanitize_run_title("Title: 代码优化"), "代码优化");
+        assert_eq!(sanitize_run_title("会话标题：任务检查"), "任务检查");
+    }
+
+    #[test]
+    fn title_rejects_prompt_echo_and_questions() {
+        assert!(title_echoes_source(
+            "sglang 目前性能怎么样",
+            &["sglang 目前性能怎么样"]
+        ));
+        assert!(title_echoes_source(
+            "SGLang 目前性能怎么样？",
+            &["sglang 目前性能怎么样"]
+        ));
+        assert!(!title_echoes_source(
+            "SGLang 性能分析",
+            &["sglang 目前性能怎么样"]
+        ));
+        let long = "请用 Rust 逐步分析多线程 Tokio 异步队列可能出现的死锁根因，并给出推导证明与完整的重构代码";
+        assert!(title_echoes_source(
+            "请用 Rust 逐步分析多线程 Tokio 异步队列可…",
+            &[long]
+        ));
+        assert!(title_needs_rewrite(
+            "请用 Rust 逐步分析多线程 Tokio 异步队列",
+            &[long]
+        ));
+        assert!(title_looks_like_question("sglang 目前性能怎么样"));
+        assert!(title_needs_rewrite(
+            "sglang 目前性能怎么样",
+            &["sglang 目前性能怎么样"]
+        ));
+        assert!(!title_needs_rewrite(
+            "SGLang 性能分析",
+            &["sglang 目前性能怎么样"]
+        ));
+    }
+
+    #[test]
+    fn title_from_chat_reads_string_or_parts() {
+        assert_eq!(
+            title_from_chat_response(&json!({
+                "choices": [{ "message": { "content": "SGLang 性能分析" } }]
+            })),
+            "SGLang 性能分析"
+        );
+        assert_eq!(
+            title_from_chat_response(&json!({
+                "choices": [{ "message": { "content": [{ "type": "text", "text": "SGLang 性能分析" }] } }]
+            })),
+            "SGLang 性能分析"
+        );
+    }
+
+    #[test]
+    fn title_focus_includes_recent_follow_ups() {
+        let focus = format_title_focus("检查一下项目", &["服务器不动，继续用".into()]);
+        assert!(focus.contains("Original task:\n检查一下项目"));
+        assert!(focus.contains("1. 服务器不动，继续用"));
+    }
+
+    #[test]
+    fn user_rename_locks_auto_title() {
+        assert!(!title_is_user_locked("检查一下项目", None, "检查一下项目"));
+        assert!(title_is_user_locked("我改的标题", None, "检查一下项目"));
+        assert!(!title_is_user_locked(
+            "SSH 优化服务器",
+            Some("SSH 优化服务器"),
+            "检查一下项目"
+        ));
+        assert!(title_is_user_locked(
+            "手动标题",
+            Some("SSH 优化服务器"),
+            "检查一下项目"
+        ));
+    }
 }

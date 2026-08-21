@@ -101,11 +101,11 @@ export function Composer({
           ref={text.textareaRef}
           className={
             compact
-              ? "block max-h-32 min-h-[32px] w-full resize-none border-0 bg-transparent px-0 pb-1 pt-0 text-[13px] leading-normal text-ink outline-none"
-              : "block max-h-[200px] min-h-[72px] w-full resize-none border-0 bg-transparent px-1 pb-2.5 pt-0.5 text-sm leading-normal text-ink outline-none"
+              ? "block max-h-32 min-h-[32px] w-full resize-none border-0 bg-transparent px-0 pb-1 pt-0 text-[13px] leading-normal text-ink outline-none placeholder:text-placeholder"
+              : "block max-h-[200px] min-h-[72px] w-full resize-none border-0 bg-transparent px-1 pb-2.5 pt-0.5 text-sm leading-normal text-ink outline-none placeholder:text-placeholder"
           }
           rows={compact ? 1 : undefined}
-          placeholder={placeholder}
+          placeholder={text.value ? "" : placeholder}
           aria-label={ariaLabel}
           value={text.value}
           onChange={(e) => {

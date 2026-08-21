@@ -31,6 +31,9 @@ pub async fn run_supervisor(cli: Cli) -> Result<()> {
         "zene-cloud-worker supervisor started"
     );
 
+    // Wait for API to be ready before starting the main loop
+    wait_for_api(&client, &cli, &shutdown).await;
+
     loop {
         if shutdown.load(Ordering::SeqCst) {
             break;
@@ -291,6 +294,29 @@ async fn fetch_queue_stats(client: &reqwest::Client, cli: &Cli) -> Result<QueueS
         .await?
         .error_for_status()?;
     Ok(response.json().await?)
+}
+
+async fn wait_for_api(client: &reqwest::Client, cli: &Cli, shutdown: &Arc<AtomicBool>) {
+    let health_url = format!("{}/api/v1/health", cli.api_url);
+    let mut attempts = 0;
+    loop {
+        if shutdown.load(Ordering::SeqCst) {
+            return;
+        }
+        attempts += 1;
+        match client.get(&health_url).send().await {
+            Ok(resp) if resp.status().is_success() => {
+                info!(attempts, "API server is ready");
+                return;
+            }
+            _ => {
+                if attempts == 1 {
+                    info!("Waiting for API server to be ready...");
+                }
+                tokio::time::sleep(Duration::from_millis(500)).await;
+            }
+        }
+    }
 }
 
 #[cfg(test)]

@@ -14,11 +14,11 @@ use sqlx::SqlitePool;
 use std::str::FromStr;
 use uuid::Uuid;
 use zene_cloud_domain::{
-    ApprovalDecision, ApprovalKind, ApprovalRequest, ApprovalRisk, ApprovalStatus, AuthResponse,
-    CloneAuthResponse, CreateApprovalRequest, CreateRepositoryRequest, CreateRunRequest,
-    LoginRequest, MessageRole, Organization, PermissionMode, PlatformEvent, QueueActive, QueueHold,
-    QueueStats, RegisterRequest, Repository, Run, RunEvent, RunEventKind, RunMessage, RunStatus,
-    User, WorkerCommand, WorkerFence, summarize_prompt_title,
+    summarize_prompt_title, ApprovalDecision, ApprovalKind, ApprovalRequest, ApprovalRisk,
+    ApprovalStatus, AuthResponse, CloneAuthResponse, CreateApprovalRequest,
+    CreateRepositoryRequest, CreateRunRequest, LoginRequest, MessageRole, Organization,
+    PermissionMode, PlatformEvent, QueueActive, QueueHold, QueueStats, RegisterRequest, Repository,
+    Run, RunEvent, RunEventKind, RunMessage, RunStatus, User, WorkerCommand, WorkerFence,
 };
 
 /// Worker attempt lease renewed by heartbeat (seconds).
@@ -121,6 +121,10 @@ impl Db {
             (
                 "014_workspaces",
                 include_str!("../../../migrations/014_workspaces.sql"),
+            ),
+            (
+                "015_user_llm_providers",
+                include_str!("../../../migrations/015_user_llm_providers.sql"),
             ),
         ];
 
@@ -576,11 +580,13 @@ impl Db {
         let id = Uuid::new_v4();
         let now = Utc::now();
         let title = title_from_prompt(&req.prompt);
-        let head_branch = format!(
-            "zene/{}/{}",
-            slugify(&title).chars().take(24).collect::<String>(),
-            &id.to_string()[..8]
-        );
+        let slug = slugify(&title).chars().take(24).collect::<String>();
+        let short_id = &id.to_string()[..8];
+        let head_branch = if slug.is_empty() {
+            format!("zene/{short_id}")
+        } else {
+            format!("zene/{slug}/{short_id}")
+        };
         let base_ref = req
             .base_ref
             .filter(|s| !s.trim().is_empty())
@@ -2453,22 +2459,22 @@ fn title_from_prompt(prompt: &str) -> String {
 }
 
 fn slugify(input: &str) -> String {
-    let slug = input
-        .chars()
-        .map(|c| {
-            if c.is_ascii_alphanumeric() {
-                c.to_ascii_lowercase()
-            } else {
-                '-'
-            }
-        })
-        .collect::<String>();
-    let slug = slug.trim_matches('-').to_string();
-    if slug.is_empty() {
-        format!("org-{}", &Uuid::new_v4().to_string()[..8])
-    } else {
-        slug
+    let mut slug = String::new();
+    let mut prev_dash = false;
+    for c in input.chars() {
+        if c.is_ascii_alphanumeric() {
+            slug.push(c.to_ascii_lowercase());
+            prev_dash = false;
+        } else if c.is_alphanumeric() {
+            // Keep CJK / other letters so Chinese titles are not discarded.
+            slug.push(c);
+            prev_dash = false;
+        } else if !slug.is_empty() && !prev_dash {
+            slug.push('-');
+            prev_dash = true;
+        }
     }
+    slug.trim_matches('-').to_string()
 }
 
 fn split_sql_statements(sql: &str) -> Vec<String> {
@@ -2552,4 +2558,17 @@ fn platform_payload(event: PlatformEvent) -> serde_json::Value {
 
 fn run_status_payload(status: RunStatus, head_sha: Option<String>) -> serde_json::Value {
     platform_payload(PlatformEvent::RunStatusChanged { status, head_sha })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::slugify;
+
+    #[test]
+    fn slugify_keeps_ascii_and_cjk() {
+        assert_eq!(slugify("Fix login bug"), "fix-login-bug");
+        assert_eq!(slugify("查看一下项目进展"), "查看一下项目进展");
+        assert_eq!(slugify("  !!!  "), "");
+        assert_eq!(slugify("SGLang 性能怎么样？"), "sglang-性能怎么样");
+    }
 }

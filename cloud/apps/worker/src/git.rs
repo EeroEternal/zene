@@ -286,3 +286,96 @@ async fn drain_stderr_lines(stderr: tokio::process::ChildStderr) {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{git_command, prepare_workspace, workspace_ready};
+    use uuid::Uuid;
+    use zene_cloud_domain::CloneAuthResponse;
+
+    #[tokio::test]
+    async fn prepare_workspace_uses_git_worktree_from_cache() {
+        let root = std::env::temp_dir().join(format!("zene-wt-test-{}", Uuid::new_v4()));
+        let repo_id = Uuid::new_v4();
+        let cache = root.join(".repo-cache").join(repo_id.to_string());
+        std::fs::create_dir_all(&cache).unwrap();
+
+        // Initialize a dummy bare repo
+        let _ = git_command()
+            .args(["-C", &cache.display().to_string(), "init", "--bare"])
+            .status()
+            .await
+            .unwrap();
+        // Create an initial commit in a temp worktree to have a valid HEAD
+        let init_wt = root.join("init-wt");
+        std::fs::create_dir_all(&init_wt).unwrap();
+        let _ = git_command()
+            .args(["-C", &init_wt.display().to_string(), "init"])
+            .status()
+            .await
+            .unwrap();
+        tokio::fs::write(init_wt.join("hello.txt"), "hello")
+            .await
+            .unwrap();
+        let _ = git_command()
+            .args(["-C", &init_wt.display().to_string(), "add", "."])
+            .status()
+            .await
+            .unwrap();
+        let _ = git_command()
+            .args([
+                "-C",
+                &init_wt.display().to_string(),
+                "-c",
+                "user.email=test@test.com",
+                "-c",
+                "user.name=Test",
+                "commit",
+                "-m",
+                "initial commit",
+            ])
+            .status()
+            .await
+            .unwrap();
+        let _ = git_command()
+            .args([
+                "-C",
+                &init_wt.display().to_string(),
+                "push",
+                &cache.display().to_string(),
+                "HEAD:refs/heads/main",
+            ])
+            .status()
+            .await
+            .unwrap();
+        let _ = git_command()
+            .args([
+                "-C",
+                &cache.display().to_string(),
+                "symbolic-ref",
+                "HEAD",
+                "refs/heads/main",
+            ])
+            .status()
+            .await
+            .unwrap();
+
+        let auth = CloneAuthResponse {
+            run_id: Uuid::new_v4(),
+            repository_id: repo_id,
+            clone_url: "https://example.com/test.git".into(),
+            token: None,
+            username: None,
+            base_ref: "main".into(),
+            head_branch: "zene/test-branch".into(),
+            mock: false,
+        };
+
+        let ws = root.join("ws").join(Uuid::new_v4().to_string());
+        prepare_workspace(&root, &ws, &auth).await.unwrap();
+        assert!(ws.join("hello.txt").exists());
+        assert!(workspace_ready(&ws).await);
+
+        let _ = tokio::fs::remove_dir_all(root).await;
+    }
+}

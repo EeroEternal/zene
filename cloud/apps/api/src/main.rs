@@ -3,7 +3,7 @@ use std::path::PathBuf;
 
 use anyhow::Result;
 use clap::Parser;
-use tower_http::cors::{Any, CorsLayer};
+use tower_http::cors::{AllowOrigin, Any, CorsLayer};
 use tower_http::services::ServeDir;
 use tower_http::trace::TraceLayer;
 use tracing_subscriber::EnvFilter;
@@ -83,10 +83,21 @@ async fn main() -> Result<()> {
     );
 
     let api = router(state);
+    let cors_origins = std::env::var("ZENE_CLOUD_CORS_ORIGINS").unwrap_or_default();
+    let allowed_origins: Vec<axum::http::HeaderValue> = if cors_origins.is_empty() {
+        vec![cli.public_base_url.parse().unwrap_or_else(|_| {
+            "http://127.0.0.1:8788".parse().expect("valid header")
+        })]
+    } else {
+        cors_origins
+            .split(',')
+            .filter_map(|s| s.trim().parse().ok())
+            .collect()
+    };
     let app = api
         .layer(
             CorsLayer::new()
-                .allow_origin(Any)
+                .allow_origin(AllowOrigin::list(allowed_origins))
                 .allow_methods(Any)
                 .allow_headers(Any),
         )

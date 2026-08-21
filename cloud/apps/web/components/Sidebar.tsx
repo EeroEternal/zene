@@ -180,6 +180,18 @@ export function Sidebar(props: SidebarProps) {
     return out;
   }, [filtered, listGroup, repos]);
 
+  // Determine the active group key (containing the current run)
+  const activeGroupKey = useMemo(() => {
+    if (!currentRunId) return null;
+    for (let gi = 0; gi < groups.length; gi++) {
+      const group = groups[gi];
+      if (group.runs.some((r) => r.id === currentRunId)) {
+        return group.label ?? `ungrouped-${gi}`;
+      }
+    }
+    return null;
+  }, [currentRunId, groups]);
+
   const openRunMenu = (runId: string, x: number, y: number) => {
     setCtx({ runId, x, y });
     setMenu(null);
@@ -222,33 +234,61 @@ export function Sidebar(props: SidebarProps) {
         {groups.map((group, gi) => {
           const groupKey = group.label ?? `ungrouped-${gi}`;
           const hasHeader = group.label != null;
-          const collapsed = hasHeader && collapsedGroups.has(groupKey);
+          // By default, only the group with the active/current run is expanded; others stay collapsed unless toggled
+          const isExplicitCollapsed = collapsedGroups.has(groupKey);
+          const isExplicitExpanded = collapsedGroups.has(`expand:${groupKey}`);
+          const isCurrent = activeGroupKey ? activeGroupKey === groupKey : gi === 0;
+          const isCollapsed = hasHeader && (isExplicitCollapsed || (!isCurrent && !isExplicitExpanded));
+
           const { owner, name } = hasHeader ? splitGroupLabel(group.label as string) : { owner: "", name: "" };
           const byProject = listGroup === "project" && Boolean(owner);
+          const displayLabel = byProject
+            ? name
+            : group.label && /^[0-9a-fA-F-]{36}$/.test(group.label)
+              ? "ParaMCP"
+              : group.label;
+
           return (
             <div key={groupKey} className={gi === 0 ? "mb-2" : "mb-2 mt-3"}>
               {hasHeader && (
                 <button
                   type="button"
                   className="mb-1 flex w-full items-center gap-1 rounded-sm px-1.5 py-0.5 text-left hover:bg-canvas/40"
-                  aria-expanded={!collapsed}
-                  onClick={() => toggleGroup(groupKey)}
+                  aria-expanded={!isCollapsed}
+                  onClick={() => {
+                    setCollapsedGroups((prev) => {
+                      const next = new Set(prev);
+                      if (isCollapsed) {
+                        next.delete(groupKey);
+                        next.add(`expand:${groupKey}`);
+                      } else {
+                        next.add(groupKey);
+                        next.delete(`expand:${groupKey}`);
+                      }
+                      try {
+                        localStorage.setItem(COLLAPSED_GROUPS_KEY, JSON.stringify(Array.from(next)));
+                      } catch { /* ignore */ }
+                      return next;
+                    });
+                  }}
                 >
-                  {collapsed ? (
+                  {isCollapsed ? (
                     <IconChevronRight className="h-3 w-3 shrink-0 text-placeholder" />
                   ) : (
                     <IconChevronDown className="h-3 w-3 shrink-0 text-placeholder" />
                   )}
-                  {byProject ? <IconRepo className="h-3 w-3 shrink-0 text-placeholder" /> : null}
+                  {listGroup === "project" ? (
+                    <IconRepo className="h-3 w-3 shrink-0 text-placeholder" />
+                  ) : null}
                   <span
                     className="min-w-0 flex-1 truncate text-[11px] font-semibold tracking-[0.02em] text-muted"
                     title={group.label || undefined}
                   >
-                    {byProject ? name : group.label}
+                    {displayLabel}
                   </span>
                 </button>
               )}
-              {!collapsed && (
+              {!isCollapsed && (
               <div className={`flex flex-col ${hasHeader ? "ml-3 border-l border-line pl-1.5" : ""} ${listCompact ? "gap-0.5" : "gap-1"}`}>
                 {group.runs.map((run) => {
                   const active = run.id === currentRunId;

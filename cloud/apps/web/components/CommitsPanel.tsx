@@ -18,7 +18,15 @@ function formatWhen(iso: string): string {
   });
 }
 
-export function CommitsPanel({ runId, baseRef }: { runId: string; baseRef?: string }) {
+export function CommitsPanel({
+  runId,
+  baseRef,
+  refreshSignal,
+}: {
+  runId: string;
+  baseRef?: string;
+  refreshSignal?: number;
+}) {
   const toast = useToast();
   const [commits, setCommits] = useState<GitCommit[]>([]);
   const [error, setError] = useState("");
@@ -37,7 +45,7 @@ export function CommitsPanel({ runId, baseRef }: { runId: string; baseRef?: stri
 
   useEffect(() => {
     load();
-  }, [load]);
+  }, [load, refreshSignal]);
 
   return (
     <div className="flex h-full min-h-0 flex-col bg-canvas">

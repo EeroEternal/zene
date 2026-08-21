@@ -122,7 +122,17 @@ function formatWaitClock(elapsedMs: number): string {
   return s ? `${m}m ${s}s` : `${m}m`;
 }
 
-/** Copy shown after send while the run is busy but no thought/tool has arrived. */
+/** Explanatory hint for live thought streaming / deep reasoning phases. */
+export function liveThoughtPhaseCopy(elapsedMs: number): string {
+  const secs = Math.max(0, Math.floor(elapsedMs / 1000));
+  if (secs < 4) return "Streaming reasoning from inference gateway…";
+  if (secs < 10) return "Analyzing code context & reasoning over task steps…";
+  if (secs < 20) return "Deep reasoning in progress — planning execution & tool actions…";
+  if (secs < 35) return "Complex reasoning active — SmartGate gateway is streaming thoughts…";
+  return "Long-running reasoning — session context and connection remain active.";
+}
+
+/** Copy shown after send while the run is busy but no thought/tool has arrived or between steps. */
 export function waitingTurnCopy(
   elapsedMs: number,
   status?: string | null,
@@ -133,13 +143,15 @@ export function waitingTurnCopy(
   }
   const secs = Math.max(0, Math.floor(elapsedMs / 1000));
   const detail =
-    secs < 5
-      ? "Connecting to the model…"
-      : secs < 14
-        ? "Waiting for the first tokens. A slow network can take a while."
-        : secs < 30
-          ? "Still working — the session did not stop."
-          : "Taking longer than usual. The worker is still attached.";
+    secs < 3
+      ? "Connecting to inference gateway…"
+      : secs < 7
+        ? "Warming context and establishing model stream…"
+        : secs < 15
+          ? "Waiting for the first response tokens…"
+          : secs < 30
+            ? "Still generating — reasoning and session context are active."
+            : "Taking longer than usual. The worker is still processing your request.";
   return {
     title: `Thinking · ${formatWaitClock(elapsedMs)}`,
     detail,

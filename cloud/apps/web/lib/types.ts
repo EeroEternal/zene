@@ -424,6 +424,40 @@ export type ListGroup = "project" | "date" | "status" | "none";
 export type ListFilter = "none" | "running" | "completed" | "failed" | "project";
 export type View = "new" | "settings" | "run";
 
+export interface LlmProviderView {
+  id: string;
+  providerId: string;
+  name: string;
+  baseUrl: string;
+  defaultModel: string;
+  models: string[];
+  hasApiKey: boolean;
+  apiKeyHint?: string | null;
+  isDefault: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface CreateLlmProviderRequest {
+  providerId: string;
+  name?: string;
+  baseUrl: string;
+  defaultModel?: string;
+  models?: string[];
+  apiKey?: string;
+  isDefault?: boolean;
+}
+
+export interface UpdateLlmProviderRequest {
+  providerId?: string;
+  name?: string;
+  baseUrl?: string;
+  defaultModel?: string;
+  models?: string[];
+  apiKey?: string;
+  isDefault?: boolean;
+}
+
 export interface LlmSettingsView {
   providerId: string;
   baseUrl: string;

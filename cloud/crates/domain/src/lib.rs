@@ -2077,6 +2077,108 @@ pub struct UpdateLlmSettingsRequest {
     pub api_key: Option<String>,
 }
 
+/// Stored user LLM provider endpoint.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UserLlmProvider {
+    pub id: Id,
+    pub user_id: Id,
+    pub provider_id: String,
+    pub name: String,
+    pub base_url: String,
+    pub api_key: String,
+    pub default_model: String,
+    pub models: Vec<String>,
+    pub is_default: bool,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LlmProviderView {
+    pub id: Id,
+    pub provider_id: String,
+    pub name: String,
+    pub base_url: String,
+    pub default_model: String,
+    pub models: Vec<String>,
+    pub has_api_key: bool,
+    pub api_key_hint: Option<String>,
+    pub is_default: bool,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CreateLlmProviderRequest {
+    pub provider_id: String,
+    #[serde(default)]
+    pub name: Option<String>,
+    pub base_url: String,
+    #[serde(default)]
+    pub default_model: String,
+    #[serde(default)]
+    pub models: Vec<String>,
+    #[serde(default)]
+    pub api_key: Option<String>,
+    #[serde(default)]
+    pub is_default: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateLlmProviderRequest {
+    #[serde(default)]
+    pub provider_id: Option<String>,
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub base_url: Option<String>,
+    #[serde(default)]
+    pub default_model: Option<String>,
+    #[serde(default)]
+    pub models: Option<Vec<String>>,
+    #[serde(default)]
+    pub api_key: Option<String>,
+    #[serde(default)]
+    pub is_default: Option<bool>,
+}
+
+impl UserLlmProvider {
+    pub fn to_view(&self) -> LlmProviderView {
+        let trimmed = self.api_key.trim();
+        let has_api_key = !trimmed.is_empty();
+        let api_key_hint = if has_api_key {
+            let hint: String = trimmed
+                .chars()
+                .rev()
+                .take(4)
+                .collect::<String>()
+                .chars()
+                .rev()
+                .collect();
+            Some(format!("••••{hint}"))
+        } else {
+            None
+        };
+        LlmProviderView {
+            id: self.id,
+            provider_id: self.provider_id.clone(),
+            name: self.name.clone(),
+            base_url: self.base_url.clone(),
+            default_model: self.default_model.clone(),
+            models: self.models.clone(),
+            has_api_key,
+            api_key_hint,
+            is_default: self.is_default,
+            created_at: self.created_at,
+            updated_at: self.updated_at,
+        }
+    }
+}
+
 /// Stored row (includes api_key for worker injection).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]

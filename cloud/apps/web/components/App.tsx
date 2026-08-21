@@ -215,8 +215,8 @@ function AppInner() {
         await onComplete();
       };
       const onMessage = (event: MessageEvent) => {
-        // Install callback may land on API origin (e.g. :8788) while UI is on :8787.
-        if (event.data?.type !== "github-connected") return;
+        // Verify the message came from the popup we opened
+        if (event.data?.type !== "github-connected" || event.source !== popup) return;
         try {
           popup.close();
         } catch {}
@@ -250,6 +250,7 @@ function AppInner() {
     setView("new");
     setRunTitle("New task");
     setDrawerOpen(false);
+    history.pushState({}, "", "/");
     refreshRuns();
     refreshGithub();
     refreshRepos().catch(() => {});
@@ -262,6 +263,8 @@ function AppInner() {
       setView("settings");
       setRunTitle("Settings");
       setDrawerOpen(false);
+      const s = section ?? "account";
+      history.pushState({}, "", `/?view=settings&section=${s}`);
       refreshGithub();
       refreshRepos().catch(() => {});
     },
@@ -272,6 +275,7 @@ function AppInner() {
     setCurrentRunId(runId);
     setView("run");
     setDrawerOpen(false);
+    history.pushState({}, "", `/?runId=${runId}`);
   }, []);
 
   const renameRun = useCallback(
@@ -324,6 +328,7 @@ function AppInner() {
     setOrg(null);
     setCurrentRunId(null);
     setView("new");
+    history.replaceState({}, "", "/");
   }, []);
 
   const bootstrapped = useRef(false);
@@ -360,6 +365,19 @@ function AppInner() {
         setOrg(me.organization);
         setAuthed(true);
         setReady(true);
+
+        // Restore view from URL
+        const urlParams = new URLSearchParams(window.location.search);
+        const urlRunId = urlParams.get("runId");
+        const urlView = urlParams.get("view");
+        if (urlRunId) {
+          setCurrentRunId(urlRunId);
+          setView("run");
+        } else if (urlView === "settings") {
+          setView("settings");
+          setSettingsSection((urlParams.get("section") as SettingsSection) || "account");
+        }
+
         await Promise.all([refreshGithub(), refreshRepos().catch(() => {}), refreshRuns()]);
       } catch {
         setToken("");
@@ -385,6 +403,30 @@ function AppInner() {
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, [authed, toggleCodePanel, showNewAgent]);
+
+  // Browser back/forward navigation
+  useEffect(() => {
+    if (!authed) return;
+    const onPopState = () => {
+      const urlParams = new URLSearchParams(window.location.search);
+      const urlRunId = urlParams.get("runId");
+      const urlView = urlParams.get("view");
+      if (urlRunId) {
+        setCurrentRunId(urlRunId);
+        setView("run");
+      } else if (urlView === "settings") {
+        setCurrentRunId(null);
+        setView("settings");
+        setSettingsSection((urlParams.get("section") as SettingsSection) || "account");
+      } else {
+        setCurrentRunId(null);
+        setView("new");
+      }
+      setDrawerOpen(false);
+    };
+    window.addEventListener("popstate", onPopState);
+    return () => window.removeEventListener("popstate", onPopState);
+  }, [authed]);
 
   if (!ready) return null;
 

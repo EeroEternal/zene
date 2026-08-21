@@ -7,8 +7,8 @@ import { CodePanelToggle, SidebarPanelToggle } from "../PanelToggleButton";
 interface SessionHeaderProps {
   title: string;
   repoName?: string;
-  headBranch?: string;
-  model?: string;
+  /** User-selected checkout branch (base ref), not the auto-created zene/ working branch. */
+  branch?: string;
   editingTitle: boolean;
   titleDraft: string;
   onTitleDraftChange: (value: string) => void;
@@ -24,8 +24,7 @@ interface SessionHeaderProps {
 export function SessionHeader({
   title,
   repoName,
-  headBranch,
-  model,
+  branch,
   editingTitle,
   titleDraft,
   onTitleDraftChange,
@@ -93,23 +92,15 @@ export function SessionHeader({
               {repoName}
             </span>
           )}
-          {headBranch ? (
+          {branch ? (
             <span
               className="hidden items-center gap-1 whitespace-nowrap font-mono text-[11px] text-muted min-[640px]:inline-flex"
-              title={headBranch}
+              title={branch}
             >
               <IconBranch className="h-3 w-3 shrink-0" />
-              {headBranch}
+              {branch}
             </span>
           ) : null}
-          {model && model !== "default" && (
-            <span
-              className="hidden items-center gap-1 rounded bg-secondary px-1.5 py-0.5 text-[11px] font-medium text-muted min-[860px]:inline-flex"
-              title={`Model: ${model}`}
-            >
-              {model}
-            </span>
-          )}
         </div>
       </div>
       {!codePanelOpen && onToggleCodePanel && (

@@ -702,6 +702,16 @@ async fn merge_run_pr(
         .await
         .map_err(AppError::from)?;
     let updated = git_broker.merge_pr(&run, &pr).await.map_err(AppError::from)?;
+    let root = state.run_checkout_dir(&run);
+    if root.join(".git").exists() {
+        let base_ref = &run.base_ref;
+        let refspec = format!("+refs/heads/{base_ref}:refs/remotes/origin/{base_ref}");
+        let _ = tokio::process::Command::new("git")
+            .args(["fetch", "origin", &refspec])
+            .current_dir(&root)
+            .output()
+            .await;
+    }
     Ok(Json(updated))
 }
 

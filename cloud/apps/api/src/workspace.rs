@@ -196,7 +196,7 @@ pub async fn git_status(root: &Path) -> Result<GitStatus> {
         } else {
             rest.trim().to_string()
         };
-        if path.is_empty() {
+        if path.is_empty() || path == ".zene" || path.starts_with(".zene/") {
             continue;
         }
         let status = normalize_status(x, y);

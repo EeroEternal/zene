@@ -57,6 +57,11 @@ export function NewAgent(props: NewAgentProps) {
     }
   }, [openProjectMenuSignal, openProjectMenu]);
 
+  // Auto-focus composer input when new task page opens
+  useEffect(() => {
+    text.textareaRef.current?.focus();
+  }, [text.textareaRef]);
+
   const startRun = useCallback(async () => {
     setError("");
     if (!llm.ready) {

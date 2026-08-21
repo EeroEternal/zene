@@ -76,6 +76,8 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
   ref,
 ) {
   const promptRef = useRef<HTMLTextAreaElement>(null);
+  const valueRef = useRef(value);
+  valueRef.current = value;
   const [openPickerNonce, setOpenPickerNonce] = useState(0);
   const compact = size === "compact";
 
@@ -111,7 +113,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
       insertText: (text: string) => {
         const t = promptRef.current;
         if (!t) {
-          onChange(value + text);
+          onChange(valueRef.current + text);
           return;
         }
         const start = t.selectionStart ?? t.value.length;
@@ -126,7 +128,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
         });
       },
     }),
-    [autosize, onChange, value],
+    [autosize, onChange],
   );
 
   const canSubmit = Boolean(value.trim()) && chrome.inputEnabled && !submitDisabled && !submitBusy;

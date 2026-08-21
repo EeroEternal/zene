@@ -68,10 +68,11 @@ impl AppError {
     }
 
     pub fn internal(err: impl std::fmt::Display) -> Self {
+        tracing::error!(error = %err, "internal server error");
         Self {
             status: StatusCode::INTERNAL_SERVER_ERROR,
             error: "internal_error".into(),
-            message: err.to_string(),
+            message: "An unexpected error occurred".into(),
             retryable: true,
         }
     }

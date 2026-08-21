@@ -156,6 +156,8 @@ interface CodePanelProps {
   /** When true, panel occupies the full main workspace (Changes & checks view). */
   fullPage?: boolean;
   onCollapse?: () => void;
+  refreshSignal?: number;
+  onRefresh?: () => void;
 }
 
 export function CodePanel({
@@ -169,6 +171,8 @@ export function CodePanel({
   equalSplit = false,
   fullPage = false,
   onCollapse,
+  refreshSignal,
+  onRefresh,
 }: CodePanelProps) {
   const toast = useToast();
   const saved = readSessionUi(runId);
@@ -183,6 +187,7 @@ export function CodePanel({
   const [fileView, setFileView] = useState<{ path: string; content: string; truncated?: boolean } | null>(
     null,
   );
+  const [localRefresh, setLocalRefresh] = useState(0);
   const [latestPr, setLatestPr] = useState<PullRequest | null>(null);
   const [commitBusy, setCommitBusy] = useState(false);
   const [treeExpandAll, setTreeExpandAll] = useState(0);
@@ -269,7 +274,7 @@ export function CodePanel({
   useEffect(() => {
     if (tab === "files") loadFiles();
     if (tab === "git") loadPrs();
-  }, [tab, loadFiles, loadPrs]);
+  }, [tab, loadFiles, loadPrs, refreshSignal, localRefresh]);
 
   useDismiss(menuOpen, () => setMenuOpen(false), menuRef, { event: "mousedown" });
 
@@ -285,6 +290,8 @@ export function CodePanel({
         draft: true,
       });
       await loadPrs();
+      setLocalRefresh((n) => n + 1);
+      onRefresh?.();
       const pr = result.pullRequest;
       if (pr?.url && pr.providerNumber != null) {
         toast(`Draft PR #${pr.providerNumber} created`, "ok");
@@ -429,6 +436,11 @@ export function CodePanel({
             onPullRequestChange={setLatestPr}
             onCommitAndCreatePr={commitAndCreatePr}
             commitBusy={commitBusy}
+            refreshSignal={(refreshSignal || 0) + localRefresh}
+            onRefresh={() => {
+              setLocalRefresh((n) => n + 1);
+              onRefresh?.();
+            }}
           />
         )}
         {tab === "files" && (

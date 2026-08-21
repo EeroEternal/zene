@@ -24,7 +24,8 @@ test("sessionPhase stays idle when nothing is pending", () => {
 
 test("waitingTurnCopy rotates while the first tokens are late", () => {
   assert.match(waitingTurnCopy(800, "running").detail, /Connecting/);
-  assert.match(waitingTurnCopy(8000, "running").detail, /first tokens|network/i);
-  assert.match(waitingTurnCopy(20000, "running").detail, /did not stop/);
+  assert.match(waitingTurnCopy(5000, "running").detail, /Warming context/i);
+  assert.match(waitingTurnCopy(10000, "running").detail, /first response tokens/i);
+  assert.match(waitingTurnCopy(20000, "running").detail, /Still generating/i);
   assert.equal(waitingTurnCopy(3000, "cloning").title.includes("Cloning") || waitingTurnCopy(3000, "cloning").detail.length > 0, true);
 });

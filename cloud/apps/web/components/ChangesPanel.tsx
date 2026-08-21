@@ -133,10 +133,12 @@ export function ChangesPanel({
   runId,
   baseRef,
   banner,
+  refreshSignal,
 }: {
   runId: string;
   baseRef?: string;
   banner?: string;
+  refreshSignal?: number;
 }) {
   const toast = useToast();
   const [compare, setCompare] = useState<GitCompare | null>(null);
@@ -165,7 +167,7 @@ export function ChangesPanel({
 
   useEffect(() => {
     loadCompare();
-  }, [loadCompare]);
+  }, [loadCompare, refreshSignal]);
 
   const files = compare?.files ?? [];
   const totalAdd = compare?.totalAdditions ?? 0;
