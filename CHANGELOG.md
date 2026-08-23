@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+## v0.1.15 (2026-08-23)
+
+### Fixed
+- Inference gateway: `publish_prefix` treats `409 CONFLICT` as an idempotent
+  stale-epoch acknowledgement (info log) instead of a failure warning —
+  mirrors `close_session` tolerance; the post-epoch-bump republish lands
+  quietly (#129, Cortex field feedback P1).
+
+### Docs
+- Context architecture assessment (`docs/context-architecture-assessment.md`):
+  A/B capability boundaries, gaps, and ordered optimization plan (#125),
+  synced with v0.1.14 gateway changes.
+- AGENTS.md: require PR flow for code and docs changes.
+
 ## v0.1.14 (2026-08-17)
 
 ### Changed
