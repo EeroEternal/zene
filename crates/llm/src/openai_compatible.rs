@@ -228,6 +228,15 @@ pub(crate) fn to_proxy_request(request: &ChatRequest, stream: bool) -> Result<Pr
         metadata: HashMap::new(),
     };
     proxy.mark_openai_raw_messages();
+    if stream {
+        // Ask OpenAI-compatible upstreams (SGLang / vLLM / OpenAI) to emit a
+        // terminal usage chunk so gateway-injected telemetry fields survive on
+        // the streaming path. Providers that ignore it are unaffected.
+        proxy.extra.insert(
+            "stream_options".to_string(),
+            serde_json::json!({ "include_usage": true }),
+        );
+    }
     if let Some(ctx) = &request.context {
         proxy
             .metadata

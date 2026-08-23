@@ -57,6 +57,7 @@ mod tests {
             total_tokens: 12,
             cached_tokens: Some(4),
             gateway_hit_tokens: None,
+            gateway_anchor_aligned: None,
         });
         accumulator.record(&TokenUsage {
             prompt_tokens: 3,
@@ -64,6 +65,7 @@ mod tests {
             total_tokens: 4,
             cached_tokens: Some(1),
             gateway_hit_tokens: None,
+            gateway_anchor_aligned: None,
         });
         assert_eq!(accumulator.total().prompt_tokens, 13);
         assert_eq!(accumulator.total().cached_tokens, Some(5));

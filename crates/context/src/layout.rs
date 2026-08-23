@@ -68,6 +68,11 @@ pub struct PrefixCacheExplain {
     /// against `cached_tokens`, the gap diagnoses ledger-vs-engine drift.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub gateway_hit_tokens: Option<u64>,
+    /// Gateway-reported semantic-anchor alignment (docs/semantic-anchor-routing.md
+    /// counterpart): true when the exact match's final page boundary coincided
+    /// with a structural block boundary likely to survive agentic context edits.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub anchor_aligned: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub unchanged_reprocessed_est: Option<u64>,
 }

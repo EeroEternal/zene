@@ -13,6 +13,12 @@ pub struct TokenUsage {
     /// Kept separate from `cached_tokens` so ledger view vs engine reality can be compared.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub gateway_hit_tokens: Option<u64>,
+    /// Gateway-reported semantic-anchor alignment of the served prefix
+    /// (Cortex `usage.gateway_anchor_aligned`). `true` means the exact match's
+    /// final page boundary coincided with a structural block boundary, so the
+    /// hit is likely to survive the next agentic context edit.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gateway_anchor_aligned: Option<bool>,
 }
 
 impl TokenUsage {
@@ -30,11 +36,28 @@ impl TokenUsage {
             (None, Some(b)) => self.gateway_hit_tokens = Some(b),
             _ => {}
         }
+        // Alignment is a per-step property, not a sum: last observed wins.
+        if other.gateway_anchor_aligned.is_some() {
+            self.gateway_anchor_aligned = other.gateway_anchor_aligned;
+        }
     }
 }
 
+/// Locates the `usage` object in either a completed JSON body (`{usage: ...}`)
+/// or a streaming aggregation (`[{...}, {usage: ...}]` — unigateway-sdk stores
+/// the raw SSE events as an array on `ChatResponseFinal.raw`).
+fn usage_object(raw: &serde_json::Value) -> Option<&serde_json::Value> {
+    if let Some(usage) = raw.get("usage") {
+        return Some(usage);
+    }
+    raw.as_array()?
+        .iter()
+        .rev()
+        .find_map(|event| event.get("usage"))
+}
+
 pub fn parse_usage_from_raw(raw: &serde_json::Value) -> Option<TokenUsage> {
-    let usage = raw.get("usage")?;
+    let usage = usage_object(raw)?;
     let prompt_tokens = usage
         .get("prompt_tokens")
         .and_then(serde_json::Value::as_u64)
@@ -58,11 +81,26 @@ pub fn parse_usage_from_raw(raw: &serde_json::Value) -> Option<TokenUsage> {
                 .and_then(serde_json::Value::as_u64)
         });
 
-    // Gateway-injected ledger hits (unigateway normalizes heterogeneous upstream
-    // shapes into `usage.cache_hit_tokens`).
+    // Gateway-injected ledger hits. Two shapes exist in the wild:
+    // - unigateway normalization: `usage.cache_hit_tokens`
+    // - Cortex direct injection:  `usage.gateway_cache_hit_tokens`
     let gateway_hit_tokens = usage
-        .get("cache_hit_tokens")
-        .and_then(serde_json::Value::as_u64);
+        .get("gateway_cache_hit_tokens")
+        .and_then(serde_json::Value::as_u64)
+        .or_else(|| {
+            usage
+                .get("cache_hit_tokens")
+                .and_then(serde_json::Value::as_u64)
+        });
+
+    let gateway_anchor_aligned = usage
+        .get("gateway_anchor_aligned")
+        .and_then(serde_json::Value::as_bool)
+        .or_else(|| {
+            usage
+                .get("anchor_aligned")
+                .and_then(serde_json::Value::as_bool)
+        });
 
     Some(TokenUsage {
         prompt_tokens,
@@ -70,6 +108,7 @@ pub fn parse_usage_from_raw(raw: &serde_json::Value) -> Option<TokenUsage> {
         total_tokens,
         cached_tokens,
         gateway_hit_tokens,
+        gateway_anchor_aligned,
     })
 }
 
@@ -112,6 +151,48 @@ mod tests {
     }
 
     #[test]
+    fn parses_cortex_injected_fields() {
+        // Cortex injects into the response body (unigateway-sdk's proxy_chat
+        // does not surface response headers): usage.gateway_cache_hit_tokens +
+        // usage.gateway_anchor_aligned.
+        let raw = json!({
+            "usage": {
+                "prompt_tokens": 500,
+                "completion_tokens": 16,
+                "total_tokens": 516,
+                "gateway_cache_hit_tokens": 320,
+                "gateway_anchor_aligned": true
+            }
+        });
+        let usage = parse_usage_from_raw(&raw).expect("usage");
+        assert_eq!(usage.gateway_hit_tokens, Some(320));
+        assert_eq!(usage.gateway_anchor_aligned, Some(true));
+    }
+
+    #[test]
+    fn parses_usage_from_streaming_event_array() {
+        // unigateway-sdk streaming completion stores raw as an array of SSE
+        // payloads; the last event carries the usage object.
+        let raw = json!([
+            {"choices": [{"delta": {"content": "hi"}}]},
+            {
+                "choices": [],
+                "usage": {
+                    "prompt_tokens": 80,
+                    "completion_tokens": 4,
+                    "total_tokens": 84,
+                    "gateway_cache_hit_tokens": 64,
+                    "gateway_anchor_aligned": false
+                }
+            }
+        ]);
+        let usage = parse_usage_from_raw(&raw).expect("usage");
+        assert_eq!(usage.prompt_tokens, 80);
+        assert_eq!(usage.gateway_hit_tokens, Some(64));
+        assert_eq!(usage.gateway_anchor_aligned, Some(false));
+    }
+
+    #[test]
     fn accumulate_sums_fields() {
         let mut total = TokenUsage {
             prompt_tokens: 1,
@@ -119,6 +200,7 @@ mod tests {
             total_tokens: 3,
             cached_tokens: None,
             gateway_hit_tokens: None,
+            gateway_anchor_aligned: None,
         };
         total.accumulate(&TokenUsage {
             prompt_tokens: 4,
@@ -126,11 +208,14 @@ mod tests {
             total_tokens: 9,
             cached_tokens: Some(2),
             gateway_hit_tokens: Some(7),
+            gateway_anchor_aligned: Some(true),
         });
         assert_eq!(total.prompt_tokens, 5);
         assert_eq!(total.completion_tokens, 7);
         assert_eq!(total.total_tokens, 12);
         assert_eq!(total.cached_tokens, Some(2));
         assert_eq!(total.gateway_hit_tokens, Some(7));
+        // Alignment is a per-step property: last observed wins.
+        assert_eq!(total.gateway_anchor_aligned, Some(true));
     }
 }
