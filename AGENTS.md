@@ -26,6 +26,11 @@ When adding or rewriting Cloud Console UI or API, **reuse named capabilities**. 
 
 Ids: `llm`, `repositories`, `github`, `session`, `runs`, `composer`, `project-picker`, `branch-picker`, `model-picker`, `attach-menu`, `picker`, `menu`, `dialogs`, `http`.
 
+## Workflow
+
+- Code and docs changes go through GitHub PRs (branch → PR → review → merge); reference the issue (`Refs: ParaTensor/zene#N`, `Closes #N`). Direct pushes to `main` are limited to release chores (version bump / lockfile / changelog) and trivial fixes.
+- Version bumps follow `scripts/publish-crates.sh` order (`zene-config → zene-llm → zene-model-executor → zene-session → zene-context`); run `--verify` before publishing.
+
 ## Read when relevant
 
 - [Repository layout](docs/agents/layout.md) — where scripts belong
