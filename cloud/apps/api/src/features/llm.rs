@@ -1,6 +1,6 @@
 use axum::extract::{Path, State};
 use axum::response::IntoResponse;
-use axum::routing::{get, put};
+use axum::routing::{get, post, put};
 use axum::{Json, Router};
 use uuid::Uuid;
 use zene_cloud_domain::{
@@ -49,7 +49,11 @@ async fn get_llm_settings(
     AuthUser(user): AuthUser,
 ) -> Result<impl IntoResponse, AppError> {
     let providers = state.db.list_user_llm_providers(user.id).await?;
-    if let Some(def) = providers.iter().find(|p| p.is_default).or_else(|| providers.first()) {
+    if let Some(def) = providers
+        .iter()
+        .find(|p| p.is_default)
+        .or_else(|| providers.first())
+    {
         let trimmed = def.api_key.trim();
         let has_api_key = !trimmed.is_empty();
         let api_key_hint = if has_api_key {
@@ -103,11 +107,18 @@ async fn update_llm_settings(
     if req.provider_id.trim().is_empty() {
         return Err(AppError::bad_request("providerId is required"));
     }
-    let saved = state.db.upsert_user_llm_settings(user.id, req.clone()).await?;
+    let saved = state
+        .db
+        .upsert_user_llm_settings(user.id, req.clone())
+        .await?;
 
     // Also sync to a default provider in user_llm_providers
     let providers = state.db.list_user_llm_providers(user.id).await?;
-    if let Some(first) = providers.iter().find(|p| p.is_default).or_else(|| providers.first()) {
+    if let Some(first) = providers
+        .iter()
+        .find(|p| p.is_default)
+        .or_else(|| providers.first())
+    {
         let _ = state
             .db
             .update_user_llm_provider(
@@ -187,7 +198,10 @@ async fn delete_llm_provider(
     AuthUser(user): AuthUser,
     Path(provider_id): Path<Uuid>,
 ) -> Result<impl IntoResponse, AppError> {
-    state.db.delete_user_llm_provider(user.id, provider_id).await?;
+    state
+        .db
+        .delete_user_llm_provider(user.id, provider_id)
+        .await?;
     Ok(Json(serde_json::json!({ "ok": true })))
 }
 

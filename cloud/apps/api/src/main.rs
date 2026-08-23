@@ -43,16 +43,28 @@ struct Cli {
     )]
     database_url: String,
 
-    #[arg(long, env = "ZENE_CLOUD_WORKER_TOKEN", default_value = "dev-worker-token")]
+    #[arg(
+        long,
+        env = "ZENE_CLOUD_WORKER_TOKEN",
+        default_value = "dev-worker-token"
+    )]
     worker_token: String,
 
     #[arg(long, env = "ZENE_CLOUD_WEB_DIR", default_value = "apps/web/dist")]
     web_dir: PathBuf,
 
-    #[arg(long, env = "ZENE_CLOUD_WORKSPACE_ROOT", default_value = "./data/workspaces")]
+    #[arg(
+        long,
+        env = "ZENE_CLOUD_WORKSPACE_ROOT",
+        default_value = "./data/workspaces"
+    )]
     workspace_root: PathBuf,
 
-    #[arg(long, env = "ZENE_CLOUD_PUBLIC_BASE_URL", default_value = "http://127.0.0.1:8788")]
+    #[arg(
+        long,
+        env = "ZENE_CLOUD_PUBLIC_BASE_URL",
+        default_value = "http://127.0.0.1:8788"
+    )]
     public_base_url: String,
 }
 
@@ -85,9 +97,10 @@ async fn main() -> Result<()> {
     let api = router(state);
     let cors_origins = std::env::var("ZENE_CLOUD_CORS_ORIGINS").unwrap_or_default();
     let allowed_origins: Vec<axum::http::HeaderValue> = if cors_origins.is_empty() {
-        vec![cli.public_base_url.parse().unwrap_or_else(|_| {
-            "http://127.0.0.1:8788".parse().expect("valid header")
-        })]
+        vec![cli
+            .public_base_url
+            .parse()
+            .unwrap_or_else(|_| "http://127.0.0.1:8788".parse().expect("valid header"))]
     } else {
         cors_origins
             .split(',')

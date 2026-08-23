@@ -72,7 +72,10 @@ impl AppState {
         }
         let client = self.github_client_for_org(org_id).await?;
         let broker = GitBroker::new(self.db.clone(), client);
-        self.git_brokers.write().await.insert(org_id, broker.clone());
+        self.git_brokers
+            .write()
+            .await
+            .insert(org_id, broker.clone());
         Ok(broker)
     }
 
@@ -81,7 +84,10 @@ impl AppState {
         let config = GithubConfig::merge_env_and_db(stored);
         let client = GithubClient::new(config);
         let broker = GitBroker::new(self.db.clone(), client.clone());
-        self.github_clients.write().await.insert(org_id, client.clone());
+        self.github_clients
+            .write()
+            .await
+            .insert(org_id, client.clone());
         self.git_brokers.write().await.insert(org_id, broker);
         Ok(client)
     }

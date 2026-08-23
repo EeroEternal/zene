@@ -2,9 +2,10 @@ use anyhow::{bail, Context, Result};
 use chrono::{Duration, Utc};
 use uuid::Uuid;
 use zene_cloud_domain::{
-    ApprovalDecision, ApprovalRequest, AuditLog, GitOperation, GitOperationKind, GitOperationStatus,
-    GithubAccount, GithubAccountType, GithubInstallation, GithubInstallationStatus, GithubRepoSummary,
-    OauthState, PullRequest, PullRequestState, Repository,
+    ApprovalDecision, ApprovalRequest, AuditLog, GitOperation, GitOperationKind,
+    GitOperationStatus, GithubAccount, GithubAccountType, GithubInstallation,
+    GithubInstallationStatus, GithubRepoSummary, OauthState, PullRequest, PullRequestState,
+    Repository,
 };
 
 use crate::{parse_time, Db};
@@ -42,14 +43,13 @@ impl Db {
     /// Atomically fetch and delete an OAuth state if it exists and is not expired.
     pub async fn take_oauth_state(&self, state: &str) -> Result<Option<OauthState>> {
         let mut tx = self.pool.begin().await?;
-        let row: Option<(String, Option<String>, Option<String>, String, String)> =
-            sqlx::query_as(
-                "SELECT state, user_id, redirect_to, created_at, expires_at
+        let row: Option<(String, Option<String>, Option<String>, String, String)> = sqlx::query_as(
+            "SELECT state, user_id, redirect_to, created_at, expires_at
                  FROM oauth_states WHERE state = ?",
-            )
-            .bind(state)
-            .fetch_optional(&mut *tx)
-            .await?;
+        )
+        .bind(state)
+        .fetch_optional(&mut *tx)
+        .await?;
         let Some((state, user_id, redirect_to, created_at, expires_at)) = row else {
             return Ok(None);
         };
@@ -199,9 +199,7 @@ impl Db {
         let (id, created_at) = if let Some((id, bound_org, created_at)) = existing {
             let bound_org = Uuid::parse_str(&bound_org)?;
             if bound_org != organization_id {
-                bail!(
-                    "installation {installation_id} already exists in another organization"
-                );
+                bail!("installation {installation_id} already exists in another organization");
             }
             sqlx::query(
                 "UPDATE github_installations
@@ -253,35 +251,48 @@ impl Db {
         &self,
         organization_id: Uuid,
     ) -> Result<Vec<GithubInstallation>> {
-        let rows: Vec<(String, String, String, String, String, String, String, String)> =
-            sqlx::query_as(
-                "SELECT id, organization_id, installation_id, account_login, account_type, status,
+        let rows: Vec<(
+            String,
+            String,
+            String,
+            String,
+            String,
+            String,
+            String,
+            String,
+        )> = sqlx::query_as(
+            "SELECT id, organization_id, installation_id, account_login, account_type, status,
                         created_at, updated_at
                  FROM github_installations WHERE organization_id = ?
                  ORDER BY created_at DESC",
-            )
-            .bind(organization_id.to_string())
-            .fetch_all(&self.pool)
-            .await?;
-        Ok(rows
-            .into_iter()
-            .map(installation_from_row)
-            .collect())
+        )
+        .bind(organization_id.to_string())
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows.into_iter().map(installation_from_row).collect())
     }
 
     pub async fn get_installation_by_provider_id(
         &self,
         installation_id: &str,
     ) -> Result<Option<GithubInstallation>> {
-        let row: Option<(String, String, String, String, String, String, String, String)> =
-            sqlx::query_as(
-                "SELECT id, organization_id, installation_id, account_login, account_type, status,
+        let row: Option<(
+            String,
+            String,
+            String,
+            String,
+            String,
+            String,
+            String,
+            String,
+        )> = sqlx::query_as(
+            "SELECT id, organization_id, installation_id, account_login, account_type, status,
                         created_at, updated_at
                  FROM github_installations WHERE installation_id = ?",
-            )
-            .bind(installation_id)
-            .fetch_optional(&self.pool)
-            .await?;
+        )
+        .bind(installation_id)
+        .fetch_optional(&self.pool)
+        .await?;
         Ok(row.map(installation_from_row))
     }
 
@@ -411,10 +422,7 @@ impl Db {
         .bind(run_id.to_string())
         .fetch_all(&self.pool)
         .await?;
-        Ok(rows
-            .into_iter()
-            .map(crate::map_approval_full_row)
-            .collect())
+        Ok(rows.into_iter().map(crate::map_approval_full_row).collect())
     }
 
     pub async fn create_git_operation(
@@ -747,14 +755,12 @@ impl Db {
         state: PullRequestState,
         draft: bool,
     ) -> Result<Option<PullRequest>> {
-        sqlx::query(
-            "UPDATE pull_requests SET state = ?, draft = ? WHERE id = ?",
-        )
-        .bind(state.as_str())
-        .bind(if draft { 1 } else { 0 })
-        .bind(pr_id.to_string())
-        .execute(&self.pool)
-        .await?;
+        sqlx::query("UPDATE pull_requests SET state = ?, draft = ? WHERE id = ?")
+            .bind(state.as_str())
+            .bind(if draft { 1 } else { 0 })
+            .bind(pr_id.to_string())
+            .execute(&self.pool)
+            .await?;
         self.get_pull_request(pr_id).await
     }
 
@@ -814,9 +820,19 @@ impl Db {
             .fetch_optional(&self.pool)
             .await?;
         Ok(row.map(
-            |(organization_id, mode, client_id, client_secret, app_id, app_private_key, app_slug, updated_at)| {
+            |(
+                organization_id,
+                mode,
+                client_id,
+                client_secret,
+                app_id,
+                app_private_key,
+                app_slug,
+                updated_at,
+            )| {
                 zene_cloud_domain::GithubProviderConfig {
-                    organization_id: Uuid::parse_str(&organization_id).unwrap_or_else(|_| Uuid::nil()),
+                    organization_id: Uuid::parse_str(&organization_id)
+                        .unwrap_or_else(|_| Uuid::nil()),
                     mode: match mode.to_ascii_lowercase().as_str() {
                         "mock" => GithubMode::Mock,
                         _ => GithubMode::Live,
@@ -1037,7 +1053,16 @@ impl Db {
 }
 
 fn installation_from_row(
-    row: (String, String, String, String, String, String, String, String),
+    row: (
+        String,
+        String,
+        String,
+        String,
+        String,
+        String,
+        String,
+        String,
+    ),
 ) -> GithubInstallation {
     GithubInstallation {
         id: Uuid::parse_str(&row.0).unwrap(),
@@ -1045,10 +1070,8 @@ fn installation_from_row(
         installation_id: row.2,
         account_login: row.3,
         account_type: GithubAccountType::parse(&row.4).unwrap_or(GithubAccountType::Organization),
-        status: GithubInstallationStatus::parse(&row.5)
-            .unwrap_or(GithubInstallationStatus::Active),
+        status: GithubInstallationStatus::parse(&row.5).unwrap_or(GithubInstallationStatus::Active),
         created_at: parse_time(&row.6),
         updated_at: parse_time(&row.7),
     }
 }
-

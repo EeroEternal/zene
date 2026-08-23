@@ -18,16 +18,23 @@ pub struct GithubConfig {
 impl GithubConfig {
     pub fn from_env() -> Result<Self> {
         let mode = GithubMode::from_env();
-        let client_id = std::env::var("GITHUB_CLIENT_ID").ok().filter(|s| !s.is_empty());
+        let client_id = std::env::var("GITHUB_CLIENT_ID")
+            .ok()
+            .filter(|s| !s.is_empty());
         let client_secret = std::env::var("GITHUB_CLIENT_SECRET")
             .ok()
             .filter(|s| !s.is_empty());
-        let app_id = std::env::var("GITHUB_APP_ID").ok().filter(|s| !s.is_empty());
-        let app_slug = std::env::var("GITHUB_APP_SLUG").ok().filter(|s| !s.is_empty());
+        let app_id = std::env::var("GITHUB_APP_ID")
+            .ok()
+            .filter(|s| !s.is_empty());
+        let app_slug = std::env::var("GITHUB_APP_SLUG")
+            .ok()
+            .filter(|s| !s.is_empty());
         let app_private_key_pem = match std::env::var("GITHUB_APP_PRIVATE_KEY_PATH") {
             Ok(path) if !path.is_empty() => {
-                let pem = std::fs::read_to_string(&path)
-                    .map_err(|e| anyhow::anyhow!("read GITHUB_APP_PRIVATE_KEY_PATH ({path}): {e}"))?;
+                let pem = std::fs::read_to_string(&path).map_err(|e| {
+                    anyhow::anyhow!("read GITHUB_APP_PRIVATE_KEY_PATH ({path}): {e}")
+                })?;
                 Some(pem)
             }
             _ => std::env::var("GITHUB_APP_PRIVATE_KEY")
@@ -69,9 +76,7 @@ impl GithubConfig {
         }
     }
 
-    pub fn merge_env_and_db(
-        stored: Option<zene_cloud_domain::GithubProviderConfig>,
-    ) -> Self {
+    pub fn merge_env_and_db(stored: Option<zene_cloud_domain::GithubProviderConfig>) -> Self {
         let mut cfg = Self::live_default();
         if let Some(stored) = stored {
             cfg.mode = stored.mode;
@@ -135,7 +140,8 @@ impl GithubConfig {
 
     pub fn is_app_configured(&self) -> bool {
         self.app_id.as_ref().is_some_and(|s| !s.is_empty())
-            && self.app_private_key_pem
+            && self
+                .app_private_key_pem
                 .as_ref()
                 .is_some_and(|s| !s.is_empty())
             && self.app_slug.as_ref().is_some_and(|s| !s.is_empty())

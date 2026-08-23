@@ -652,20 +652,17 @@ fn pull_request_state(value: &str, draft: bool) -> PullRequestState {
 }
 
 fn graphql_pull_request(node: serde_json::Value) -> Result<PullRequest> {
-    let draft = node.get("isDraft").and_then(|v| v.as_bool()).unwrap_or(false);
-    let state = node
-        .get("state")
-        .and_then(|v| v.as_str())
-        .unwrap_or("OPEN");
+    let draft = node
+        .get("isDraft")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let state = node.get("state").and_then(|v| v.as_str()).unwrap_or("OPEN");
     Ok(PullRequest {
         id: uuid::Uuid::new_v4(),
         repository_id: uuid::Uuid::nil(),
         run_id: uuid::Uuid::nil(),
         provider_number: node.get("number").and_then(|v| v.as_i64()),
-        url: node
-            .get("url")
-            .and_then(|v| v.as_str())
-            .map(str::to_string),
+        url: node.get("url").and_then(|v| v.as_str()).map(str::to_string),
         title: node
             .get("title")
             .and_then(|v| v.as_str())

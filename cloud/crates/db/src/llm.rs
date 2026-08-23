@@ -46,7 +46,8 @@ impl Db {
                     created_at,
                     updated_at,
                 )| {
-                    let models: Vec<String> = serde_json::from_str(&models_json).unwrap_or_default();
+                    let models: Vec<String> =
+                        serde_json::from_str(&models_json).unwrap_or_default();
                     UserLlmProvider {
                         id: Uuid::parse_str(&id).unwrap_or_else(|_| Uuid::nil()),
                         user_id: Uuid::parse_str(&user_id).unwrap_or_else(|_| Uuid::nil()),
@@ -155,7 +156,10 @@ impl Db {
         if !default_model.is_empty() && !models.contains(&default_model) {
             models.insert(0, default_model.clone());
         }
-        let api_key = req.api_key.map(|s| s.trim().to_string()).unwrap_or_default();
+        let api_key = req
+            .api_key
+            .map(|s| s.trim().to_string())
+            .unwrap_or_default();
         let models_json = serde_json::to_string(&models).unwrap_or_else(|_| "[]".into());
 
         let existing = self.list_user_llm_providers(user_id).await?;
@@ -385,9 +389,7 @@ impl Db {
         if !m.is_empty() && m != "default" {
             // Match provider whose models list contains the requested model
             if let Some(matched) = providers.iter().find(|p| {
-                p.models
-                    .iter()
-                    .any(|model| model.eq_ignore_ascii_case(m))
+                p.models.iter().any(|model| model.eq_ignore_ascii_case(m))
                     || p.default_model.eq_ignore_ascii_case(m)
             }) {
                 return Ok(Some(matched.clone()));

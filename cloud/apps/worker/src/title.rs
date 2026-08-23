@@ -22,7 +22,8 @@ Do not copy the user's wording. Do not write a question. \
 Do not include prefixes like 'Title:' or 'Agent Session:'. \
 No quotes, markdown, or trailing punctuation. Return only the title text.";
 
-const TITLE_REWRITE_SYSTEM: &str = "The last title copied the user's request, was a question, or included a prefix. \
+const TITLE_REWRITE_SYSTEM: &str =
+    "The last title copied the user's request, was a question, or included a prefix. \
 Rewrite it as a short topic label (noun phrase) in the user's language, 2–8 words. \
 Example: 'sglang 目前性能怎么样' → 'SGLang 性能分析'. \
 Do not include prefixes like 'Title:' or 'Agent Session:'. \
@@ -49,7 +50,9 @@ pub(crate) fn strip_title_prefix(raw: &str) -> &str {
         if lower.starts_with(word) {
             let rest = &raw[word.len()..];
             let rest_trimmed = rest.trim_start();
-            if let Some(after_delim) = rest_trimmed.strip_prefix(|c| c == ':' || c == '：' || c == '-' || c == '—' || c == '–') {
+            if let Some(after_delim) = rest_trimmed
+                .strip_prefix(|c| c == ':' || c == '：' || c == '-' || c == '—' || c == '–')
+            {
                 return after_delim.trim();
             }
         }
@@ -60,7 +63,17 @@ pub(crate) fn strip_title_prefix(raw: &str) -> &str {
 pub(crate) fn sanitize_run_title(raw: &str) -> String {
     let mut cleaned = raw
         .trim()
-        .trim_matches(|c| c == '"' || c == '\'' || c == '`' || c == '「' || c == '」' || c == '“' || c == '”' || c == '‘' || c == '’')
+        .trim_matches(|c| {
+            c == '"'
+                || c == '\''
+                || c == '`'
+                || c == '「'
+                || c == '」'
+                || c == '“'
+                || c == '”'
+                || c == '‘'
+                || c == '’'
+        })
         .lines()
         .next()
         .unwrap_or("")
@@ -69,7 +82,17 @@ pub(crate) fn sanitize_run_title(raw: &str) -> String {
         .trim();
     cleaned = strip_title_prefix(cleaned);
     cleaned = cleaned
-        .trim_matches(|c| c == '"' || c == '\'' || c == '`' || c == '「' || c == '」' || c == '“' || c == '”' || c == '‘' || c == '’')
+        .trim_matches(|c| {
+            c == '"'
+                || c == '\''
+                || c == '`'
+                || c == '「'
+                || c == '」'
+                || c == '“'
+                || c == '”'
+                || c == '‘'
+                || c == '’'
+        })
         .trim();
     cleaned.chars().take(56).collect()
 }

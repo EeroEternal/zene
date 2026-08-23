@@ -11,9 +11,9 @@ use serde::Deserialize;
 use tokio_stream::wrappers::ReceiverStream;
 use uuid::Uuid;
 use zene_cloud_domain::{
-    github_account_view, ClaimedRun, CreateApprovalRequest, CreatePullRequestBody, CreateRunRequest,
-    DecideApprovalRequest, EmailLoginRequest, EmailLoginResponse, LoginRequest, MessageRole,
-    PostMessageRequest, QueueStats, RegisterRequest, RunStatus, SetRunModeRequest,
+    github_account_view, ClaimedRun, CreateApprovalRequest, CreatePullRequestBody,
+    CreateRunRequest, DecideApprovalRequest, EmailLoginRequest, EmailLoginResponse, LoginRequest,
+    MessageRole, PostMessageRequest, QueueStats, RegisterRequest, RunStatus, SetRunModeRequest,
     UpdateRunRequest, WorkerClaimRequest, WorkerCommandAckRequest, WorkerCommandsResponse,
     WorkerEventRequest, WorkerFence, WorkerPullRequestRequest, WorkerPushRequest,
     WorkerSessionRequest, WorkerStatusRequest, WorkerTitleRequest,
@@ -681,7 +681,10 @@ async fn mark_run_pr_ready(
         .git_broker_for_org(run.organization_id)
         .await
         .map_err(AppError::from)?;
-    let updated = git_broker.mark_pr_ready(&run, &pr).await.map_err(AppError::from)?;
+    let updated = git_broker
+        .mark_pr_ready(&run, &pr)
+        .await
+        .map_err(AppError::from)?;
     Ok(Json(updated))
 }
 
@@ -701,7 +704,10 @@ async fn merge_run_pr(
         .git_broker_for_org(run.organization_id)
         .await
         .map_err(AppError::from)?;
-    let updated = git_broker.merge_pr(&run, &pr).await.map_err(AppError::from)?;
+    let updated = git_broker
+        .merge_pr(&run, &pr)
+        .await
+        .map_err(AppError::from)?;
     let root = state.run_checkout_dir(&run);
     if root.join(".git").exists() {
         let base_ref = &run.base_ref;
@@ -722,10 +728,7 @@ async fn user_push(
 ) -> Result<impl IntoResponse, AppError> {
     let run = authorize_run(&state, user.id, run_id).await?;
     let root = state.run_checkout_dir(&run);
-    let commit_msg = format!(
-        "zene: {}",
-        run.title.chars().take(72).collect::<String>()
-    );
+    let commit_msg = format!("zene: {}", run.title.chars().take(72).collect::<String>());
     workspace::commit_worktree_if_dirty(&root, &commit_msg)
         .await
         .map_err(AppError::from)?;
@@ -1000,10 +1003,7 @@ async fn worker_push(
         .await?
         .ok_or_else(|| AppError::not_found("run not found"))?;
     let root = state.run_checkout_dir(&run);
-    let commit_msg = format!(
-        "zene: {}",
-        run.title.chars().take(72).collect::<String>()
-    );
+    let commit_msg = format!("zene: {}", run.title.chars().take(72).collect::<String>());
     let committed_head = workspace::commit_worktree_if_dirty(&root, &commit_msg)
         .await
         .map_err(AppError::from)?;
@@ -1118,8 +1118,8 @@ mod reconnect_replay_tests {
     use zene_cloud_db::Db;
     use zene_cloud_domain::{
         AuthResponse, ClaimedRun, CreateRepositoryRequest, CreateRunRequest, PermissionMode,
-        RegisterRequest, Run, RunEvent, RunEventKind, RunStatus,
-        UpdateLlmSettingsRequest, WorkerEventRequest, WorkerFence,
+        RegisterRequest, Run, RunEvent, RunEventKind, RunStatus, UpdateLlmSettingsRequest,
+        WorkerEventRequest, WorkerFence,
     };
     use zene_cloud_github::{GithubClient, GithubConfig};
 

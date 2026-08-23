@@ -139,7 +139,9 @@ impl GitBroker {
             }
         }
 
-        let result = self.live_accept_bundle(run, &repo, bundle, expected_head).await;
+        let result = self
+            .live_accept_bundle(run, &repo, bundle, expected_head)
+            .await;
 
         match result {
             Ok((head_sha, push_url)) => {
@@ -222,12 +224,8 @@ impl GitBroker {
             .await?
             .context("repository not found")?;
 
-        let base = body
-            .base_ref
-            .unwrap_or_else(|| run.base_ref.clone());
-        let head = body
-            .head_ref
-            .unwrap_or_else(|| run.head_branch.clone());
+        let base = body.base_ref.unwrap_or_else(|| run.base_ref.clone());
+        let head = body.head_ref.unwrap_or_else(|| run.head_branch.clone());
         let draft = body.draft;
 
         let installation_id = repo
@@ -458,21 +456,19 @@ impl GitBroker {
             &[
                 "fetch",
                 "origin",
-                &format!("+refs/heads/{}:refs/remotes/origin/{}", run.base_ref, run.base_ref),
+                &format!(
+                    "+refs/heads/{}:refs/remotes/origin/{}",
+                    run.base_ref, run.base_ref
+                ),
             ],
         )
         .await
         .ok(); // base may already exist; ignore soft failures before bundle
 
-        let bundle_str = bundle_path
-            .to_str()
-            .context("bundle path is not utf-8")?;
-        if run_git(
-            &work,
-            &["fetch", bundle_str, run.head_branch.as_str()],
-        )
-        .await
-        .is_err()
+        let bundle_str = bundle_path.to_str().context("bundle path is not utf-8")?;
+        if run_git(&work, &["fetch", bundle_str, run.head_branch.as_str()])
+            .await
+            .is_err()
         {
             run_git(&work, &["bundle", "unbundle", bundle_str])
                 .await
@@ -497,12 +493,9 @@ impl GitBroker {
         }
 
         // Ensure we have a local branch to push.
-        if run_git(
-            &work,
-            &["checkout", "-B", &run.head_branch, "FETCH_HEAD"],
-        )
-        .await
-        .is_err()
+        if run_git(&work, &["checkout", "-B", &run.head_branch, "FETCH_HEAD"])
+            .await
+            .is_err()
         {
             run_git(&work, &["checkout", "-B", &run.head_branch])
                 .await
@@ -567,7 +560,11 @@ async fn run_git(cwd: &Path, args: &[&str]) -> Result<()> {
         .with_context(|| format!("spawn git {}", args.join(" ")))?;
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        bail!("git {} failed with {}: {stderr}", args.join(" "), output.status);
+        bail!(
+            "git {} failed with {}: {stderr}",
+            args.join(" "),
+            output.status
+        );
     }
     Ok(())
 }

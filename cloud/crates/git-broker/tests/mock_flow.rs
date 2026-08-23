@@ -51,16 +51,18 @@ async fn live_clone_and_draft_pr_flow() {
         )
         .route(
             "/repos/acme/demo/pulls",
-            axum::routing::post(|axum::Json(body): axum::Json<serde_json::Value>| async move {
-                axum::Json(serde_json::json!({
-                    "number": 101,
-                    "html_url": "https://github.com/acme/demo/pull/101",
-                    "state": "open",
-                    "draft": body.get("draft").and_then(|v| v.as_bool()).unwrap_or(true),
-                    "title": body.get("title").and_then(|v| v.as_str()).unwrap_or("PR"),
-                    "body": body.get("body").and_then(|v| v.as_str()),
-                }))
-            }),
+            axum::routing::post(
+                |axum::Json(body): axum::Json<serde_json::Value>| async move {
+                    axum::Json(serde_json::json!({
+                        "number": 101,
+                        "html_url": "https://github.com/acme/demo/pull/101",
+                        "state": "open",
+                        "draft": body.get("draft").and_then(|v| v.as_bool()).unwrap_or(true),
+                        "title": body.get("title").and_then(|v| v.as_str()).unwrap_or("PR"),
+                        "body": body.get("body").and_then(|v| v.as_str()),
+                    }))
+                },
+            ),
         );
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();

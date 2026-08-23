@@ -1,8 +1,8 @@
 use zene_cloud_db::Db;
 use zene_cloud_domain::{
     CreateRepositoryRequest, CreateRunRequest, GitOperationKind, GitOperationStatus,
-    GithubAccountType, GithubInstallationStatus, GithubRepoSummary, PermissionMode, PullRequestState,
-    RegisterRequest,
+    GithubAccountType, GithubInstallationStatus, GithubRepoSummary, PermissionMode,
+    PullRequestState, RegisterRequest,
 };
 
 #[tokio::test]
@@ -42,11 +42,23 @@ async fn github_crud_and_migrations() {
     assert_eq!(account.login, "octocat");
 
     let inst = db
-        .upsert_installation(auth.organization.id, "999", "acme", GithubAccountType::Organization, GithubInstallationStatus::Active)
+        .upsert_installation(
+            auth.organization.id,
+            "999",
+            "acme",
+            GithubAccountType::Organization,
+            GithubInstallationStatus::Active,
+        )
         .await
         .unwrap();
     assert_eq!(inst.installation_id, "999");
-    assert_eq!(db.list_installations(auth.organization.id).await.unwrap().len(), 1);
+    assert_eq!(
+        db.list_installations(auth.organization.id)
+            .await
+            .unwrap()
+            .len(),
+        1
+    );
 
     let synced = db
         .sync_repos_from_github(
@@ -194,10 +206,7 @@ async fn installation_cannot_move_to_another_organization() {
         .await
         .expect_err("must not transfer installation");
     assert!(err.to_string().contains("another organization"));
-    let still = db
-        .list_installations(first.organization.id)
-        .await
-        .unwrap();
+    let still = db.list_installations(first.organization.id).await.unwrap();
     assert_eq!(still.len(), 1);
     assert!(db
         .list_installations(second.organization.id)

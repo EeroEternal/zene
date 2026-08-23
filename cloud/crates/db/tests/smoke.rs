@@ -1241,7 +1241,9 @@ async fn same_repo_sessions_share_workspace_id_not_checkout() {
     assert_eq!(same_repo.len(), 2);
     assert_ne!(same_repo[0], same_repo[1]);
     assert!(same_repo.iter().all(|dir| dir.contains("/runs/")));
-    assert!(dirs.iter().any(|dir| dir.contains(&other_run.workspace_id.to_string())));
+    assert!(dirs
+        .iter()
+        .any(|dir| dir.contains(&other_run.workspace_id.to_string())));
     assert!(dirs.iter().all(|dir| dir.contains("/ws/")));
     assert!(dirs.iter().any(|dir| dir.contains(&first.id.to_string())));
     assert!(dirs.iter().any(|dir| dir.contains(&second.id.to_string())));

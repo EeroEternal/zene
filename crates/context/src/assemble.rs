@@ -141,9 +141,10 @@ pub fn anchor_boundaries(messages: &[Message], start: usize) -> Vec<u64> {
         .skip(start)
         .filter(|(_, message)| match message.role {
             Role::User => true,
-            Role::Assistant => {
-                message.tool_calls.as_ref().is_some_and(|calls| !calls.is_empty())
-            }
+            Role::Assistant => message
+                .tool_calls
+                .as_ref()
+                .is_some_and(|calls| !calls.is_empty()),
             _ => false,
         })
         .map(|(idx, _)| idx as u64)
@@ -219,17 +220,20 @@ mod tests {
     #[test]
     fn anchor_boundaries_mark_turns_and_tool_groups() {
         let messages = vec![
-            Message::system("sys"),                          // 0 pinned prefix
-            Message::user("turn 1"),                         // 1 anchor
-            Message::assistant_with_tools(None, vec![]),      // 2 not an anchor (no calls)
-            Message::user("turn 2"),                         // 3 anchor
-            Message::assistant_with_tools(None, vec![zene_llm::ToolCall {
-                id: "call-1".into(),
-                name: "read".into(),
-                arguments: "{}".into(),
-            }]),                                              // 4 anchor (tool group)
-            Message::tool_result("call-1", "read", "out"),      // 5 same block
-            Message::assistant("done"),                      // 6 not an anchor
+            Message::system("sys"),                      // 0 pinned prefix
+            Message::user("turn 1"),                     // 1 anchor
+            Message::assistant_with_tools(None, vec![]), // 2 not an anchor (no calls)
+            Message::user("turn 2"),                     // 3 anchor
+            Message::assistant_with_tools(
+                None,
+                vec![zene_llm::ToolCall {
+                    id: "call-1".into(),
+                    name: "read".into(),
+                    arguments: "{}".into(),
+                }],
+            ), // 4 anchor (tool group)
+            Message::tool_result("call-1", "read", "out"), // 5 same block
+            Message::assistant("done"),                  // 6 not an anchor
         ];
         assert_eq!(stable_system_boundary(&messages), 1);
         assert_eq!(anchor_boundaries(&messages, 1), vec![1, 3, 4]);

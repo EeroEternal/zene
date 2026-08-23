@@ -32,8 +32,7 @@ mod prefire_stub;
 
 pub use assemble::{
     anchor_boundaries, assemble_outbound, delivery_mode_from_env, stable_system_boundary,
-    AssembledOutbound,
-    DeliveryMode,
+    AssembledOutbound, DeliveryMode,
 };
 pub use compaction::{
     apply_compaction_to_messages, apply_overflow_truncate_pass, apply_slice_keep,

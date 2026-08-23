@@ -31,10 +31,7 @@ struct AppJwtClaims {
 impl GithubAppAuth {
     pub fn from_config(cfg: &GithubConfig) -> Self {
         Self {
-            app_id: cfg
-                .app_id
-                .clone()
-                .unwrap_or_else(|| "0".into()),
+            app_id: cfg.app_id.clone().unwrap_or_else(|| "0".into()),
             private_key_pem: cfg.app_private_key_pem.clone(),
             app_slug: cfg.app_slug.clone(),
         }
@@ -59,8 +56,7 @@ impl GithubAppAuth {
         };
         let key = EncodingKey::from_rsa_pem(pem.as_bytes())
             .context("parse GitHub App private key PEM")?;
-        encode(&Header::new(Algorithm::RS256), &claims, &key)
-            .context("encode GitHub App JWT")
+        encode(&Header::new(Algorithm::RS256), &claims, &key).context("encode GitHub App JWT")
     }
 
     /// Exchange App JWT for an installation access token.

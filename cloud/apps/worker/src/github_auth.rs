@@ -83,7 +83,10 @@ pub async fn write_token_file(dir: &Path, token: &str) -> Result<PathBuf> {
 }
 
 fn real_gh() -> Option<PathBuf> {
-    let output = std::process::Command::new("which").arg("gh").output().ok()?;
+    let output = std::process::Command::new("which")
+        .arg("gh")
+        .output()
+        .ok()?;
     if !output.status.success() {
         return None;
     }
@@ -158,8 +161,13 @@ async fn ensure_git_exclude(workspace: &Path) -> Result<()> {
         tokio::fs::create_dir_all(parent).await?;
     }
     let marker = ".zene/";
-    let existing = tokio::fs::read_to_string(&exclude_path).await.unwrap_or_default();
-    if existing.lines().any(|line| line.trim() == marker || line.trim() == ".zene") {
+    let existing = tokio::fs::read_to_string(&exclude_path)
+        .await
+        .unwrap_or_default();
+    if existing
+        .lines()
+        .any(|line| line.trim() == marker || line.trim() == ".zene")
+    {
         return Ok(());
     }
     let mut next = existing;
@@ -321,9 +329,18 @@ pub fn inject_env(
         .unwrap_or_default();
     env.insert("PATH".into(), format!("{}:{old_path}", bin.display()));
     env.insert("GH_CONFIG_DIR".into(), gh_config.display().to_string());
-    env.insert("XDG_STATE_HOME".into(), dir.join("xdg-state").display().to_string());
-    env.insert("XDG_CACHE_HOME".into(), dir.join("xdg-cache").display().to_string());
-    env.insert("XDG_DATA_HOME".into(), dir.join("xdg-data").display().to_string());
+    env.insert(
+        "XDG_STATE_HOME".into(),
+        dir.join("xdg-state").display().to_string(),
+    );
+    env.insert(
+        "XDG_CACHE_HOME".into(),
+        dir.join("xdg-cache").display().to_string(),
+    );
+    env.insert(
+        "XDG_DATA_HOME".into(),
+        dir.join("xdg-data").display().to_string(),
+    );
     env.insert("GH_NO_UPDATE_NOTIFIER".into(), "1".into());
     env.insert("GH_PROMPT_DISABLED".into(), "1".into());
     // Override host `GH_TOKEN` / `~/.config/gh`. The wrapper re-reads the token

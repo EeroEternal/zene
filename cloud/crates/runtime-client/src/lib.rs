@@ -45,9 +45,15 @@ fn acp_permission_outcome(
         ApprovalDecision::Deny => "reject-once",
     });
     let mut outcome = serde_json::Map::new();
-    outcome.insert("optionId".into(), serde_json::Value::String(option_id.to_string()));
+    outcome.insert(
+        "optionId".into(),
+        serde_json::Value::String(option_id.to_string()),
+    );
     if let Some(answer) = answer {
-        outcome.insert("answer".into(), serde_json::Value::String(answer.to_string()));
+        outcome.insert(
+            "answer".into(),
+            serde_json::Value::String(answer.to_string()),
+        );
     }
     serde_json::json!({ "outcome": outcome })
 }
@@ -104,8 +110,12 @@ fn map_session_update(update: &str) -> CloudEventKind {
 /// no Cloud `GetMode` / `session/get_mode`.
 #[derive(Debug, Clone)]
 pub enum RuntimeCommand {
-    Prompt { text: String },
-    Steer { text: String },
+    Prompt {
+        text: String,
+    },
+    Steer {
+        text: String,
+    },
     Cancel,
     Approval {
         request_id: String,
@@ -113,7 +123,9 @@ pub enum RuntimeCommand {
         option_id: Option<String>,
         answer: Option<String>,
     },
-    SetMode { mode_id: String },
+    SetMode {
+        mode_id: String,
+    },
     Shutdown,
 }
 
@@ -197,9 +209,15 @@ impl RuntimeNotification {
 
 #[derive(Debug)]
 pub enum RuntimeEvent {
-    Initialized { session_id: String, event: RuntimeNotification },
+    Initialized {
+        session_id: String,
+        event: RuntimeNotification,
+    },
     Notification(RuntimeNotification),
-    Request { request: RuntimeRequest, event: RuntimeNotification },
+    Request {
+        request: RuntimeRequest,
+        event: RuntimeNotification,
+    },
     ChildExited,
 }
 
@@ -281,9 +299,7 @@ fn runtime_notification(event: AcpEvent) -> RuntimeNotification {
 
 fn product_payload(kind: CloudEventKind, raw: &Value) -> RuntimePayload {
     match kind {
-        CloudEventKind::TextDelta
-        | CloudEventKind::ThoughtDelta
-        | CloudEventKind::UserMessage => {
+        CloudEventKind::TextDelta | CloudEventKind::ThoughtDelta | CloudEventKind::UserMessage => {
             let Some(update) = raw.pointer("/params/update") else {
                 return RuntimePayload::Json(raw.clone());
             };
@@ -353,7 +369,9 @@ fn tool_result_payload(update: &Value) -> ToolResultPayload {
         status: json_str(update, "status"),
         raw_output: json_opt(update, "rawOutput"),
         text: if text.is_empty() { None } else { Some(text) },
-        is_error: update.pointer("/rawOutput/isError").and_then(Value::as_bool),
+        is_error: update
+            .pointer("/rawOutput/isError")
+            .and_then(Value::as_bool),
     }
 }
 
@@ -368,8 +386,8 @@ fn session_started_product(raw: &Value) -> RuntimePayload {
         .or_else(|| raw.pointer("/params/sessionId"))
         .and_then(Value::as_str)
         .map(str::to_string);
-    let resumed = (raw.get("method").and_then(Value::as_str) == Some("session/resume"))
-        .then_some(true);
+    let resumed =
+        (raw.get("method").and_then(Value::as_str) == Some("session/resume")).then_some(true);
     let modes = result.get("modes");
     let recovery = result
         .pointer("/_meta/recovery")
@@ -381,9 +399,7 @@ fn session_started_product(raw: &Value) -> RuntimePayload {
             .and_then(|value| value.get("currentModeId"))
             .and_then(Value::as_str)
             .map(str::to_string),
-        available_modes: modes
-            .and_then(|value| value.get("availableModes"))
-            .cloned(),
+        available_modes: modes.and_then(|value| value.get("availableModes")).cloned(),
         recovery,
     };
     if payload.session_id.is_none()
@@ -408,7 +424,10 @@ fn session_recovery_payload(raw: &Value) -> Option<SessionRecoveryPayload> {
         active_tool_count: raw.get("activeToolCount").and_then(Value::as_u64),
         safe_resume_allowed: raw.get("safeResumeAllowed").and_then(Value::as_bool),
         automatic_resume: raw.get("automaticResume").and_then(Value::as_bool),
-        reason: raw.get("reason").and_then(Value::as_str).map(str::to_string),
+        reason: raw
+            .get("reason")
+            .and_then(Value::as_str)
+            .map(str::to_string),
     };
     if payload == SessionRecoveryPayload::default() {
         None
@@ -463,7 +482,10 @@ fn acp_residual_product(raw: &Value) -> RuntimePayload {
         return RuntimePayload::Json(raw.clone());
     };
     RuntimePayload::AcpResidual(AcpResidualPayload {
-        method: raw.get("method").and_then(Value::as_str).map(str::to_string),
+        method: raw
+            .get("method")
+            .and_then(Value::as_str)
+            .map(str::to_string),
         session_update: update
             .get("sessionUpdate")
             .and_then(Value::as_str)
@@ -630,7 +652,10 @@ fn runtime_request(method: &str, params: &Value) -> Option<RuntimeRequest> {
 /// request into multiple approvals. The full params include session metadata
 /// and are serialized deterministically by serde_json's default map ordering.
 fn permission_request_key(params: &Value) -> String {
-    if let Some(tool_call_id) = params.pointer("/toolCall/toolCallId").and_then(Value::as_str) {
+    if let Some(tool_call_id) = params
+        .pointer("/toolCall/toolCallId")
+        .and_then(Value::as_str)
+    {
         return tool_call_id.to_string();
     }
 
@@ -670,7 +695,10 @@ impl AcpRuntimeClient {
             let guard = bridge.lock().await;
             let client = guard.as_ref().context("runtime bridge missing")?;
             let (id, events) = match existing_session_id {
-                Some(existing) => match client.initialize_and_resume_session(workdir, existing).await {
+                Some(existing) => match client
+                    .initialize_and_resume_session(workdir, existing)
+                    .await
+                {
                     Ok(pair) => pair,
                     Err(_) => client.initialize_and_new_session(workdir).await?,
                 },
@@ -681,7 +709,10 @@ impl AcpRuntimeClient {
         }
         for event in init_events {
             let event = runtime_notification(event);
-            let _ = events_tx.send(RuntimeEvent::Initialized { session_id: session_id.clone(), event });
+            let _ = events_tx.send(RuntimeEvent::Initialized {
+                session_id: session_id.clone(),
+                event,
+            });
         }
         let event_tx = events_tx.clone();
         let pending_approvals = Arc::new(Mutex::new(HashMap::new()));
@@ -690,11 +721,13 @@ impl AcpRuntimeClient {
         tokio::spawn(async move {
             while let Some(message) = messages.recv().await {
                 let event = match message {
-                    BridgeMsg::Notification { raw, .. } => {
-                        RuntimeEvent::Notification(runtime_notification(AcpEvent::from_notification(&raw)))
-                    }
+                    BridgeMsg::Notification { raw, .. } => RuntimeEvent::Notification(
+                        runtime_notification(AcpEvent::from_notification(&raw)),
+                    ),
                     BridgeMsg::ReverseRequest { id, method, params } => {
-                        let event = runtime_notification(AcpEvent::from_reverse_request(&id, &method, &params));
+                        let event = runtime_notification(AcpEvent::from_reverse_request(
+                            &id, &method, &params,
+                        ));
                         match runtime_request(&method, &params) {
                             Some(request) => {
                                 let RuntimeRequest::Approval { request_id, .. } = &request;
@@ -712,7 +745,9 @@ impl AcpRuntimeClient {
                         }
                     }
                 };
-                if event_tx.send(event).is_err() { break; }
+                if event_tx.send(event).is_err() {
+                    break;
+                }
             }
             let _ = event_tx.send(RuntimeEvent::ChildExited);
         });
@@ -727,7 +762,9 @@ impl AcpRuntimeClient {
 
 #[async_trait]
 impl RuntimeClient for AcpRuntimeClient {
-    async fn session_id(&self) -> Result<String> { Ok(self.session_id.clone()) }
+    async fn session_id(&self) -> Result<String> {
+        Ok(self.session_id.clone())
+    }
     async fn send(&self, command: RuntimeCommand) -> Result<()> {
         match command {
             RuntimeCommand::Prompt { text } => {
@@ -774,11 +811,7 @@ impl RuntimeClient for AcpRuntimeClient {
                     .context("runtime bridge missing")?
                     .respond(
                         &id,
-                        acp_permission_outcome(
-                            decision,
-                            option_id.as_deref(),
-                            answer.as_deref(),
-                        ),
+                        acp_permission_outcome(decision, option_id.as_deref(), answer.as_deref()),
                     )
                     .await
             }
@@ -800,7 +833,9 @@ impl RuntimeClient for AcpRuntimeClient {
             }
         }
     }
-    async fn next_event(&self) -> Option<RuntimeEvent> { self.events.lock().await.recv().await }
+    async fn next_event(&self) -> Option<RuntimeEvent> {
+        self.events.lock().await.recv().await
+    }
     async fn is_alive(&self) -> bool {
         let mut guard = self.bridge.lock().await;
         guard.as_mut().is_some_and(|bridge| !bridge.child_exited())
@@ -1432,7 +1467,10 @@ mod tests {
             }),
         });
         assert_eq!(event.event_type.as_event_type(), "session_started");
-        assert_eq!(event.payload, serde_json::json!({ "sessionId": "session-1" }));
+        assert_eq!(
+            event.payload,
+            serde_json::json!({ "sessionId": "session-1" })
+        );
     }
 
     #[test]
@@ -1624,9 +1662,13 @@ mod tests {
 
     #[test]
     fn runtime_commands_are_transport_neutral() {
-        let command = RuntimeCommand::Prompt { text: "hello".into() };
+        let command = RuntimeCommand::Prompt {
+            text: "hello".into(),
+        };
         assert!(matches!(command, RuntimeCommand::Prompt { text } if text == "hello"));
-        let command = RuntimeCommand::Steer { text: "nudge".into() };
+        let command = RuntimeCommand::Steer {
+            text: "nudge".into(),
+        };
         assert!(matches!(command, RuntimeCommand::Steer { text } if text == "nudge"));
         let command = RuntimeCommand::SetMode {
             mode_id: "plan".into(),
@@ -1666,11 +1708,7 @@ mod tests {
             serde_json::json!({ "outcome": { "optionId": "reject-once" } })
         );
         assert_eq!(
-            acp_permission_outcome(
-                ApprovalDecision::AllowOnce,
-                Some("ask-0"),
-                None,
-            ),
+            acp_permission_outcome(ApprovalDecision::AllowOnce, Some("ask-0"), None,),
             serde_json::json!({ "outcome": { "optionId": "ask-0" } })
         );
         assert_eq!(
@@ -1717,7 +1755,10 @@ mod tests {
             RuntimeEvent::Initialized { event, .. } => {
                 assert_eq!(
                     event.payload,
-                    RuntimePayload::SessionStarted(mock_session_started_payload(&session_id, false))
+                    RuntimePayload::SessionStarted(mock_session_started_payload(
+                        &session_id,
+                        false
+                    ))
                 );
                 let value = event.payload.to_value();
                 assert_eq!(value["currentModeId"], "default");

@@ -157,10 +157,7 @@ fn terminate_excess_holds(children: &mut [ChildSlot], stats: &QueueStats, max_ho
     let mut holds = stats.holds.clone();
     holds.sort_by_key(|h| h.since);
     for hold in holds.into_iter().take(excess) {
-        if let Some(slot) = children
-            .iter_mut()
-            .find(|c| c.worker_id == hold.worker_id)
-        {
+        if let Some(slot) = children.iter_mut().find(|c| c.worker_id == hold.worker_id) {
             info!(
                 worker_id = %slot.worker_id,
                 run_id = %hold.run_id,

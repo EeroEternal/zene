@@ -103,7 +103,11 @@ pub fn read_file(root: &Path, rel: &str, max_bytes: usize) -> Result<FileContent
     }
     let bytes = std::fs::read(&path).with_context(|| format!("read {}", path.display()))?;
     let truncated = bytes.len() > max_bytes;
-    let slice = if truncated { &bytes[..max_bytes] } else { &bytes };
+    let slice = if truncated {
+        &bytes[..max_bytes]
+    } else {
+        &bytes
+    };
     let content = String::from_utf8_lossy(slice).into_owned();
     Ok(FileContent {
         path: rel.replace('\\', "/"),
@@ -161,7 +165,10 @@ async fn run_git_diff(root: &Path, base_args: &[&str], path: Option<&str>) -> Re
     if let Some(p) = path {
         cmd.args(["--", p]);
     }
-    let output = cmd.output().await.with_context(|| format!("git {}", base_args.join(" ")))?;
+    let output = cmd
+        .output()
+        .await
+        .with_context(|| format!("git {}", base_args.join(" ")))?;
     Ok(String::from_utf8_lossy(&output.stdout).into_owned())
 }
 
@@ -256,14 +263,24 @@ async fn merge_numstat(
         if path.is_empty() {
             continue;
         }
-        let additions = if add == "-" { 0 } else { add.parse().unwrap_or(0) };
-        let deletions = if del == "-" { 0 } else { del.parse().unwrap_or(0) };
-        let entry = files.entry(path.to_string()).or_insert_with(|| GitStatusFile {
-            path: path.to_string(),
-            status: "M".into(),
-            additions: 0,
-            deletions: 0,
-        });
+        let additions = if add == "-" {
+            0
+        } else {
+            add.parse().unwrap_or(0)
+        };
+        let deletions = if del == "-" {
+            0
+        } else {
+            del.parse().unwrap_or(0)
+        };
+        let entry = files
+            .entry(path.to_string())
+            .or_insert_with(|| GitStatusFile {
+                path: path.to_string(),
+                status: "M".into(),
+                additions: 0,
+                deletions: 0,
+            });
         // Prefer the larger counts if both staged and unstaged report the same file.
         entry.additions = entry.additions.max(additions);
         entry.deletions = entry.deletions.max(deletions);
@@ -436,7 +453,8 @@ pub async fn git_compare_diff(root: &Path, base_ref: &str, path: &str) -> Result
     }
     if diff.trim().is_empty() {
         if let Ok(content) = read_file(root, path, 200_000) {
-            let mut synthetic = format!("diff --git a/{path} b/{path}\n--- /dev/null\n+++ b/{path}\n");
+            let mut synthetic =
+                format!("diff --git a/{path} b/{path}\n--- /dev/null\n+++ b/{path}\n");
             for line in content.content.lines() {
                 synthetic.push('+');
                 synthetic.push_str(line);
@@ -514,11 +532,7 @@ async fn merge_name_status(
         if status_raw.is_empty() {
             continue;
         }
-        let status = status_raw
-            .chars()
-            .next()
-            .unwrap_or('M')
-            .to_string();
+        let status = status_raw.chars().next().unwrap_or('M').to_string();
         let path = if status == "R" || status == "C" {
             // R100\told\tnew  or C...\told\tnew
             let _old = parts.next();
@@ -559,9 +573,12 @@ fn validate_rel_path(rel: &str) -> Result<()> {
     let cleaned = rel.trim_start_matches('/');
     let path = PathBuf::from(cleaned);
     if cleaned.is_empty()
-        || path
-            .components()
-            .any(|c| matches!(c, Component::ParentDir | Component::RootDir | Component::Prefix(_)))
+        || path.components().any(|c| {
+            matches!(
+                c,
+                Component::ParentDir | Component::RootDir | Component::Prefix(_)
+            )
+        })
     {
         bail!("invalid path");
     }

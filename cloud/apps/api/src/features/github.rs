@@ -222,10 +222,7 @@ fn github_connected_page(public_base_url: &str) -> impl IntoResponse {
 <p>GitHub connected. You can close this window.</p>"#
     );
     (
-        [(
-            axum::http::header::CONTENT_TYPE,
-            "text/html; charset=utf-8",
-        )],
+        [(axum::http::header::CONTENT_TYPE, "text/html; charset=utf-8")],
         html,
     )
 }

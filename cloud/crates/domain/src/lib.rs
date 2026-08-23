@@ -620,9 +620,9 @@ pub struct ApprovalEventPayload {
 
 impl ApprovalEventPayload {
     pub fn is_ask_user(&self) -> bool {
-        self.raw_input.as_ref().is_some_and(|value| {
-            value.get("askUser").and_then(|flag| flag.as_bool()) == Some(true)
-        })
+        self.raw_input
+            .as_ref()
+            .is_some_and(|value| value.get("askUser").and_then(|flag| flag.as_bool()) == Some(true))
     }
 }
 
@@ -857,12 +857,12 @@ pub struct WorkerEventRequest {
 mod tests {
     use super::{
         github_account_view, ApprovalDecision, ApprovalEventPayload, ApprovalKind, ApprovalRisk,
-        ApprovalStatus, CloudEventKind, CreateApprovalRequest, DecideApprovalRequest, GithubAccount,
-        GithubAccountType, GithubInstallationStatus,
-        GithubMode, MessageRole, PermissionMode, PlatformEvent, ProjectionPayload,
-        PullRequestState, RunEventKind, RunStatus, TextEventPayload, ToolCallPayload,
-        WorkerClaimRequest, WorkerCommand, WorkerCommandAckRequest, WorkerCommandKind,
-        WorkerEventRequest, WorkerFence, WorkerPushRequest, WorkerSessionRequest,
+        ApprovalStatus, CloudEventKind, CreateApprovalRequest, DecideApprovalRequest,
+        GithubAccount, GithubAccountType, GithubInstallationStatus, GithubMode, MessageRole,
+        PermissionMode, PlatformEvent, ProjectionPayload, PullRequestState, RunEventKind,
+        RunStatus, TextEventPayload, ToolCallPayload, WorkerClaimRequest, WorkerCommand,
+        WorkerCommandAckRequest, WorkerCommandKind, WorkerEventRequest, WorkerFence,
+        WorkerPushRequest, WorkerSessionRequest,
     };
 
     #[test]
@@ -1260,25 +1260,21 @@ mod tests {
                 "rawInput": { "path": "notes.md" }
             })
         );
-        assert!(
-            !ApprovalEventPayload {
-                request_id: "call-7".into(),
-                raw_input: Some(serde_json::json!({ "path": "notes.md" })),
-                ..ApprovalEventPayload::default()
-            }
-            .is_ask_user()
-        );
-        assert!(
-            ApprovalEventPayload {
-                request_id: "ask-1".into(),
-                raw_input: Some(serde_json::json!({
-                    "askUser": true,
-                    "question": "Ship this PR?"
-                })),
-                ..ApprovalEventPayload::default()
-            }
-            .is_ask_user()
-        );
+        assert!(!ApprovalEventPayload {
+            request_id: "call-7".into(),
+            raw_input: Some(serde_json::json!({ "path": "notes.md" })),
+            ..ApprovalEventPayload::default()
+        }
+        .is_ask_user());
+        assert!(ApprovalEventPayload {
+            request_id: "ask-1".into(),
+            raw_input: Some(serde_json::json!({
+                "askUser": true,
+                "question": "Ship this PR?"
+            })),
+            ..ApprovalEventPayload::default()
+        }
+        .is_ask_user());
         let parsed: DecideApprovalRequest = serde_json::from_value(serde_json::json!({
             "decision": "allow-once",
             "optionId": "ask-0"
@@ -2374,7 +2370,10 @@ mod title_tests {
 
     #[test]
     fn strips_question_tail() {
-        assert_eq!(summarize_prompt_title("sglang 目前性能怎么样"), "sglang 目前性能");
+        assert_eq!(
+            summarize_prompt_title("sglang 目前性能怎么样"),
+            "sglang 目前性能"
+        );
     }
 
     #[test]

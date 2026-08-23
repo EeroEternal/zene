@@ -12,7 +12,10 @@ const LONG_RPC_POLL: Duration = Duration::from_secs(30);
 #[derive(Debug, Clone, Copy)]
 enum RpcWait {
     Deadline(Duration),
-    Silence { poll: Duration, max_silence: Duration },
+    Silence {
+        poll: Duration,
+        max_silence: Duration,
+    },
 }
 
 fn keep_waiting(wait: RpcWait, started_elapsed: Duration, silence_elapsed: Duration) -> bool {
@@ -217,7 +220,8 @@ impl AcpBridge {
                     }
                     Err(err) => {
                         warn!(error = %err, "acp stdout read failed");
-                        fail_pending(&pending_pump, "ACP child stdout failed before responding").await;
+                        fail_pending(&pending_pump, "ACP child stdout failed before responding")
+                            .await;
                         break;
                     }
                 }
@@ -487,7 +491,10 @@ async fn fail_pending(
 ) {
     let senders = {
         let mut pending = pending.lock().await;
-        pending.drain().map(|(_, sender)| sender).collect::<Vec<_>>()
+        pending
+            .drain()
+            .map(|(_, sender)| sender)
+            .collect::<Vec<_>>()
     };
     let response = json!({
         "jsonrpc": "2.0",
@@ -567,7 +574,11 @@ mod tests {
             poll: Duration::from_secs(30),
             max_silence: Duration::from_secs(600),
         };
-        assert!(keep_waiting(wait, Duration::from_secs(1200), Duration::from_secs(5)));
+        assert!(keep_waiting(
+            wait,
+            Duration::from_secs(1200),
+            Duration::from_secs(5)
+        ));
         assert!(!keep_waiting(
             wait,
             Duration::from_secs(1200),
@@ -615,8 +626,10 @@ mod tests {
     #[test]
     fn reverse_request_identity_is_stable_across_jsonrpc_ids() {
         let params = json!({ "sessionId": "session-1", "_meta": { "sequence": "9" } });
-        let first = AcpEvent::from_reverse_request(&json!(42), "session/request_permission", &params);
-        let second = AcpEvent::from_reverse_request(&json!(99), "session/request_permission", &params);
+        let first =
+            AcpEvent::from_reverse_request(&json!(42), "session/request_permission", &params);
+        let second =
+            AcpEvent::from_reverse_request(&json!(99), "session/request_permission", &params);
         assert_eq!(first.source_event_id, second.source_event_id);
         assert_eq!(first.cursor, Some(9));
     }
