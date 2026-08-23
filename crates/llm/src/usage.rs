@@ -43,8 +43,18 @@ impl TokenUsage {
     }
 }
 
+/// Locates the `usage` object in either a completed JSON body (`{usage: ...}`)
+/// or a streaming aggregation (`[{...}, {usage: ...}]` — unigateway-sdk stores
+/// the raw SSE events as an array on `ChatResponseFinal.raw`).
+fn usage_object(raw: &serde_json::Value) -> Option<&serde_json::Value> {
+    if let Some(usage) = raw.get("usage") {
+        return Some(usage);
+    }
+    raw.as_array()?.iter().rev().find_map(|event| event.get("usage"))
+}
+
 pub fn parse_usage_from_raw(raw: &serde_json::Value) -> Option<TokenUsage> {
-    let usage = raw.get("usage")?;
+    let usage = usage_object(raw)?;
     let prompt_tokens = usage
         .get("prompt_tokens")
         .and_then(serde_json::Value::as_u64)
@@ -154,6 +164,29 @@ mod tests {
         let usage = parse_usage_from_raw(&raw).expect("usage");
         assert_eq!(usage.gateway_hit_tokens, Some(320));
         assert_eq!(usage.gateway_anchor_aligned, Some(true));
+    }
+
+    #[test]
+    fn parses_usage_from_streaming_event_array() {
+        // unigateway-sdk streaming completion stores raw as an array of SSE
+        // payloads; the last event carries the usage object.
+        let raw = json!([
+            {"choices": [{"delta": {"content": "hi"}}]},
+            {
+                "choices": [],
+                "usage": {
+                    "prompt_tokens": 80,
+                    "completion_tokens": 4,
+                    "total_tokens": 84,
+                    "gateway_cache_hit_tokens": 64,
+                    "gateway_anchor_aligned": false
+                }
+            }
+        ]);
+        let usage = parse_usage_from_raw(&raw).expect("usage");
+        assert_eq!(usage.prompt_tokens, 80);
+        assert_eq!(usage.gateway_hit_tokens, Some(64));
+        assert_eq!(usage.gateway_anchor_aligned, Some(false));
     }
 
     #[test]
