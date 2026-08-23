@@ -456,7 +456,8 @@ pub fn plan_compaction(
 }
 
 fn truncate_message_body(content: &str, max_content_chars: usize) -> Option<String> {
-    if content.starts_with("[truncated ") {
+    // Already commit-shaped (handle or placeholder): never rewrite.
+    if content.starts_with("[truncated ") || content.starts_with("[zene-tool-output ") {
         return None;
     }
     let char_count = content.chars().count();
@@ -585,6 +586,9 @@ fn record_compaction_result<S: ContextSession + ?Sized>(
     );
 }
 
+/// Retained for tests and explicit callers. Not used by [`compact_session`]
+/// (#130: in-place prefix rewrite is a BodyMutate).
+#[allow(dead_code)]
 fn try_truncate_only_compaction<S: ContextSession + ?Sized>(
     session: &mut S,
     config: &CompactionConfig,
@@ -676,41 +680,16 @@ fn try_slice_keep_compaction<S: ContextSession + ?Sized>(
     Some(result)
 }
 
-/// Overflow recovery: apply phase-1 truncation in place before a retry (no threshold check).
+/// Overflow recovery: never rewrite older prefix bodies (#130).
+/// Current-turn tool tails are shaped via [`apply_steps_truncate_pass`];
+/// everything else must go through slice/summarize (epoch++).
 pub fn apply_overflow_truncate_pass<S: ContextSession + ?Sized>(
     session: &mut S,
     config: &CompactionConfig,
-    tools: &[ToolDefinition],
-    estimator: &TokenEstimator,
+    _tools: &[ToolDefinition],
+    _estimator: &TokenEstimator,
 ) -> bool {
-    let tokens_before = estimate_session_tokens(session, tools, estimator);
-    let messages = projected_messages(session);
-    let Some(plan) = plan_compaction(&messages, config, estimator) else {
-        return false;
-    };
-    let prefix_start = system_prefix_start(&messages);
-    let mut projected = messages;
-    let truncated = truncate_old_message_bodies(
-        &mut projected,
-        prefix_start,
-        plan.tail_start,
-        TRUNCATE_TOOL_RESULT_MAX_CHARS,
-        TRUNCATE_ASSISTANT_TEXT_MAX_CHARS,
-    );
-    if truncated == 0 {
-        return false;
-    }
-
-    let tokens_after = tokens::estimate_context(&projected, tools, estimator) as u32;
-    session.commit_compaction_snapshot(
-        "context_overflow_truncate",
-        truncated,
-        None,
-        Some(tokens_before),
-        Some(tokens_after),
-        projected,
-    );
-    true
+    apply_steps_truncate_pass(session, config)
 }
 
 pub fn subagent_compaction_config(parent: &CompactionConfig) -> CompactionConfig {
@@ -805,10 +784,7 @@ where
 {
     let tokens_before = tokens::estimate_context(messages, tools, estimator) as u32;
 
-    if let Some(result) = try_truncate_only_on_messages(messages, config, tools, estimator) {
-        return Ok(Some(result));
-    }
-
+    // #130: skip in-place prefix rewrite; slice/summarize only.
     if let Some(result) = try_slice_keep_on_messages(messages, config, tools, estimator) {
         return Ok(Some(result));
     }
@@ -868,6 +844,8 @@ where
     }))
 }
 
+/// Retained for tests. Not used by [`compact_with_phases`] (#130).
+#[allow(dead_code)]
 fn try_truncate_only_on_messages(
     messages: &mut Vec<Message>,
     config: &CompactionConfig,
@@ -989,10 +967,8 @@ pub async fn compact_session<S: ContextSession + ?Sized>(
     prefire: Option<&PrefireCache>,
     memory_block: Option<&str>,
 ) -> Result<Option<CompactionResult>> {
-    if let Some(result) = try_truncate_only_compaction(session, config, tools, estimator) {
-        return Ok(Some(result));
-    }
-
+    // #130: do not rewrite existing prefix bodies in place (BodyMutate).
+    // Commit-time shaping + slice/summarize (epoch++) are the only size valves.
     if let Some(result) = try_slice_keep_compaction(session, config, tools, estimator) {
         return Ok(Some(result));
     }
@@ -1295,6 +1271,19 @@ mod tests {
     }
 
     #[test]
+    #[test]
+    fn truncate_old_skips_commit_shaped_handles() {
+        let handle = "[zene-tool-output path=\"/tmp/out.txt\" bytes=9000]".to_string();
+        let mut messages = vec![
+            Message::system("sys"),
+            tool_msg(&handle),
+            user_msg("recent"),
+        ];
+        let truncated = truncate_old_message_bodies(&mut messages, 1, 2, 100, 100);
+        assert_eq!(truncated, 0);
+        assert_eq!(messages[1].content.as_deref(), Some(handle.as_str()));
+    }
+
     fn truncate_old_tool_results_replaces_large_bodies() {
         let mut messages = vec![
             Message::system("sys"),
