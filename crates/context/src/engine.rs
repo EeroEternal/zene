@@ -315,6 +315,7 @@ pub struct ContextEngine {
     last_epoch_bump_reason: Option<&'static str>,
     last_cached_tokens: Option<u64>,
     last_gateway_hit_tokens: Option<u64>,
+    last_anchor_aligned: Option<bool>,
     last_unchanged_reprocessed_est: Option<u64>,
 }
 
@@ -488,6 +489,7 @@ impl ContextEngine {
             last_epoch_bump_reason: None,
             last_cached_tokens: None,
             last_gateway_hit_tokens: None,
+            last_anchor_aligned: None,
             last_unchanged_reprocessed_est: None,
         }
     }
@@ -753,6 +755,13 @@ impl ContextEngine {
             tracing::debug!(
                 gateway_hit_tokens = gateway_hit,
                 "inference gateway cache hits"
+            );
+        }
+        if let Some(aligned) = usage.gateway_anchor_aligned {
+            self.last_anchor_aligned = Some(aligned);
+            tracing::debug!(
+                anchor_aligned = aligned,
+                "inference gateway anchor alignment"
             );
         }
         if let Some(cached) = usage.cached_tokens {
@@ -1090,6 +1099,7 @@ impl ContextEngine {
             break_kind: break_kind.as_str().to_string(),
             cached_tokens: self.last_cached_tokens,
             gateway_hit_tokens: self.last_gateway_hit_tokens,
+            anchor_aligned: self.last_anchor_aligned,
             unchanged_reprocessed_est: self.last_unchanged_reprocessed_est,
         }
     }

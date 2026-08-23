@@ -43,6 +43,9 @@ pub struct ProjectionPrefixCache {
     pub break_kind: String,
     pub cached_tokens: Option<u64>,
     pub gateway_hit_tokens: Option<u64>,
+    /// Gateway-reported semantic-anchor alignment of the served prefix
+    /// (Cortex `usage.gateway_anchor_aligned`).
+    pub anchor_aligned: Option<bool>,
     pub unchanged_reprocessed_est: Option<u64>,
 }
 
