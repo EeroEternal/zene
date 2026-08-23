@@ -21,7 +21,7 @@ use crate::message::{Message, Role, ToolCall};
 use crate::provider::{ChatRequest, ChatResponse, Provider, StreamEvent};
 use crate::retry::with_llm_retry;
 use crate::tool::ToolDefinition;
-use crate::usage::{parse_usage_from_raw, TokenUsage};
+use crate::usage::{apply_gateway_headers, parse_usage_from_raw, TokenUsage};
 
 const DEFAULT_POOL_ID: &str = "zene-default";
 const DEFAULT_ENDPOINT_ID: &str = "zene-default";
@@ -116,18 +116,21 @@ impl OpenAiCompatibleProvider {
             .map_err(|err| anyhow!("{err}"))?
         {
             ProxySession::Completed(resp) => {
-                let usage = parse_usage_from_raw(&resp.response.raw);
+                let mut usage = parse_usage_from_raw(&resp.response.raw);
+                apply_gateway_headers(&mut usage, &resp.response_headers);
                 Ok(ChatResponse {
                     message: final_to_message(resp.response),
                     usage,
                 })
             }
             ProxySession::Streaming(streaming) => {
+                let headers = streaming.response_headers.clone();
                 let resp = streaming
                     .into_completion()
                     .await
                     .map_err(|err| anyhow!("{err}"))?;
-                let usage = parse_usage_from_raw(&resp.response.raw);
+                let mut usage = parse_usage_from_raw(&resp.response.raw);
+                apply_gateway_headers(&mut usage, &headers);
                 Ok(ChatResponse {
                     message: final_to_message(resp.response),
                     usage,
@@ -153,13 +156,15 @@ impl OpenAiCompatibleProvider {
 
         match session {
             ProxySession::Completed(resp) => {
+                let mut usage = parse_usage_from_raw(&resp.response.raw);
+                apply_gateway_headers(&mut usage, &resp.response_headers);
                 let message = final_to_message(resp.response.clone());
-                let usage = parse_usage_from_raw(&resp.response.raw);
                 let events = completed_message_to_events(message, usage);
                 Ok(Box::pin(futures::stream::iter(events.into_iter().map(Ok))))
             }
             ProxySession::Streaming(streaming) => {
                 let completion = streaming.completion;
+                let stream_headers = streaming.response_headers.clone();
                 let stream = streaming
                     .stream
                     .map(|chunk| {
@@ -176,10 +181,11 @@ impl OpenAiCompatibleProvider {
                     });
 
                 let done_stream = futures::stream::once(async move {
-                    let usage = match completion.await {
+                    let mut usage = match completion.await {
                         Ok(Ok(resp)) => parse_usage_from_raw(&resp.response.raw),
                         _ => None,
                     };
+                    apply_gateway_headers(&mut usage, &stream_headers);
                     Ok(StreamEvent::Done { usage })
                 });
 

@@ -3389,9 +3389,8 @@ checksum = "ebc1c04c71510c7f702b52b7c350734c9ff1295c464a03335b00bb84fc54f853"
 
 [[package]]
 name = "unigateway-core"
-version = "2.14.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "48720d1d15f70b6b7e85609feb2fdfd4797d4245adb4dcf02a51f953ce743284"
+version = "2.15.0"
+source = "git+https://github.com/EeroEternal/unigateway?branch=main#dfaae051021218443ac9470ef9192c90174e68fc"
 dependencies = [
  "futures-core",
  "futures-util",
@@ -3406,9 +3405,8 @@ dependencies = [
 
 [[package]]
 name = "unigateway-host"
-version = "2.14.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "db0c7b40af01e7126e798329828f5f6fa5d7679aed10b26e2711e674e542a000"
+version = "2.15.0"
+source = "git+https://github.com/EeroEternal/unigateway?branch=main#dfaae051021218443ac9470ef9192c90174e68fc"
 dependencies = [
  "anyhow",
  "bytes",
@@ -3424,9 +3422,8 @@ dependencies = [
 
 [[package]]
 name = "unigateway-protocol"
-version = "2.14.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "94dff5f8647364e4accdb6b90ba570f752bca020ed057b7ea5aeaee0f067023d"
+version = "2.15.0"
+source = "git+https://github.com/EeroEternal/unigateway?branch=main#dfaae051021218443ac9470ef9192c90174e68fc"
 dependencies = [
  "anyhow",
  "bytes",
@@ -3440,9 +3437,8 @@ dependencies = [
 
 [[package]]
 name = "unigateway-sdk"
-version = "2.14.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8c0ac955477be271811b22959a99e2a34d8b97c29b5ed71b43a4fa459830546b"
+version = "2.15.0"
+source = "git+https://github.com/EeroEternal/unigateway?branch=main#dfaae051021218443ac9470ef9192c90174e68fc"
 dependencies = [
  "unigateway-core",
  "unigateway-host",
@@ -3452,9 +3448,8 @@ dependencies = [
 
 [[package]]
 name = "unigateway-session"
-version = "2.14.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4291ca4b3f4396b5cdd43e9c7da7b7373ba8744acef4547f632319ba748ef540"
+version = "2.15.0"
+source = "git+https://github.com/EeroEternal/unigateway?branch=main#dfaae051021218443ac9470ef9192c90174e68fc"
 dependencies = [
  "anyhow",
  "axum",
@@ -3467,9 +3462,8 @@ dependencies = [
 
 [[package]]
 name = "unigateway-session-redis"
-version = "2.14.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "63795c4e4a104f738401617fc1cdcc3c5741dfbb6610861a643f11d9fd529dde"
+version = "2.15.0"
+source = "git+https://github.com/EeroEternal/unigateway?branch=main#dfaae051021218443ac9470ef9192c90174e68fc"
 dependencies = [
  "redis",
  "serde",

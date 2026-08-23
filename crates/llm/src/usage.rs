@@ -56,6 +56,48 @@ fn usage_object(raw: &serde_json::Value) -> Option<&serde_json::Value> {
         .find_map(|event| event.get("usage"))
 }
 
+/// Header names for Cortex gateway routing telemetry.
+const HEADER_HIT_TOKENS: &str = "x-cortex-cache-hit-tokens";
+const HEADER_ANCHOR_ALIGNED: &str = "x-cortex-anchor-aligned";
+
+/// Merges gateway routing headers into parsed usage as a fallback for fields
+/// the response body did not carry. Body values (per-request, injected by the
+/// gateway) win over headers when both are present.
+///
+/// Source: unigateway response_headers (surfaced in unigateway#6); Cortex
+/// emits `x-cortex-cache-hit-tokens` / `x-cortex-anchor-aligned`.
+pub fn apply_gateway_headers(
+    usage: &mut Option<TokenUsage>,
+    headers: &std::collections::HashMap<String, String>,
+) {
+    let hit = headers
+        .get(HEADER_HIT_TOKENS)
+        .and_then(|v| v.parse::<u64>().ok());
+    let aligned = headers
+        .get(HEADER_ANCHOR_ALIGNED)
+        .map(|v| v.trim() == "true");
+    if hit.is_none() && aligned.is_none() {
+        return;
+    }
+    match usage {
+        Some(u) => {
+            if u.gateway_hit_tokens.is_none() {
+                u.gateway_hit_tokens = hit;
+            }
+            if u.gateway_anchor_aligned.is_none() {
+                u.gateway_anchor_aligned = aligned;
+            }
+        }
+        slot @ None => {
+            *slot = Some(TokenUsage {
+                gateway_hit_tokens: hit,
+                gateway_anchor_aligned: aligned,
+                ..TokenUsage::default()
+            });
+        }
+    }
+}
+
 pub fn parse_usage_from_raw(raw: &serde_json::Value) -> Option<TokenUsage> {
     let usage = usage_object(raw)?;
     let prompt_tokens = usage
@@ -116,6 +158,48 @@ pub fn parse_usage_from_raw(raw: &serde_json::Value) -> Option<TokenUsage> {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn gateway_headers_fill_missing_fields_without_overriding_body() {
+        use std::collections::HashMap;
+        let mut headers = HashMap::new();
+        headers.insert("x-cortex-cache-hit-tokens".to_string(), "320".to_string());
+        headers.insert("x-cortex-anchor-aligned".to_string(), "true".to_string());
+
+        // Body empty: headers create the usage entry.
+        let mut none: Option<TokenUsage> = None;
+        apply_gateway_headers(&mut none, &headers);
+        let u = none.expect("created");
+        assert_eq!(u.gateway_hit_tokens, Some(320));
+        assert_eq!(u.gateway_anchor_aligned, Some(true));
+
+        // Body present but fields missing: headers fill them.
+        let mut some = Some(TokenUsage {
+            prompt_tokens: 10,
+            ..TokenUsage::default()
+        });
+        apply_gateway_headers(&mut some, &headers);
+        let u = some.expect("kept");
+        assert_eq!(u.gateway_hit_tokens, Some(320));
+        assert_eq!(u.prompt_tokens, 10);
+
+        // Body values win over headers when both exist.
+        let mut both = Some(TokenUsage {
+            gateway_hit_tokens: Some(64),
+            gateway_anchor_aligned: Some(false),
+            ..TokenUsage::default()
+        });
+        apply_gateway_headers(&mut both, &headers);
+        let u = both.expect("kept");
+        assert_eq!(u.gateway_hit_tokens, Some(64));
+        assert_eq!(u.gateway_anchor_aligned, Some(false));
+
+        // Unrelated headers are a no-op.
+        let empty = HashMap::new();
+        let mut none2: Option<TokenUsage> = None;
+        apply_gateway_headers(&mut none2, &empty);
+        assert!(none2.is_none());
+    }
 
     #[test]
     fn parse_openai_usage() {
