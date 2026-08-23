@@ -76,7 +76,7 @@ OpenAI-compatible 路径定义以下元数据：
 | `delivery` | `full` 或 `delta` |
 | `tail_start` | delta 对应的消息切分位置 |
 
-启用 inference-gateway 时，Agent 默认选择 delta。Agent 先向 `/v1/zene/sessions/{id}/publish` 发送 canonical prefix，再由网关的 session middleware 组装 `prefix || tail`。没有新增 tail 或无法形成有效 delta 时，Agent 会回退到 full。当前 publish 不等待可反馈给 ContextEngine 的确认，故障闭环属于下文明确列出的缺口。
+启用 inference-gateway 时，delta 需通过 `ZENE_CONTEXT_DELIVERY=delta` 显式开启（v0.1.14 起，网关 URL 单独存在不再默认启用 delta——能力协商未落地前，不能假设网关具备按 session 重建全量 prompt 的能力）。Agent 先向 `/v1/zene/sessions/{id}/publish` 发送 canonical prefix（payload 含 epoch、messages、pinned_boundary、anchor_boundaries），再由网关的 session middleware 组装 `prefix || tail`。没有新增 tail 或无法形成有效 delta 时，Agent 会回退到 full。当前 publish 不等待可反馈给 ContextEngine 的确认，故障闭环属于下文明确列出的缺口。
 
 网关保存 prefix 的消息副本，但不拥有 compaction、memory、branch 或 transcript 语义。它不是第二个 Session SoT。
 
@@ -114,7 +114,7 @@ ContextEngine 会在 emit publish 前更新 `initial_publish_done`、`pending_pu
 
 ### Cache explain 尚未当步闭环
 
-`ProjectionExplain.cached_tokens` 使用前一次 Provider 调用的 usage，`unchanged_reprocessed_est` 使用 frozen prefix 字符数除以四的估算。它们适合诊断趋势，不是 Provider 对当前投影的精确归因。
+`ProjectionExplain.cached_tokens` 使用前一次 Provider 调用的 usage，`unchanged_reprocessed_est` 使用 frozen prefix 字符数除以四的估算。它们适合诊断趋势，不是 Provider 对当前投影的精确归因。v0.1.14 起 `PrefixCacheExplain` 并列记录网关账本命中（`gateway_hit_tokens`）与 provider 实际命中（`cached_tokens`），但两数仍是上一轮回填，当步归因缺口不变。
 
 `PrefixCacheBreakKind::BodyMutate` 已定义，但当前分类路径没有产生该值。Console 也尚未展示 typed prefix-cache 数据。
 
