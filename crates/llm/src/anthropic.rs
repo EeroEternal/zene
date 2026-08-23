@@ -312,6 +312,7 @@ fn parse_anthropic_response(raw: &Value) -> Result<ChatResponse> {
                 .and_then(Value::as_u64)
                 .unwrap_or(0),
         cached_tokens: None,
+        gateway_hit_tokens: usage.get("cache_hit_tokens").and_then(Value::as_u64),
     });
 
     let message = if tool_calls.is_empty() {
@@ -457,6 +458,9 @@ impl AnthropicStreamState {
                                 .and_then(Value::as_u64)
                                 .unwrap_or(0),
                             cached_tokens: None,
+                            gateway_hit_tokens: usage
+                                .get("cache_hit_tokens")
+                                .and_then(Value::as_u64),
                         });
                     }
                 }

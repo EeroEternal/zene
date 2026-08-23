@@ -31,7 +31,8 @@ mod prefire;
 mod prefire_stub;
 
 pub use assemble::{
-    assemble_outbound, delivery_mode_from_env, stable_system_boundary, AssembledOutbound,
+    anchor_boundaries, assemble_outbound, delivery_mode_from_env, stable_system_boundary,
+    AssembledOutbound,
     DeliveryMode,
 };
 pub use compaction::{

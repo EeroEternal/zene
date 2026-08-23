@@ -192,6 +192,7 @@ pub fn runtime_event_handler(
                         prefix_fingerprint: prefix_cache.prefix_fingerprint.clone(),
                         break_kind: prefix_cache.break_kind.clone(),
                         cached_tokens: prefix_cache.cached_tokens,
+                        gateway_hit_tokens: prefix_cache.gateway_hit_tokens,
                         unchanged_reprocessed_est: prefix_cache.unchanged_reprocessed_est,
                     },
                 },
@@ -378,6 +379,7 @@ mod tests {
                 prefix_fingerprint: Some("abc".into()),
                 break_kind: "none".into(),
                 cached_tokens: None,
+                gateway_hit_tokens: None,
                 unchanged_reprocessed_est: None,
             },
         });

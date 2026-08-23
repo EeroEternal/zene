@@ -42,6 +42,7 @@ pub struct ProjectionPrefixCache {
     pub prefix_fingerprint: Option<String>,
     pub break_kind: String,
     pub cached_tokens: Option<u64>,
+    pub gateway_hit_tokens: Option<u64>,
     pub unchanged_reprocessed_est: Option<u64>,
 }
 

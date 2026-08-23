@@ -230,7 +230,7 @@ Explore 子 agent 继续用 Read/Grep/Glob（加上来的 Repo Map）做调研�
 已实现行为（原 Phase 0–5）：
 
 - compact 或真正的 system 基座变更 → `epoch++` 并 `PublishPrefix`
-- `ZENE_CONTEXT_DELIVERY=full|delta`（配 `ZENE_INFERENCE_GATEWAY_URL` 时默认 delta）
+- `ZENE_CONTEXT_DELIVERY=full|delta`（delta 需显式开启；网关能力协商未落地前默认 full，见 issue #128）
 - `pinned_boundary` = `stable_system_boundary`（system + compaction summary）
 - 大 tool 输出可句柄化（`ZENE_TOOL_OUTPUT_HANDLES`）
 - Cloud Worker 注入 `ZENE_RUN_ID`；Run 结束 `close_session`

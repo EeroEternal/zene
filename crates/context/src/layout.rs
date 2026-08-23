@@ -64,6 +64,10 @@ pub struct PrefixCacheExplain {
     pub break_kind: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cached_tokens: Option<u64>,
+    /// Inference-gateway/ledger-reported hit tokens (e.g. Cortex). Compared
+    /// against `cached_tokens`, the gap diagnoses ledger-vs-engine drift.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gateway_hit_tokens: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub unchanged_reprocessed_est: Option<u64>,
 }

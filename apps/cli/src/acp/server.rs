@@ -938,6 +938,7 @@ fn project_runtime_event(
                 "prefixFingerprint": prefix_cache.prefix_fingerprint,
                 "breakKind": prefix_cache.break_kind,
                 "cachedTokens": prefix_cache.cached_tokens,
+                "gatewayHitTokens": prefix_cache.gateway_hit_tokens,
                 "unchangedReprocessedEst": prefix_cache.unchanged_reprocessed_est,
             }),
         )),

@@ -3,7 +3,10 @@ name = "zene-model-executor"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-publish = false
+description = "Turn-facing model execution boundary: request/response types and executor trait over ChatClient"
+repository = "https://github.com/ParaTensor/zene"
+keywords = ["llm", "agent", "model", "executor"]
+categories = ["development-tools", "asynchronous"]
 
 [dependencies]
 anyhow.workspace = true

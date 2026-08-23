@@ -1,5 +1,6 @@
 //! Outbound message assembly: full history vs delta tail (Phase 3).
 
+use tracing::warn;
 use zene_llm::{Message, MessageKind, Role};
 
 #[cfg(feature = "gateway")]
@@ -26,16 +27,31 @@ impl DeliveryMode {
     }
 }
 
-/// Resolve delivery mode from env. Defaults to delta when inference gateway is configured.
+/// Resolve delivery mode from env.
+///
+/// Delta requires the gateway to reconstruct the full prompt per session. The
+/// protocol does not yet have capability negotiation (issue #128), so the default
+/// stays Full even when a gateway is configured; delta must be opted into
+/// explicitly via `ZENE_CONTEXT_DELIVERY=delta`.
 pub fn delivery_mode_from_env() -> DeliveryMode {
     match std::env::var(ENV_DELIVERY)
         .ok()
         .map(|s| s.trim().to_ascii_lowercase())
         .as_deref()
     {
-        Some("delta") => DeliveryMode::Delta,
+        Some("delta") => {
+            if !gateway_configured() {
+                warn!(
+                    env = ENV_DELIVERY,
+                    "delta delivery requested but no inference gateway configured; \
+                     tails will be sent as full prompts"
+                );
+            }
+            DeliveryMode::Delta
+        }
         Some("full") => DeliveryMode::Full,
-        _ if gateway_configured() => DeliveryMode::Delta,
+        // Conservative default: a gateway that cannot rebuild full prompts would
+        // silently forward incomplete deltas downstream.
         _ => DeliveryMode::Full,
     }
 }
@@ -112,6 +128,28 @@ pub fn stable_system_boundary(messages: &[Message]) -> usize {
     idx
 }
 
+/// Message indices that begin a semantic anchor block, at or after `start`.
+///
+/// Anchors are turn starts (user messages) and tool-call group starts (assistant
+/// messages carrying tool calls); their tool results belong to the same block.
+/// Published to the inference gateway so it can score prefix liveness on
+/// harness-declared boundaries instead of tokenizer heuristics (issue #128).
+pub fn anchor_boundaries(messages: &[Message], start: usize) -> Vec<u64> {
+    messages
+        .iter()
+        .enumerate()
+        .skip(start)
+        .filter(|(_, message)| match message.role {
+            Role::User => true,
+            Role::Assistant => {
+                message.tool_calls.as_ref().is_some_and(|calls| !calls.is_empty())
+            }
+            _ => false,
+        })
+        .map(|(idx, _)| idx as u64)
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -163,5 +201,37 @@ mod tests {
             Message::user("hi"),
         ];
         assert_eq!(stable_system_boundary(&messages), 3);
+    }
+
+    #[test]
+    fn delivery_mode_defaults_to_full_without_explicit_opt_in() {
+        // Issue #128: gateway presence alone must not enable delta — the gateway
+        // may be unable to rebuild full prompts, which would silently truncate.
+        std::env::remove_var(ENV_DELIVERY);
+        assert_eq!(delivery_mode_from_env(), DeliveryMode::Full);
+        std::env::set_var(ENV_DELIVERY, "delta");
+        assert_eq!(delivery_mode_from_env(), DeliveryMode::Delta);
+        std::env::set_var(ENV_DELIVERY, "full");
+        assert_eq!(delivery_mode_from_env(), DeliveryMode::Full);
+        std::env::remove_var(ENV_DELIVERY);
+    }
+
+    #[test]
+    fn anchor_boundaries_mark_turns_and_tool_groups() {
+        let messages = vec![
+            Message::system("sys"),                          // 0 pinned prefix
+            Message::user("turn 1"),                         // 1 anchor
+            Message::assistant_with_tools(None, vec![]),      // 2 not an anchor (no calls)
+            Message::user("turn 2"),                         // 3 anchor
+            Message::assistant_with_tools(None, vec![zene_llm::ToolCall {
+                id: "call-1".into(),
+                name: "read".into(),
+                arguments: "{}".into(),
+            }]),                                              // 4 anchor (tool group)
+            Message::tool_result("call-1", "read", "out"),      // 5 same block
+            Message::assistant("done"),                      // 6 not an anchor
+        ];
+        assert_eq!(stable_system_boundary(&messages), 1);
+        assert_eq!(anchor_boundaries(&messages, 1), vec![1, 3, 4]);
     }
 }

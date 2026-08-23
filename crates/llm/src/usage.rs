@@ -8,6 +8,11 @@ pub struct TokenUsage {
     /// Provider-reported prompt cache hits (OpenAI `prompt_tokens_details.cached_tokens`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cached_tokens: Option<u64>,
+    /// Inference-gateway/ledger-reported cache hit tokens (e.g. Cortex
+    /// `usage.cache_hit_tokens`, mirrors the `x-cortex-cache-hit-tokens` header).
+    /// Kept separate from `cached_tokens` so ledger view vs engine reality can be compared.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gateway_hit_tokens: Option<u64>,
 }
 
 impl TokenUsage {
@@ -18,6 +23,11 @@ impl TokenUsage {
         match (self.cached_tokens, other.cached_tokens) {
             (Some(a), Some(b)) => self.cached_tokens = Some(a + b),
             (None, Some(b)) => self.cached_tokens = Some(b),
+            _ => {}
+        }
+        match (self.gateway_hit_tokens, other.gateway_hit_tokens) {
+            (Some(a), Some(b)) => self.gateway_hit_tokens = Some(a + b),
+            (None, Some(b)) => self.gateway_hit_tokens = Some(b),
             _ => {}
         }
     }
@@ -48,11 +58,18 @@ pub fn parse_usage_from_raw(raw: &serde_json::Value) -> Option<TokenUsage> {
                 .and_then(serde_json::Value::as_u64)
         });
 
+    // Gateway-injected ledger hits (unigateway normalizes heterogeneous upstream
+    // shapes into `usage.cache_hit_tokens`).
+    let gateway_hit_tokens = usage
+        .get("cache_hit_tokens")
+        .and_then(serde_json::Value::as_u64);
+
     Some(TokenUsage {
         prompt_tokens,
         completion_tokens,
         total_tokens,
         cached_tokens,
+        gateway_hit_tokens,
     })
 }
 
@@ -77,22 +94,43 @@ mod tests {
     }
 
     #[test]
+    fn parses_gateway_cache_hit_tokens() {
+        // unigateway normalizes gateway/ledger hits into `usage.cache_hit_tokens`
+        // (Cortex: mirrors the x-cortex-cache-hit-tokens header).
+        let raw = json!({
+            "usage": {
+                "prompt_tokens": 100,
+                "completion_tokens": 5,
+                "total_tokens": 105,
+                "prompt_tokens_details": {"cached_tokens": 60},
+                "cache_hit_tokens": 80
+            }
+        });
+        let usage = parse_usage_from_raw(&raw).expect("usage");
+        assert_eq!(usage.cached_tokens, Some(60));
+        assert_eq!(usage.gateway_hit_tokens, Some(80));
+    }
+
+    #[test]
     fn accumulate_sums_fields() {
         let mut total = TokenUsage {
             prompt_tokens: 1,
             completion_tokens: 2,
             total_tokens: 3,
             cached_tokens: None,
+            gateway_hit_tokens: None,
         };
         total.accumulate(&TokenUsage {
             prompt_tokens: 4,
             completion_tokens: 5,
             total_tokens: 9,
             cached_tokens: Some(2),
+            gateway_hit_tokens: Some(7),
         });
         assert_eq!(total.prompt_tokens, 5);
         assert_eq!(total.completion_tokens, 7);
         assert_eq!(total.total_tokens, 12);
         assert_eq!(total.cached_tokens, Some(2));
+        assert_eq!(total.gateway_hit_tokens, Some(7));
     }
 }

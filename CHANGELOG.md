@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+## v0.1.14 (2026-08-17)
+
+### Changed
+- Inference gateway integration hardening from Cortex field testing (issue #128):
+  - Delta delivery now requires explicit `ZENE_CONTEXT_DELIVERY=delta` opt-in; gateway
+    URL alone no longer enables it (no capability negotiation yet — a gateway that
+    cannot rebuild full prompts would silently forward incomplete tails).
+  - `publish_prefix` payload now carries `anchor_boundaries` (turn starts + tool-call
+    group starts) so the gateway can score prefix liveness on harness-declared
+    boundaries instead of tokenizer heuristics.
+  - Gateway/ledger cache-hit tokens (`usage.cache_hit_tokens`, mirrors Cortex's
+    `x-cortex-cache-hit-tokens`) flow through `TokenUsage.gateway_hit_tokens` into
+    `PrefixCacheExplain`, ACP meta (`gatewayHitTokens`), and `/context` diagnostics,
+    alongside provider `cached_tokens` for ledger-vs-engine drift diagnosis.
+- deps: unigateway-sdk 2.14.0 → 2.14.2.
+
 ## v0.1.13 (2026-08-16)
 
 ### Added

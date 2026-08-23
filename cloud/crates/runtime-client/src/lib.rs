@@ -539,6 +539,7 @@ fn usage_product(raw: &Value) -> RuntimePayload {
         payload.context_percent = json_opt(meta, "contextPercent");
         payload.context_epoch = json_opt(meta, "contextEpoch");
         payload.cached_tokens = json_opt(meta, "cachedTokens");
+        payload.gateway_hit_tokens = json_opt(meta, "gatewayHitTokens");
     }
     RuntimePayload::Usage(payload)
 }

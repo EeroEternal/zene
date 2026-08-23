@@ -11,7 +11,7 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
 PATCH_CONFIG="$ROOT/.cargo/publish-local.toml"
-PACKAGES=(zene-config zene-llm zene-session zene-context)
+PACKAGES=(zene-config zene-llm zene-model-executor zene-session zene-context)
 
 mode="${1:-}"
 
@@ -21,6 +21,7 @@ verify_local() {
     echo "==> cargo package -p ${pkg} --allow-dirty"
     cargo package -p "$pkg" --allow-dirty --config "patch.crates-io.zene-config.path=\"crates/config\"" \
       --config "patch.crates-io.zene-llm.path=\"crates/llm\"" \
+      --config "patch.crates-io.zene-model-executor.path=\"crates/model-executor\"" \
       --config "patch.crates-io.zene-session.path=\"crates/session\""
   done
   echo "All packages verified."

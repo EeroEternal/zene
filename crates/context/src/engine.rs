@@ -314,6 +314,7 @@ pub struct ContextEngine {
     last_prefix_tokens: u32,
     last_epoch_bump_reason: Option<&'static str>,
     last_cached_tokens: Option<u64>,
+    last_gateway_hit_tokens: Option<u64>,
     last_unchanged_reprocessed_est: Option<u64>,
 }
 
@@ -486,6 +487,7 @@ impl ContextEngine {
             last_prefix_tokens: 0,
             last_epoch_bump_reason: None,
             last_cached_tokens: None,
+            last_gateway_hit_tokens: None,
             last_unchanged_reprocessed_est: None,
         }
     }
@@ -746,6 +748,13 @@ impl ContextEngine {
         compaction_config: &CompactionConfig,
     ) -> Result<ContextUsageUpdate> {
         self.water.record_usage(usage);
+        if let Some(gateway_hit) = usage.gateway_hit_tokens {
+            self.last_gateway_hit_tokens = Some(gateway_hit);
+            tracing::debug!(
+                gateway_hit_tokens = gateway_hit,
+                "inference gateway cache hits"
+            );
+        }
         if let Some(cached) = usage.cached_tokens {
             let prefix = u64::from(self.last_prefix_tokens);
             self.last_cached_tokens = Some(cached);
@@ -1080,6 +1089,7 @@ impl ContextEngine {
             prefix_fingerprint: fingerprint,
             break_kind: break_kind.as_str().to_string(),
             cached_tokens: self.last_cached_tokens,
+            gateway_hit_tokens: self.last_gateway_hit_tokens,
             unchanged_reprocessed_est: self.last_unchanged_reprocessed_est,
         }
     }

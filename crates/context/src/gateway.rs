@@ -3,7 +3,7 @@
 use tracing::{debug, warn};
 use zene_llm::Message;
 
-use crate::assemble::stable_system_boundary;
+use crate::assemble::{anchor_boundaries, stable_system_boundary};
 use crate::two_pass::fingerprint_messages;
 
 const ENV_RUN_ID: &str = "ZENE_RUN_ID";
@@ -44,12 +44,14 @@ pub async fn publish_prefix(session_id: &str, epoch: u64, messages: &[Message]) 
     let api_messages: Vec<serde_json::Value> =
         messages.iter().map(message_to_publish_json).collect();
     let pinned_boundary = stable_system_boundary(messages) as u64;
+    let anchors = anchor_boundaries(messages, pinned_boundary as usize);
     let fingerprint_value = format!("{:016x}", fingerprint_messages(messages));
     let body = serde_json::json!({
         "epoch": epoch,
         "message_count": messages.len(),
         "messages": api_messages,
         "pinned_boundary": pinned_boundary,
+        "anchor_boundaries": anchors,
         "fingerprint": {
             "algorithm": "zene-v1",
             "value": fingerprint_value,

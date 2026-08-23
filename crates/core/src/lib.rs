@@ -462,13 +462,18 @@ impl Agent {
                 explain.estimate_tokens,
             ),
             format!(
-                "prefix_cache: break={} prefix_end={} tail={} cached={} reprocessed_est={}",
+                "prefix_cache: break={} prefix_end={} tail={} cached={} gateway_hit={} reprocessed_est={}",
                 explain.prefix_cache.break_kind,
                 explain.prefix_cache.prefix_end,
                 explain.prefix_cache.tail_decoration_count,
                 explain
                     .prefix_cache
                     .cached_tokens
+                    .map(|n| n.to_string())
+                    .unwrap_or_else(|| "-".into()),
+                explain
+                    .prefix_cache
+                    .gateway_hit_tokens
                     .map(|n| n.to_string())
                     .unwrap_or_else(|| "-".into()),
                 explain

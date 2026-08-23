@@ -118,6 +118,7 @@ mod tests {
             completion_tokens: 10,
             total_tokens: 710,
             cached_tokens: None,
+            gateway_hit_tokens: None,
         });
         assert_eq!(water.effective_tokens(), 700);
         assert_eq!(water.usage_percent(), 70);
@@ -144,6 +145,7 @@ mod tests {
             completion_tokens: 10,
             total_tokens: 710,
             cached_tokens: None,
+            gateway_hit_tokens: None,
         });
         assert_eq!(water.usage_update(650), 700);
         assert_eq!(water.usage_update(750), 750);
