@@ -50,7 +50,10 @@ fn usage_object(raw: &serde_json::Value) -> Option<&serde_json::Value> {
     if let Some(usage) = raw.get("usage") {
         return Some(usage);
     }
-    raw.as_array()?.iter().rev().find_map(|event| event.get("usage"))
+    raw.as_array()?
+        .iter()
+        .rev()
+        .find_map(|event| event.get("usage"))
 }
 
 pub fn parse_usage_from_raw(raw: &serde_json::Value) -> Option<TokenUsage> {
