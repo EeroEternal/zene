@@ -61,6 +61,16 @@ pub async fn publish_prefix(session_id: &str, epoch: u64, messages: &[Message]) 
         Ok(resp) if resp.status().is_success() => {
             info_gateway("publish", session_id, epoch, resp.status().as_u16());
         }
+        // 409 = our epoch baseline is stale (gateway moved on); nothing to retry —
+        // the next publish after the local epoch bump will land. Treat as idempotent.
+        Ok(resp) if resp.status().as_u16() == 409 => {
+            tracing::info!(
+                session_id,
+                epoch,
+                status = 409,
+                "inference gateway publish conflict (stale epoch); ignored"
+            );
+        }
         Ok(resp) => {
             warn!(
                 session_id,
