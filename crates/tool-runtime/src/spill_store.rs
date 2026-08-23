@@ -93,8 +93,12 @@ mod tests {
         std::env::remove_var("ZENE_MAX_TOOL_OUTPUT_BYTES");
         let store = FsToolOutputStore::new(dir.path());
         let out = apply_tool_bound_plan(plan, &store);
-        assert!(out.contains("truncated"));
+        // Default commit shape is a handle (#130); path still points at the spill.
         assert!(out.contains(".zene/tool-output/"));
+        assert!(
+            out.starts_with("[zene-tool-output ") || out.contains("[truncated"),
+            "expected handle or truncated placeholder, got {out}"
+        );
     }
 
     #[test]

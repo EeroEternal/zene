@@ -6,16 +6,20 @@ pub const TOOL_MAX_OUTPUT_BYTES: usize = 30_000;
 const ENV_TOOL_OUTPUT_HANDLES: &str = "ZENE_TOOL_OUTPUT_HANDLES";
 
 /// When true, spilled tool output is referenced by handle only (no large inline preview).
+///
+/// Defaults **on**: commit-time shaping (#130) prefers a short immutable handle
+/// over a large inline body that compaction would later rewrite (BodyMutate).
+/// Set `ZENE_TOOL_OUTPUT_HANDLES=0` to restore the inline-preview fallback.
 pub fn tool_output_handles_enabled() -> bool {
     std::env::var(ENV_TOOL_OUTPUT_HANDLES)
         .ok()
         .map(|v| {
-            matches!(
+            !matches!(
                 v.trim().to_ascii_lowercase().as_str(),
-                "1" | "true" | "yes" | "on"
+                "0" | "false" | "no" | "off"
             )
         })
-        .unwrap_or(false)
+        .unwrap_or(true)
 }
 
 pub fn tool_max_output_bytes() -> usize {
@@ -114,6 +118,24 @@ mod tests {
         let plan = plan_tool_output_bound("y".repeat(2000), "Bash");
         std::env::remove_var("ZENE_MAX_TOOL_OUTPUT_BYTES");
         assert!(matches!(plan, ToolBoundPlan::Spill(_)));
+    }
+
+    #[test]
+    fn handles_default_on_without_env() {
+        std::env::remove_var("ZENE_TOOL_OUTPUT_HANDLES");
+        assert!(tool_output_handles_enabled());
+        let out = format_bounded_output("yyyy", 400, Some("/tmp/out.txt"), 2000);
+        assert!(out.starts_with("[zene-tool-output path="));
+        assert!(!out.contains("yyyy"));
+    }
+
+    #[test]
+    fn handles_can_be_disabled() {
+        std::env::set_var("ZENE_TOOL_OUTPUT_HANDLES", "0");
+        let out = format_bounded_output("yyyy", 400, Some("/tmp/out.txt"), 2000);
+        std::env::remove_var("ZENE_TOOL_OUTPUT_HANDLES");
+        assert!(out.contains("yyyy"));
+        assert!(out.contains("[truncated"));
     }
 
     #[test]
