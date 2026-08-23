@@ -24,9 +24,9 @@ tokio.workspace = true
 tower-http.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
-unigateway-sdk = { version = "2.14", features = ["host", "session"] }
-unigateway-session = { version = "2.14", features = ["http"] }
-unigateway-session-redis = "2.14"
+unigateway-sdk = { workspace = true, features = ["host", "session"] }
+unigateway-session = { workspace = true, features = ["http"] }
+unigateway-session-redis = { workspace = true }
 zene-llm = { workspace = true }
 
 [dev-dependencies]
