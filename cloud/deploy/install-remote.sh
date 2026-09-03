@@ -22,6 +22,9 @@ fi
 if [[ -f "$STAGE_DIR/bin/zene" ]]; then
   install -m 755 "$STAGE_DIR/bin/zene" "$OPT_DIR/bin/zene"
 fi
+if [[ -f "$STAGE_DIR/bin/cellz" ]]; then
+  install -m 755 "$STAGE_DIR/bin/cellz" "$OPT_DIR/bin/cellz"
+fi
 
 if [[ -d "$STAGE_DIR/web" ]]; then
   rm -rf "$OPT_DIR/web"
@@ -35,6 +38,9 @@ if [[ -d "$UNIT_SRC" ]]; then
   if [[ -f "$UNIT_SRC/zene-inference-gateway.service" ]]; then
     install -m 644 "$UNIT_SRC/zene-inference-gateway.service" /etc/systemd/system/zene-inference-gateway.service
   fi
+  if [[ -f "$UNIT_SRC/cellz.service" ]]; then
+    install -m 644 "$UNIT_SRC/cellz.service" /etc/systemd/system/cellz.service
+  fi
 fi
 
 if [[ -f "$CADDY_SRC" ]]; then
@@ -42,11 +48,15 @@ if [[ -f "$CADDY_SRC" ]]; then
 fi
 
 chown -R zene:zene "$OPT_DIR" /var/lib/zene-cloud
-mkdir -p /var/lib/zene-cloud/workspaces
+mkdir -p /var/lib/zene-cloud/workspaces /var/lib/zene-cloud/cells
 chown -R zene:zene /var/lib/zene-cloud
 
 systemctl daemon-reload
 systemctl enable zene-cloud-api zene-cloud-worker caddy
+if [[ -f /etc/systemd/system/cellz.service ]]; then
+  systemctl enable cellz
+  systemctl restart cellz
+fi
 if [[ -f /etc/systemd/system/zene-inference-gateway.service ]]; then
   systemctl enable zene-inference-gateway
   systemctl restart zene-inference-gateway

@@ -271,6 +271,22 @@ fn inject_inference_gateway(env: &mut HashMap<String, String>, url: Option<&str>
     }
 }
 
+fn inject_cellz(env: &mut HashMap<String, String>, url: Option<&str>) {
+    let url = url
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .or_else(|| {
+            std::env::var("CELLZ_URL")
+                .ok()
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+        });
+    if let Some(url) = url {
+        env.insert("CELLZ_URL".into(), url);
+    }
+}
+
 async fn run_with_real_acp(
     client: &reqwest::Client,
     cli: &Cli,
@@ -328,6 +344,7 @@ async fn run_with_real_acp(
     inject_run_max_turns(&mut llm_env, claimed.run.max_turns);
     inject_run_context(&mut llm_env, run_id, &cli.api_url, &cli.worker_token);
     inject_inference_gateway(&mut llm_env, cli.inference_gateway_url.as_deref());
+    inject_cellz(&mut llm_env, cli.cellz_url.as_deref());
     if let Some((dir, token, repo)) = github_for_acp {
         crate::github_auth::inject_env(&mut llm_env, dir, token.as_deref(), repo.as_deref());
     }
@@ -335,7 +352,8 @@ async fn run_with_real_acp(
         run_id = %run_id,
         max_turns = claimed.run.max_turns,
         inference_gateway = cli.inference_gateway_url.is_some(),
-        "injected ZENE_MAX_TURNS, ZENE_RUN_ID, and optional inference gateway for acp"
+        cellz = cli.cellz_url.is_some(),
+        "injected ZENE_MAX_TURNS, ZENE_RUN_ID, optional inference gateway and cellz for acp"
     );
 
     let runtime = Arc::new(
