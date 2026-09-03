@@ -98,6 +98,9 @@ pub fn format_bounded_output(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Mutex;
+
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
 
     #[test]
     fn skips_small_and_mcp() {
@@ -114,6 +117,7 @@ mod tests {
 
     #[test]
     fn plans_spill_for_large_bash() {
+        let _guard = ENV_LOCK.lock().unwrap();
         std::env::set_var("ZENE_MAX_TOOL_OUTPUT_BYTES", "400");
         let plan = plan_tool_output_bound("y".repeat(2000), "Bash");
         std::env::remove_var("ZENE_MAX_TOOL_OUTPUT_BYTES");
@@ -122,6 +126,7 @@ mod tests {
 
     #[test]
     fn handles_default_on_without_env() {
+        let _guard = ENV_LOCK.lock().unwrap();
         std::env::remove_var("ZENE_TOOL_OUTPUT_HANDLES");
         assert!(tool_output_handles_enabled());
         let out = format_bounded_output("yyyy", 400, Some("/tmp/out.txt"), 2000);
@@ -131,6 +136,7 @@ mod tests {
 
     #[test]
     fn handles_can_be_disabled() {
+        let _guard = ENV_LOCK.lock().unwrap();
         std::env::set_var("ZENE_TOOL_OUTPUT_HANDLES", "0");
         let out = format_bounded_output("yyyy", 400, Some("/tmp/out.txt"), 2000);
         std::env::remove_var("ZENE_TOOL_OUTPUT_HANDLES");
@@ -140,6 +146,7 @@ mod tests {
 
     #[test]
     fn handle_only_when_enabled() {
+        let _guard = ENV_LOCK.lock().unwrap();
         std::env::set_var("ZENE_TOOL_OUTPUT_HANDLES", "1");
         let out = format_bounded_output("yyyy", 400, Some("/tmp/out.txt"), 2000);
         std::env::remove_var("ZENE_TOOL_OUTPUT_HANDLES");
