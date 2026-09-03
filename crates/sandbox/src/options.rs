@@ -64,7 +64,7 @@ pub(crate) fn resolve_policy(workdir: &Path, opts: &SandboxOptions) -> Result<Po
 
 fn load_named_policy(workdir: &Path, profile: &str) -> Result<Policy> {
     let cfg = load_zene_sandbox_config(workdir);
-    if matches!(profile, "workspace" | "read-only" | "strict") {
+    if matches!(profile, "workspace" | "read-only" | "strict" | "agentcell") {
         if cfg.profiles.contains_key(profile) {
             return cfg
                 .resolve_policy(profile, workdir)
@@ -97,7 +97,7 @@ fn load_zene_sandbox_config(workdir: &Path) -> SandboxConfig {
 
 fn builtin_policy(profile: &str, workdir: &Path) -> Result<Policy> {
     match profile {
-        "workspace" => profile_workspace(workdir).map_err(|err| anyhow::anyhow!("{err}")),
+        "workspace" | "agentcell" => profile_workspace(workdir).map_err(|err| anyhow::anyhow!("{err}")),
         "read-only" => profile_read_only(workdir).map_err(|err| anyhow::anyhow!("{err}")),
         "strict" => profile_strict(workdir).map_err(|err| anyhow::anyhow!("{err}")),
         other => anyhow::bail!("unknown built-in sandbox profile `{other}`"),
