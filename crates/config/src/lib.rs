@@ -17,9 +17,8 @@ pub enum ProviderKind {
 impl ProviderKind {
     pub fn parse(s: &str) -> Result<Self, String> {
         match s.trim().to_lowercase().as_str() {
-            "openai" | "openai-compatible" | "openai_compatible" => Ok(Self::OpenAi),
+            "openai" | "openai-compatible" | "openai_compatible" | "" => Ok(Self::OpenAi),
             "anthropic" => Ok(Self::Anthropic),
-            other if other.is_empty() => Ok(Self::OpenAi),
             other => Err(format!(
                 "unknown provider `{other}`; expected `openai` or `anthropic`"
             )),
@@ -568,8 +567,6 @@ impl ZeneConfig {
             "glm".to_string()
         } else if base.contains("anthropic") {
             "anthropic".to_string()
-        } else if base.contains("openai") {
-            "openai".to_string()
         } else {
             "openai".to_string()
         }

@@ -59,7 +59,7 @@ impl AnthropicProvider {
             anyhow::bail!("Anthropic API error ({status}): {message}");
         }
 
-        Ok(parse_anthropic_response(&raw)?)
+        parse_anthropic_response(&raw)
     }
 
     async fn chat_stream_once(
@@ -475,7 +475,7 @@ impl AnthropicStreamState {
                 Some("message_stop") => {
                     self.done = true;
                     events.push(StreamEvent::Done {
-                        usage: self.usage.clone(),
+                        usage: self.usage,
                     });
                 }
                 _ => {}
