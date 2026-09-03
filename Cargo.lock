@@ -742,8 +742,7 @@ checksum = "d0881ea181b1df73ff77ffaaf9c7544ecc11e82fba9b5f27b262a3c73a332555"
 [[package]]
 name = "eero-keel-core"
 version = "0.0.15"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a71304b54e89e23a7ab7acc70e7d0f1893c242f589237688e6b81ec208db7d0e"
+source = "git+https://github.com/EeroEternal/keel#75bd2cfdd5f9e937bed59eb0774295ef7fddf6b2"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -763,8 +762,7 @@ dependencies = [
 [[package]]
 name = "eero-keel-enforce"
 version = "0.0.15"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "61bf5c9c461192006345bd8b7299b161abe788a69bdc294c72f1aa6501705cee"
+source = "git+https://github.com/EeroEternal/keel#75bd2cfdd5f9e937bed59eb0774295ef7fddf6b2"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -789,8 +787,7 @@ dependencies = [
 [[package]]
 name = "eero-keel-policy"
 version = "0.0.15"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7a452e5aa19596a390d18a28fc51307234eca15fd8a33d82ce0f4ac6367e41f7"
+source = "git+https://github.com/EeroEternal/keel#75bd2cfdd5f9e937bed59eb0774295ef7fddf6b2"
 dependencies = [
  "chrono",
  "serde",
@@ -804,8 +801,7 @@ dependencies = [
 [[package]]
 name = "eero-keel-record"
 version = "0.0.15"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8ca0fdff81fc3591c52ff9069d074eccb09957fb0a9835c30f97ac5716e50ed2"
+source = "git+https://github.com/EeroEternal/keel#75bd2cfdd5f9e937bed59eb0774295ef7fddf6b2"
 dependencies = [
  "async-trait",
  "chrono",
