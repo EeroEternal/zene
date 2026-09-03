@@ -25,15 +25,17 @@ Disable or delete the old Cloudflare Pages project `zene-docs` in the dashboard 
 Build on a Linux amd64 host (or use GitHub Actions `deploy-cloud`):
 
 ```bash
-# from repo root — cloud workspace + CLI
+# from repo root — cloud workspace + CLI + cellz
 (cd cloud && cargo build --release -p zene-cloud-api -p zene-cloud-worker --locked)
 cargo build --release -p zene-cli --locked
+(cd ../cellz && cargo build --release)
 (cd cloud/apps/web && npm ci && npm run build)
 
 STAGE=/tmp/zene-cloud-stage
 rm -rf "$STAGE" && mkdir -p "$STAGE/bin" "$STAGE/web" "$STAGE/systemd"
 cp cloud/target/release/zene-cloud-api cloud/target/release/zene-cloud-worker "$STAGE/bin/"
 cp target/release/zene target/release/zene-inference-gateway "$STAGE/bin/"
+cp ../cellz/target/release/cellz "$STAGE/bin/"
 cp -a cloud/apps/web/dist/. "$STAGE/web/"
 cp cloud/deploy/systemd/*.service "$STAGE/systemd/"
 cp cloud/deploy/Caddyfile cloud/deploy/install-remote.sh "$STAGE/"

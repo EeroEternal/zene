@@ -272,6 +272,9 @@ fn spawn_executor(exe: &PathBuf, cli: &Cli) -> Result<ChildSlot> {
     } else {
         cmd.env("ZENE_CLOUD_PUSH_PR", "false");
     }
+    if let Some(cellz_url) = &cli.cellz_url {
+        cmd.env("CELLZ_URL", cellz_url);
+    }
 
     // Inherit stdout/stderr so executor logs appear under the supervisor session.
     let child = cmd.spawn().context("spawn executor")?;

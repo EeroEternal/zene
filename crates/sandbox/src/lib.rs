@@ -182,8 +182,18 @@ impl LocalSandbox {
         options::adapt_policy_for_keel_spawn(&mut policy);
         let network = policy.network.clone();
 
-        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        #[cfg(target_os = "linux")]
+        let backend = if profile == "agentcell"
+            || std::env::var("ZENE_SANDBOX_BACKEND").ok().as_deref() == Some("agentcell")
+        {
+            keel_core::backend_agentcell(keel_core::AgentCellOptions::default())
+        } else {
+            backend_local_process(options::local_process_options())
+        };
+
+        #[cfg(target_os = "macos")]
         let backend = backend_local_process(options::local_process_options());
+
         #[cfg(not(any(target_os = "linux", target_os = "macos")))]
         let backend = backend_process_guard();
 

@@ -1,3 +1,4 @@
+mod cellz;
 mod checkpoint;
 mod paths;
 mod record;
@@ -15,6 +16,7 @@ use zene_llm::Message;
 /// Current event-backed conversation schema. Older records may omit this field.
 pub const CURRENT_CONVERSATION_SCHEMA_VERSION: u16 = 1;
 
+pub use cellz::CellzSessionStore;
 pub use checkpoint::{
     fork_session, latest_checkpoint_id, list_checkpoints, load_checkpoint, restore_checkpoint,
     save_checkpoint, SessionCheckpoint,
@@ -396,6 +398,12 @@ impl SessionView {
 /// backing store.
 pub trait SessionStore: Send + Sync {
     fn save(&self, session: &SessionRecord) -> Result<()>;
+
+    /// Optional loader hook for remote or specialized stores.
+    fn load(&self, id: &str) -> Result<Option<SessionRecord>> {
+        let _ = id;
+        Ok(None)
+    }
 }
 
 /// Default on-disk session store used by the compatibility APIs.
@@ -409,6 +417,18 @@ impl SessionStore for FileSessionStore {
         let raw = serde_json::to_string_pretty(session).context("serialize session")?;
         fs::write(path, raw).context("write session file")?;
         Ok(())
+    }
+
+    fn load(&self, id: &str) -> Result<Option<SessionRecord>> {
+        let path = session_path(id);
+        if !path.exists() {
+            return Ok(None);
+        }
+        let raw = fs::read_to_string(&path)
+            .with_context(|| format!("read session file: {}", path.display()))?;
+        parse_session_raw(&raw, Some(id))
+            .map(Some)
+            .context("parse session file")
     }
 }
 
@@ -750,6 +770,7 @@ impl SessionRecord {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn record_tool_result(
         &mut self,
         turn_id: Option<&str>,

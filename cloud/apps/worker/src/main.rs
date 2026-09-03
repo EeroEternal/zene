@@ -73,6 +73,10 @@ pub(crate) struct Cli {
     #[arg(long, env = "ZENE_CLOUD_PUSH_PR", default_value_t = false)]
     pub(crate) push_pr: bool,
 
+    /// Optional cellz state daemon URL (e.g. http://127.0.0.1:8080)
+    #[arg(long, env = "CELLZ_URL")]
+    pub(crate) cellz_url: Option<String>,
+
     /// Run as process supervisor (spawn/scale executor children). Mutually exclusive with executor loop.
     #[arg(long, env = "ZENE_CLOUD_WORKER_SUPERVISOR", default_value_t = false)]
     pub(crate) supervisor: bool,
