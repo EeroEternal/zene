@@ -474,9 +474,7 @@ impl AnthropicStreamState {
                 }
                 Some("message_stop") => {
                     self.done = true;
-                    events.push(StreamEvent::Done {
-                        usage: self.usage,
-                    });
+                    events.push(StreamEvent::Done { usage: self.usage });
                 }
                 _ => {}
             }

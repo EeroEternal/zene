@@ -426,7 +426,9 @@ impl SessionStore for FileSessionStore {
         }
         let raw = fs::read_to_string(&path)
             .with_context(|| format!("read session file: {}", path.display()))?;
-        parse_session_raw(&raw, Some(id)).map(Some).context("parse session file")
+        parse_session_raw(&raw, Some(id))
+            .map(Some)
+            .context("parse session file")
     }
 }
 

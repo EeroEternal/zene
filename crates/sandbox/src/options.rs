@@ -97,7 +97,9 @@ fn load_zene_sandbox_config(workdir: &Path) -> SandboxConfig {
 
 fn builtin_policy(profile: &str, workdir: &Path) -> Result<Policy> {
     match profile {
-        "workspace" | "agentcell" => profile_workspace(workdir).map_err(|err| anyhow::anyhow!("{err}")),
+        "workspace" | "agentcell" => {
+            profile_workspace(workdir).map_err(|err| anyhow::anyhow!("{err}"))
+        }
         "read-only" => profile_read_only(workdir).map_err(|err| anyhow::anyhow!("{err}")),
         "strict" => profile_strict(workdir).map_err(|err| anyhow::anyhow!("{err}")),
         other => anyhow::bail!("unknown built-in sandbox profile `{other}`"),

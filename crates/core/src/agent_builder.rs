@@ -351,16 +351,14 @@ impl AgentBuilder {
             tool_dedup: ToolDedup::new(),
             hooks,
             record_writer,
-            session_store: self
-                .session_store
-                .unwrap_or_else(|| {
-                    if let Ok(url) = std::env::var("CELLZ_URL") {
-                        if !url.is_empty() {
-                            return Arc::new(zene_session::CellzSessionStore::new(url));
-                        }
+            session_store: self.session_store.unwrap_or_else(|| {
+                if let Ok(url) = std::env::var("CELLZ_URL") {
+                    if !url.is_empty() {
+                        return Arc::new(zene_session::CellzSessionStore::new(url));
                     }
-                    Arc::new(FileSessionStore)
-                }),
+                }
+                Arc::new(FileSessionStore)
+            }),
             mcp,
             background: self.background.unwrap_or_else(shared_background_tasks),
             approval_broker: self.approval_broker,

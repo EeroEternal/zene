@@ -56,7 +56,8 @@ impl CellzSessionStore {
 
     /// Read `CELLZ_URL` from the environment or default to `http://127.0.0.1:8080`.
     pub fn from_env() -> Self {
-        let endpoint = std::env::var("CELLZ_URL").unwrap_or_else(|_| "http://127.0.0.1:8080".to_string());
+        let endpoint =
+            std::env::var("CELLZ_URL").unwrap_or_else(|_| "http://127.0.0.1:8080".to_string());
         Self::new(endpoint)
     }
 
@@ -126,14 +127,12 @@ impl CellzSessionStore {
             let seq = event.sequence() as i64;
             if seq > current_seq {
                 let event_type = match event {
-                    SessionEvent::MessageAppended { message, .. } => {
-                        match message.role {
-                            zene_llm::Role::User => "user_message",
-                            zene_llm::Role::Assistant => "agent_message",
-                            zene_llm::Role::System => "system_message",
-                            zene_llm::Role::Tool => "tool_result",
-                        }
-                    }
+                    SessionEvent::MessageAppended { message, .. } => match message.role {
+                        zene_llm::Role::User => "user_message",
+                        zene_llm::Role::Assistant => "agent_message",
+                        zene_llm::Role::System => "system_message",
+                        zene_llm::Role::Tool => "tool_result",
+                    },
                     SessionEvent::TurnStarted { .. } => "turn_start",
                     SessionEvent::TurnEnded { .. } => "turn_end",
                     SessionEvent::ToolCall { .. } => "tool_call",
@@ -258,7 +257,9 @@ impl CellzSessionStore {
         let mut events = Vec::new();
         if let Some(events_arr) = export["events"].as_array() {
             for ev in events_arr {
-                if let Ok(session_event) = serde_json::from_value::<SessionEvent>(ev["payload"].clone()) {
+                if let Ok(session_event) =
+                    serde_json::from_value::<SessionEvent>(ev["payload"].clone())
+                {
                     events.push(session_event);
                 }
             }
@@ -308,7 +309,10 @@ impl SessionStore for CellzSessionStore {
             }
             Err(e) => {
                 if self.fallback_on_error {
-                    warn!("Failed to save session to cellz (falling back to disk): {}", e);
+                    warn!(
+                        "Failed to save session to cellz (falling back to disk): {}",
+                        e
+                    );
                     self.fallback.save(session)
                 } else {
                     Err(e)
@@ -475,18 +479,34 @@ mod tests {
 
         // 1. Save session to mock cellz
         let save_res = store.save(&session);
-        assert!(save_res.is_ok(), "Save to cellz must succeed: {:?}", save_res);
-        assert!(received_create.load(Ordering::SeqCst), "Should call /cells create");
-        assert!(received_batch.load(Ordering::SeqCst), "Should call /events/batch");
+        assert!(
+            save_res.is_ok(),
+            "Save to cellz must succeed: {:?}",
+            save_res
+        );
+        assert!(
+            received_create.load(Ordering::SeqCst),
+            "Should call /cells create"
+        );
+        assert!(
+            received_batch.load(Ordering::SeqCst),
+            "Should call /events/batch"
+        );
 
         // 2. Load session from mock cellz
-        let loaded = store.load(&session.meta.id).unwrap().expect("Must find exported session");
+        let loaded = store
+            .load(&session.meta.id)
+            .unwrap()
+            .expect("Must find exported session");
         assert_eq!(loaded.meta.id, session.meta.id);
         assert_eq!(loaded.meta.title, "Synced Agent");
         assert_eq!(loaded.events.len(), 1);
         assert_eq!(loaded.todos.len(), 1);
         assert_eq!(loaded.todos[0].content, "Live in cellz");
         assert_eq!(loaded.messages.len(), 1);
-        assert_eq!(loaded.messages[0].content, Some("Roundtrip test".to_string()));
+        assert_eq!(
+            loaded.messages[0].content,
+            Some("Roundtrip test".to_string())
+        );
     }
 }
