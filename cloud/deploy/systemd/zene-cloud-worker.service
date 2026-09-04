@@ -1,7 +1,7 @@
 [Unit]
 Description=Zene Cloud Worker
-After=network.target zene-cloud-api.service zene-inference-gateway.service
-Wants=zene-cloud-api.service zene-inference-gateway.service
+After=network.target zene-cloud-api.service zene-inference-gateway.service cellz.service
+Wants=zene-cloud-api.service zene-inference-gateway.service cellz.service
 
 [Service]
 Type=simple

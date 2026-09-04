@@ -32,6 +32,7 @@ authors = ["Zene Contributors"]
 anyhow = "1"
 async-trait = "0.1"
 axum = { version = "0.8", features = ["macros"] }
+cellz = "0.1.0"
 chrono = { version = "0.4", features = ["serde"] }
 clap = { version = "4", features = ["derive"] }
 dirs = "6"

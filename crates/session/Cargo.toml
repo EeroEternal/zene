@@ -11,6 +11,7 @@ categories = ["database", "development-tools"]
 
 [dependencies]
 anyhow.workspace = true
+cellz = { workspace = true }
 chrono.workspace = true
 dirs.workspace = true
 serde.workspace = true
