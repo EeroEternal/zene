@@ -59,11 +59,9 @@ const config: Config = {
           orange: "hsl(var(--code-orange))",
         },
         muted: {
-          DEFAULT: "hsl(var(--muted-foreground))",
-          bg: "hsl(var(--muted))",
+          DEFAULT: "hsl(var(--muted))",
           foreground: "hsl(var(--muted-foreground))",
         },
-        "muted-foreground": "hsl(var(--muted-foreground))",
         accent: {
           DEFAULT: "hsl(var(--accent))",
           foreground: "hsl(var(--accent-foreground))",
@@ -160,6 +158,10 @@ const config: Config = {
       },
       transitionDuration: {
         DEFAULT: "150ms",
+      },
+      textColor: {
+        muted: "hsl(var(--muted-foreground))",
+        "muted-foreground": "hsl(var(--muted-foreground))",
       },
     },
   },
