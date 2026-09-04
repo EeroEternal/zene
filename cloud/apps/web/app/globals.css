@@ -2,28 +2,146 @@
 @tailwind components;
 @tailwind utilities;
 
-:root {
-  --color-bg: #f6f5f4;
-  --color-nav: #ebe9e7;
-  --color-surface: #ffffff;
-  --color-ink: #2e3436;
-  --color-muted: #687174;
-  --color-primary: #3584e4;
-  --color-primary-hover: #1c71d8;
-  --color-accent: #e5a50a;
-  --color-warning-bg: #fff5d6;
-  --color-success: #287a46;
-  --color-success-bg: #eaf4ec;
-  --color-error: #c01c28;
-  --color-error-bg: #fcebec;
-  --color-primary-soft: #eaf2ff;
-  --color-chip: #e4e2e0;
-  --color-line: #dddcd9;
-  --radius-sm: 4px;
-  --radius-md: 6px;
-  --radius-lg: 8px;
-  --toolbar-w: 52px;
-  --sidebar-w: 232px;
+@layer base {
+  :root {
+    --brand: 226 62% 40%;
+    --background: 0 0% 100%;
+    --foreground: 240 10% 15%;
+
+    --card: 0 0% 100%;
+    --card-foreground: 240 10% 15%;
+
+    --popover: 0 0% 100%;
+    --popover-foreground: 240 10% 15%;
+
+    --primary: 226 62% 40%;
+    --primary-foreground: 0 0% 100%;
+    --primary-hover: 225 63% 33%;
+    --primary-active: 224 65% 27%;
+    --primary-light: 224 100% 96%;
+    --primary-dark: 225 63% 33%;
+
+    --secondary: 240 5% 96%;
+    --secondary-foreground: 240 10% 30%;
+
+    --muted: 240 5% 96%;
+    --muted-foreground: 240 4% 46%;
+
+    --accent: 240 5% 96%;
+    --accent-foreground: 240 10% 15%;
+
+    --destructive: 0 84% 60%;
+    --destructive-foreground: 0 0% 100%;
+
+    --success: 142 71% 45%;
+    --success-foreground: 142 71% 95%;
+
+    --warning: 37 100% 55%;
+    --warning-foreground: 37 100% 95%;
+
+    --info: 217 91% 60%;
+    --inactive: 215 16% 47%;
+    --experimental: 262 83% 58%;
+
+    --border: 240 6% 90%;
+    --input: 240 6% 90%;
+    --ring: 226 62% 40%;
+
+    --radius: 0.5rem;
+
+    --sidebar-background: 240 5% 96%;
+    --sidebar-foreground: 240 4% 46%;
+    --sidebar-primary: 226 62% 40%;
+    --sidebar-primary-foreground: 0 0% 100%;
+    --sidebar-accent: 240 5% 92%;
+    --sidebar-accent-foreground: 240 10% 15%;
+    --sidebar-border: 240 6% 90%;
+    --sidebar-ring: 226 62% 40%;
+
+    --chart-1: 226 62% 40%;
+    --chart-2: 189 94% 43%;
+    --chart-3: 262 83% 58%;
+    --chart-4: 142 71% 45%;
+    --chart-5: 37 92% 50%;
+
+    --code-background: 216 28% 7%;
+    --code-border: 216 28% 17%;
+    --code-foreground: 213 27% 84%;
+    --code-muted: 215 16% 57%;
+    --code-blue: 213 94% 68%;
+    --code-cyan: 188 86% 63%;
+    --code-green: 142 69% 58%;
+    --code-yellow: 45 93% 58%;
+    --code-orange: 27 96% 61%;
+
+    --sidebar: 240 5% 96%;
+
+    --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    --font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+
+    /* Dimensions */
+    --sidebar-width-expanded: 256px;
+    --sidebar-width-collapsed: 48px;
+    --topbar-height: 56px;
+    --page-padding-x: 32px;
+    --page-padding-top: 32px;
+  }
+
+  .dark {
+    --brand: 226 62% 40%;
+    --background: 240 10% 4%;
+    --foreground: 0 0% 95%;
+
+    --card: 240 10% 6%;
+    --card-foreground: 0 0% 95%;
+
+    --popover: 240 10% 6%;
+    --popover-foreground: 0 0% 95%;
+
+    --primary: 226 100% 77%;
+    --primary-foreground: 222 47% 11%;
+    --primary-hover: 226 100% 83%;
+    --primary-active: 226 100% 70%;
+    --primary-light: 225 45% 18%;
+    --primary-dark: 226 100% 70%;
+
+    --secondary: 240 5% 15%;
+    --secondary-foreground: 0 0% 80%;
+
+    --muted: 240 5% 15%;
+    --muted-foreground: 240 5% 55%;
+
+    --accent: 240 5% 15%;
+    --accent-foreground: 0 0% 95%;
+
+    --destructive: 0 72% 55%;
+    --destructive-foreground: 0 0% 100%;
+
+    --success: 142 71% 45%;
+    --success-foreground: 142 71% 95%;
+
+    --warning: 37 100% 55%;
+    --warning-foreground: 37 100% 95%;
+
+    --info: 213 94% 68%;
+    --inactive: 215 20% 65%;
+    --experimental: 258 90% 76%;
+
+    --border: 240 5% 18%;
+    --input: 240 5% 18%;
+    --ring: 226 100% 77%;
+
+    --sidebar-background: 240 10% 6%;
+    --sidebar-foreground: 240 5% 55%;
+    --sidebar-primary: 226 100% 77%;
+    --sidebar-primary-foreground: 222 47% 11%;
+    --sidebar-accent: 240 5% 12%;
+    --sidebar-accent-foreground: 0 0% 95%;
+    --sidebar-border: 240 5% 18%;
+    --sidebar-ring: 226 100% 77%;
+
+    --sidebar: 240 10% 6%;
+  }
 }
 
 @layer base {
@@ -33,7 +151,7 @@
     margin: 0;
   }
   body {
-    @apply overflow-hidden bg-canvas-bg font-sans text-sm text-ink antialiased;
+    @apply overflow-hidden bg-background font-sans text-sm text-foreground antialiased;
   }
   button {
     cursor: pointer;
@@ -55,50 +173,52 @@
 }
 
 @layer components {
+  /* Shared button primitives following console-kit specification */
   .btn {
-    @apply inline-flex h-8 items-center justify-center rounded-[5px] bg-chip px-3 text-[13px] font-medium text-ink transition-colors duration-150 hover:bg-line-strong disabled:opacity-40 disabled:hover:bg-chip;
+    @apply inline-flex h-9 items-center justify-center rounded-md border border-border bg-card px-3 text-[13px] font-medium text-foreground transition-colors duration-150 hover:bg-muted disabled:opacity-40 disabled:hover:bg-card;
   }
   .btn-primary {
-    @apply bg-primary text-white hover:bg-primary-hover disabled:hover:bg-primary;
+    @apply border-transparent bg-primary text-primary-foreground hover:bg-primary-hover active:bg-primary-active focus-visible:ring-2 focus-visible:ring-primary/20 disabled:hover:bg-primary;
   }
   .btn-danger {
-    @apply bg-transparent text-danger hover:bg-danger-soft disabled:hover:bg-transparent;
+    @apply border-transparent bg-transparent text-destructive hover:bg-destructive/10 disabled:hover:bg-transparent;
   }
   .btn-sm {
     @apply h-7 px-2.5 text-xs;
   }
   .field-input {
-    @apply w-full rounded-sm border border-line-strong bg-canvas px-3 py-[9px] text-ink outline-none transition-colors duration-150 focus:border-primary;
+    @apply w-full rounded-sm border border-input bg-card px-3 py-[9px] text-[13.5px] text-foreground outline-none transition-colors duration-150 placeholder:text-muted-foreground focus:border-primary focus:ring-2 focus:ring-primary/20;
   }
+  /* Quiet selection style per console-kit spec: bg-primary/10 */
   .nav-item {
-    @apply flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-left text-[12.5px] text-ink hover:bg-canvas/60;
+    @apply flex w-full items-center gap-2 rounded-md px-2.5 py-1.5 text-left text-[13px] text-muted-foreground transition-colors duration-150 hover:bg-muted hover:text-foreground;
   }
   .nav-item-active {
-    @apply bg-active font-medium text-ink;
+    @apply bg-primary/10 font-medium text-primary hover:bg-primary/15 hover:text-primary;
   }
   .field-label {
-    @apply mb-1.5 mt-3 block text-[11px] font-semibold tracking-[.02em] text-muted;
+    @apply mb-1.5 mt-3 block text-[12px] font-medium tracking-[.01em] text-muted-foreground;
   }
   .menu-card {
-    @apply rounded-md border border-line bg-canvas p-1.5 shadow-menu;
+    @apply rounded-md border border-border bg-card p-1.5 shadow-menu;
   }
   .menu-item {
-    @apply flex w-full items-center gap-2.5 rounded-sm px-2.5 py-2 text-left text-[13px] text-ink hover:bg-secondary;
+    @apply flex w-full items-center gap-2.5 rounded-sm px-2.5 py-2 text-left text-[13px] text-foreground hover:bg-muted;
   }
   .picker-item {
-    @apply flex w-full items-center gap-2.5 rounded-sm p-2 text-left text-[13px] font-normal text-ink hover:bg-secondary;
+    @apply flex w-full items-center gap-2.5 rounded-sm p-2 text-left text-[13px] font-normal text-foreground hover:bg-muted;
   }
   .picker-item-active {
-    @apply bg-active;
+    @apply bg-primary/10 font-medium text-primary;
   }
   .menu-label {
-    @apply px-2.5 pb-1 pt-2 text-[11px] font-medium text-placeholder;
+    @apply px-2.5 pb-1 pt-2 text-[11px] font-medium uppercase tracking-[0.06em] text-muted-foreground;
   }
   .menu-sep {
-    @apply mx-1.5 my-1 h-px bg-line;
+    @apply mx-1.5 my-1 h-px bg-border;
   }
   .panel-title {
-    @apply mb-2.5 text-[11px] font-semibold uppercase tracking-[.04em] text-placeholder;
+    @apply mb-2.5 text-[11px] font-semibold uppercase tracking-[.04em] text-muted-foreground;
   }
   .ico-stroke {
     stroke: currentColor;
@@ -111,7 +231,7 @@
     stroke-width: 2;
   }
   .md-body {
-    @apply min-w-0 text-[13.5px] leading-[1.55] text-ink;
+    @apply min-w-0 text-[13.5px] leading-[1.55] text-foreground;
     overflow-wrap: anywhere;
     word-break: break-word;
   }
@@ -146,7 +266,7 @@
   .md-body h2,
   .md-body h3,
   .md-body h4 {
-    @apply mb-1.5 mt-3 font-semibold text-ink;
+    @apply mb-1.5 mt-3 font-semibold text-foreground;
   }
   .md-body h1 {
     @apply text-[18px];
@@ -180,22 +300,22 @@
     @apply text-primary underline underline-offset-2;
   }
   .md-body strong {
-    @apply font-semibold text-ink;
+    @apply font-semibold text-foreground;
   }
   .md-body code {
-    @apply rounded-[3px] bg-secondary px-1 py-px font-mono text-[12px] text-ink;
+    @apply rounded-[3px] bg-secondary px-1 py-px font-mono text-[12px] text-foreground;
   }
   .md-body pre {
-    @apply my-2 overflow-x-auto rounded-lg border border-line bg-tertiary p-2.5;
+    @apply my-2 overflow-x-auto rounded-lg border border-border bg-muted p-2.5;
   }
   .md-body pre code {
     @apply bg-transparent p-0 text-[12px] leading-[1.5];
   }
   .md-body blockquote {
-    @apply my-2 border-l-2 border-line-strong pl-3 text-muted;
+    @apply my-2 border-l-2 border-border pl-3 text-muted-foreground;
   }
   .md-body hr {
-    @apply my-3 border-0 border-t border-line;
+    @apply my-3 border-0 border-t border-border;
   }
   /* Models often emit a leading ---; don't show a stray rule above the first heading. */
   .md-body > hr:first-child {
@@ -206,19 +326,19 @@
   }
   .md-body th,
   .md-body td {
-    @apply border border-line px-2 py-1.5 text-left;
+    @apply border border-border px-2 py-1.5 text-left;
   }
   .md-body th {
-    @apply bg-tertiary font-semibold;
+    @apply bg-muted font-semibold;
   }
 
   /* IDE code viewer (highlight.js) — light theme aligned with Console tokens */
   .code-viewer .hljs {
-    @apply bg-transparent text-ink;
+    @apply bg-transparent text-foreground;
   }
   .code-viewer .hljs-comment,
   .code-viewer .hljs-quote {
-    @apply text-placeholder italic;
+    @apply text-muted-foreground italic;
   }
   .code-viewer .hljs-keyword,
   .code-viewer .hljs-selector-tag,
@@ -247,14 +367,14 @@
   .code-viewer .hljs-variable,
   .code-viewer .hljs-template-variable,
   .code-viewer .hljs-params {
-    @apply text-ink;
+    @apply text-foreground;
   }
   .code-viewer .hljs-meta,
   .code-viewer .hljs-link {
-    @apply text-muted;
+    @apply text-muted-foreground;
   }
   .code-viewer .hljs-deletion {
-    @apply text-danger;
+    @apply text-destructive;
   }
 }
 
