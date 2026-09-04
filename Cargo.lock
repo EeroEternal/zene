@@ -742,7 +742,7 @@ checksum = "d0881ea181b1df73ff77ffaaf9c7544ecc11e82fba9b5f27b262a3c73a332555"
 [[package]]
 name = "eero-keel-core"
 version = "0.0.15"
-source = "git+https://github.com/EeroEternal/keel#75bd2cfdd5f9e937bed59eb0774295ef7fddf6b2"
+source = "git+https://github.com/EeroEternal/keel#b2475b68987c11ba8f65b4cec400b7c3549851fb"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -762,7 +762,7 @@ dependencies = [
 [[package]]
 name = "eero-keel-enforce"
 version = "0.0.15"
-source = "git+https://github.com/EeroEternal/keel#75bd2cfdd5f9e937bed59eb0774295ef7fddf6b2"
+source = "git+https://github.com/EeroEternal/keel#b2475b68987c11ba8f65b4cec400b7c3549851fb"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -787,7 +787,7 @@ dependencies = [
 [[package]]
 name = "eero-keel-policy"
 version = "0.0.15"
-source = "git+https://github.com/EeroEternal/keel#75bd2cfdd5f9e937bed59eb0774295ef7fddf6b2"
+source = "git+https://github.com/EeroEternal/keel#b2475b68987c11ba8f65b4cec400b7c3549851fb"
 dependencies = [
  "chrono",
  "serde",
@@ -801,7 +801,7 @@ dependencies = [
 [[package]]
 name = "eero-keel-record"
 version = "0.0.15"
-source = "git+https://github.com/EeroEternal/keel#75bd2cfdd5f9e937bed59eb0774295ef7fddf6b2"
+source = "git+https://github.com/EeroEternal/keel#b2475b68987c11ba8f65b4cec400b7c3549851fb"
 dependencies = [
  "async-trait",
  "chrono",
