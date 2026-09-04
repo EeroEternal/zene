@@ -186,7 +186,17 @@ impl LocalSandbox {
         let backend = if profile == "agentcell"
             || std::env::var("ZENE_SANDBOX_BACKEND").ok().as_deref() == Some("agentcell")
         {
-            keel_core::backend_agentcell(keel_core::AgentCellOptions::default())
+            let mut ac_opts = keel_core::AgentCellOptions::default();
+            if let keel_core::NetworkPolicy::Allowlist(rules) = &network {
+                if let Some(first) = rules.first() {
+                    ac_opts.egress = Some(if let Some(port) = first.port {
+                        format!("{}:{}", first.host, port)
+                    } else {
+                        format!("{}:443", first.host)
+                    });
+                }
+            }
+            keel_core::backend_agentcell(ac_opts)
         } else {
             backend_local_process(options::local_process_options())
         };
