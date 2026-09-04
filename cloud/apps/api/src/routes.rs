@@ -174,7 +174,7 @@ async fn request_email_login(
     tracing::warn!(
         email = %req.email.trim().to_lowercase(),
         %login_url,
-        "RESEND_API_KEY unset; returning sign-in URL for local use"
+        "Email sending unconfigured (CLOUDFLARE_MAIL_TOKEN or RESEND_API_KEY unset); returning sign-in URL for local use"
     );
     Ok(Json(EmailLoginResponse {
         ok: true,
