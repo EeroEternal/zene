@@ -80,21 +80,9 @@ impl EmailConfig {
 }
 
 #[derive(Serialize)]
-struct CloudflareEmailRecipient<'a> {
-    email: &'a str,
-}
-
-#[derive(Serialize)]
-struct CloudflareEmailSender<'a> {
-    email: &'a str,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    name: Option<&'a str>,
-}
-
-#[derive(Serialize)]
 struct CloudflareSendEmailRequest<'a> {
-    from: CloudflareEmailSender<'a>,
-    to: Vec<CloudflareEmailRecipient<'a>>,
+    from: &'a str,
+    to: Vec<&'a str>,
     subject: &'a str,
     text: &'a str,
     html: &'a str,
@@ -107,19 +95,6 @@ struct ResendEmail<'a> {
     subject: &'a str,
     html: &'a str,
     text: &'a str,
-}
-
-fn parse_sender_name_and_email(from_raw: &str) -> (Option<&str>, &str) {
-    let raw = from_raw.trim();
-    if let (Some(start), Some(end)) = (raw.find('<'), raw.rfind('>')) {
-        if start < end {
-            let name = raw[..start].trim();
-            let email = raw[start + 1..end].trim();
-            let name_opt = if name.is_empty() { None } else { Some(name) };
-            return (name_opt, email);
-        }
-    }
-    (None, raw)
 }
 
 pub async fn send_signin_email(cfg: &EmailConfig, to: &str, login_url: &str) -> Result<()> {
@@ -140,16 +115,12 @@ pub async fn send_signin_email(cfg: &EmailConfig, to: &str, login_url: &str) -> 
             account_id,
             from,
         } => {
-            let (name, sender_email) = parse_sender_name_and_email(from);
             let url = format!(
                 "https://api.cloudflare.com/client/v4/accounts/{account_id}/email/sending/send"
             );
             let payload = CloudflareSendEmailRequest {
-                from: CloudflareEmailSender {
-                    email: sender_email,
-                    name,
-                },
-                to: vec![CloudflareEmailRecipient { email: to }],
+                from,
+                to: vec![to],
                 subject: "Sign in to Zene",
                 text: &text,
                 html: &html,
@@ -229,13 +200,12 @@ mod tests {
     use super::*;
 
     #[test]
-    fn parses_sender_name_and_email() {
-        let (name, email) = parse_sender_name_and_email("Zene <noreply@zene.run>");
-        assert_eq!(name, Some("Zene"));
-        assert_eq!(email, "noreply@zene.run");
-
-        let (name2, email2) = parse_sender_name_and_email("noreply@zene.run");
-        assert_eq!(name2, None);
-        assert_eq!(email2, "noreply@zene.run");
+    fn email_config_cloudflare_precedence() {
+        std::env::set_var("CLOUDFLARE_MAIL_TOKEN", "token_123");
+        std::env::set_var("CLOUDFLARE_ACCOUNT_ID", "acc_123");
+        let cfg = EmailConfig::from_env();
+        assert!(cfg.configured());
+        std::env::remove_var("CLOUDFLARE_MAIL_TOKEN");
+        std::env::remove_var("CLOUDFLARE_ACCOUNT_ID");
     }
 }
