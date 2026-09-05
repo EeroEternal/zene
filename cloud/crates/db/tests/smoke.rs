@@ -1134,9 +1134,20 @@ async fn user_retry_requeues_failed_run_and_resumes_without_prompt() {
     db.set_runtime_session_id_fenced(run.id, &fence, "runtime-session-retry")
         .await
         .unwrap();
-    db.update_run_status(run.id, RunStatus::Failed, None, Some("clone-auth".into()))
+    let failed = db
+        .update_run_status(run.id, RunStatus::Failed, None, Some("clone-auth".into()))
         .await
         .unwrap();
+    assert_eq!(failed.last_error.as_deref(), Some("clone-auth"));
+    assert_eq!(
+        db.get_run(run.id)
+            .await
+            .unwrap()
+            .unwrap()
+            .last_error
+            .as_deref(),
+        Some("clone-auth")
+    );
     db.user_retry_run(run.id, None).await.unwrap();
     let replacement = db
         .claim_next_run("retry-worker-2", std::path::Path::new("/tmp/zc-workspaces"))

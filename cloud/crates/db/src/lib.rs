@@ -746,6 +746,7 @@ impl Db {
             started_at: None,
             finished_at: None,
             archived_at: None,
+            last_error: None,
         };
         let mut tx = self.pool.begin().await?;
         sqlx::query(
@@ -1218,7 +1219,7 @@ impl Db {
             Some("platform.status.queued"),
             None,
             RunEventKind::Platform,
-            run_status_payload(RunStatus::Queued, None),
+            run_status_payload(RunStatus::Queued, None, None),
         )
         .await?;
         tx.commit().await?;
@@ -1297,12 +1298,14 @@ impl Db {
             sqlx::query(
                 "UPDATE runs
                  SET status = ?, status_version = status_version + 1, head_sha = COALESCE(?, head_sha),
-                     finished_at = COALESCE(?, finished_at)
+                     finished_at = COALESCE(?, finished_at),
+                     last_error = COALESCE(?, last_error)
                  WHERE id = ?",
             )
             .bind(status.as_str())
             .bind(head_sha.clone())
             .bind(finished.clone())
+            .bind(failure_code.clone())
             .bind(run_id.to_string())
             .execute(&mut *tx)
             .await?;
@@ -1325,7 +1328,7 @@ impl Db {
             Some(&format!("platform.status.{}", status.as_str())),
             None,
             RunEventKind::Platform,
-            run_status_payload(status, head_sha),
+            run_status_payload(status, head_sha, failure_code),
         )
         .await?;
         tx.commit().await?;
@@ -1351,16 +1354,18 @@ impl Db {
         sqlx::query(
             "UPDATE runs
              SET status = ?, status_version = status_version + 1, head_sha = COALESCE(?, head_sha),
-                 finished_at = COALESCE(?, finished_at)
+                 finished_at = COALESCE(?, finished_at),
+                 last_error = COALESCE(?, last_error)
              WHERE id = ?",
         )
         .bind(status.as_str())
         .bind(head_sha.clone())
         .bind(finished)
+        .bind(failure_code.clone())
         .bind(run_id.to_string())
         .execute(&mut *tx)
         .await?;
-        if let Some(code) = failure_code {
+        if let Some(code) = failure_code.as_deref() {
             sqlx::query(
                 "UPDATE run_attempts SET failure_code = ?, finished_at = ?
                  WHERE run_id = ? AND finished_at IS NULL",
@@ -1378,7 +1383,7 @@ impl Db {
             Some(&format!("platform.status.{}", status.as_str())),
             None,
             RunEventKind::Platform,
-            run_status_payload(status, head_sha),
+            run_status_payload(status, head_sha, failure_code),
         )
         .await?;
         let updated =
@@ -1813,7 +1818,7 @@ impl Db {
                 Some("platform.status.queued"),
                 None,
                 RunEventKind::Platform,
-                run_status_payload(RunStatus::Queued, None),
+                run_status_payload(RunStatus::Queued, None, None),
             )
             .await?;
         }
@@ -2502,6 +2507,7 @@ struct RunRow {
     started_at: Option<String>,
     finished_at: Option<String>,
     archived_at: Option<String>,
+    last_error: Option<String>,
 }
 
 impl RunRow {
@@ -2532,6 +2538,7 @@ impl RunRow {
             started_at: self.started_at.as_deref().map(parse_time),
             finished_at: self.finished_at.as_deref().map(parse_time),
             archived_at: self.archived_at.as_deref().map(parse_time),
+            last_error: self.last_error,
         }
     }
 }
@@ -2684,14 +2691,22 @@ pub(crate) fn map_approval_full_row(
 const RUN_COLUMNS: &str =
     "id, organization_id, repository_id, workspace_id, requested_by, status, status_version,
     title, prompt, base_ref, base_sha, head_branch, head_sha, model, permission_mode, max_turns,
-    created_at, started_at, finished_at, archived_at";
+    created_at, started_at, finished_at, archived_at, last_error";
 
 fn platform_payload(event: PlatformEvent) -> serde_json::Value {
     serde_json::to_value(event).unwrap_or_else(|_| serde_json::json!({}))
 }
 
-fn run_status_payload(status: RunStatus, head_sha: Option<String>) -> serde_json::Value {
-    platform_payload(PlatformEvent::RunStatusChanged { status, head_sha })
+fn run_status_payload(
+    status: RunStatus,
+    head_sha: Option<String>,
+    last_error: Option<String>,
+) -> serde_json::Value {
+    platform_payload(PlatformEvent::RunStatusChanged {
+        status,
+        head_sha,
+        last_error,
+    })
 }
 
 #[cfg(test)]
