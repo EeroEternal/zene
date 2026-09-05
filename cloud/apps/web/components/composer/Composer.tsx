@@ -84,8 +84,8 @@ export function Composer({
       <div
         className={
           compact
-            ? "relative -mx-3.5 rounded-md bg-canvas px-3.5 pb-2 pt-2.5 shadow-card focus-within:shadow-[0_0_0_2px_#EAF2FF]"
-            : "relative rounded-md bg-canvas p-3 pb-2.5 shadow-card focus-within:shadow-[0_0_0_2px_#EAF2FF]"
+            ? "relative -mx-3.5 rounded-md border border-border bg-canvas px-3.5 pb-2 pt-2.5 shadow-card focus-within:border-primary/40 focus-within:shadow-[0_0_0_2px_#EAF2FF]"
+            : "relative rounded-md border border-border bg-canvas p-3 pb-2.5 shadow-card focus-within:border-primary/40 focus-within:shadow-[0_0_0_2px_#EAF2FF]"
         }
       >
         {text.trigger && (

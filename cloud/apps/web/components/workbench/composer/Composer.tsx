@@ -197,8 +197,8 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
         className={
           cardClassName ||
           (compact
-            ? "-mx-3.5 rounded-md bg-canvas px-3.5 pb-2 pt-2.5 shadow-card focus-within:shadow-[0_0_0_2px_#EAF2FF]"
-            : "rounded-md bg-canvas p-3 pb-2.5 shadow-card focus-within:shadow-[0_0_0_2px_#EAF2FF]")
+            ? "-mx-3.5 rounded-md border border-border bg-canvas px-3.5 pb-2 pt-2.5 shadow-card focus-within:border-primary/40 focus-within:shadow-[0_0_0_2px_#EAF2FF]"
+            : "rounded-md border border-border bg-canvas p-3 pb-2.5 shadow-card focus-within:border-primary/40 focus-within:shadow-[0_0_0_2px_#EAF2FF]")
         }
       >
         <textarea
