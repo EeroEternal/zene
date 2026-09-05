@@ -144,6 +144,7 @@ export function Composer({
               compact={compact}
               open={openMenu === "model"}
               onToggle={() => setMenu(openMenu === "model" ? null : "model")}
+              onClose={() => setMenu(null)}
               selectedModel={selectedModel}
               llmSettings={llmSettings}
               llmReady={llmReady}

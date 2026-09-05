@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   IconExternal,
   IconGithub,
@@ -9,11 +9,12 @@ import {
   IconRepo,
 } from "@/lib/icons";
 import type { Repo } from "@/lib/types";
-import { ChipTrigger, MenuSep, SearchablePicker } from "../ui";
+import { ChipTrigger, MenuSep, SearchablePicker, useDismiss } from "../ui";
 
 export function ProjectPicker({
   open,
   onToggle,
+  onClose,
   repos,
   selectedRepoId,
   githubConnected,
@@ -24,6 +25,7 @@ export function ProjectPicker({
 }: {
   open: boolean;
   onToggle: () => void;
+  onClose?: () => void;
   repos: Repo[];
   selectedRepoId: string;
   githubConnected: boolean;
@@ -32,8 +34,11 @@ export function ProjectPicker({
   onRefreshRepos: () => Promise<Repo[]>;
   onNotice: (message: string, kind: "ok" | "error") => void;
 }) {
+  const rootRef = useRef<HTMLDivElement>(null);
   const [query, setQuery] = useState("");
   const selected = repos.find((r) => r.id === selectedRepoId) || null;
+
+  useDismiss(open, () => onClose ? onClose() : onToggle(), rootRef);
 
   useEffect(() => {
     if (open) setQuery("");
@@ -51,7 +56,7 @@ export function ProjectPicker({
     : "Connect GitHub to see repos";
 
   return (
-    <div className="relative">
+    <div className="relative" ref={rootRef}>
       <ChipTrigger
         open={open}
         title={selected ? `${selected.owner}/${selected.name}` : "Select project"}

@@ -1,13 +1,14 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { IconBranch } from "@/lib/icons";
 import type { Branch } from "@/lib/types";
-import { ChipTrigger, SearchablePicker } from "../ui";
+import { ChipTrigger, SearchablePicker, useDismiss } from "../ui";
 
 export function BranchPicker({
   open,
   onToggle,
+  onClose,
   disabled,
   loading,
   branches,
@@ -16,13 +17,17 @@ export function BranchPicker({
 }: {
   open: boolean;
   onToggle: () => void;
+  onClose?: () => void;
   disabled?: boolean;
   loading?: boolean;
   branches: Branch[];
   selectedBranch: string;
   onSelect: (name: string) => void;
 }) {
+  const rootRef = useRef<HTMLDivElement>(null);
   const [query, setQuery] = useState("");
+
+  useDismiss(open, () => onClose ? onClose() : onToggle(), rootRef);
 
   useEffect(() => {
     if (open) setQuery("");
@@ -34,7 +39,7 @@ export function BranchPicker({
   }, [branches, query]);
 
   return (
-    <div className="relative">
+    <div className="relative" ref={rootRef}>
       <ChipTrigger
         open={open}
         disabled={disabled}

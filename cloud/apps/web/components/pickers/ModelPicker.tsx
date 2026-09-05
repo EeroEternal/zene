@@ -9,6 +9,7 @@ import { SearchablePicker, useAnchoredMenu } from "../ui";
 export function ModelPicker({
   open,
   onToggle,
+  onClose,
   selectedModel,
   llmSettings,
   llmReady = true,
@@ -19,6 +20,7 @@ export function ModelPicker({
 }: {
   open: boolean;
   onToggle: () => void;
+  onClose?: () => void;
   selectedModel: string;
   llmSettings: LlmSettingsView | null;
   llmReady?: boolean;
@@ -28,8 +30,33 @@ export function ModelPicker({
   compact?: boolean;
 }) {
   const triggerRef = useRef<HTMLDivElement>(null);
+  const popupRef = useRef<HTMLDivElement>(null);
   const [query, setQuery] = useState("");
   const pos = useAnchoredMenu(open, triggerRef, { width: 280, placement: "above" });
+
+  useEffect(() => {
+    if (!open) return;
+    const onDoc = (e: MouseEvent) => {
+      const target = e.target as Node;
+      if (triggerRef.current?.contains(target)) return;
+      if (popupRef.current?.contains(target)) return;
+      if (onClose) onClose();
+      else onToggle();
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        e.stopPropagation();
+        if (onClose) onClose();
+        else onToggle();
+      }
+    };
+    document.addEventListener("click", onDoc);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("click", onDoc);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [open, onClose, onToggle]);
 
   useEffect(() => {
     if (open) setQuery("");
@@ -66,6 +93,7 @@ export function ModelPicker({
       </button>
       {open && pos && (
         <div
+          ref={popupRef}
           className="fixed z-[45]"
           style={{
             left: pos.left,
