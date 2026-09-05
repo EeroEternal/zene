@@ -167,7 +167,8 @@ async fn send_verification_code(
     let code = state
         .db
         .create_email_verification_code(&email, purpose)
-        .await?;
+        .await
+        .map_err(|e| AppError::bad_request(e.to_string()))?;
     let cfg = crate::email::EmailConfig::from_env();
     if cfg.configured() {
         if let Err(err) =
@@ -201,7 +202,8 @@ async fn register(
         state
             .db
             .verify_and_consume_verification_code(&email, code, "register")
-            .await?;
+            .await
+            .map_err(|e| AppError::bad_request(e.to_string()))?;
     } else {
         let cfg = crate::email::EmailConfig::from_env();
         if cfg.configured() {
@@ -210,7 +212,13 @@ async fn register(
             ));
         }
     }
-    Ok(Json(state.db.register(req).await?))
+    Ok(Json(
+        state
+            .db
+            .register(req)
+            .await
+            .map_err(|e| AppError::bad_request(e.to_string()))?,
+    ))
 }
 
 async fn reset_password(
@@ -221,15 +229,28 @@ async fn reset_password(
     state
         .db
         .verify_and_consume_verification_code(&email, &req.code, "reset_password")
-        .await?;
-    Ok(Json(state.db.reset_password(&email, &req.new_password).await?))
+        .await
+        .map_err(|e| AppError::bad_request(e.to_string()))?;
+    Ok(Json(
+        state
+            .db
+            .reset_password(&email, &req.new_password)
+            .await
+            .map_err(|e| AppError::bad_request(e.to_string()))?,
+    ))
 }
 
 async fn login(
     State(state): State<AppState>,
     Json(req): Json<LoginRequest>,
 ) -> Result<impl IntoResponse, AppError> {
-    Ok(Json(state.db.login(req).await?))
+    Ok(Json(
+        state
+            .db
+            .login(req)
+            .await
+            .map_err(|_| AppError::unauthorized("Invalid email or password"))?,
+    ))
 }
 
 async fn request_email_login(
