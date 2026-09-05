@@ -162,20 +162,37 @@ async fn github_install_callback(
     let installation_id = query
         .installation_id
         .ok_or_else(|| AppError::bad_request("missing installation_id"))?;
-    let state_key = query
-        .state
-        .ok_or_else(|| AppError::bad_request("missing state"))?;
-    let saved = state
-        .db
-        .take_oauth_state(&state_key)
-        .await?
-        .ok_or_else(|| AppError::bad_request("invalid or expired state"))?;
-    let user_id = saved
-        .user_id
-        .ok_or_else(|| AppError::unauthorized("install state has no user"))?;
-    let org = state.db.primary_org(user_id).await?;
+    let org_id = match query.state.as_deref() {
+        Some(state_key) => {
+            if let Some(saved) = state.db.take_oauth_state(state_key).await? {
+                let user_id = saved
+                    .user_id
+                    .ok_or_else(|| AppError::unauthorized("install state has no user"))?;
+                state.db.primary_org(user_id).await?.id
+            } else if let Some(existing) = state
+                .db
+                .get_installation_by_provider_id(&installation_id)
+                .await?
+            {
+                existing.organization_id
+            } else {
+                return Err(AppError::bad_request("invalid or expired state"));
+            }
+        }
+        None => {
+            if let Some(existing) = state
+                .db
+                .get_installation_by_provider_id(&installation_id)
+                .await?
+            {
+                existing.organization_id
+            } else {
+                return Err(AppError::bad_request("missing state"));
+            }
+        }
+    };
     let github = state
-        .reload_github_for_org(org.id)
+        .reload_github_for_org(org_id)
         .await
         .map_err(AppError::from)?;
     let remote = github
@@ -185,7 +202,7 @@ async fn github_install_callback(
     state
         .db
         .upsert_installation(
-            org.id,
+            org_id,
             &remote.id,
             &remote.account_login,
             remote.account_type,
@@ -196,7 +213,7 @@ async fn github_install_callback(
         .list_installation_repos(&remote.id)
         .await
         .map_err(AppError::from)?;
-    state.db.sync_repos_from_github(org.id, &listed).await?;
+    state.db.sync_repos_from_github(org_id, &listed).await?;
     let _ = query.setup_action;
     Ok(github_connected_page(&state.public_base_url))
 }
