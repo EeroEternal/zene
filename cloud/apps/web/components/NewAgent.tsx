@@ -128,6 +128,7 @@ export function NewAgent(props: NewAgentProps) {
               <ProjectPicker
                 open={openMenu === "project"}
                 onToggle={() => (openMenu === "project" ? closeMenus() : openProjectMenu())}
+                onClose={closeMenus}
                 repos={repos}
                 selectedRepoId={selectedRepoId}
                 githubConnected={githubConnected}
@@ -144,6 +145,7 @@ export function NewAgent(props: NewAgentProps) {
               />
               <BranchPicker
                 open={openMenu === "branch"}
+                onClose={closeMenus}
                 disabled={!selectedRepo || branches.loading}
                 loading={branches.loading}
                 branches={branches.branches}

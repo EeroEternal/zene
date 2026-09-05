@@ -12,7 +12,7 @@ import {
 } from "@/lib/composerPrefs";
 import { IconPaperclip, IconPlug, IconPlus, IconSkills } from "@/lib/icons";
 import type { McpServer, PermissionMode } from "@/lib/types";
-import { Menu, MenuItem, MenuSearch, MenuSep, MENU_FLYOUT, PromptDialog, Switch } from "../ui";
+import { Menu, MenuItem, MenuSearch, MenuSep, MENU_FLYOUT, PromptDialog, Switch, useDismiss } from "../ui";
 
 export type AttachSection = "files" | "skills" | "mcp" | "permission" | "maxTurns";
 
@@ -46,10 +46,16 @@ export function AttachMenu({
   compact?: boolean;
 }) {
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const rootRef = useRef<HTMLDivElement>(null);
   const [panel, setPanel] = useState<AttachSection | null>(null);
   const [mcpQuery, setMcpQuery] = useState("");
   const [mcpServers, setMcp] = useState<McpServer[]>([]);
   const [addMcpOpen, setAddMcpOpen] = useState(false);
+
+  useDismiss(open, () => {
+    setPanel(null);
+    onClose();
+  }, rootRef);
 
   useEffect(() => {
     setMcp(loadMcpServers());
@@ -78,7 +84,7 @@ export function AttachMenu({
   const togglePanel = (id: AttachSection) => setPanel((cur) => (cur === id ? null : id));
 
   return (
-    <div className="relative">
+    <div className="relative" ref={rootRef}>
       <button
         type="button"
         className={
