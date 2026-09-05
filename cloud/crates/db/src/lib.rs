@@ -126,6 +126,10 @@ impl Db {
                 "015_user_llm_providers",
                 include_str!("../../../migrations/015_user_llm_providers.sql"),
             ),
+            (
+                "016_email_verification_codes",
+                include_str!("../../../migrations/016_email_verification_codes.sql"),
+            ),
         ];
 
         for (version, sql) in migrations {
@@ -204,6 +208,11 @@ impl Db {
         if email.is_empty() || req.password.len() < 8 {
             bail!("invalid email or password too short");
         }
+        let display_name = if req.display_name.trim().is_empty() {
+            display_name_from_email(&email)
+        } else {
+            req.display_name.trim().to_string()
+        };
         let user_id = Uuid::new_v4();
         let org_id = Uuid::new_v4();
         let now = Utc::now();
@@ -216,7 +225,7 @@ impl Db {
         )
         .bind(user_id.to_string())
         .bind(&email)
-        .bind(&req.display_name)
+        .bind(&display_name)
         .bind(password_hash)
         .bind(now.to_rfc3339())
         .execute(&mut *tx)
@@ -227,7 +236,7 @@ impl Db {
         sqlx::query("INSERT INTO organizations (id, slug, name, created_at) VALUES (?, ?, ?, ?)")
             .bind(&slug)
             .bind(&slug)
-            .bind(format!("{}'s Workspace", req.display_name))
+            .bind(format!("{}'s Workspace", display_name))
             .bind(now.to_rfc3339())
             .execute(&mut *tx)
             .await?;
@@ -244,14 +253,14 @@ impl Db {
         .await?;
         tx.commit().await?;
 
-        let org_name = format!("{}'s Workspace", req.display_name);
+        let org_name = format!("{}'s Workspace", display_name);
         let token = self.create_session(user_id).await?;
         Ok(AuthResponse {
             token,
             user: User {
                 id: user_id,
                 email,
-                display_name: req.display_name,
+                display_name,
                 created_at: now,
             },
             organization: Organization {
@@ -353,8 +362,133 @@ impl Db {
             email: email.to_string(),
             password: format!("email:{}", Uuid::new_v4()),
             display_name: display_name_from_email(email),
+            code: None,
         })
         .await
+    }
+
+    pub async fn user_exists_by_email(&self, email: &str) -> Result<bool> {
+        let email = email.trim().to_lowercase();
+        let row: Option<(String,)> = sqlx::query_as("SELECT id FROM users WHERE email = ?")
+            .bind(&email)
+            .fetch_optional(&self.pool)
+            .await?;
+        Ok(row.is_some())
+    }
+
+    pub async fn create_email_verification_code(&self, email: &str, purpose: &str) -> Result<String> {
+        let email = email.trim().to_lowercase();
+        if !is_valid_email(&email) {
+            bail!("invalid email");
+        }
+        let now = Utc::now();
+        let recent: Option<(String,)> = sqlx::query_as(
+            "SELECT created_at FROM email_verification_codes
+             WHERE email = ? AND purpose = ? AND consumed_at IS NULL AND expires_at > ?
+             ORDER BY created_at DESC LIMIT 1",
+        )
+        .bind(&email)
+        .bind(purpose)
+        .bind(now.to_rfc3339())
+        .fetch_optional(&self.pool)
+        .await?;
+        if let Some((created_at,)) = recent {
+            if now - parse_time(&created_at) < Duration::seconds(60) {
+                bail!("Please wait 60 seconds before requesting another verification code");
+            }
+        }
+        sqlx::query(
+            "UPDATE email_verification_codes SET consumed_at = ?
+             WHERE email = ? AND purpose = ? AND consumed_at IS NULL",
+        )
+        .bind(now.to_rfc3339())
+        .bind(&email)
+        .bind(purpose)
+        .execute(&self.pool)
+        .await?;
+
+        let code = format!("{:06}", rand::random::<u32>() % 900_000 + 100_000);
+        let expires = now + Duration::minutes(10);
+        sqlx::query(
+            "INSERT INTO email_verification_codes
+             (id, email, code_hash, purpose, expires_at, created_at)
+             VALUES (?, ?, ?, ?, ?, ?)",
+        )
+        .bind(Uuid::new_v4().to_string())
+        .bind(&email)
+        .bind(hash_token(&code))
+        .bind(purpose)
+        .bind(expires.to_rfc3339())
+        .bind(now.to_rfc3339())
+        .execute(&self.pool)
+        .await?;
+        Ok(code)
+    }
+
+    pub async fn verify_and_consume_verification_code(
+        &self,
+        email: &str,
+        code: &str,
+        purpose: &str,
+    ) -> Result<()> {
+        let email = email.trim().to_lowercase();
+        let code = code.trim();
+        if code.is_empty() {
+            bail!("Verification code is required");
+        }
+        let now = Utc::now();
+        let row: Option<(String,)> = sqlx::query_as(
+            "UPDATE email_verification_codes
+             SET consumed_at = ?
+             WHERE email = ? AND code_hash = ? AND purpose = ? AND consumed_at IS NULL AND expires_at > ?
+             RETURNING id",
+        )
+        .bind(now.to_rfc3339())
+        .bind(&email)
+        .bind(hash_token(code))
+        .bind(purpose)
+        .bind(now.to_rfc3339())
+        .fetch_optional(&self.pool)
+        .await?;
+        if row.is_none() {
+            bail!("Invalid or expired verification code");
+        }
+        Ok(())
+    }
+
+    pub async fn reset_password(&self, email: &str, new_password: &str) -> Result<AuthResponse> {
+        let email = email.trim().to_lowercase();
+        if new_password.len() < 8 {
+            bail!("Password must be at least 8 characters");
+        }
+        let row: Option<(String, String, String)> = sqlx::query_as(
+            "SELECT id, email, display_name FROM users WHERE email = ?",
+        )
+        .bind(&email)
+        .fetch_optional(&self.pool)
+        .await?;
+        let Some((id, email, display_name)) = row else {
+            bail!("User not found");
+        };
+        let user_id = Uuid::parse_str(&id)?;
+        let password_hash = hash_password(new_password)?;
+        sqlx::query("UPDATE users SET password_hash = ? WHERE id = ?")
+            .bind(password_hash)
+            .bind(&id)
+            .execute(&self.pool)
+            .await?;
+        let org = self.primary_org(user_id).await?;
+        let token = self.create_session(user_id).await?;
+        Ok(AuthResponse {
+            token,
+            user: User {
+                id: user_id,
+                email,
+                display_name,
+                created_at: Utc::now(),
+            },
+            organization: org,
+        })
     }
 
     async fn find_user_by_email(&self, email: &str) -> Result<Option<User>> {

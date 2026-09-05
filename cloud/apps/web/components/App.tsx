@@ -431,7 +431,18 @@ function AppInner() {
   if (!ready) return null;
 
   if (!authed) {
-    return <AuthView />;
+    return (
+      <AuthView
+        onSuccess={(auth) => {
+          setUser(auth.user);
+          setOrg(auth.organization);
+          setAuthed(true);
+          refreshGithub().catch(() => {});
+          refreshRepos().catch(() => {});
+          refreshRuns().catch(() => {});
+        }}
+      />
+    );
   }
 
   return (

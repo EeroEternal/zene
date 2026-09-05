@@ -493,6 +493,7 @@ mod tests {
                 email: "worker-reconnect@example.com".into(),
                 password: "password123".into(),
                 display_name: "Worker Reconnect".into(),
+                code: None,
             })
             .send()
             .await

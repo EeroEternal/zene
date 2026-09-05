@@ -735,7 +735,38 @@ pub struct SetRunModeRequest {
 pub struct RegisterRequest {
     pub email: String,
     pub password: String,
+    #[serde(default)]
     pub display_name: String,
+    #[serde(default)]
+    pub code: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SendVerificationCodeRequest {
+    pub email: String,
+    #[serde(default = "default_verification_purpose")]
+    pub purpose: String,
+}
+
+fn default_verification_purpose() -> String {
+    "register".to_string()
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SendVerificationCodeResponse {
+    pub ok: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub code: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ResetPasswordRequest {
+    pub email: String,
+    pub code: String,
+    pub new_password: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
