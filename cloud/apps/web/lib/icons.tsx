@@ -1,4 +1,5 @@
 import {
+  AlertCircle,
   Archive,
   ArrowUp,
   Check,
@@ -96,6 +97,7 @@ export const IconGitlab = (props: SVGProps<SVGSVGElement>) => (
   </svg>
 );
 
+export const IconAlertCircle = lucideIcon(AlertCircle);
 export const IconArchive = lucideIcon(Archive);
 export const IconArrowUp = lucideIcon(ArrowUp);
 export const IconBranch = lucideIcon(GitBranch);

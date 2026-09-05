@@ -276,11 +276,15 @@ export function SessionWorkbench({
           if (!prev) return prev;
           const next = { ...prev, status: platform.status! };
           if (platform.headSha) next.headSha = platform.headSha;
+          if (platform.lastError !== undefined) next.lastError = platform.lastError;
           return next;
         });
         if (isTerminalStatus(nextStatus)) sealOnStop();
         if (nextStatus === "failed" || nextStatus === "timed_out" || nextStatus === "cancelled") {
           setPendingSince(null);
+          if (nextStatus === "failed" || nextStatus === "timed_out") {
+            toast(platform.lastError || `Run ${nextStatus}`, "error");
+          }
         }
         onRunsChanged();
       }
@@ -397,6 +401,7 @@ export function SessionWorkbench({
               ...(statusPatch || {}),
               status: platform.status,
               ...(platform.headSha ? { headSha: platform.headSha } : {}),
+              ...(platform.lastError !== undefined ? { lastError: platform.lastError } : {}),
             };
           }
           if (platform?.event === "run.title" && platform.title) {
@@ -837,6 +842,9 @@ export function SessionWorkbench({
           setupCopy={setupCopy}
           pendingSince={pendingSince}
           runStatus={run?.status}
+          lastError={run?.lastError}
+          onRetry={retryRun}
+          retrying={retrying}
           assistantLive={phase === "live" || phase === "approval"}
           runMessages={runMessages}
           forkingTurn={forkingTurn}

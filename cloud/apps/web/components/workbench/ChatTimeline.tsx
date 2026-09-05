@@ -2,7 +2,14 @@
 
 import hljs from "highlight.js/lib/core";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { IconChevronDown, IconChevronRight, IconLoader, IconSkills } from "@/lib/icons";
+import {
+  IconAlertCircle,
+  IconChevronDown,
+  IconChevronRight,
+  IconLoader,
+  IconRefresh,
+  IconSkills,
+} from "@/lib/icons";
 import {
   allowsDeny,
   allowsOnce,
@@ -282,6 +289,9 @@ interface ChatTimelineProps {
   /** Epoch ms when the user sent a turn that has not produced activity yet. */
   pendingSince?: number | null;
   runStatus?: string | null;
+  lastError?: string | null;
+  onRetry?: () => void;
+  retrying?: boolean;
   assistantLive: boolean;
   runMessages: RunMessage[];
   forkingTurn: number | null;
@@ -302,6 +312,9 @@ export function ChatTimeline({
   setupCopy,
   pendingSince = null,
   runStatus = null,
+  lastError = null,
+  onRetry,
+  retrying = false,
   assistantLive,
   runMessages,
   forkingTurn,
@@ -478,6 +491,15 @@ export function ChatTimeline({
       scrollToBottom();
     }
   }, [scrollSig, latestUserBubbleId, historyReady, pendingSince, spacerPx, scrollToBottom]);
+
+  useEffect(() => {
+    if (!historyReady) return;
+    const normalized = (runStatus || "").toLowerCase();
+    if (normalized === "failed" || normalized === "timed_out") {
+      justSentId.current = null;
+      scrollToBottom(true);
+    }
+  }, [runStatus, historyReady, scrollToBottom]);
 
   const toggleGroup = useCallback((key: string) => {
     setOpenGroups((prev) => {
@@ -1020,6 +1042,46 @@ export function ChatTimeline({
             <p className="m-0 mt-0.5 text-[12.5px] leading-[1.45] text-muted">
               {waitCopy.detail}
             </p>
+          </div>
+        )}
+        {((runStatus === "failed" || runStatus === "timed_out") ||
+          (Boolean(lastError) && lastError !== "user_retry" && !isBusyStatus(runStatus))) && (
+          <div
+            className="self-stretch rounded-md border border-destructive/30 bg-destructive/5 p-3.5 text-foreground"
+            role="alert"
+          >
+            <div className="flex items-start gap-2.5">
+              <IconAlertCircle className="mt-0.5 h-4 w-4 shrink-0 text-destructive" />
+              <div className="min-w-0 flex-1">
+                <div className="text-[13px] font-semibold text-destructive">
+                  {runStatus === "timed_out" ? "Execution timed out" : "Execution failed"}
+                </div>
+                {lastError && lastError !== "user_retry" ? (
+                  <p className="mt-1 whitespace-pre-wrap break-words font-mono text-[12px] leading-relaxed text-muted-foreground">
+                    {lastError}
+                  </p>
+                ) : (
+                  <p className="mt-1 text-[12px] leading-relaxed text-muted-foreground">
+                    {runStatus === "timed_out"
+                      ? "The task took too long to complete. You can retry with a new turn."
+                      : "The agent encountered an error while executing this task. You can retry or verify your model settings."}
+                  </p>
+                )}
+                {onRetry && (
+                  <div className="mt-3 flex items-center gap-2">
+                    <button
+                      type="button"
+                      className="btn btn-sm inline-flex items-center gap-1.5 border-destructive/20 text-destructive hover:bg-destructive/10"
+                      disabled={retrying}
+                      onClick={onRetry}
+                    >
+                      <IconRefresh className={`h-3 w-3 ${retrying ? "animate-spin" : ""}`} />
+                      {retrying ? "Retrying..." : "Retry"}
+                    </button>
+                  </div>
+                )}
+              </div>
+            </div>
           </div>
         )}
         <div ref={spacerRef} aria-hidden className="pointer-events-none shrink-0" style={{ height: spacerPx }} />

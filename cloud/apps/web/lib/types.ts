@@ -147,6 +147,7 @@ export interface Run {
   updatedAt?: string;
   startedAt?: string;
   archivedAt?: string;
+  lastError?: string;
 }
 
 /** Matches domain `CreateRunRequest`. */
@@ -356,7 +357,7 @@ export type PlatformEvent =
   | { event: "run.created"; title?: string; prompt?: string }
   | { event: "run.title"; title?: string }
   | { event: "run.archived" }
-  | { event: "run.status"; status?: RunStatus; headSha?: string }
+  | { event: "run.status"; status?: RunStatus; headSha?: string; lastError?: string }
   | { event: "message.created"; role?: MessageRole; text?: string }
   | {
       event: "approval.created";

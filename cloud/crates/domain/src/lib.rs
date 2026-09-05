@@ -203,6 +203,8 @@ pub struct Run {
     pub finished_at: Option<DateTime<Utc>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub archived_at: Option<DateTime<Utc>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_error: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -642,6 +644,8 @@ pub enum PlatformEvent {
         status: RunStatus,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         head_sha: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        last_error: Option<String>,
     },
     #[serde(rename = "message.created")]
     MessageCreated { role: MessageRole, text: String },
@@ -1316,6 +1320,7 @@ mod tests {
         let encoded = serde_json::to_value(PlatformEvent::RunStatusChanged {
             status: RunStatus::Completed,
             head_sha: Some("abc123".into()),
+            last_error: None,
         })
         .expect("status");
         assert_eq!(
@@ -1324,6 +1329,20 @@ mod tests {
                 "event": "run.status",
                 "status": "completed",
                 "headSha": "abc123"
+            })
+        );
+        let encoded_failed = serde_json::to_value(PlatformEvent::RunStatusChanged {
+            status: RunStatus::Failed,
+            head_sha: None,
+            last_error: Some("gateway timeout".into()),
+        })
+        .expect("status failed");
+        assert_eq!(
+            encoded_failed,
+            serde_json::json!({
+                "event": "run.status",
+                "status": "failed",
+                "lastError": "gateway timeout"
             })
         );
         let encoded = serde_json::to_value(PlatformEvent::RunArchived).expect("archived");
