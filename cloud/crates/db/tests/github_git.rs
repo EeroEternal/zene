@@ -15,6 +15,7 @@ async fn github_crud_and_migrations() {
             email: "gh@example.com".into(),
             password: "password123".into(),
             display_name: "Gh".into(),
+            code: None,
         })
         .await
         .unwrap();
@@ -175,6 +176,7 @@ async fn installation_cannot_move_to_another_organization() {
             email: "a-org@example.com".into(),
             password: "password123".into(),
             display_name: "A".into(),
+            code: None,
         })
         .await
         .unwrap();
@@ -183,6 +185,7 @@ async fn installation_cannot_move_to_another_organization() {
             email: "b-org@example.com".into(),
             password: "password123".into(),
             display_name: "B".into(),
+            code: None,
         })
         .await
         .unwrap();

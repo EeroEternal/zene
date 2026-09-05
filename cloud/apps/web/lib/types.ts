@@ -9,6 +9,40 @@ export interface Organization {
   name?: string;
 }
 
+export interface AuthResponse {
+  token: string;
+  user: User;
+  organization: Organization;
+}
+
+export interface LoginRequest {
+  email: string;
+  password: string;
+}
+
+export interface RegisterRequest {
+  email: string;
+  password: string;
+  displayName?: string;
+  code?: string;
+}
+
+export interface SendVerificationCodeRequest {
+  email: string;
+  purpose?: "register" | "reset_password";
+}
+
+export interface SendVerificationCodeResponse {
+  ok: boolean;
+  code?: string;
+}
+
+export interface ResetPasswordRequest {
+  email: string;
+  code: string;
+  newPassword: string;
+}
+
 export interface GithubAccount {
   login?: string;
 }

@@ -78,6 +78,7 @@ async fn live_clone_and_draft_pr_flow() {
             email: "broker@example.com".into(),
             password: "password123".into(),
             display_name: "Broker".into(),
+            code: None,
         })
         .await
         .unwrap();

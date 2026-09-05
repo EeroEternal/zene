@@ -21,6 +21,7 @@ async fn register_create_run_and_claim() {
             email: "a@example.com".into(),
             password: "password123".into(),
             display_name: "Ada".into(),
+            code: None,
         })
         .await
         .unwrap();
@@ -234,6 +235,7 @@ async fn run_state_mutations_have_matching_events() {
             email: format!("{}@example.com", Uuid::new_v4()),
             password: "password123".into(),
             display_name: "Transaction test".into(),
+            code: None,
         })
         .await
         .unwrap();
@@ -332,6 +334,7 @@ async fn approval_test_run(permission_mode: PermissionMode) -> (Db, Uuid) {
             email: format!("{}@example.com", Uuid::new_v4()),
             password: "password123".into(),
             display_name: "Approval test".into(),
+            code: None,
         })
         .await
         .unwrap();
@@ -508,6 +511,7 @@ async fn worker_command_is_retried_until_fenced_ack() {
             email: format!("{}@example.com", Uuid::new_v4()),
             password: "password123".into(),
             display_name: "Delivery test".into(),
+            code: None,
         })
         .await
         .unwrap();
@@ -632,6 +636,7 @@ async fn stale_waiting_for_user_attempt_is_requeued_but_approval_holds_are_not()
                 email: format!("{}-{}@example.com", suffix, Uuid::new_v4()),
                 password: "password123".into(),
                 display_name: suffix.into(),
+            code: None,
             })
             .await
             .unwrap();
@@ -729,6 +734,7 @@ async fn worker_title_is_fenced_and_retry_idempotent() {
             email: format!("title-{}@example.com", Uuid::new_v4()),
             password: "password123".into(),
             display_name: "Title test".into(),
+            code: None,
         })
         .await
         .unwrap();
@@ -861,6 +867,7 @@ async fn register_same_display_name_gets_unique_org_slug() {
             email: "a@example.com".into(),
             password: "password123".into(),
             display_name: "lipi".into(),
+            code: None,
         })
         .await
         .unwrap();
@@ -869,6 +876,7 @@ async fn register_same_display_name_gets_unique_org_slug() {
             email: "b@example.com".into(),
             password: "password123".into(),
             display_name: "lipi".into(),
+            code: None,
         })
         .await
         .unwrap();
@@ -886,6 +894,7 @@ async fn pending_mode_is_queued_and_taken_once() {
             email: "mode@example.com".into(),
             password: "password1".into(),
             display_name: "Mode".into(),
+            code: None,
         })
         .await
         .unwrap();
@@ -936,6 +945,7 @@ async fn worker_requeue_clears_terminal_state_and_preserves_history() {
             email: format!("requeue-{}@example.com", Uuid::new_v4()),
             password: "password123".into(),
             display_name: "Requeue".into(),
+            code: None,
         })
         .await
         .unwrap();
@@ -1019,6 +1029,7 @@ async fn clone_credentials_are_cached_for_reclaim() {
             email: format!("clone-cache-{}@example.com", Uuid::new_v4()),
             password: "password123".into(),
             display_name: "Clone cache".into(),
+            code: None,
         })
         .await
         .unwrap();
@@ -1078,6 +1089,7 @@ async fn user_retry_requeues_failed_run_and_resumes_without_prompt() {
             email: format!("user-retry-{}@example.com", Uuid::new_v4()),
             password: "password123".into(),
             display_name: "User retry".into(),
+            code: None,
         })
         .await
         .unwrap();
@@ -1178,6 +1190,7 @@ async fn same_repo_sessions_share_workspace_id_not_checkout() {
             email: "ws@example.com".into(),
             password: "password123".into(),
             display_name: "Ws".into(),
+            code: None,
         })
         .await
         .unwrap();
@@ -1247,4 +1260,103 @@ async fn same_repo_sessions_share_workspace_id_not_checkout() {
     assert!(dirs.iter().all(|dir| dir.contains("/ws/")));
     assert!(dirs.iter().any(|dir| dir.contains(&first.id.to_string())));
     assert!(dirs.iter().any(|dir| dir.contains(&second.id.to_string())));
+}
+
+#[tokio::test]
+async fn email_verification_code_register_and_reset_flow() {
+    let db = Db::connect("sqlite::memory:").await.unwrap();
+    db.migrate().await.unwrap();
+
+    let email = "code-test@example.com";
+    assert!(!db.user_exists_by_email(email).await.unwrap());
+
+    // Request registration code
+    let code = db
+        .create_email_verification_code(email, "register")
+        .await
+        .unwrap();
+    assert_eq!(code.len(), 6);
+    assert!(code.chars().all(|c| c.is_ascii_digit()));
+
+    // Rate limit check
+    assert!(db
+        .create_email_verification_code(email, "register")
+        .await
+        .is_err());
+
+    // Wrong code fails
+    assert!(db
+        .verify_and_consume_verification_code(email, "000000", "register")
+        .await
+        .is_err());
+
+    // Correct code succeeds
+    db.verify_and_consume_verification_code(email, &code, "register")
+        .await
+        .unwrap();
+
+    // Already consumed code fails
+    assert!(db
+        .verify_and_consume_verification_code(email, &code, "register")
+        .await
+        .is_err());
+
+    // Register user
+    let auth = db
+        .register(RegisterRequest {
+            email: email.into(),
+            password: "initial-password-123".into(),
+            display_name: "Code Tester".into(),
+            code: None,
+        })
+        .await
+        .unwrap();
+    assert_eq!(auth.user.email, email);
+    assert!(db.user_exists_by_email(email).await.unwrap());
+
+    // Login with initial password succeeds
+    let login_auth = db
+        .login(zene_cloud_domain::LoginRequest {
+            email: email.into(),
+            password: "initial-password-123".into(),
+        })
+        .await
+        .unwrap();
+    assert_eq!(login_auth.user.id, auth.user.id);
+
+    // Request reset password code
+    let reset_code = db
+        .create_email_verification_code(email, "reset_password")
+        .await
+        .unwrap();
+    assert_eq!(reset_code.len(), 6);
+
+    // Reset password with code
+    db.verify_and_consume_verification_code(email, &reset_code, "reset_password")
+        .await
+        .unwrap();
+    let reset_auth = db
+        .reset_password(email, "brand-new-password-456")
+        .await
+        .unwrap();
+    assert_eq!(reset_auth.user.id, auth.user.id);
+
+    // Old password now fails
+    assert!(db
+        .login(zene_cloud_domain::LoginRequest {
+            email: email.into(),
+            password: "initial-password-123".into(),
+        })
+        .await
+        .is_err());
+
+    // New password succeeds
+    let new_login = db
+        .login(zene_cloud_domain::LoginRequest {
+            email: email.into(),
+            password: "brand-new-password-456".into(),
+        })
+        .await
+        .unwrap();
+    assert_eq!(new_login.user.id, auth.user.id);
 }

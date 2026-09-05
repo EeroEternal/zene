@@ -13,7 +13,8 @@ use uuid::Uuid;
 use zene_cloud_domain::{
     github_account_view, ClaimedRun, CreateApprovalRequest, CreatePullRequestBody,
     CreateRunRequest, DecideApprovalRequest, EmailLoginRequest, EmailLoginResponse, LoginRequest,
-    MessageRole, PostMessageRequest, QueueStats, RegisterRequest, RunStatus, SetRunModeRequest,
+    MessageRole, PostMessageRequest, QueueStats, RegisterRequest, ResetPasswordRequest, RunStatus,
+    SendVerificationCodeRequest, SendVerificationCodeResponse, SetRunModeRequest,
     UpdateRunRequest, WorkerClaimRequest, WorkerCommandAckRequest, WorkerCommandsResponse,
     WorkerEventRequest, WorkerFence, WorkerPullRequestRequest, WorkerPushRequest,
     WorkerSessionRequest, WorkerStatusRequest, WorkerTitleRequest,
@@ -32,6 +33,8 @@ pub fn router(state: AppState) -> Router {
         .route("/api/v1/health", get(health))
         .route("/api/v1/auth/register", post(register))
         .route("/api/v1/auth/login", post(login))
+        .route("/api/v1/auth/send-code", post(send_verification_code))
+        .route("/api/v1/auth/reset-password", post(reset_password))
         .route("/api/v1/auth/email", post(request_email_login))
         .route("/api/v1/auth/email/callback", get(email_login_callback))
         .route("/api/v1/me", get(me))
@@ -134,11 +137,92 @@ async fn health(State(state): State<AppState>) -> impl IntoResponse {
     }))
 }
 
+async fn send_verification_code(
+    State(state): State<AppState>,
+    Json(req): Json<SendVerificationCodeRequest>,
+) -> Result<impl IntoResponse, AppError> {
+    let email = req.email.trim().to_lowercase();
+    if email.is_empty() {
+        return Err(AppError::bad_request("Email is required"));
+    }
+    let purpose = if req.purpose.trim().is_empty() {
+        "register"
+    } else {
+        req.purpose.trim()
+    };
+    if purpose == "register" {
+        if state.db.user_exists_by_email(&email).await? {
+            return Err(AppError::conflict(
+                "This email is already registered. Please sign in with your password.",
+            ));
+        }
+    } else if purpose == "reset_password" {
+        if !state.db.user_exists_by_email(&email).await? {
+            return Err(AppError::not_found("No account found with this email."));
+        }
+    } else {
+        return Err(AppError::bad_request("Invalid purpose"));
+    }
+
+    let code = state
+        .db
+        .create_email_verification_code(&email, purpose)
+        .await?;
+    let cfg = crate::email::EmailConfig::from_env();
+    if cfg.configured() {
+        if let Err(err) =
+            crate::email::send_verification_code_email(&cfg, &email, &code, purpose).await
+        {
+            return Err(AppError::from(err));
+        }
+        return Ok(Json(SendVerificationCodeResponse {
+            ok: true,
+            code: None,
+        }));
+    }
+    tracing::warn!(
+        %email,
+        %code,
+        %purpose,
+        "Email sending unconfigured (CLOUDFLARE_MAIL_TOKEN or RESEND_API_KEY unset); returning verification code for local use"
+    );
+    Ok(Json(SendVerificationCodeResponse {
+        ok: true,
+        code: Some(code),
+    }))
+}
+
 async fn register(
     State(state): State<AppState>,
     Json(req): Json<RegisterRequest>,
 ) -> Result<impl IntoResponse, AppError> {
+    let email = req.email.trim().to_lowercase();
+    if let Some(code) = req.code.as_deref().map(str::trim).filter(|c| !c.is_empty()) {
+        state
+            .db
+            .verify_and_consume_verification_code(&email, code, "register")
+            .await?;
+    } else {
+        let cfg = crate::email::EmailConfig::from_env();
+        if cfg.configured() {
+            return Err(AppError::bad_request(
+                "Verification code is required for registration",
+            ));
+        }
+    }
     Ok(Json(state.db.register(req).await?))
+}
+
+async fn reset_password(
+    State(state): State<AppState>,
+    Json(req): Json<ResetPasswordRequest>,
+) -> Result<impl IntoResponse, AppError> {
+    let email = req.email.trim().to_lowercase();
+    state
+        .db
+        .verify_and_consume_verification_code(&email, &req.code, "reset_password")
+        .await?;
+    Ok(Json(state.db.reset_password(&email, &req.new_password).await?))
 }
 
 async fn login(
@@ -1202,6 +1286,7 @@ mod reconnect_replay_tests {
                     email: "replay@example.com".into(),
                     password: "password123".into(),
                     display_name: "Replay Test".into(),
+                    code: None,
                 }),
             )
             .await
