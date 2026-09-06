@@ -20,6 +20,15 @@ pub enum RuntimeCommand {
     Steer {
         text: String,
     },
+    FollowUp {
+        text: String,
+    },
+    SetSteeringMode {
+        mode: zene_turn::QueueMode,
+    },
+    SetFollowUpMode {
+        mode: zene_turn::QueueMode,
+    },
     Cancel,
     Approval {
         request_id: String,
@@ -162,6 +171,9 @@ pub struct RuntimeRecoveryInfo {
 pub trait RuntimeControl: Send + Sync {
     async fn prompt(&self, text: String) -> Result<String>;
     async fn steer(&self, text: String) -> Result<()>;
+    async fn follow_up(&self, text: String) -> Result<()>;
+    async fn set_steering_mode(&self, mode: zene_turn::QueueMode) -> Result<()>;
+    async fn set_follow_up_mode(&self, mode: zene_turn::QueueMode) -> Result<()>;
     async fn resume_safe_turn(&self) -> Result<String>;
     async fn cancel(&self) -> Result<()>;
     async fn set_mode(&self, mode_id: String) -> Result<String>;

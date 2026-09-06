@@ -5,7 +5,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::info;
 use zene_config::ZeneConfig;
 use zene_context::{ContextDeps, ContextEngine, PrefireClientFactory};
-use zene_llm::{ChatClient, TokenUsage, ToolCall};
+use zene_llm::{ChatClient, Message, TokenUsage, ToolCall};
 
 use zene_mcp::McpManager;
 use zene_model_executor::ModelExecutor;
@@ -61,7 +61,10 @@ pub use zene_permission::{
     PolicyDecision, PromptChoice, RuleAction, SharedApprovalBroker, SharedToolPermission,
     TerminalApprovalBroker, ToolPermission,
 };
-use zene_turn::{RuntimeEventHandler, SessionId, SteerBuffer, StepId, TurnId, TurnState};
+use zene_turn::{
+    FollowUpBuffer, QueueMode, RuntimeEventHandler, SessionId, SteerBuffer, StepId, TurnId,
+    TurnState,
+};
 pub use zene_workspace::{build_system_prompt, FsWorkspaceProvider, WorkspaceProvider};
 
 pub use worktree::ensure_session_worktree;
@@ -81,6 +84,7 @@ pub struct Agent {
     resume_existing_turn: bool,
     active_turn: Option<TurnState>,
     steer_buffer: Arc<Mutex<SteerBuffer>>,
+    follow_up_buffer: Arc<Mutex<FollowUpBuffer>>,
     system_prompt: String,
     permission: SharedToolPermission,
     plan_mode: SharedPlanMode,
@@ -541,11 +545,15 @@ impl Agent {
         self.steer_buffer.lock().len()
     }
 
+    pub fn pending_follow_up_count(&self) -> usize {
+        self.follow_up_buffer.lock().len()
+    }
+
     pub fn steer_buffer(&self) -> Arc<Mutex<SteerBuffer>> {
         Arc::clone(&self.steer_buffer)
     }
 
-    /// Queue follow-up user guidance for the active turn (injected between steps).
+    /// Queue a steering message for the next model call.
     pub fn queue_steer(&self, text: &str) -> Result<()> {
         if !self.is_turn_active() {
             return Err(zene_turn::steer_requires_active_turn());
@@ -558,9 +566,33 @@ impl Agent {
         Ok(())
     }
 
-    /// Queue follow-up user guidance for the active turn (injected between steps).
     pub fn steer(&mut self, text: &str) -> Result<()> {
         self.queue_steer(text)
+    }
+
+    pub fn follow_up(&self, text: &str) -> Result<()> {
+        if !self.is_turn_active() {
+            return Err(zene_turn::steer_requires_active_turn());
+        }
+        let text = text.trim();
+        if text.is_empty() {
+            anyhow::bail!("follow-up message cannot be empty");
+        }
+        self.follow_up_buffer.lock().push(text.to_string());
+        Ok(())
+    }
+
+    pub fn set_steering_mode(&self, mode: QueueMode) {
+        self.steer_buffer.lock().set_mode(mode);
+    }
+
+    pub fn set_follow_up_mode(&self, mode: QueueMode) {
+        self.follow_up_buffer.lock().set_mode(mode);
+    }
+
+    pub fn clear_queues(&self) {
+        self.steer_buffer.lock().clear();
+        self.follow_up_buffer.lock().clear();
     }
 
     fn token_estimator(&self) -> TokenEstimator {
@@ -731,6 +763,21 @@ impl Agent {
             &mut self.session,
             options,
         ))
+    }
+
+    fn inject_pending_follow_up(&mut self, options: &PromptOptions) -> Result<bool> {
+        let messages = self.follow_up_buffer.lock().take_all();
+        if messages.is_empty() {
+            return Ok(false);
+        }
+        for text in messages {
+            emit_event(
+                &options.event_handler,
+                AgentEvent::SteerInput { text: text.clone() },
+            );
+            self.session.push_message(Message::user(text));
+        }
+        Ok(true)
     }
 
     pub(crate) fn record_step_started(&mut self) -> Result<()> {

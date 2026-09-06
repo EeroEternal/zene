@@ -10,7 +10,8 @@ pub use events::{
 };
 pub use state::{
     aborted_error, agent_busy_error, begin_turn, end_turn, is_cancelled, max_turns_notice,
-    steer_requires_active_turn, SessionId, SteerBuffer, StepId, ToolCallId, TurnId, TurnState,
+    steer_requires_active_turn, FollowUpBuffer, QueueMode, SessionId, SteerBuffer, StepId,
+    ToolCallId, TurnId, TurnState,
 };
 pub use turn_loop::{
     run_turn_loop, ContextAssemblerPort, EventSinkPort, LegacyTurnPorts, ModelExecutorPort,
