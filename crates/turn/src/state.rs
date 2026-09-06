@@ -216,7 +216,7 @@ impl FollowUpBuffer {
 
 pub fn agent_busy_error() -> anyhow::Error {
     anyhow!(
-        "agent busy: a turn is already in progress; use steer() for follow-up guidance or wait for the turn to finish"
+        "agent busy: a turn is already in progress; use steer() or follow_up(), or wait for the turn to finish"
     )
 }
 
@@ -270,8 +270,9 @@ mod tests {
         buf.push("first".into());
         buf.push("second".into());
         assert_eq!(buf.len(), 2);
+        assert_eq!(buf.take_all(), vec!["first"]);
         let drained = buf.take_all();
-        assert_eq!(drained, vec!["first", "second"]);
+        assert_eq!(drained, vec!["second"]);
         assert!(buf.is_empty());
     }
 
