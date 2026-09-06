@@ -27,7 +27,7 @@ use zene_hooks::{HookRunner, HookSpec};
 use zene_permission::{
     PermissionGate, PermissionMode, PermissionRule, RuleAction, SharedToolPermission,
 };
-use zene_turn::SteerBuffer;
+use zene_turn::{FollowUpBuffer, SteerBuffer};
 use zene_workspace::{build_system_prompt, FsWorkspaceProvider};
 
 /// How MCP servers are attached when building an [`Agent`].
@@ -340,6 +340,7 @@ impl AgentBuilder {
             resume_existing_turn: false,
             active_turn: None,
             steer_buffer: Arc::new(Mutex::new(SteerBuffer::default())),
+            follow_up_buffer: Arc::new(Mutex::new(FollowUpBuffer::default())),
             system_prompt,
             permission,
             plan_mode: self.plan_mode.unwrap_or_else(shared_plan_mode),

@@ -49,6 +49,10 @@ impl TurnSessionPort<crate::PromptOptions> for AgentTurnPorts<'_> {
         <Agent as TurnRuntime>::inject_steer(self.agent, options)
     }
 
+    fn inject_follow_up(&mut self, options: &crate::PromptOptions) -> Result<bool, anyhow::Error> {
+        self.agent.inject_pending_follow_up(options)
+    }
+
     fn push_assistant(&mut self, message: zene_llm::Message) {
         <Agent as TurnRuntime>::push_assistant(self.agent, message);
     }

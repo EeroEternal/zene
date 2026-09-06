@@ -88,6 +88,9 @@ pub trait TurnRuntime {
         cancel: Option<&CancellationToken>,
     ) -> Result<ToolBatchOutcome>;
     fn inject_steer(&mut self, options: &Self::Options) -> Result<bool>;
+    fn inject_follow_up(&mut self, _options: &Self::Options) -> Result<bool> {
+        Ok(false)
+    }
     fn push_assistant(&mut self, message: Message);
     fn on_incomplete_turn(
         &mut self,
@@ -105,6 +108,9 @@ pub trait TurnSessionPort<O>: Send {
     fn active_turn(&mut self) -> Option<&mut TurnState>;
     async fn prepare_turn(&mut self, user_input: &str) -> Result<()>;
     fn inject_steer(&mut self, options: &O) -> Result<bool>;
+    fn inject_follow_up(&mut self, _options: &O) -> Result<bool> {
+        Ok(false)
+    }
     fn push_assistant(&mut self, message: Message);
     fn on_incomplete_turn(
         &mut self,
@@ -209,6 +215,10 @@ impl<R: TurnRuntime + Send> TurnSessionPort<R::Options> for LegacyTurnPorts<'_, 
 
     fn inject_steer(&mut self, options: &R::Options) -> Result<bool> {
         self.runtime.inject_steer(options)
+    }
+
+    fn inject_follow_up(&mut self, options: &R::Options) -> Result<bool> {
+        self.runtime.inject_follow_up(options)
     }
 
     fn push_assistant(&mut self, message: Message) {
@@ -362,6 +372,11 @@ where
                         .run_tools(&tool_calls, request.options, request.cancel)
                         .await?;
                     if tool_outcome == ToolBatchOutcome::Terminate {
+                        if ports.inject_steer(request.options)?
+                            || ports.inject_follow_up(request.options)?
+                        {
+                            continue;
+                        }
                         status = Some(TurnStatus::Terminated);
                         break;
                     }
@@ -378,6 +393,9 @@ where
             }
 
             final_text = assistant_message.content.unwrap_or_default();
+            if ports.inject_follow_up(request.options)? {
+                continue;
+            }
             status = Some(TurnStatus::Completed);
             break;
         }

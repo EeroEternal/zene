@@ -241,6 +241,9 @@ impl AcpServer {
                     if let Some(s) = self.sessions.get(sid) {
                         let _ = s.runtime.cancel().await;
                     }
+                    if let Some(s) = self.sessions.get_mut(sid) {
+                        s.prompt_queue.clear();
+                    }
                     if let Some(cur) = current {
                         if cur.session_id == sid {
                             if let Some(s) = self.sessions.get(sid) {
@@ -294,6 +297,9 @@ impl AcpServer {
             "session/set_config_option" => self.handle_session_set_config_option(params).await,
             "session/clear_queue" => self.handle_session_clear_queue(params),
             "session/steer" => self.handle_session_steer(params).await,
+            "session/follow_up" => self.handle_session_follow_up(params).await,
+            "session/set_steering_mode" => self.handle_set_queue_mode(params, true).await,
+            "session/set_follow_up_mode" => self.handle_set_queue_mode(params, false).await,
             "authenticate" => Ok(json!({})),
             "session/prompt" => Err(anyhow!(
                 "session/prompt is handled by the async prompt queue"
@@ -557,6 +563,9 @@ impl AcpServer {
         Ok(json!({
             "clearedCount": cleared_count,
             "cleared": cleared,
+            "steering": 0,
+            "followUp": 0,
+            "promptQueue": cleared_count,
         }))
     }
 
@@ -581,6 +590,52 @@ impl AcpServer {
             .ok_or_else(|| anyhow!("unknown sessionId: {sid}"))?;
         sess.runtime.steer(text).await?;
         Ok(json!({}))
+    }
+
+    async fn handle_session_follow_up(&mut self, params: Value) -> Result<Value> {
+        let sid = params
+            .get("sessionId")
+            .and_then(Value::as_str)
+            .ok_or_else(|| anyhow!("sessionId required"))?
+            .to_string();
+        let text = params
+            .get("text")
+            .and_then(Value::as_str)
+            .map(str::to_string)
+            .filter(|value| !value.trim().is_empty())
+            .unwrap_or_else(|| prompt_text_from_params(&params));
+        if text.trim().is_empty() {
+            bail!("text required");
+        }
+        let sess = self
+            .sessions
+            .get_mut(&sid)
+            .ok_or_else(|| anyhow!("unknown sessionId: {sid}"))?;
+        sess.runtime.follow_up(text).await?;
+        Ok(json!({}))
+    }
+
+    async fn handle_set_queue_mode(&mut self, params: Value, steering: bool) -> Result<Value> {
+        let sid = params
+            .get("sessionId")
+            .and_then(Value::as_str)
+            .ok_or_else(|| anyhow!("sessionId required"))?
+            .to_string();
+        let mode = match params.get("mode").and_then(Value::as_str) {
+            Some("one-at-a-time") => zene_turn::QueueMode::OneAtATime,
+            Some("all") => zene_turn::QueueMode::All,
+            _ => bail!("mode must be one-at-a-time or all"),
+        };
+        let sess = self
+            .sessions
+            .get(&sid)
+            .ok_or_else(|| anyhow!("unknown sessionId: {sid}"))?;
+        if steering {
+            sess.runtime.set_steering_mode(mode).await?;
+        } else {
+            sess.runtime.set_follow_up_mode(mode).await?;
+        }
+        Ok(json!({ "mode": params["mode"] }))
     }
 
     fn advertise_session(&self, session_id: &str) -> Result<()> {
@@ -663,9 +718,25 @@ impl AcpServer {
             .ok_or_else(|| anyhow!("unknown sessionId: {sid}"))?;
 
         if sess.busy {
-            debug!(session = %sid, "ACP queueing prompt behind active turn");
-            sess.prompt_queue.push_back(QueuedPrompt { rpc_id, params });
-            return Ok(());
+            let behavior = params
+                .get("streamingBehavior")
+                .and_then(Value::as_str)
+                .ok_or_else(|| anyhow!("streamingBehavior is required when session is busy"))?;
+            match behavior {
+                "steer" => {
+                    sess.runtime.steer(text).await?;
+                    self.writer
+                        .send_raw(ok_response(rpc_id, json!({})).to_string())?;
+                    return Ok(());
+                }
+                "followUp" => {
+                    sess.runtime.follow_up(text).await?;
+                    self.writer
+                        .send_raw(ok_response(rpc_id, json!({})).to_string())?;
+                    return Ok(());
+                }
+                other => bail!("unsupported streamingBehavior: {other}"),
+            }
         }
 
         self.start_prompt(sid, rpc_id, text, active).await

@@ -118,6 +118,24 @@ impl RuntimeHandle {
             .map(|_| ())
     }
 
+    pub async fn follow_up(&self, text: impl Into<String>) -> Result<()> {
+        self.command(RuntimeCommand::FollowUp { text: text.into() })
+            .await
+            .map(|_| ())
+    }
+
+    pub async fn set_steering_mode(&self, mode: zene_turn::QueueMode) -> Result<()> {
+        self.command(RuntimeCommand::SetSteeringMode { mode })
+            .await
+            .map(|_| ())
+    }
+
+    pub async fn set_follow_up_mode(&self, mode: zene_turn::QueueMode) -> Result<()> {
+        self.command(RuntimeCommand::SetFollowUpMode { mode })
+            .await
+            .map(|_| ())
+    }
+
     pub async fn resume_safe_turn(&self) -> Result<String> {
         match self.command(RuntimeCommand::ResumeSafeTurn).await? {
             RuntimeResponse::Prompt { text } => Ok(text),
@@ -225,6 +243,18 @@ impl RuntimeControl for RuntimeHandle {
         RuntimeHandle::steer(self, text).await
     }
 
+    async fn follow_up(&self, text: String) -> Result<()> {
+        RuntimeHandle::follow_up(self, text).await
+    }
+
+    async fn set_steering_mode(&self, mode: zene_turn::QueueMode) -> Result<()> {
+        RuntimeHandle::set_steering_mode(self, mode).await
+    }
+
+    async fn set_follow_up_mode(&self, mode: zene_turn::QueueMode) -> Result<()> {
+        RuntimeHandle::set_follow_up_mode(self, mode).await
+    }
+
     async fn resume_safe_turn(&self) -> Result<String> {
         RuntimeHandle::resume_safe_turn(self).await
     }
@@ -298,6 +328,7 @@ async fn run_actor(
     let publisher = RuntimeEventPublisher::new(events.clone(), state.clone(), session_id.clone());
     let mut agent = Some(agent);
     let mut queued: VecDeque<PendingPrompt> = VecDeque::new();
+    let mut follow_up: VecDeque<PendingPrompt> = VecDeque::new();
     let mut active: Option<ActivePrompt> = initial_resume.map(|candidate| {
         let (reply, _response) = oneshot::channel();
         start_prompt(
@@ -348,6 +379,7 @@ async fn run_actor(
                 &mut agent,
                 message,
                 &mut queued,
+                &mut follow_up,
                 &steer_buffer,
                 &mut shutdown_requested,
                 &publisher,
@@ -372,6 +404,8 @@ async fn run_actor(
                     Ok((finished_agent, prompt_result)) => {
                         agent = Some(finished_agent);
                         let lifecycle = terminal_lifecycle(cancelled, &prompt_result);
+                        let should_follow_up = matches!(&lifecycle, RuntimeLifecycle::Completed)
+                            && !follow_up.is_empty();
                         let response = match (lifecycle, prompt_result) {
                             (RuntimeLifecycle::Completed, Ok(text)) => {
                                 publisher.publish_lifecycle(RuntimeLifecycle::Completed);
@@ -397,6 +431,13 @@ async fn run_actor(
                             }
                         };
                         let _ = current.reply.send(response);
+                        if should_follow_up {
+                            active = Some(start_prompt(
+                                agent.take().expect("completed actor owns agent"),
+                                follow_up.pop_front().expect("follow-up exists"),
+                                &publisher,
+                            ));
+                        }
                     }
                     Err(err) => {
                         let message = format!("runtime turn task failed: {err}");
@@ -424,6 +465,7 @@ async fn run_actor(
                 handle_active_command(
                     message,
                     &mut queued,
+                    &mut follow_up,
                     &steer_buffer,
                     current.cancel.clone(),
                     &current.waiters,
@@ -484,6 +526,7 @@ fn handle_idle_command(
     agent: &mut Option<Agent>,
     message: RuntimeMessage,
     _queued: &mut VecDeque<PendingPrompt>,
+    _follow_up: &mut VecDeque<PendingPrompt>,
     _steer_buffer: &std::sync::Arc<parking_lot::Mutex<SteerBuffer>>,
     shutdown_requested: &mut bool,
     publisher: &RuntimeEventPublisher,
@@ -565,6 +608,28 @@ fn handle_idle_command(
             ));
             None
         }
+        RuntimeCommand::FollowUp { .. } => {
+            let _ = message.reply.send(Err(
+                "no turn in progress; use prompt() to start a new turn".into(),
+            ));
+            None
+        }
+        RuntimeCommand::SetSteeringMode { mode } => {
+            agent
+                .as_ref()
+                .expect("idle actor owns agent")
+                .set_steering_mode(mode);
+            let _ = message.reply.send(Ok(RuntimeResponse::Accepted));
+            None
+        }
+        RuntimeCommand::SetFollowUpMode { mode } => {
+            agent
+                .as_ref()
+                .expect("idle actor owns agent")
+                .set_follow_up_mode(mode);
+            let _ = message.reply.send(Ok(RuntimeResponse::Accepted));
+            None
+        }
         RuntimeCommand::Cancel => {
             let _ = message.reply.send(Ok(RuntimeResponse::Accepted));
             None
@@ -612,6 +677,7 @@ fn handle_idle_command(
 fn handle_active_command(
     message: RuntimeMessage,
     queued: &mut VecDeque<PendingPrompt>,
+    follow_up: &mut VecDeque<PendingPrompt>,
     steer_buffer: &std::sync::Arc<parking_lot::Mutex<SteerBuffer>>,
     cancel: CancellationToken,
     waiters: &ApprovalWaiters,
@@ -644,9 +710,34 @@ fn handle_active_command(
                 let _ = message.reply.send(Ok(RuntimeResponse::Accepted));
             }
         }
+        RuntimeCommand::FollowUp { text } => {
+            let text = text.trim();
+            if text.is_empty() {
+                let _ = message
+                    .reply
+                    .send(Err("follow-up message cannot be empty".into()));
+            } else {
+                follow_up.push_back(PendingPrompt {
+                    text: text.to_string(),
+                    reply: message.reply,
+                });
+            }
+        }
+        RuntimeCommand::SetSteeringMode { .. } | RuntimeCommand::SetFollowUpMode { .. } => {
+            let _ = message
+                .reply
+                .send(Err("cannot change queue mode while a turn is active".into()));
+        }
         RuntimeCommand::Cancel => {
             waiters.cancel_all();
             cancel.cancel();
+            queued.drain(..).for_each(|prompt| {
+                let _ = prompt.reply.send(Err("turn cancelled".into()));
+            });
+            follow_up.drain(..).for_each(|prompt| {
+                let _ = prompt.reply.send(Err("turn cancelled".into()));
+            });
+            steer_buffer.lock().clear();
             let _ = message.reply.send(Ok(RuntimeResponse::Accepted));
         }
         RuntimeCommand::SetMode { .. } | RuntimeCommand::GetMode => {
@@ -887,6 +978,7 @@ mod tests {
                 reply,
             },
             &mut queued,
+            &mut VecDeque::new(),
             &steer,
             cancel,
             &waiters,
@@ -919,6 +1011,7 @@ mod tests {
             handle_active_command(
                 RuntimeMessage { command, reply },
                 &mut queued,
+                &mut VecDeque::new(),
                 &steer,
                 cancel,
                 &ApprovalWaiters::new(),
@@ -945,6 +1038,7 @@ mod tests {
                 reply,
             },
             &mut queued,
+            &mut VecDeque::new(),
             &steer,
             cancel.clone(),
             &ApprovalWaiters::new(),
@@ -963,6 +1057,7 @@ mod tests {
                 reply,
             },
             &mut queued,
+            &mut VecDeque::new(),
             &steer,
             cancel,
             &ApprovalWaiters::new(),
@@ -984,6 +1079,7 @@ mod tests {
                 reply,
             },
             &mut queued,
+            &mut VecDeque::new(),
             &steer,
             cancel.clone(),
             &ApprovalWaiters::new(),
@@ -1001,6 +1097,7 @@ mod tests {
                 reply,
             },
             &mut queued,
+            &mut VecDeque::new(),
             &steer,
             cancel,
             &ApprovalWaiters::new(),
@@ -1023,6 +1120,7 @@ mod tests {
                 },
                 reply,
             },
+            &mut VecDeque::new(),
             &mut VecDeque::new(),
             &Arc::new(parking_lot::Mutex::new(SteerBuffer::default())),
             CancellationToken::new(),
@@ -1049,6 +1147,7 @@ mod tests {
                 },
                 reply,
             },
+            &mut VecDeque::new(),
             &mut VecDeque::new(),
             &Arc::new(parking_lot::Mutex::new(SteerBuffer::default())),
             CancellationToken::new(),

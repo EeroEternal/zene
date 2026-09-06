@@ -6,7 +6,8 @@ Core agent loop lives in `crates/core`. This document tracks engine-level behavi
 
 - One **active turn** per `Agent` (`TurnState` in `turn.rs`).
 - `Agent::prompt()` starts a turn; concurrent `prompt()` calls fail with an error that suggests `steer()`.
-- **`Agent::steer(text)`** queues follow-up user guidance in `SteerBuffer` (kimi `steerBuffer` analogue). Messages are injected as `Message::user` **after the current step completes** (post-tool or post-assistant), not as a new turn.
+- **`Agent::steer(text)`** queues steering input in `SteerBuffer` (kimi `steerBuffer` analogue). Messages are injected as `Message::user` before the next model call, after the current tool batch or assistant step.
+- **`Agent::follow_up(text)`** queues input that is injected only when the turn would otherwise settle.
 - Steer is typically used from Cloud / ACP / async callers (the interactive local REPL was removed).
 - Event: `AgentEvent::SteerInput { text }` for UI/replay hooks.
 

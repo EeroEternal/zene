@@ -128,10 +128,23 @@ impl TurnState {
     }
 }
 
-/// Buffered follow-up user messages injected between steps (kimi `steerBuffer`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum QueueMode {
+    OneAtATime,
+    All,
+}
+
+impl Default for QueueMode {
+    fn default() -> Self {
+        Self::OneAtATime
+    }
+}
+
+/// Buffered steer messages injected between model steps.
 #[derive(Debug, Default)]
 pub struct SteerBuffer {
     pending: Vec<String>,
+    mode: QueueMode,
 }
 
 impl SteerBuffer {
@@ -148,13 +161,62 @@ impl SteerBuffer {
     }
 
     pub fn take_all(&mut self) -> Vec<String> {
-        std::mem::take(&mut self.pending)
+        let count = match self.mode {
+            QueueMode::OneAtATime => 1,
+            QueueMode::All => self.pending.len(),
+        };
+        self.pending.drain(..count).collect()
+    }
+
+    pub fn clear(&mut self) {
+        self.pending.clear();
+    }
+
+    pub fn set_mode(&mut self, mode: QueueMode) {
+        self.mode = mode;
+    }
+}
+
+/// Follow-up messages injected only when a turn would otherwise settle.
+#[derive(Debug, Default)]
+pub struct FollowUpBuffer {
+    pending: Vec<String>,
+    mode: QueueMode,
+}
+
+impl FollowUpBuffer {
+    pub fn push(&mut self, text: String) {
+        self.pending.push(text);
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.pending.is_empty()
+    }
+
+    pub fn len(&self) -> usize {
+        self.pending.len()
+    }
+
+    pub fn take_all(&mut self) -> Vec<String> {
+        let count = match self.mode {
+            QueueMode::OneAtATime => 1,
+            QueueMode::All => self.pending.len(),
+        };
+        self.pending.drain(..count).collect()
+    }
+
+    pub fn clear(&mut self) {
+        self.pending.clear();
+    }
+
+    pub fn set_mode(&mut self, mode: QueueMode) {
+        self.mode = mode;
     }
 }
 
 pub fn agent_busy_error() -> anyhow::Error {
     anyhow!(
-        "agent busy: a turn is already in progress; use steer() for follow-up guidance or wait for the turn to finish"
+        "agent busy: a turn is already in progress; use steer() or follow_up(), or wait for the turn to finish"
     )
 }
 
@@ -208,8 +270,25 @@ mod tests {
         buf.push("first".into());
         buf.push("second".into());
         assert_eq!(buf.len(), 2);
+        assert_eq!(buf.take_all(), vec!["first"]);
         let drained = buf.take_all();
-        assert_eq!(drained, vec!["first", "second"]);
+        assert_eq!(drained, vec!["second"]);
         assert!(buf.is_empty());
+    }
+
+    #[test]
+    fn queue_modes_control_drain_size() {
+        let mut steer = SteerBuffer::default();
+        steer.push("first".into());
+        steer.push("second".into());
+        assert_eq!(steer.take_all(), vec!["first"]);
+        steer.set_mode(QueueMode::All);
+        assert_eq!(steer.take_all(), vec!["second"]);
+
+        let mut follow_up = FollowUpBuffer::default();
+        follow_up.push("first".into());
+        follow_up.push("second".into());
+        follow_up.set_mode(QueueMode::All);
+        assert_eq!(follow_up.take_all(), vec!["first", "second"]);
     }
 }
