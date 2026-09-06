@@ -5,8 +5,8 @@ mod state;
 mod turn_loop;
 
 pub use events::{
-    EventSequence, ProjectionInjectedSource, ProjectionPrefixCache, ProjectionToolOutput,
-    RuntimeEvent, RuntimeEventHandler, RuntimeEventKind,
+    EventSequence, ProjectionInjectedSource, ProjectionPrefixCache, ProjectionReadyEvent,
+    ProjectionToolOutput, RuntimeEvent, RuntimeEventHandler, RuntimeEventKind,
 };
 pub use state::{
     aborted_error, agent_busy_error, begin_turn, end_turn, is_cancelled, max_turns_notice,

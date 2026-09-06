@@ -90,8 +90,8 @@ if [ -n "$TARGET" ]; then
 
     echo "=== Installation Completed ==="
     echo "Installed to $INSTALL_DIR"
-    echo "Cloud Console: cd cloud && ./scripts/dev.sh"
-    echo "ACP (workers/editors): zene acp"
+    echo "Start ACP server: zene acp"
+    echo "For hosted web console, see zene-cloud: https://github.com/EeroEternal/zene-cloud"
     echo "If 'zene' still resolves to an old path, open a new terminal or run: hash -r"
     exit 0
   else

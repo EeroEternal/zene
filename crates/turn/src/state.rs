@@ -7,6 +7,12 @@ use uuid::Uuid;
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct SessionId(String);
 
+impl Default for SessionId {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl SessionId {
     pub fn new() -> Self {
         Self(Uuid::new_v4().to_string())
@@ -28,6 +34,12 @@ impl fmt::Display for SessionId {
 /// Stable identity for a model tool call.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct ToolCallId(String);
+
+impl Default for ToolCallId {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 impl ToolCallId {
     pub fn new() -> Self {
@@ -51,6 +63,12 @@ impl fmt::Display for ToolCallId {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct TurnId(Uuid);
 
+impl Default for TurnId {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl TurnId {
     pub fn new() -> Self {
         Self(Uuid::new_v4())
@@ -66,6 +84,12 @@ impl fmt::Display for TurnId {
 /// Identifier for one LLM invocation within a turn.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct StepId(Uuid);
+
+impl Default for StepId {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 impl StepId {
     pub fn new() -> Self {
