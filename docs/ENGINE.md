@@ -37,7 +37,7 @@ Warn log when estimate ≥ 90% of `compaction.context_window_tokens`.
 
 ## Compaction (v2)
 
-Three phases in `compaction.rs`, cheapest first. Session history records every pass in `CompactionEntry` with `reason`, `tokens_before`, `tokens_after`.
+Three phases in `compaction.rs`, cheapest first. Session history records every pass as an append-only `CompactionApplied` event (indexed by `CompactionEntry`) with `reason`, `tokens_before`, `tokens_after`. The resulting LLM context is rebuilt from the active event path, not the materialized `messages` cache.
 
 ### Phase 1 — Truncate (in place)
 
@@ -137,7 +137,7 @@ Config `[permission_rules]` supports `allow` / `deny` / `ask` patterns (`Bash`, 
 
 ## Session recovery
 
-Before/after compaction, checkpoints are saved under `~/.zene/sessions/<id>/compaction_checkpoints/`. Slash commands: `/rewind [id]`, `/fork`, `/session-info`.
+Before/after compaction, checkpoints are saved under `~/.zene/sessions/<id>/compaction_checkpoints/`. Slash commands: `/rewind [id]`, `/fork`, `/session-info`. Forks append both `branch_forked` and `branch_summary` facts; labels and host-defined custom facts are likewise append-only session events and remain out of model context unless a host explicitly projects them.
 
 ## Background tasks
 

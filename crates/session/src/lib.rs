@@ -183,6 +183,33 @@ pub enum SessionEvent {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         parent_sequence: Option<u64>,
     },
+    /// Summary attached to a branch transition without changing its messages.
+    BranchSummary {
+        #[serde(default)]
+        sequence: u64,
+        id: String,
+        created_at: DateTime<Utc>,
+        branch_id: String,
+        summary: String,
+    },
+    /// User-visible metadata attached to a session path.
+    Label {
+        #[serde(default)]
+        sequence: u64,
+        id: String,
+        created_at: DateTime<Utc>,
+        name: String,
+        value: String,
+    },
+    /// Extensible session fact for hosts that need durable non-message data.
+    Custom {
+        #[serde(default)]
+        sequence: u64,
+        id: String,
+        created_at: DateTime<Utc>,
+        name: String,
+        value: serde_json::Value,
+    },
     Rewound {
         #[serde(default)]
         sequence: u64,
@@ -500,6 +527,15 @@ impl SessionEvent {
             | Self::BranchForked {
                 sequence: value, ..
             }
+            | Self::BranchSummary {
+                sequence: value, ..
+            }
+            | Self::Label {
+                sequence: value, ..
+            }
+            | Self::Custom {
+                sequence: value, ..
+            }
             | Self::Rewound {
                 sequence: value, ..
             } => *value = sequence,
@@ -522,6 +558,9 @@ impl SessionEvent {
             | Self::ModeChanged { sequence, .. }
             | Self::ModelChanged { sequence, .. }
             | Self::BranchForked { sequence, .. }
+            | Self::BranchSummary { sequence, .. }
+            | Self::Label { sequence, .. }
+            | Self::Custom { sequence, .. }
             | Self::Rewound { sequence, .. } => *sequence,
         }
     }
@@ -848,6 +887,43 @@ impl SessionRecord {
             source_session_id: source_session_id.to_string(),
             branch_session_id: branch_session_id.to_string(),
             parent_sequence: Some(self.event_sequence),
+        });
+        self.meta.updated_at = Utc::now();
+    }
+
+    /// Record a summary when switching to or creating a branch.
+    pub fn record_branch_summary(&mut self, branch_id: &str, summary: &str) {
+        self.append_event(SessionEvent::BranchSummary {
+            sequence: 0,
+            id: Uuid::new_v4().to_string(),
+            created_at: Utc::now(),
+            branch_id: branch_id.to_string(),
+            summary: summary.to_string(),
+        });
+        self.meta.updated_at = Utc::now();
+    }
+
+    /// Append a durable label fact. Repeated names intentionally preserve the
+    /// complete label history; consumers choose the latest value if needed.
+    pub fn record_label(&mut self, name: &str, value: &str) {
+        self.append_event(SessionEvent::Label {
+            sequence: 0,
+            id: Uuid::new_v4().to_string(),
+            created_at: Utc::now(),
+            name: name.to_string(),
+            value: value.to_string(),
+        });
+        self.meta.updated_at = Utc::now();
+    }
+
+    /// Append a durable host-defined fact without making it part of LLM context.
+    pub fn record_custom(&mut self, name: &str, value: serde_json::Value) {
+        self.append_event(SessionEvent::Custom {
+            sequence: 0,
+            id: Uuid::new_v4().to_string(),
+            created_at: Utc::now(),
+            name: name.to_string(),
+            value,
         });
         self.meta.updated_at = Utc::now();
     }
@@ -1461,11 +1537,44 @@ mod tests {
             Some(fork.meta.id.as_str())
         );
         assert_eq!(view.active_path_start_sequence, Some(1));
-        assert_eq!(view.active_events.len(), 3);
+        assert_eq!(view.active_events.len(), 4);
         let projected = serde_json::to_string(&view.messages).unwrap();
         assert!(projected.contains("parent"));
         assert!(projected.contains("branch"));
         assert_eq!(view.source_event_count, fork.events.len());
+        assert!(matches!(
+            fork.events[2],
+            SessionEvent::BranchSummary { ref branch_id, .. } if branch_id == &fork.meta.id
+        ));
+    }
+
+    #[test]
+    fn session_metadata_facts_are_append_only_and_excluded_from_context() {
+        let mut session = SessionRecord::new(Path::new("."));
+        session.push_message(Message::user("hello"));
+        session.record_label("topic", "event-tree");
+        session.record_custom("host_state", serde_json::json!({"expanded": true}));
+        let before = session.event_sequence;
+        session.record_branch_summary("branch-1", "Continue from this point.");
+
+        assert_eq!(session.event_sequence, before + 1);
+        assert!(matches!(
+            session.events[1],
+            SessionEvent::Label { ref name, ref value, .. } if name == "topic" && value == "event-tree"
+        ));
+        assert!(matches!(
+            session.events[2],
+            SessionEvent::Custom { ref name, ref value, .. } if name == "host_state" && value["expanded"] == true
+        ));
+        assert!(matches!(
+            session.events[3],
+            SessionEvent::BranchSummary { ref branch_id, ref summary, .. }
+                if branch_id == "branch-1" && summary == "Continue from this point."
+        ));
+        assert_eq!(
+            session.try_view().unwrap().messages[0].content.as_deref(),
+            Some("hello")
+        );
     }
 
     #[test]
