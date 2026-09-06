@@ -155,11 +155,19 @@ async fn main() -> Result<()> {
             Ok(())
         }
         None => {
-            anyhow::bail!(
-                "the interactive local REPL was removed. Use Cloud Console \
-                 (`cd cloud && ./scripts/dev.sh`) for the product UI, or `zene acp` \
-                 for Agent Client Protocol (Cloud workers / editors)."
-            );
+            println!("Zene (Zen Engine) — The Open, Minimalist Agent Harness");
+            println!();
+            println!("Usage: zene [OPTIONS] <COMMAND>");
+            println!();
+            println!("Commands:");
+            println!("  acp       Speak Agent Client Protocol (ACP) over stdio JSON-RPC");
+            println!("  sessions  List saved sessions for the current workdir");
+            println!("  config    Print config path and defaults");
+            println!("  export    Export a session and its record to a zip file");
+            println!("  mcp       Probe configured MCP servers");
+            println!();
+            println!("Run 'zene --help' for more options.");
+            Ok(())
         }
     }
 }

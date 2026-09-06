@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use zene_llm::TokenUsage;
 
-use crate::{SessionId, StepId, ToolCallId, TurnId};
+use crate::{SessionId, StepId, TurnId};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct EventSequence(u64);
@@ -18,7 +18,7 @@ impl EventSequence {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct ProjectionToolOutput {
     pub message_index: usize,
     pub tool_call_id: Option<String>,
@@ -27,7 +27,7 @@ pub struct ProjectionToolOutput {
     pub handle_reference: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct ProjectionInjectedSource {
     pub message_index: usize,
     pub kind: String,
@@ -58,6 +58,33 @@ pub struct RuntimeEvent {
     pub kind: RuntimeEventKind,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct ProjectionReadyEvent {
+    pub source_message_count: usize,
+    pub projected_message_count: usize,
+    pub source_event_count: usize,
+    pub active_event_count: usize,
+    pub cache_drift_detected: bool,
+    pub used_materialized_fallback: bool,
+    pub fallback_reason: Option<String>,
+    pub active_branch_id: Option<String>,
+    pub active_path_start_sequence: Option<u64>,
+    pub injected: Vec<String>,
+    pub retained_message_count: usize,
+    pub retained_turn_count: usize,
+    pub dropped_event_count: usize,
+    pub truncated_message_count: usize,
+    pub compaction_event_ids: Vec<String>,
+    pub tool_output_provenance: Vec<ProjectionToolOutput>,
+    pub retained_turn_ids: Vec<String>,
+    pub injected_sources: Vec<ProjectionInjectedSource>,
+    pub delivery: String,
+    pub delivery_tail_start: Option<usize>,
+    pub estimate_tokens: u32,
+    pub context_epoch: u64,
+    pub prefix_cache: ProjectionPrefixCache,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum RuntimeEventKind {
     TurnStarted,
@@ -71,12 +98,12 @@ pub enum RuntimeEventKind {
         delta: String,
     },
     ToolCall {
-        id: ToolCallId,
+        id: String,
         name: String,
         arguments: String,
     },
     ToolResult {
-        id: ToolCallId,
+        id: String,
         name: String,
         content: String,
         is_error: bool,
@@ -89,31 +116,7 @@ pub enum RuntimeEventKind {
         context_percent: u8,
         context_epoch: u64,
     },
-    ProjectionReady {
-        source_message_count: usize,
-        projected_message_count: usize,
-        source_event_count: usize,
-        active_event_count: usize,
-        cache_drift_detected: bool,
-        used_materialized_fallback: bool,
-        fallback_reason: Option<String>,
-        active_branch_id: Option<String>,
-        active_path_start_sequence: Option<u64>,
-        injected: Vec<String>,
-        retained_message_count: usize,
-        retained_turn_count: usize,
-        dropped_event_count: usize,
-        truncated_message_count: usize,
-        compaction_event_ids: Vec<String>,
-        tool_output_provenance: Vec<ProjectionToolOutput>,
-        retained_turn_ids: Vec<String>,
-        injected_sources: Vec<ProjectionInjectedSource>,
-        delivery: String,
-        delivery_tail_start: Option<usize>,
-        estimate_tokens: u32,
-        context_epoch: u64,
-        prefix_cache: ProjectionPrefixCache,
-    },
+    ProjectionReady(Box<ProjectionReadyEvent>),
     TurnEnded {
         steps: u32,
     },

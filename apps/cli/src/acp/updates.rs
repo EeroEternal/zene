@@ -2,6 +2,7 @@
 
 use serde_json::{json, Value};
 use zene_llm::{Message, Role};
+use zene_turn::ProjectionReadyEvent;
 
 /// Map a built-in / MCP tool name to an ACP tool kind.
 pub fn tool_kind(name: &str) -> &'static str {
@@ -354,105 +355,67 @@ pub fn usage_update(
     })
 }
 
-#[allow(dead_code)]
-pub fn projection_ready_update(
-    source_message_count: usize,
-    projected_message_count: usize,
-    source_event_count: usize,
-    active_event_count: usize,
-    cache_drift_detected: bool,
-    used_materialized_fallback: bool,
-    fallback_reason: Option<&str>,
-    active_branch_id: Option<&str>,
-    active_path_start_sequence: Option<u64>,
-    injected: &[String],
-    retained_message_count: usize,
-    retained_turn_count: usize,
-    dropped_event_count: usize,
-    truncated_message_count: usize,
-    compaction_event_ids: &[String],
-    delivery: &str,
-    delivery_tail_start: Option<usize>,
-    estimate_tokens: u32,
-    context_epoch: u64,
-) -> Value {
-    projection_ready_update_with_provenance(
-        source_message_count,
-        projected_message_count,
-        source_event_count,
-        active_event_count,
-        cache_drift_detected,
-        used_materialized_fallback,
-        fallback_reason,
-        active_branch_id,
-        active_path_start_sequence,
-        injected,
-        retained_message_count,
-        retained_turn_count,
-        dropped_event_count,
-        truncated_message_count,
-        compaction_event_ids,
-        &[],
-        &[],
-        &[],
-        delivery,
-        delivery_tail_start,
-        estimate_tokens,
-        context_epoch,
-        &json!({}),
-    )
-}
+pub fn projection_ready_update(event: &ProjectionReadyEvent) -> Value {
+    let tool_output_provenance: Vec<Value> = event
+        .tool_output_provenance
+        .iter()
+        .map(|item| {
+            json!({
+                "messageIndex": item.message_index,
+                "toolCallId": item.tool_call_id,
+                "toolName": item.tool_name,
+                "kind": item.kind,
+                "handleReference": item.handle_reference,
+            })
+        })
+        .collect();
+    let injected_sources: Vec<Value> = event
+        .injected_sources
+        .iter()
+        .map(|item| {
+            json!({
+                "messageIndex": item.message_index,
+                "kind": item.kind,
+                "source": item.source,
+            })
+        })
+        .collect();
+    let prefix_cache = json!({
+        "prefixEnd": event.prefix_cache.prefix_end,
+        "bodyEnd": event.prefix_cache.body_end,
+        "tailDecorationCount": event.prefix_cache.tail_decoration_count,
+        "prefixFingerprint": event.prefix_cache.prefix_fingerprint,
+        "breakKind": event.prefix_cache.break_kind,
+        "cachedTokens": event.prefix_cache.cached_tokens,
+        "gatewayHitTokens": event.prefix_cache.gateway_hit_tokens,
+        "unchangedReprocessedEst": event.prefix_cache.unchanged_reprocessed_est,
+    });
 
-pub fn projection_ready_update_with_provenance(
-    source_message_count: usize,
-    projected_message_count: usize,
-    source_event_count: usize,
-    active_event_count: usize,
-    cache_drift_detected: bool,
-    used_materialized_fallback: bool,
-    fallback_reason: Option<&str>,
-    active_branch_id: Option<&str>,
-    active_path_start_sequence: Option<u64>,
-    injected: &[String],
-    retained_message_count: usize,
-    retained_turn_count: usize,
-    dropped_event_count: usize,
-    truncated_message_count: usize,
-    compaction_event_ids: &[String],
-    tool_output_provenance: &[Value],
-    retained_turn_ids: &[String],
-    injected_sources: &[Value],
-    delivery: &str,
-    delivery_tail_start: Option<usize>,
-    estimate_tokens: u32,
-    context_epoch: u64,
-    prefix_cache: &Value,
-) -> Value {
     json!({
         "sessionUpdate": "projection_update",
         "_meta": {
-            "sourceMessageCount": source_message_count,
-            "projectedMessageCount": projected_message_count,
-            "sourceEventCount": source_event_count,
-            "activeEventCount": active_event_count,
-            "cacheDriftDetected": cache_drift_detected,
-            "usedMaterializedFallback": used_materialized_fallback,
-            "fallbackReason": fallback_reason,
-            "activeBranchId": active_branch_id,
-            "activePathStartSequence": active_path_start_sequence,
-            "injected": injected,
-            "retainedMessageCount": retained_message_count,
-            "retainedTurnCount": retained_turn_count,
-            "droppedEventCount": dropped_event_count,
-            "truncatedMessageCount": truncated_message_count,
-            "compactionEventIds": compaction_event_ids,
+            "sourceMessageCount": event.source_message_count,
+            "projectedMessageCount": event.projected_message_count,
+            "sourceEventCount": event.source_event_count,
+            "activeEventCount": event.active_event_count,
+            "cacheDriftDetected": event.cache_drift_detected,
+            "usedMaterializedFallback": event.used_materialized_fallback,
+            "fallbackReason": event.fallback_reason,
+            "activeBranchId": event.active_branch_id,
+            "activePathStartSequence": event.active_path_start_sequence,
+            "injected": event.injected,
+            "retainedMessageCount": event.retained_message_count,
+            "retainedTurnCount": event.retained_turn_count,
+            "droppedEventCount": event.dropped_event_count,
+            "truncatedMessageCount": event.truncated_message_count,
+            "compactionEventIds": event.compaction_event_ids,
             "toolOutputProvenance": tool_output_provenance,
-            "retainedTurnIds": retained_turn_ids,
+            "retainedTurnIds": event.retained_turn_ids,
             "injectedSources": injected_sources,
-            "delivery": delivery,
-            "deliveryTailStart": delivery_tail_start,
-            "estimateTokens": estimate_tokens,
-            "contextEpoch": context_epoch,
+            "delivery": event.delivery,
+            "deliveryTailStart": event.delivery_tail_start,
+            "estimateTokens": event.estimate_tokens,
+            "contextEpoch": event.context_epoch,
             "prefixCache": prefix_cache,
         },
     })
@@ -675,30 +638,29 @@ mod tests {
 
     #[test]
     fn projection_update_exposes_projection_explain() {
-        let update = projection_ready_update(
-            8,
-            5,
-            12,
-            9,
-            false,
-            false,
-            None,
-            Some("branch-1"),
-            Some(4),
-            &[
+        let event = ProjectionReadyEvent {
+            source_message_count: 8,
+            projected_message_count: 5,
+            source_event_count: 12,
+            active_event_count: 9,
+            active_branch_id: Some("branch-1".to_string()),
+            active_path_start_sequence: Some(4),
+            injected: vec![
                 "compaction_summary".to_string(),
                 "system_reminder".to_string(),
             ],
-            5,
-            2,
-            3,
-            1,
-            &["compact-1".to_string()],
-            "delta",
-            Some(5),
-            321,
-            7,
-        );
+            retained_message_count: 5,
+            retained_turn_count: 2,
+            dropped_event_count: 3,
+            truncated_message_count: 1,
+            compaction_event_ids: vec!["compact-1".to_string()],
+            delivery: "delta".to_string(),
+            delivery_tail_start: Some(5),
+            estimate_tokens: 321,
+            context_epoch: 7,
+            ..Default::default()
+        };
+        let update = projection_ready_update(&event);
         assert_eq!(update["sessionUpdate"], "projection_update");
         assert_eq!(update["_meta"]["activeEventCount"], 9);
         assert_eq!(update["_meta"]["cacheDriftDetected"], false);

@@ -26,7 +26,7 @@ use super::terminal_bridge::AcpRemoteTerminal;
 use super::transport::{AcpWriter, SharedState};
 use super::updates::{
     agent_message_chunk, agent_thought_chunk, available_commands_update, current_mode_update,
-    error_update, modes_state, plan_from_todo_arguments, projection_ready_update_with_provenance,
+    error_update, modes_state, plan_from_todo_arguments, projection_ready_update,
     replay_updates_from_messages, step_started, tool_call_result_update, tool_call_update,
     tool_kind, tool_title, turn_ended, turn_started, usage_update,
 };
@@ -934,84 +934,7 @@ fn project_runtime_event(
             *context_epoch,
         )),
         RuntimeEventKind::Error { message } => Some(error_update(message)),
-        RuntimeEventKind::ProjectionReady {
-            source_message_count,
-            projected_message_count,
-            source_event_count,
-            active_event_count,
-            cache_drift_detected,
-            used_materialized_fallback,
-            fallback_reason,
-            active_branch_id,
-            active_path_start_sequence,
-            injected,
-            retained_message_count,
-            retained_turn_count,
-            dropped_event_count,
-            truncated_message_count,
-            compaction_event_ids,
-            tool_output_provenance,
-            retained_turn_ids,
-            injected_sources,
-            delivery,
-            delivery_tail_start,
-            estimate_tokens,
-            context_epoch,
-            prefix_cache,
-        } => Some(projection_ready_update_with_provenance(
-            *source_message_count,
-            *projected_message_count,
-            *source_event_count,
-            *active_event_count,
-            *cache_drift_detected,
-            *used_materialized_fallback,
-            fallback_reason.as_deref(),
-            active_branch_id.as_deref(),
-            *active_path_start_sequence,
-            injected,
-            *retained_message_count,
-            *retained_turn_count,
-            *dropped_event_count,
-            *truncated_message_count,
-            compaction_event_ids,
-            &tool_output_provenance
-                .iter()
-                .map(|item| {
-                    json!({
-                        "messageIndex": item.message_index,
-                        "toolCallId": item.tool_call_id,
-                        "toolName": item.tool_name,
-                        "kind": item.kind,
-                        "handleReference": item.handle_reference,
-                    })
-                })
-                .collect::<Vec<_>>(),
-            retained_turn_ids,
-            &injected_sources
-                .iter()
-                .map(|item| {
-                    json!({
-                        "messageIndex": item.message_index,
-                        "kind": item.kind,
-                        "source": item.source,
-                    })
-                })
-                .collect::<Vec<_>>(),
-            delivery,
-            *delivery_tail_start,
-            *estimate_tokens,
-            *context_epoch,
-            &json!({
-                "prefixEnd": prefix_cache.prefix_end,
-                "bodyEnd": prefix_cache.body_end,
-                "tailDecorationCount": prefix_cache.tail_decoration_count,
-                "prefixFingerprint": prefix_cache.prefix_fingerprint,
-                "breakKind": prefix_cache.break_kind,
-                "cachedTokens": prefix_cache.cached_tokens,
-                "gatewayHitTokens": prefix_cache.gateway_hit_tokens,
-                "unchangedReprocessedEst": prefix_cache.unchanged_reprocessed_est,
-            }),
-        )),
+        RuntimeEventKind::ProjectionReady(ready) => Some(projection_ready_update(ready)),
         RuntimeEventKind::TurnStarted => {
             let turn_id = event.turn_id.as_ref().map(|id| id.to_string());
             Some(turn_started(turn_id.as_deref()))

@@ -1,12 +1,70 @@
 use std::sync::Arc;
 
-use zene_context::{InjectedSource, PrefixCacheExplain, ToolOutputProvenance};
 use zene_llm::TokenUsage;
 
 use zene_turn::{
-    EventSequence, ProjectionInjectedSource, ProjectionPrefixCache, ProjectionToolOutput,
-    RuntimeEvent, RuntimeEventHandler, RuntimeEventKind, SessionId, StepId, ToolCallId, TurnId,
+    EventSequence, ProjectionInjectedSource, ProjectionPrefixCache, ProjectionReadyEvent,
+    ProjectionToolOutput, RuntimeEvent, RuntimeEventHandler, RuntimeEventKind, SessionId, StepId,
+    TurnId,
 };
+
+pub fn projection_ready_event_from_explain(
+    explain: &zene_context::ProjectionExplain,
+) -> ProjectionReadyEvent {
+    ProjectionReadyEvent {
+        source_message_count: explain.source_message_count,
+        projected_message_count: explain.projected_message_count,
+        source_event_count: explain.source_event_count,
+        active_event_count: explain.active_event_count,
+        cache_drift_detected: explain.cache_drift_detected,
+        used_materialized_fallback: explain.used_materialized_fallback,
+        fallback_reason: explain.fallback_reason.clone(),
+        active_branch_id: explain.active_branch_id.clone(),
+        active_path_start_sequence: explain.active_path_start_sequence,
+        injected: explain.injected.clone(),
+        retained_message_count: explain.retained_message_count,
+        retained_turn_count: explain.retained_turn_count,
+        dropped_event_count: explain.dropped_event_count,
+        truncated_message_count: explain.truncated_message_count,
+        compaction_event_ids: explain.compaction_event_ids.clone(),
+        tool_output_provenance: explain
+            .tool_output_provenance
+            .iter()
+            .map(|item| ProjectionToolOutput {
+                message_index: item.message_index,
+                tool_call_id: item.tool_call_id.clone(),
+                tool_name: item.tool_name.clone(),
+                kind: item.kind.clone(),
+                handle_reference: item.handle_reference.clone(),
+            })
+            .collect(),
+        retained_turn_ids: explain.retained_turn_ids.clone(),
+        injected_sources: explain
+            .injected_sources
+            .iter()
+            .map(|item| ProjectionInjectedSource {
+                message_index: item.message_index,
+                kind: item.kind.clone(),
+                source: item.source.clone(),
+            })
+            .collect(),
+        delivery: explain.delivery.as_str().to_string(),
+        delivery_tail_start: explain.delivery_tail_start,
+        estimate_tokens: explain.estimate_tokens,
+        context_epoch: explain.context_epoch,
+        prefix_cache: ProjectionPrefixCache {
+            prefix_end: explain.prefix_cache.prefix_end,
+            body_end: explain.prefix_cache.body_end,
+            tail_decoration_count: explain.prefix_cache.tail_decoration_count,
+            prefix_fingerprint: explain.prefix_cache.prefix_fingerprint.clone(),
+            break_kind: explain.prefix_cache.break_kind.clone(),
+            cached_tokens: explain.prefix_cache.cached_tokens,
+            gateway_hit_tokens: explain.prefix_cache.gateway_hit_tokens,
+            anchor_aligned: explain.prefix_cache.anchor_aligned,
+            unchanged_reprocessed_est: explain.prefix_cache.unchanged_reprocessed_est,
+        },
+    }
+}
 
 pub type EventHandler = Arc<dyn Fn(AgentEvent) + Send + Sync>;
 
@@ -80,7 +138,7 @@ pub fn runtime_event_handler(
                 current_turn,
                 current_step,
                 RuntimeEventKind::ToolCall {
-                    id: ToolCallId::from_string(id.clone()),
+                    id: id.clone(),
                     name: name.clone(),
                     arguments: arguments.clone(),
                 },
@@ -95,7 +153,7 @@ pub fn runtime_event_handler(
                 current_turn,
                 current_step,
                 RuntimeEventKind::ToolResult {
-                    id: ToolCallId::from_string(id.clone()),
+                    id: id.clone(),
                     name: name.clone(),
                     content: content.clone(),
                     is_error: *is_error,
@@ -119,84 +177,10 @@ pub fn runtime_event_handler(
                     context_epoch: *context_epoch,
                 },
             ),
-            AgentEvent::ProjectionReady {
-                source_message_count,
-                projected_message_count,
-                source_event_count,
-                active_event_count,
-                cache_drift_detected,
-                used_materialized_fallback,
-                fallback_reason,
-                active_branch_id,
-                active_path_start_sequence,
-                injected,
-                retained_message_count,
-                retained_turn_count,
-                dropped_event_count,
-                truncated_message_count,
-                compaction_event_ids,
-                tool_output_provenance,
-                retained_turn_ids,
-                injected_sources,
-                delivery,
-                delivery_tail_start,
-                estimate_tokens,
-                context_epoch,
-                prefix_cache,
-            } => (
+            AgentEvent::ProjectionReady(event) => (
                 current_turn,
                 current_step,
-                RuntimeEventKind::ProjectionReady {
-                    source_message_count: *source_message_count,
-                    projected_message_count: *projected_message_count,
-                    source_event_count: *source_event_count,
-                    active_event_count: *active_event_count,
-                    cache_drift_detected: *cache_drift_detected,
-                    used_materialized_fallback: *used_materialized_fallback,
-                    fallback_reason: fallback_reason.clone(),
-                    active_branch_id: active_branch_id.clone(),
-                    active_path_start_sequence: *active_path_start_sequence,
-                    injected: injected.clone(),
-                    retained_message_count: *retained_message_count,
-                    retained_turn_count: *retained_turn_count,
-                    dropped_event_count: *dropped_event_count,
-                    truncated_message_count: *truncated_message_count,
-                    compaction_event_ids: compaction_event_ids.clone(),
-                    tool_output_provenance: tool_output_provenance
-                        .iter()
-                        .map(|item| ProjectionToolOutput {
-                            message_index: item.message_index,
-                            tool_call_id: item.tool_call_id.clone(),
-                            tool_name: item.tool_name.clone(),
-                            kind: item.kind.clone(),
-                            handle_reference: item.handle_reference.clone(),
-                        })
-                        .collect(),
-                    retained_turn_ids: retained_turn_ids.clone(),
-                    injected_sources: injected_sources
-                        .iter()
-                        .map(|item| ProjectionInjectedSource {
-                            message_index: item.message_index,
-                            kind: item.kind.clone(),
-                            source: item.source.clone(),
-                        })
-                        .collect(),
-                    delivery: delivery.clone(),
-                    delivery_tail_start: *delivery_tail_start,
-                    estimate_tokens: *estimate_tokens,
-                    context_epoch: *context_epoch,
-                    prefix_cache: ProjectionPrefixCache {
-                        prefix_end: prefix_cache.prefix_end,
-                        body_end: prefix_cache.body_end,
-                        tail_decoration_count: prefix_cache.tail_decoration_count,
-                        prefix_fingerprint: prefix_cache.prefix_fingerprint.clone(),
-                        break_kind: prefix_cache.break_kind.clone(),
-                        cached_tokens: prefix_cache.cached_tokens,
-                        gateway_hit_tokens: prefix_cache.gateway_hit_tokens,
-                        anchor_aligned: prefix_cache.anchor_aligned,
-                        unchanged_reprocessed_est: prefix_cache.unchanged_reprocessed_est,
-                    },
-                },
+                RuntimeEventKind::ProjectionReady(event.clone()),
             ),
             AgentEvent::TurnEnd { turn_id, steps } => (
                 Some(*turn_id),
@@ -273,31 +257,7 @@ pub enum AgentEvent {
         context_percent: u8,
         context_epoch: u64,
     },
-    ProjectionReady {
-        source_message_count: usize,
-        projected_message_count: usize,
-        source_event_count: usize,
-        active_event_count: usize,
-        cache_drift_detected: bool,
-        used_materialized_fallback: bool,
-        fallback_reason: Option<String>,
-        active_branch_id: Option<String>,
-        active_path_start_sequence: Option<u64>,
-        injected: Vec<String>,
-        retained_message_count: usize,
-        retained_turn_count: usize,
-        dropped_event_count: usize,
-        truncated_message_count: usize,
-        compaction_event_ids: Vec<String>,
-        tool_output_provenance: Vec<ToolOutputProvenance>,
-        retained_turn_ids: Vec<String>,
-        injected_sources: Vec<InjectedSource>,
-        delivery: String,
-        delivery_tail_start: Option<usize>,
-        estimate_tokens: u32,
-        context_epoch: u64,
-        prefix_cache: PrefixCacheExplain,
-    },
+    ProjectionReady(Box<ProjectionReadyEvent>),
     TurnEnd {
         turn_id: TurnId,
         steps: u32,
@@ -340,51 +300,46 @@ mod tests {
         handler(AgentEvent::TextDelta {
             delta: "hello".into(),
         });
-        handler(AgentEvent::ProjectionReady {
-            source_message_count: 4,
-            projected_message_count: 3,
-            source_event_count: 7,
-            active_event_count: 5,
-            cache_drift_detected: false,
-            used_materialized_fallback: false,
-            fallback_reason: None,
-            active_branch_id: Some("branch".into()),
-            active_path_start_sequence: Some(3),
-            injected: vec!["compaction_summary".into()],
-            retained_message_count: 3,
-            retained_turn_count: 1,
-            dropped_event_count: 2,
-            truncated_message_count: 1,
-            compaction_event_ids: vec!["compact-1".into()],
-            tool_output_provenance: vec![ToolOutputProvenance {
-                message_index: 2,
-                tool_call_id: Some("call-1".into()),
-                tool_name: Some("Read".into()),
-                kind: "handle".into(),
-                handle_reference: Some("/tmp/output".into()),
-            }],
-            retained_turn_ids: vec![turn_id.to_string()],
-            injected_sources: vec![InjectedSource {
-                message_index: 0,
-                kind: "compaction_summary".into(),
-                source: "compaction_event".into(),
-            }],
-            delivery: "full".into(),
-            delivery_tail_start: None,
-            estimate_tokens: 128,
-            context_epoch: 2,
-            prefix_cache: PrefixCacheExplain {
-                prefix_end: 1,
-                body_end: 3,
-                tail_decoration_count: 0,
-                prefix_fingerprint: Some("abc".into()),
-                break_kind: "none".into(),
-                cached_tokens: None,
-                gateway_hit_tokens: None,
-                anchor_aligned: None,
-                unchanged_reprocessed_est: None,
+        handler(AgentEvent::ProjectionReady(Box::new(
+            ProjectionReadyEvent {
+                source_message_count: 4,
+                projected_message_count: 3,
+                source_event_count: 7,
+                active_event_count: 5,
+                active_branch_id: Some("branch".into()),
+                active_path_start_sequence: Some(3),
+                injected: vec!["compaction_summary".into()],
+                retained_message_count: 3,
+                retained_turn_count: 1,
+                dropped_event_count: 2,
+                truncated_message_count: 1,
+                compaction_event_ids: vec!["compact-1".into()],
+                tool_output_provenance: vec![ProjectionToolOutput {
+                    message_index: 2,
+                    tool_call_id: Some("call-1".into()),
+                    tool_name: Some("Read".into()),
+                    kind: "handle".into(),
+                    handle_reference: Some("/tmp/output".into()),
+                }],
+                retained_turn_ids: vec![turn_id.to_string()],
+                injected_sources: vec![ProjectionInjectedSource {
+                    message_index: 0,
+                    kind: "compaction_summary".into(),
+                    source: "compaction_event".into(),
+                }],
+                delivery: "full".into(),
+                estimate_tokens: 128,
+                context_epoch: 2,
+                prefix_cache: ProjectionPrefixCache {
+                    prefix_end: 1,
+                    body_end: 3,
+                    prefix_fingerprint: Some("abc".into()),
+                    break_kind: "none".into(),
+                    ..Default::default()
+                },
+                ..Default::default()
             },
-        });
+        )));
 
         let events = collected.lock().unwrap();
         assert_eq!(events.len(), 4);
@@ -393,55 +348,30 @@ mod tests {
         assert_eq!(events[3].turn_id, Some(turn_id));
         assert_eq!(events[3].step_id, Some(step_id));
         match &events[3].kind {
-            RuntimeEventKind::ProjectionReady {
-                source_message_count,
-                projected_message_count,
-                source_event_count,
-                active_event_count,
-                cache_drift_detected,
-                used_materialized_fallback,
-                fallback_reason,
-                active_branch_id,
-                active_path_start_sequence,
-                injected,
-                retained_message_count,
-                retained_turn_count,
-                dropped_event_count,
-                truncated_message_count,
-                compaction_event_ids,
-                tool_output_provenance,
-                retained_turn_ids,
-                injected_sources,
-                delivery,
-                delivery_tail_start,
-                estimate_tokens,
-                context_epoch,
-                prefix_cache,
-            } => {
-                assert_eq!(*source_message_count, 4);
-                assert_eq!(*projected_message_count, 3);
-                assert_eq!(*source_event_count, 7);
-                assert_eq!(*active_event_count, 5);
-                assert!(!cache_drift_detected);
-                assert!(!used_materialized_fallback);
-                assert_eq!(fallback_reason, &None);
-                assert_eq!(active_branch_id.as_deref(), Some("branch"));
-                assert_eq!(*active_path_start_sequence, Some(3));
-                assert_eq!(injected, &["compaction_summary"]);
-                assert_eq!(tool_output_provenance.len(), 1);
-                assert_eq!(tool_output_provenance[0].kind, "handle");
-                assert_eq!(retained_turn_ids, &[turn_id.to_string()]);
-                assert_eq!(injected_sources[0].source, "compaction_event");
-                assert_eq!(*retained_message_count, 3);
-                assert_eq!(*retained_turn_count, 1);
-                assert_eq!(*dropped_event_count, 2);
-                assert_eq!(*truncated_message_count, 1);
-                assert_eq!(compaction_event_ids, &["compact-1"]);
-                assert_eq!(delivery, "full");
-                assert_eq!(*delivery_tail_start, None);
-                assert_eq!(*estimate_tokens, 128);
-                assert_eq!(*context_epoch, 2);
-                assert_eq!(prefix_cache.break_kind, "none");
+            RuntimeEventKind::ProjectionReady(ev) => {
+                assert_eq!(ev.source_message_count, 4);
+                assert_eq!(ev.projected_message_count, 3);
+                assert_eq!(ev.source_event_count, 7);
+                assert_eq!(ev.active_event_count, 5);
+                assert!(!ev.cache_drift_detected);
+                assert!(!ev.used_materialized_fallback);
+                assert_eq!(ev.fallback_reason, None);
+                assert_eq!(ev.active_branch_id.as_deref(), Some("branch"));
+                assert_eq!(ev.active_path_start_sequence, Some(3));
+                assert_eq!(ev.injected, &["compaction_summary"]);
+                assert_eq!(ev.tool_output_provenance.len(), 1);
+                assert_eq!(ev.tool_output_provenance[0].kind, "handle");
+                assert_eq!(ev.retained_turn_ids, &[turn_id.to_string()]);
+                assert_eq!(ev.injected_sources[0].source, "compaction_event");
+                assert_eq!(ev.retained_message_count, 3);
+                assert_eq!(ev.retained_turn_count, 1);
+                assert_eq!(ev.dropped_event_count, 2);
+                assert_eq!(ev.truncated_message_count, 1);
+                assert_eq!(ev.compaction_event_ids, &["compact-1"]);
+                assert_eq!(ev.delivery, "full");
+                assert_eq!(ev.estimate_tokens, 128);
+                assert_eq!(ev.context_epoch, 2);
+                assert_eq!(ev.prefix_cache.break_kind, "none");
             }
             other => panic!("unexpected runtime event: {other:?}"),
         }

@@ -79,31 +79,9 @@ pub(crate) async fn prepare_step_context(
     }
     emit_event(
         &options.event_handler,
-        AgentEvent::ProjectionReady {
-            source_message_count: prepared.explain.source_message_count,
-            projected_message_count: prepared.explain.projected_message_count,
-            source_event_count: prepared.explain.source_event_count,
-            active_event_count: prepared.explain.active_event_count,
-            cache_drift_detected: prepared.explain.cache_drift_detected,
-            used_materialized_fallback: prepared.explain.used_materialized_fallback,
-            fallback_reason: prepared.explain.fallback_reason.clone(),
-            active_branch_id: prepared.explain.active_branch_id.clone(),
-            active_path_start_sequence: prepared.explain.active_path_start_sequence,
-            injected: prepared.explain.injected.clone(),
-            retained_message_count: prepared.explain.retained_message_count,
-            retained_turn_count: prepared.explain.retained_turn_count,
-            dropped_event_count: prepared.explain.dropped_event_count,
-            truncated_message_count: prepared.explain.truncated_message_count,
-            compaction_event_ids: prepared.explain.compaction_event_ids.clone(),
-            tool_output_provenance: prepared.explain.tool_output_provenance.clone(),
-            retained_turn_ids: prepared.explain.retained_turn_ids.clone(),
-            injected_sources: prepared.explain.injected_sources.clone(),
-            delivery: prepared.explain.delivery.as_str().to_string(),
-            delivery_tail_start: prepared.explain.delivery_tail_start,
-            estimate_tokens: prepared.explain.estimate_tokens,
-            context_epoch: prepared.explain.context_epoch,
-            prefix_cache: prepared.explain.prefix_cache.clone(),
-        },
+        AgentEvent::ProjectionReady(Box::new(
+            crate::events::projection_ready_event_from_explain(&prepared.explain),
+        )),
     );
     let step = prepared.step;
     debug!(
