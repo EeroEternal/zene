@@ -1,7 +1,0 @@
----
-description: Console 能力从 @/cap/<id> 引用，可混用
-globs: cloud/apps/web/**/*.{tsx,ts}
-alwaysApply: false
----
-
-需要已有 Console 能力时，写 `import { … } from "@/cap/<id>"`（`llm`、`composer`、`project-picker`、`picker`、`dialogs` 等）。多个能力就写多行 import。打印语句：`./cloud/scripts/use-capability.sh llm composer`。不要从 `NewAgent.tsx` 复制实现。
