@@ -448,6 +448,7 @@ mod tests {
         model_calls: Arc<AtomicUsize>,
         tool_outcome: ToolBatchOutcome,
         max_steps: u32,
+        steer_calls: Arc<AtomicUsize>,
     }
 
     struct DirectPorts {
@@ -635,6 +636,7 @@ mod tests {
         }
 
         fn inject_steer(&mut self, _options: &Self::Options) -> Result<bool> {
+            self.steer_calls.fetch_add(1, Ordering::SeqCst);
             Ok(false)
         }
 
@@ -687,12 +689,40 @@ mod tests {
             model_calls: Arc::clone(&model_calls),
             tool_outcome: ToolBatchOutcome::Terminate,
             max_steps: 4,
+            steer_calls: Arc::new(AtomicUsize::new(0)),
         };
 
         let result =
             block_on(run_turn_loop(&mut runtime, "prompt", &(), None)).expect("turn completes");
         assert_eq!(result, "");
         assert_eq!(model_calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn terminate_tool_batch_does_not_drain_pending_steer() {
+        // Terminate ends the turn immediately, before the steer/follow-up drain
+        // point that normally runs after a tool batch. Pending steer input is
+        // left queued for the next turn rather than being injected mid-turn.
+        let model_calls = Arc::new(AtomicUsize::new(0));
+        let steer_calls = Arc::new(AtomicUsize::new(0));
+        let mut runtime = FakeRuntime {
+            active: None,
+            model_calls,
+            tool_outcome: ToolBatchOutcome::Terminate,
+            max_steps: 4,
+            steer_calls: Arc::clone(&steer_calls),
+        };
+
+        let outcome = block_on(
+            TurnEngine::new(&mut LegacyTurnPorts::new(&mut runtime)).run(TurnRequest::new(
+                "prompt",
+                &(),
+                None,
+            )),
+        )
+        .expect("turn completes");
+        assert_eq!(outcome.status, TurnStatus::Terminated);
+        assert_eq!(steer_calls.load(Ordering::SeqCst), 0);
     }
 
     #[test]
@@ -703,6 +733,7 @@ mod tests {
             model_calls: Arc::clone(&model_calls),
             tool_outcome: ToolBatchOutcome::Continue,
             max_steps: 4,
+            steer_calls: Arc::new(AtomicUsize::new(0)),
         };
 
         let outcome = block_on(
@@ -727,6 +758,7 @@ mod tests {
             model_calls,
             tool_outcome: ToolBatchOutcome::Terminate,
             max_steps: 4,
+            steer_calls: Arc::new(AtomicUsize::new(0)),
         };
 
         let outcome = block_on(
@@ -749,6 +781,7 @@ mod tests {
             model_calls,
             tool_outcome: ToolBatchOutcome::Continue,
             max_steps: 1,
+            steer_calls: Arc::new(AtomicUsize::new(0)),
         };
 
         let outcome = block_on(
