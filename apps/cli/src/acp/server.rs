@@ -291,6 +291,8 @@ impl AcpServer {
             "session/list" => self.handle_session_list(params),
             "session/close" => self.handle_session_close(params).await,
             "session/set_mode" => self.handle_session_set_mode(params).await,
+            "session/set_config_option" => self.handle_session_set_config_option(params).await,
+            "session/clear_queue" => self.handle_session_clear_queue(params),
             "session/steer" => self.handle_session_steer(params).await,
             "authenticate" => Ok(json!({})),
             "session/prompt" => Err(anyhow!(
@@ -488,6 +490,74 @@ impl AcpServer {
         self.writer
             .session_update(&sid, current_mode_update(&active))?;
         Ok(json!({}))
+    }
+
+    async fn handle_session_set_config_option(&mut self, params: Value) -> Result<Value> {
+        let sid = params
+            .get("sessionId")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| anyhow!("sessionId required"))?
+            .to_string();
+        let key = params
+            .get("key")
+            .or_else(|| params.get("name"))
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| anyhow!("config key or name required"))?;
+        let value = params
+            .get("value")
+            .ok_or_else(|| anyhow!("config value required"))?;
+
+        let sess = self
+            .sessions
+            .get_mut(&sid)
+            .ok_or_else(|| anyhow!("unknown sessionId: {sid}"))?;
+
+        match key {
+            "mode" => {
+                let mode_id = value
+                    .as_str()
+                    .ok_or_else(|| anyhow!("mode must be a string"))?;
+                let active = sess.runtime.set_mode(mode_id.to_string()).await?;
+                self.writer
+                    .session_update(&sid, current_mode_update(&active))?;
+            }
+            "permission_mode" | "permissionMode" => {
+                let mode_str = value
+                    .as_str()
+                    .ok_or_else(|| anyhow!("permission_mode must be a string"))?;
+                sess.permission_mode = mode_str.to_string();
+            }
+            _ => {
+                debug!(session = %sid, key = %key, value = %value, "ACP runtime config option updated");
+            }
+        }
+
+        Ok(json!({
+            "key": key,
+            "value": value,
+        }))
+    }
+
+    fn handle_session_clear_queue(&mut self, params: Value) -> Result<Value> {
+        let sid = params
+            .get("sessionId")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| anyhow!("sessionId required"))?
+            .to_string();
+        let sess = self
+            .sessions
+            .get_mut(&sid)
+            .ok_or_else(|| anyhow!("unknown sessionId: {sid}"))?;
+        let cleared_count = sess.prompt_queue.len();
+        let mut cleared = Vec::new();
+        while let Some(q) = sess.prompt_queue.pop_front() {
+            cleared.push(q.rpc_id.to_value());
+        }
+        debug!(session = %sid, cleared_count, "ACP prompt queue cleared");
+        Ok(json!({
+            "clearedCount": cleared_count,
+            "cleared": cleared,
+        }))
     }
 
     async fn handle_session_steer(&mut self, params: Value) -> Result<Value> {

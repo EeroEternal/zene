@@ -96,12 +96,13 @@ async fn run_llm_step(
             "llm step context estimate"
         );
 
-        let request = model_executor::build_request(
+        let request = model_executor::build_request_with_reasoning(
             &deps.config.model,
             messages.clone(),
             tools.to_vec(),
             options.stream,
             Some(metadata.clone()),
+            deps.config.reasoning_effort.clone(),
         );
 
         let result = if options.stream {
@@ -311,6 +312,7 @@ mod tests {
             tools: vec![],
             stream: true,
             context: None,
+            reasoning_effort: None,
         };
         let (message, _) = run_streaming_step(&TextThenDone, request, &options, None)
             .await

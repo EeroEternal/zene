@@ -17,6 +17,8 @@ pub struct ChatRequest {
     pub stream: bool,
     /// Optional session linkage for inference gateways (see docs/context-engine.md).
     pub context: Option<ContextMetadata>,
+    /// Optional reasoning effort configuration (e.g. "low", "medium", "high", or token budget)
+    pub reasoning_effort: Option<String>,
 }
 
 #[derive(Debug, Clone)]

@@ -247,6 +247,7 @@ async fn summarize_prepared_input(
             tools: Vec::<ToolDefinition>::new(),
             stream: false,
             context: None,
+            reasoning_effort: None,
         };
 
         match client.complete(request).await {
@@ -808,6 +809,7 @@ where
         tools: Vec::new(),
         stream: false,
         context: None,
+        reasoning_effort: None,
     };
     let response = chat(request).await.context("compaction summary")?;
     let summary = response
@@ -946,6 +948,7 @@ where
         tools: Vec::<ToolDefinition>::new(),
         stream: false,
         context: None,
+        reasoning_effort: None,
     };
 
     let response = chat(request).await.context("compaction summary")?;

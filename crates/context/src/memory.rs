@@ -197,6 +197,7 @@ pub async fn run_memory_flush(
         tools: Vec::<ToolDefinition>::new(),
         stream: false,
         context: None,
+        reasoning_effort: None,
     };
 
     let response = client

@@ -261,6 +261,7 @@ impl<'a> SubagentTurnRuntime<'a> {
                 tools: context.tools,
                 stream: false,
                 context: None,
+                reasoning_effort: self.config.reasoning_effort.clone(),
             })
             .await
             .context("subagent llm step")?;
