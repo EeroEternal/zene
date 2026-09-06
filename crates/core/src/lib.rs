@@ -54,7 +54,9 @@ pub use plan_mode::PlanApprovalPrompter;
 pub use subagent::{run_subagent, CoreSubagentRunner};
 pub use tool_dedup::{append_reminder, ToolDedup};
 pub use tool_scheduler::{classify_tool_accesses, ToolScheduler};
-pub use zene_hooks::{HookBlock, HookRunner, HookSpec};
+pub use zene_hooks::{
+    ExtensionHook, HookBlock, HookEvent, HookOutcome, HookPayload, HookRunner, HookSpec,
+};
 pub use zene_permission::{
     approve_tool_call, policy_denied, resolve_permission, ApprovalBroker, ApprovalRequest,
     AutoApprovalBroker, PermissionGate, PermissionMode, PermissionPrompter, PermissionRule,
@@ -134,6 +136,21 @@ impl Agent {
     /// Override inference session id (e.g. Cloud run_id for gateway linkage).
     pub fn set_external_session_id(&mut self, id: Option<String>) {
         self.context.set_external_session_id(id);
+    }
+
+    /// Access the agent's hook runner.
+    pub fn hooks(&self) -> &HookRunner {
+        &self.hooks
+    }
+
+    /// Access the agent's hook runner mutably.
+    pub fn hooks_mut(&mut self) -> &mut HookRunner {
+        &mut self.hooks
+    }
+
+    /// Register an in-process host extension hook.
+    pub fn add_extension_hook(&mut self, hook: Arc<dyn ExtensionHook>) {
+        self.hooks.add_extension(hook);
     }
 
     pub fn is_plan_mode_active(&self) -> bool {
@@ -643,6 +660,35 @@ impl Agent {
         info!(turn_id = %turn_id, "turn_start");
         emit_event(&event_handler, AgentEvent::TurnStart { turn_id });
 
+        if let Some(block) = self
+            .hooks
+            .run_before_agent_start(&self.session.meta.id, user_input)
+            .await?
+        {
+            emit_event(
+                &event_handler,
+                AgentEvent::Error {
+                    message: format!("Agent start blocked: {}", block.reason),
+                },
+            );
+            emit_event(&event_handler, AgentEvent::TurnEnd { turn_id, steps: 0 });
+            self.session
+                .record_turn_ended(&turn_id.to_string(), 0, "blocked");
+            bail!("agent start blocked by hook: {}", block.reason);
+        }
+
+        emit_event(
+            &event_handler,
+            AgentEvent::LifecycleEvent {
+                event: "before_agent_start".to_string(),
+                payload: serde_json::json!({
+                    "sessionId": self.session.meta.id,
+                    "prompt": user_input,
+                })
+                .to_string(),
+            },
+        );
+
         let run_options = PromptOptions {
             stream: options.stream,
             cancel: options.cancel,
@@ -975,7 +1021,8 @@ fn execution_checkpoints_from_agent_event(
         | AgentEvent::ModeChanged { .. }
         | AgentEvent::UsageUpdate { .. }
         | AgentEvent::ProjectionReady { .. }
-        | AgentEvent::SteerInput { .. } => None,
+        | AgentEvent::SteerInput { .. }
+        | AgentEvent::LifecycleEvent { .. } => None,
     };
     checkpoint.into_iter().collect()
 }
@@ -1041,7 +1088,6 @@ fn record_entry_from_agent_event(event: &AgentEvent) -> Option<RecordEntry> {
             name,
             content,
             is_error,
-            duration_ms: _,
             ..
         } => Some(RecordEntry::ToolResult {
             name: name.clone(),
@@ -1064,7 +1110,8 @@ fn record_entry_from_agent_event(event: &AgentEvent) -> Option<RecordEntry> {
         | AgentEvent::SteerInput { .. }
         | AgentEvent::ModeChanged { .. }
         | AgentEvent::UsageUpdate { .. }
-        | AgentEvent::ProjectionReady { .. } => None,
+        | AgentEvent::ProjectionReady { .. }
+        | AgentEvent::LifecycleEvent { .. } => None,
     }
 }
 

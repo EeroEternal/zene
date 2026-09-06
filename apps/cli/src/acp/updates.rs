@@ -273,6 +273,16 @@ pub fn error_update(message: &str) -> Value {
     })
 }
 
+pub fn lifecycle_event_update(event: &str, payload: &str) -> Value {
+    let structured_payload =
+        serde_json::from_str::<Value>(payload).unwrap_or_else(|_| json!(payload));
+    json!({
+        "sessionUpdate": "lifecycle_event",
+        "event": event,
+        "payload": structured_payload,
+    })
+}
+
 pub fn agent_thought_chunk(text: &str) -> Value {
     json!({
         "sessionUpdate": "agent_thought_chunk",
@@ -700,5 +710,17 @@ mod tests {
         assert_eq!(updates[3]["sessionUpdate"], "tool_call_update");
         assert_eq!(updates[3]["status"], "completed");
         assert_eq!(updates[4]["sessionUpdate"], "agent_message_chunk");
+    }
+
+    #[test]
+    fn lifecycle_event_update_shapes() {
+        let update = lifecycle_event_update(
+            "before_agent_start",
+            r#"{"sessionId":"sess-1","prompt":"hello"}"#,
+        );
+        assert_eq!(update["sessionUpdate"], "lifecycle_event");
+        assert_eq!(update["event"], "before_agent_start");
+        assert_eq!(update["payload"]["sessionId"], "sess-1");
+        assert_eq!(update["payload"]["prompt"], "hello");
     }
 }

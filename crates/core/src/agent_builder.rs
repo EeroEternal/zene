@@ -23,7 +23,7 @@ use zene_tools::{
 use crate::plan_mode::{default_plan_approval_prompter, PlanApprovalPrompter};
 use crate::tool_dedup::ToolDedup;
 use crate::Agent;
-use zene_hooks::{HookRunner, HookSpec};
+use zene_hooks::{ExtensionHook, HookRunner, HookSpec};
 use zene_permission::{
     PermissionGate, PermissionMode, PermissionRule, RuleAction, SharedToolPermission,
 };
@@ -68,6 +68,7 @@ pub struct AgentBuilder {
     approval_broker: Option<zene_permission::SharedApprovalBroker>,
     external_session_id: Option<String>,
     include_workspace_context: Option<bool>,
+    extensions: Vec<Arc<dyn ExtensionHook>>,
 }
 
 impl AgentBuilder {
@@ -100,6 +101,7 @@ impl AgentBuilder {
             approval_broker: None,
             external_session_id: None,
             include_workspace_context: None,
+            extensions: Vec::new(),
         }
     }
 
@@ -173,6 +175,18 @@ impl AgentBuilder {
     pub fn hooks(mut self, hooks: HookRunner) -> Self {
         self.hooks = Some(hooks);
         self.load_hooks_from_config = false;
+        self
+    }
+
+    /// Register an in-process host extension hook.
+    pub fn extension_hook(mut self, hook: Arc<dyn ExtensionHook>) -> Self {
+        self.extensions.push(hook);
+        self
+    }
+
+    /// Register multiple in-process host extension hooks.
+    pub fn extension_hooks(mut self, hooks: Vec<Arc<dyn ExtensionHook>>) -> Self {
+        self.extensions.extend(hooks);
         self
     }
 
@@ -284,7 +298,7 @@ impl AgentBuilder {
 
         let sandbox: Arc<dyn Sandbox> = zene_sandbox::into_arc(local);
 
-        let hooks = match self.hooks {
+        let mut hooks = match self.hooks {
             Some(hooks) => hooks,
             None if self.load_hooks_from_config => {
                 let hook_entries = self.config.load_hooks().unwrap_or_else(|err| {
@@ -295,6 +309,9 @@ impl AgentBuilder {
             }
             None => HookRunner::with_bash(Vec::new(), workdir.clone()),
         };
+        for ext in self.extensions {
+            hooks.add_extension(ext);
+        }
 
         let todos = match self.todos {
             Some(todos) => todos,

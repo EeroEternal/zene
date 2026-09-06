@@ -85,7 +85,7 @@ This document defines the system architectural model, crate component boundaries
 - **`crates/permission`**:
   - Fine-grained permission gates (allow / deny / ask), pattern-based matching, and interactive approval broker interfaces.
 - **`crates/hooks`**:
-  - Lifecycle hook configuration and execution (`PreToolUse`, `PostToolUse`).
+  - Lifecycle hook configuration, in-process extension traits (`ExtensionHook`), and execution (`PreToolUse`, `PostToolUse`, `BeforeAgentStart`, `SessionBeforeCompact`, `ContextMutate`). Supports tool gating (`block` / `terminate`).
 - **`crates/mcp`**:
   - Model Context Protocol (MCP) client manager over stdio and HTTP transports.
 
@@ -107,3 +107,34 @@ This document defines the system architectural model, crate component boundaries
    - All file and shell interactions must be validated against canonical paths before execution. Symlinks pointing outside the workspace or into sensitive credential files are denied.
 4. **Zen Engine: Composable & Standalone Bricks**:
    - Designed like a headless harness (similar to Flue). Modules like `zene-sandbox`, `zene-context`, `zene-tools`, and `zene-session` must strive for standalone usability so developers can embed or adopt them independently without pulling in the entire framework.
+
+## 4. Host-Facing Extension & Lifecycle Integration
+
+Zene exposes a typed, deterministic host extension and lifecycle surface designed for Cloud orchestrators, ACP editors, and embedded custom runtimes:
+
+### 4.1 Lifecycle Events
+
+| Event | Trigger Point | Payload / Context | Capabilities |
+| --- | --- | --- | --- |
+| `before_agent_start` | Turn start before first model step | `session_id`, `prompt` | Can block turn initialization with reason |
+| `pre_tool_use` | Immediately prior to tool execution | `tool`, `arguments` | Can allow, block (error back to LLM), or terminate (end turn) |
+| `post_tool_use` | Immediately after tool execution | `tool`, `arguments` | Post-execution auditing / side-effect sync |
+| `session_before_compact` | Prior to context compaction | `session_id`, `turn_count`, `token_count` | Pre-compaction notifications & reminders |
+| `context_mutate` | During tail context decoration assembly | `step`, `plan_mode_active` | Mutates trailing ephemeral sections while keeping prefix cache epoch stable |
+
+### 4.2 Integration Modes
+
+1. **In-Process Rust Trait (`ExtensionHook`)**:
+   - Injected into `AgentBuilder` via `builder.extension_hook(Arc::new(MyHook))` or `agent.add_extension_hook(...)`.
+   - Async, zero serialization overhead, returns typed `HookOutcome::Allow` or `HookOutcome::Block(HookBlock)`.
+2. **Process Hooks (`[[hooks]]` in `.zene/config.toml`)**:
+   - Shell command executables receiving JSON payload on `stdin`.
+   - Exit code `0`: Allow.
+   - Exit code `1` (or stdout JSON `{"block": true}`): Block tool with error output returned to LLM.
+   - Exit code `2` (or stdout JSON `{"block": true, "terminate": true}`): Block and terminate tool batch immediately.
+3. **ACP Lifecycle Streaming**:
+   - Remote hosts receive `sessionUpdate: "lifecycle_event"` notifications in real time via JSON-RPC.
+
+### 4.3 Zero UI Guardrail
+
+Extensions remain strictly headless (Rust traits, stdin/stdout subprocesses, or ACP JSON-RPC notifications). Embedding JavaScript/TypeScript webview runtimes or HTML/CSS control consoles in core is explicitly disallowed.

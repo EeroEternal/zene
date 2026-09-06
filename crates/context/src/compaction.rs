@@ -995,6 +995,10 @@ pub async fn compact_session<S: ContextSession + ?Sized>(
     let reason = params.reason;
     let tools = params.tools;
     let options = params.options;
+    let tokens_before = estimate_session_tokens(session, tools, estimator);
+    if let Some(hooks) = options.hooks {
+        hooks.on_session_before_compact(reason, tokens_before);
+    }
     // #130: do not rewrite existing prefix bodies in place (BodyMutate).
     // Commit-time shaping + slice/summarize (epoch++) are the only size valves.
     if let Some(result) = try_slice_keep_compaction(session, config, tools, estimator) {
@@ -1290,7 +1294,6 @@ mod tests {
     }
 
     #[test]
-    #[test]
     fn truncate_old_skips_commit_shaped_handles() {
         let handle = "[zene-tool-output path=\"/tmp/out.txt\" bytes=9000]".to_string();
         let mut messages = vec![
@@ -1303,6 +1306,7 @@ mod tests {
         assert_eq!(messages[1].content.as_deref(), Some(handle.as_str()));
     }
 
+    #[test]
     fn truncate_old_tool_results_replaces_large_bodies() {
         let mut messages = vec![
             Message::system("sys"),

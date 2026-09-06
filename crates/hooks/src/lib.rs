@@ -5,7 +5,8 @@ mod executor;
 mod runner;
 
 pub use engine::{
-    build_hook_input, hook_failure_reason, HookEngine, HookEvent, HookRunRequest, HookSpec,
+    build_hook_input, hook_failure_reason, HookEngine, HookEvent, HookPayload, HookRunRequest,
+    HookSpec,
 };
-pub use executor::{BashHookExecutor, HookExecutor, HookOutcome};
-pub use runner::{HookBlock, HookRunner};
+pub use executor::{BashHookExecutor, HookBlock, HookExecutor, HookOutcome};
+pub use runner::{ExtensionHook, HookRunner};

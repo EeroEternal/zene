@@ -26,9 +26,9 @@ use super::terminal_bridge::AcpRemoteTerminal;
 use super::transport::{AcpWriter, SharedState};
 use super::updates::{
     agent_message_chunk, agent_thought_chunk, available_commands_update, current_mode_update,
-    error_update, modes_state, plan_from_todo_arguments, projection_ready_update,
-    replay_updates_from_messages, step_started, tool_call_result_update, tool_call_update,
-    tool_kind, tool_title, turn_ended, turn_started, usage_update,
+    error_update, lifecycle_event_update, modes_state, plan_from_todo_arguments,
+    projection_ready_update, replay_updates_from_messages, step_started, tool_call_result_update,
+    tool_call_update, tool_kind, tool_title, turn_ended, turn_started, usage_update,
 };
 
 /// Tracks the tool call currently awaiting permission so ACP can reuse its id.
@@ -946,6 +946,9 @@ fn project_runtime_event(
         RuntimeEventKind::TurnEnded { steps } => {
             let turn_id = event.turn_id.as_ref().map(|id| id.to_string());
             Some(turn_ended(*steps, turn_id.as_deref()))
+        }
+        RuntimeEventKind::LifecycleEvent { event, payload } => {
+            Some(lifecycle_event_update(event, payload))
         }
         RuntimeEventKind::SteerInput { .. }
         | RuntimeEventKind::ApprovalRequested { .. }

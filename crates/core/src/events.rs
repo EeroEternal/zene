@@ -206,6 +206,14 @@ pub fn runtime_event_handler(
                     state: mode_id.clone(),
                 },
             ),
+            AgentEvent::LifecycleEvent { event, payload } => (
+                current_turn,
+                current_step,
+                RuntimeEventKind::LifecycleEvent {
+                    event: event.clone(),
+                    payload: payload.clone(),
+                },
+            ),
         };
         handler(RuntimeEvent {
             sequence,
@@ -267,6 +275,10 @@ pub enum AgentEvent {
     },
     SteerInput {
         text: String,
+    },
+    LifecycleEvent {
+        event: String,
+        payload: String,
     },
 }
 

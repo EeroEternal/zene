@@ -139,6 +139,10 @@ pub enum RuntimeEventKind {
         request_id: String,
         allowed: bool,
     },
+    LifecycleEvent {
+        event: String,
+        payload: String,
+    },
 }
 
 pub type RuntimeEventHandler = Arc<dyn Fn(RuntimeEvent) + Send + Sync>;
