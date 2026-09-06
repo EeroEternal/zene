@@ -9,6 +9,7 @@ Primary toolchain is Cargo (Rust workspace). Rust >= 1.85 (`unigateway-sdk` need
 - Build: `cargo build --workspace --locked`
 - Test: `cargo test --workspace --locked`
 - Lint: `cargo clippy --workspace --locked`
+- Format check: `cargo fmt --check`
 - Install binary: `./scripts/install.sh`
 
 ## Knowledge Tiering & Token Budget Discipline
@@ -18,6 +19,7 @@ Primary toolchain is Cargo (Rust workspace). Rust >= 1.85 (`unigateway-sdk` need
 | **Standing Constraints** | Inviolable rules across all tasks | This file ("Always Active"); expanded in [`docs/ai/agents/`](docs/ai/agents/) |
 | **Reusable Workflows** | Domain procedures & validation commands | `.agents/skills/*/SKILL.md` (Authoritative) |
 | **Commit Conventions** | Conventional commits & PR standards | [`commit-style.md`](docs/ai/agents/commit-style.md) |
+| **Architecture & Crates** | System boundaries & crate responsibilities | [`docs/architecture.md`](docs/architecture.md) |
 | **Daemon Loops** | Engineering loops & charters | [`engineering.md`](docs/ai/agents/engineering.md) + [`loop-charter.md`](docs/ai/agents/loop-charter.md) |
 
 - **Token Budget & Zero-Sum Updates**: As a resident system prompt weight, this file has a strict hard limit of **80 lines / 1200 Tokens**. Follow the **zero-sum rule (add one, remove one)**.
@@ -27,11 +29,12 @@ Primary toolchain is Cargo (Rust workspace). Rust >= 1.85 (`unigateway-sdk` need
 
 | Task Signal | Required Reading |
 | --- | --- |
+| Architecture / Crate responsibilities / Layering | [`docs/architecture.md`](docs/architecture.md) |
+| Context projection / Prefix caching / Compaction | [`docs/context-engine.md`](docs/context-engine.md) + [`docs/ENGINE.md`](docs/ENGINE.md) |
 | `git stash` operations | skill [`git-stash-safe`](.agents/skills/git-stash-safe/SKILL.md) |
-| Writing design docs in `docs/` / DDL / Mermaid | skill [`verify-design-doc`](.agents/skills/verify-design-doc/SKILL.md) |
+| Writing design proposals in `docs/` / Mermaid | skill [`verify-design-doc`](.agents/skills/verify-design-doc/SKILL.md) |
 | Code review / PR audit / acceptance verification | skill [`review`](.agents/skills/review/SKILL.md) (Independent read-only context) |
 | Pre-push local quality gates | skill [`pre-push-local-gates`](.agents/skills/pre-push-local-gates/SKILL.md) |
-| Release / tagging / production deployment | skill [`release`](.agents/skills/release/SKILL.md) |
 | Commit message conventions | [`commit-style.md`](docs/ai/agents/commit-style.md) |
 | Autonomous agent loops / engineering daemons | [`engineering.md`](docs/ai/agents/engineering.md) + [`loop-charter.md`](docs/ai/agents/loop-charter.md) |
 
@@ -41,3 +44,4 @@ Primary toolchain is Cargo (Rust workspace). Rust >= 1.85 (`unigateway-sdk` need
 2. **Zero Hallucination Code**: Every definition must have callers; every cache field must have a store policy; metrics must track both success and failure; every `TODO` must reference an issue.
 3. **Release Guardrail & Gate Check**: Run full local quality gates before push via skill [`pre-push-local-gates`](.agents/skills/pre-push-local-gates/SKILL.md). Merging to main or creating release tags is strictly prohibited without explicit human approval.
 4. **Workflow & PRs**: Code and docs changes go through GitHub PRs (`branch → PR → review → merge`; reference `Refs: ParaTensor/zene#N`). Direct pushes to `main` are limited to release chores and trivial fixes.
+5. **Zero UI in Core**: `zene` is a pure agent framework and CLI/ACP engine. Never introduce HTML/CSS web consoles into this repository; hosted web platforms belong to `zene-cloud`.
