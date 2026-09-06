@@ -1,8 +1,0 @@
-<!-- GitLab logomark (monocolor)  https://gitlab.com/gitlab-com/gitlab-artwork/-/blob/master/logo/logo-monocolor.svg -->
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 500 500" fill="currentColor" aria-hidden="true">
-  <path d="M249.9,476.8 249.9,476.8 340.6,197.7 159.2,197.7 249.9,476.8z"/>
-  <path d="M32.1,197.7 32.1,197.7 4.5,282.5c-2.5,7.7.2,16.2 6.8,21l238.5,173.3L32.1,197.7z"/>
-  <path d="M32.1,197.7h127.1L104.6,29.6c-2.8-8.6-15-8.6-17.9,0L32.1,197.7z"/>
-  <path d="M467.6,197.7 467.6,197.7 495.2,282.5c2.5,7.7-.2,16.2-6.8,21L249.9,476.8 467.6,197.7z"/>
-  <path d="M467.6,197.7H340.5l54.6-168.1c2.8-8.6,15-8.6,17.9,0L467.6,197.7z"/>
-</svg>

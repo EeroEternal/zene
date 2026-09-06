@@ -1,20 +1,8 @@
 # Zene
 
-Zene is a coding-agent product. The product UI is **Cloud Console** (`cloud/`); the `zene` binary speaks Agent Client Protocol (`zene acp`) for Cloud workers and editors.
+Zene is an open-source coding-agent framework and CLI toolchain. The `zene` binary speaks Agent Client Protocol (`zene acp`) for external clients, workers, and editors.
 
-## Local development (Cloud Console)
-
-```bash
-cd cloud && ./scripts/dev.sh
-# open http://127.0.0.1:8788/
-# Email sign-in → Settings (LLM BYOK) → Connect GitHub → New Agent
-```
-
-`dev.sh` builds or locates the repo-root `zene` binary and starts the API + worker with real ACP.
-
-See [`cloud/README.md`](cloud/README.md) for env vars and demo path. Production: [https://zene.run](https://zene.run) — deploy notes in [`cloud/deploy/README.md`](cloud/deploy/README.md).
-
-Control-plane / event productization line is closed; wrap-up and optional next goals: [`docs/agent-runtime-next-goals.md`](docs/agent-runtime-next-goals.md).
+For the multi-tenant hosted web platform and console, see [zene-cloud](https://github.com/EeroEternal/zene-cloud).
 
 ## Install `zene` (ACP binary)
 
