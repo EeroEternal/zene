@@ -184,7 +184,7 @@ async fn run_mcp_doctor(workdir: &std::path::Path) -> Result<()> {
         );
         return Ok(());
     }
-    let defs = tools.definitions();
+    let defs = tools.registered_definitions();
     println!("Connected MCP tools: {}", defs.len());
     for def in defs {
         println!("  - {}", def.name);

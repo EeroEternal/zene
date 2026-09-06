@@ -148,6 +148,20 @@ impl RuntimeHandle {
         }
     }
 
+    pub async fn activate_tools(&self, names: Vec<String>) -> Result<Vec<String>> {
+        match self.command(RuntimeCommand::ActivateTools { names }).await? {
+            RuntimeResponse::Tools { names } => Ok(names),
+            _ => Err(anyhow!("runtime returned an invalid activate tools response")),
+        }
+    }
+
+    pub async fn deactivate_tools(&self, names: Vec<String>) -> Result<Vec<String>> {
+        match self.command(RuntimeCommand::DeactivateTools { names }).await? {
+            RuntimeResponse::Tools { names } => Ok(names),
+            _ => Err(anyhow!("runtime returned an invalid deactivate tools response")),
+        }
+    }
+
     pub async fn shutdown(&self) -> Result<()> {
         self.command(RuntimeCommand::Shutdown).await.map(|_| ())
     }
@@ -235,6 +249,14 @@ impl RuntimeControl for RuntimeHandle {
 
     async fn set_mode(&self, mode_id: String) -> Result<String> {
         RuntimeHandle::set_mode(self, mode_id).await
+    }
+
+    async fn activate_tools(&self, names: Vec<String>) -> Result<Vec<String>> {
+        RuntimeHandle::activate_tools(self, names).await
+    }
+
+    async fn deactivate_tools(&self, names: Vec<String>) -> Result<Vec<String>> {
+        RuntimeHandle::deactivate_tools(self, names).await
     }
 
     async fn current_mode(&self) -> Result<String> {
@@ -586,6 +608,22 @@ fn handle_idle_command(
                 None
             }
         },
+        RuntimeCommand::ActivateTools { names } => {
+            let names = agent
+                .as_ref()
+                .expect("idle actor owns agent")
+                .activate_tools(&names);
+            let _ = message.reply.send(Ok(RuntimeResponse::Tools { names }));
+            None
+        }
+        RuntimeCommand::DeactivateTools { names } => {
+            let names = agent
+                .as_ref()
+                .expect("idle actor owns agent")
+                .deactivate_tools(&names);
+            let _ = message.reply.send(Ok(RuntimeResponse::Tools { names }));
+            None
+        }
         RuntimeCommand::Approval { request_id, .. } => {
             let _ = message
                 .reply
@@ -649,7 +687,10 @@ fn handle_active_command(
             cancel.cancel();
             let _ = message.reply.send(Ok(RuntimeResponse::Accepted));
         }
-        RuntimeCommand::SetMode { .. } | RuntimeCommand::GetMode => {
+        RuntimeCommand::SetMode { .. }
+        | RuntimeCommand::ActivateTools { .. }
+        | RuntimeCommand::DeactivateTools { .. }
+        | RuntimeCommand::GetMode => {
             let _ = message.reply.send(Err(
                 "cannot change or read mode while a turn is active".into()
             ));

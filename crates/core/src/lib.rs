@@ -221,6 +221,20 @@ impl Agent {
         self.plan_mode.lock().is_tool_allowed(tool_name)
     }
 
+    /// Activate registered tools for subsequent model requests.
+    pub fn activate_tools(&self, names: &[String]) -> Vec<String> {
+        self.tools.activate_many(names.iter())
+    }
+
+    /// Deactivate tools from subsequent model requests without unregistering them.
+    pub fn deactivate_tools(&self, names: &[String]) -> Vec<String> {
+        self.tools.deactivate_many(names.iter())
+    }
+
+    pub fn active_tool_names(&self) -> Vec<String> {
+        self.tools.active_tool_names()
+    }
+
     fn tool_definitions_for_llm(&self) -> Vec<zene_llm::ToolDefinition> {
         let active = self.is_plan_mode_active();
         ToolCatalog::definitions(self.tools.as_ref())
