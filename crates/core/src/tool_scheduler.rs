@@ -171,10 +171,14 @@ fn str_field(value: &Value, key: &str) -> Option<String> {
     value.get(key).and_then(|v| v.as_str()).map(str::to_string)
 }
 
+pub type BoxFuture<T> = Pin<Box<dyn Future<Output = T> + Send>>;
+pub type TaskItem<T> = (ToolAccesses, BoxFuture<T>);
+type InFlightTasks<T> = FuturesUnordered<BoxFuture<(usize, T)>>;
+
 struct ScheduledTask<T> {
     index: usize,
     accesses: ToolAccesses,
-    future: Pin<Box<dyn Future<Output = T> + Send>>,
+    future: BoxFuture<T>,
 }
 
 struct ActiveTask {
@@ -186,9 +190,7 @@ pub struct ToolScheduler;
 
 impl ToolScheduler {
     /// Run tool futures with conflict-aware parallelism. Results are returned in input order.
-    pub async fn run_ordered<T>(
-        tasks: Vec<(ToolAccesses, Pin<Box<dyn Future<Output = T> + Send>>)>,
-    ) -> Vec<T>
+    pub async fn run_ordered<T>(tasks: Vec<TaskItem<T>>) -> Vec<T>
     where
         T: Send + 'static,
     {
@@ -207,8 +209,7 @@ impl ToolScheduler {
             })
             .collect();
         let mut active: Vec<ActiveTask> = Vec::new();
-        let mut in_flight: FuturesUnordered<Pin<Box<dyn Future<Output = (usize, T)> + Send>>> =
-            FuturesUnordered::new();
+        let mut in_flight: InFlightTasks<T> = FuturesUnordered::new();
         let mut results: Vec<Option<T>> = (0..count).map(|_| None).collect();
         let mut completed = 0;
 
@@ -256,7 +257,7 @@ fn is_blocked<T>(
 fn start_queued_tasks<T>(
     queued: &mut Vec<ScheduledTask<T>>,
     active: &mut Vec<ActiveTask>,
-    in_flight: &mut FuturesUnordered<Pin<Box<dyn Future<Output = (usize, T)> + Send>>>,
+    in_flight: &mut InFlightTasks<T>,
 ) where
     T: Send + 'static,
 {
