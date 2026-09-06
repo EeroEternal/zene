@@ -4,11 +4,20 @@ This document describes the structure and lifecycle of the `docs/` tree.
 
 ## Directory Structure
 
-- `docs/architecture.md`: High-level system architecture, crate responsibilities, and component boundaries.
-- `docs/ENGINE.md`: Detailed agent loop, compaction algorithms, and token estimation notes.
-- `docs/context-engine.md`: Semantic context projection, prefix cache, and KV cache layout.
-- `docs/session-as-source-of-truth.md`: Architectural model separating durable session facts from ephemeral context projections.
+### Core Specifications
+- `docs/architecture.md`: 5-tier system architecture, crate responsibilities, and runtime boundaries.
+- `docs/ENGINE.md`: Core agent loop, compaction algorithms, and token estimation notes.
+- `docs/context-engine.md`: Semantic context projection, 3-zone layout, prefix caching, and governance.
+- `docs/session-as-source-of-truth.md`: Architectural model separating durable session facts from ephemeral projections.
+- `docs/agent-components.md`: Composable agent foundation components, dependency ordering, and composition rules.
+- `docs/agent-inference-context.md`: Inference-layer session linkage, prefix publishing, and delta assembly.
+- `docs/agent-notes-design.md`: Agent Notes 3-layer storage, discovery, and active invariants lifecycle.
+- `docs/ROADMAP.md`: Project vision, completed foundations, active milestones, and future directions.
+
+### Specialized Subdirectories
 - `docs/ai/agents/`: Engineering hard rules, commit conventions, loop charters, and agent governance.
+- `docs/research/`: Architectural comparisons, benchmarks, and external harness research (e.g. Pi, DeepSeek).
+- `docs/archive/`: Historical implementation wave logs and closed-out design iterations.
 
 ## Document Lifecycle Discipline
 

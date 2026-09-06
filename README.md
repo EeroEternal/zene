@@ -123,24 +123,23 @@ zene config            # show config paths
 zene export --session <id> --output out.zip
 zene mcp doctor        # probe configured MCP servers
 ```
-
-See [docs/TUI_MIGRATION.md](docs/TUI_MIGRATION.md) for the move away from TUI / local Web Agent / REPL.
+ 
+For detailed system layering and crate breakdown, see [docs/architecture.md](docs/architecture.md).
 
 ## Architecture
 
+Zene is organized into a modular workspace of crates and binaries:
+
 ```
 zene/
-├── apps/cli/          # zene binary: ACP + utility subcommands
-├── cloud/apps/web/    # Cloud Console UI
-└── crates/
-    ├── core/          # agent turn loop, hooks
-    ├── llm/           # OpenAI-compatible (unigateway-sdk from crates.io) + Anthropic clients
-    ├── sandbox/       # local filesystem + shell
-    ├── tools/         # Read/Write/Edit/Bash/Grep/Glob/Task
-    ├── session/       # session persistence (~/.zene/sessions/)
-    ├── mcp/           # MCP server integration
-    └── config/        # config loading
+├── apps/
+│   ├── cli/               # zene binary: ACP server & CLI subcommands
+│   └── inference-gateway/ # Local reverse proxy for session prefix caching
+├── crates/                # 17 domain-isolated crates (context, tools, sandbox, session, turn...)
+└── docs/                  # System architecture, engine specs, and research
 ```
+
+See [docs/architecture.md](docs/architecture.md) for crate boundaries and [docs/context-engine.md](docs/context-engine.md) for semantic context management.
 
 ## License
 

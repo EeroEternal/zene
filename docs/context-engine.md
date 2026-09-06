@@ -2,7 +2,7 @@
 
 Zene 的语义上下文引擎（`crates/context`）。它从 Session 事实算出**这一次**发给模型的视图，不把「模型碰巧看到的 messages」当成会话历史。
 
-相关实现：`zene-context`、`zene-llm` 协议字段、`zene-core` 组装。心智模型见 [session-as-source-of-truth.md](./session-as-source-of-truth.md)；现状边界与落实顺序见 [context-architecture-assessment.md](./context-architecture-assessment.md)；推理协议见 [agent-inference-context.md](./agent-inference-context.md)；compaction 算法细节见 [ENGINE.md](./ENGINE.md)；控制面见 [agent-runtime-optimization.md](./agent-runtime-optimization.md)。
+相关实现：`zene-context`、`zene-llm` 协议字段、`zene-core` 组装。心智模型见 [session-as-source-of-truth.md](./session-as-source-of-truth.md)；推理协议见 [agent-inference-context.md](./agent-inference-context.md)；架构层级见 [architecture.md](./architecture.md)；compaction 算法细节见 [ENGINE.md](./ENGINE.md)；外部研究见 [pi-agent-harness.md](./research/pi-agent-harness.md) 与 [deepseek-harness.md](./research/deepseek-harness.md)。
 
 **不在本文范围**：新的 compress 算法、改成 Pi JSONL、把 permission / MCP / Turn 塞进 ContextEngine、为 agent 循环建设全仓 embedding。
 
@@ -214,12 +214,10 @@ Repo Map 是给模型看的 **仓库结构地图**，不是源码全文，也不
 - 不要再写一份和 Session 抢真相的 `STATE.md`；决策、compact、todo、plan 已在 event log。
 - `AGENTS.md` 已经进冻结前缀：短约定留 system，变长细则走 Skill 按需读。
 
-### 5.4 和 Cloud Code Intelligence 的关系
-
-[产品设计 7.10](../zene-cloud-platform/docs/PRODUCT_AND_SYSTEM_DESIGN.md) 的分期仍然成立：
+### 5.4 和 Cloud Code Intelligence 的边界
 
 - **Run 工作区（本文）**：tree-sitter 符号 + 按需 Repo Map + Grep/Read。绑定 workspace version / canonical path。
-- **Console 第二阶段**：默认分支增量索引、embedding 跨仓搜索、PR 影响分析。那是产品搜索，不是把 ContextEngine 做强。
+- **Console 服务端**：默认分支增量索引、embedding 跨仓搜索、PR 影响分析。属于控制面/云平台服务，不属于核心 ContextEngine。
 
 Explore 子 agent 继续用 Read/Grep/Glob（加上来的 Repo Map）做调研；主 context 只收摘要。这是 Isolate，不改变三区布局。
 
@@ -240,7 +238,28 @@ Explore 子 agent 继续用 Read/Grep/Glob（加上来的 Repo Map）做调研�
 
 ---
 
-## 7. 数据流
+## 7. Context 治理与工程纪律
+
+Context 优化不仅是输入端的压缩，还涵盖输出保洁、决策生命周期、减熵巡检与工具收敛：
+
+1. **输出保洁与会话视角消除**：
+   - 规则：防止单次会话临时脚手架污染持久化代码与文档。剔除 `(decision 3)`、`按照讨论 4` 等死引用与辩解句。
+   - 黄金准则：脱离本次会话历史的人类/Agent，仅检出当前 HEAD 也能完全理解并独立验证每一个术语和论断。
+2. **决策生命周期（Agent Notes 三层架构）**：
+   - 详见 [agent-notes-design.md](./agent-notes-design.md)。
+   - `implemented` 归档至 `archived/`，仅保留核心公理（Active Invariants）；
+   - `rejected` 仅提炼为“方案诱人但证实有大坑”的负向护栏（Negative Guardrails），避免无效上下文积累。
+3. **输入端与工具日志收敛**：
+   - `crates/tools/src/output_sanitizer.rs` 实现 `OutputSanitizer`：
+     - 测试成功折叠：过滤成百上千行 `test ... ok` 输出，仅保留结果 Summary；
+     - 失败精准提取：仅保留 `FAILED` 堆栈帧；
+     - 超长日志智能省略：超过阈值时进行截断提示与 handle 化。
+4. **代码库主动减熵（Find Simplifications）**：
+   - 定期扫描未消费的公开 API、重复抽象与无用中间状态，保持符号表与 RepoMap 纯净。
+
+---
+
+## 8. 数据流
 
 ```mermaid
 sequenceDiagram
@@ -262,13 +281,12 @@ TurnEngine 只依赖 `ContextAssembler::prepare` / `handle_overflow`；三段式
 
 ---
 
-## 8. 剩余工作
+## 9. 剩余工作
 
 - 仅清理可无损迁移的 legacy session fallback
 - Console 按产品需求展示 `prefixCache`（非第一版必做彩图）
-- Agent-specific runtime wiring 的进一步 crate 化（控制面，见 runtime 文档）
-- §5 最小闭环已落地：`zene-index`（tree-sitter 符号图 + hash 增量）与 `RepoMap` 工具；不要为此改 ContextEngine 布局
-- 向量检索 / 跨仓 embedding 属于 Console Code Intelligence，不在本文实现范围
+- Agent-specific runtime wiring 的进一步 crate 化（控制面）
+- 向量检索 / 跨仓 embedding 属于 Console Code Intelligence，不在核心实现范围
 
 ---
 
@@ -278,9 +296,11 @@ TurnEngine 只依赖 `ContextAssembler::prepare` / `handle_overflow`；三段式
 - [agent-inference-context.md](./agent-inference-context.md) — 与推理层的 session / cache / 续算
 - [ENGINE.md](./ENGINE.md) — turn、compaction 算法、memory、sandbox、Grep/Read
 - [agent-components.md](./agent-components.md) — 可组装组件栈；索引不进 `zene-context`
-- [agent-runtime-optimization.md](./agent-runtime-optimization.md) — 控制面；本文不替代
-- [pi-agent-harness-lessons.md](./pi-agent-harness-lessons.md) — Pi 对照
-- [PRODUCT_AND_SYSTEM_DESIGN.md](../zene-cloud-platform/docs/PRODUCT_AND_SYSTEM_DESIGN.md) §7.10 — Cloud Code Intelligence 分期
+- [agent-notes-design.md](./agent-notes-design.md) — Agent Notes 三层存储与生命周期
+- [architecture.md](./architecture.md) — 系统整体架构与 17 个 crates 职责
+- [pi-agent-harness.md](./research/pi-agent-harness.md) — Pi 对照经验
+- [deepseek-harness.md](./research/deepseek-harness.md) — DeepSeek Harness 上下文治理经验
+- [agent-runtime-optimization.md](./archive/agent-runtime-optimization.md) — 归档的 Wave 1-16 演进记录
 
 曾拆成 `context-engine-projection.md` 与 `context-engine-prefix-cache.md`，已并入本文。
 
