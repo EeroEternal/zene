@@ -4,9 +4,9 @@
 > Context 是「下一次发给模型看什么」（运行时视图）。  
 > 两者相关，但不是同一件事；也绝不能反过来让 Context 变成事实来源。
 
-本文是架构心智模型，不是实现清单。对照实现见 [ENGINE.md](./ENGINE.md)、[context-engine.md](./context-engine.md)、[agent-inference-context.md](./agent-inference-context.md)、[agent-components.md](./agent-components.md)。  
-控制面（谁在跑、命令与状态归谁）见 [agent-runtime-optimization.md](./agent-runtime-optimization.md)（已收口）；结项与后续目标见 [agent-runtime-next-goals.md](./agent-runtime-next-goals.md)。Context 投影落地见 [context-engine.md](./context-engine.md)。  
-灵感来源：Pi Session Tree（JSONL event tree + `buildSessionContext` 投影）；Zene 不必照搬其格式。更完整的 Pi→Zene 对照见 [pi-agent-harness-lessons.md](./pi-agent-harness-lessons.md)。
+本文是架构心智模型，不是实现清单。对照实现见 [architecture.md](./architecture.md)、[ENGINE.md](./ENGINE.md)、[context-engine.md](./context-engine.md)、[agent-inference-context.md](./agent-inference-context.md)、[agent-components.md](./agent-components.md)。  
+控制面（谁在跑、命令与状态归谁）历史见 [agent-runtime-optimization.md](./archive/agent-runtime-optimization.md)。Context 投影落地见 [context-engine.md](./context-engine.md)。  
+灵感来源：Pi Session Tree（JSONL event tree + `buildSessionContext` 投影）；Zene 不必照搬其格式。更完整的 Pi→Zene 对照见 [pi-agent-harness.md](./research/pi-agent-harness.md)。
 
 ---
 
@@ -369,8 +369,9 @@ Wave 12    Safe resume 与 Cloud RuntimeClient                 已完成 reconne
 
 - [ENGINE.md](./ENGINE.md) — turn / steer / compaction 行为
 - [context-engine.md](./context-engine.md) — ContextEngine 边界、投影、prefix cache、索引 Select
-- [agent-runtime-optimization.md](./agent-runtime-optimization.md) — AgentRuntime / Turn / ports（控制面，已收口）
-- [agent-runtime-next-goals.md](./agent-runtime-next-goals.md) — 本线结项与后续可选目标
+- [architecture.md](./architecture.md) — 5 层系统架构与 Crates 职责
 - [agent-inference-context.md](./agent-inference-context.md) — 推理上下文装配
 - [agent-components.md](./agent-components.md) — 可组装组件栈
-- [pi-agent-harness-lessons.md](./pi-agent-harness-lessons.md) — Pi Agent Harness 对照与启发总览
+- [pi-agent-harness.md](./research/pi-agent-harness.md) — Pi Agent Harness 对照与启发总览
+- [deepseek-harness.md](./research/deepseek-harness.md) — DeepSeek Harness 上下文治理经验
+- [agent-runtime-optimization.md](./archive/agent-runtime-optimization.md) — 归档的 AgentRuntime / Turn / ports 演进历史

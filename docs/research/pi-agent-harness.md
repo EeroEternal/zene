@@ -5,10 +5,10 @@
 
 相关 Zene 文档：
 
-- [session-as-source-of-truth.md](./session-as-source-of-truth.md) — Session 事实 vs Context 投影
-- [context-engine.md](./context-engine.md) — ContextEngine（含索引 Select 契约）
-- [agent-components.md](./agent-components.md) — 可组装组件栈
-- [ENGINE.md](./ENGINE.md) — turn / compaction / ACP 行为
+- [session-as-source-of-truth.md](../session-as-source-of-truth.md) — Session 事实 vs Context 投影
+- [context-engine.md](../context-engine.md) — ContextEngine（含索引 Select 契约）
+- [agent-components.md](../agent-components.md) — 可组装组件栈
+- [ENGINE.md](../ENGINE.md) — turn / compaction / ACP 行为
 
 外部参考：
 
@@ -129,7 +129,7 @@ Agent Runtime Context
 Provider Request Context
 ```
 
-展开与落地：[session-as-source-of-truth.md](./session-as-source-of-truth.md)、[context-engine.md](./context-engine.md)。
+展开与落地：[session-as-source-of-truth.md](../session-as-source-of-truth.md)、[context-engine.md](../context-engine.md)。
 
 ### 4.2 生命周期事件
 
@@ -165,7 +165,7 @@ agent_end
 | Steering | 当前工具批完成后、下次 LLM 前注入 | 纠偏、加约束 |
 | Follow-up | 当前 agent 跑完再处理 | 收尾任务、下一阶段工作 |
 
-**Zene：** 已有 `Agent::steer()` / `SteerBuffer`（见 [ENGINE.md](./ENGINE.md)）。  
+**Zene：** 已有 `Agent::steer()` / `SteerBuffer`（见 [ENGINE.md](../ENGINE.md)）。  
 建议在协议与文档里显式保留两种队列语义，避免 Cloud「执行中继续输入」行为含糊。
 
 ### 4.4 并行工具 + 稳定 transcript 顺序
@@ -189,7 +189,7 @@ Compaction / branch summary **追加 entry**，完整历史仍在文件中；con
 
 **这是对 Zene 价值最大的一点。**  
 Zene 已有 `SessionRecord`、checkpoint、compaction segment、fork/rewind、record writer、ACP replay —— 多个投影/旁路并存，但尚未把「完整事件树」明确升为单一事实源。  
-心智模型与落地原则见 [session-as-source-of-truth.md](./session-as-source-of-truth.md)。
+心智模型与落地原则见 [session-as-source-of-truth.md](../session-as-source-of-truth.md)。
 
 ### 4.6 Compaction + Branch summarization
 
@@ -200,14 +200,14 @@ Pi 两套机制：
 
 Summary 结构（Goal / Constraints / Progress / Decisions / Next / Critical Context + read/modified files）稳定、可机器读。
 
-**Zene：** 压缩算法更强（truncate/slice/summarize、overflow、prefire、memory、water level 等，见 [ENGINE.md](./ENGINE.md)）。  
+**Zene：** 压缩算法更强（truncate/slice/summarize、overflow、prefire、memory、water level 等，见 [ENGINE.md](../ENGINE.md)）。  
 应借的是抽象，不是换算法：
 
 - compaction 是 **session 事件**，不是销毁历史  
 - branch summary ≠ 普通 compaction  
 - summary **schema 稳定且可解释**  
 
-投影侧路线：[context-engine.md](./context-engine.md)。
+投影侧路线：[context-engine.md](../context-engine.md)。
 
 ### 4.7 Extensions / Skills / Packages
 
@@ -225,7 +225,7 @@ Packages 可打包 extensions/skills/prompts/themes，npm/git，带 trust 与 pi
 
 > 保留产品能力，但让它们通过清晰的 trait / capability / trust / 版本边界接入，而不是焊死在 core 上帝对象里。
 
-方向与 [agent-components.md](./agent-components.md) 的 composition root 一致。可演进：
+方向与 [agent-components.md](../agent-components.md) 的 composition root 一致。可演进：
 
 | 层次 | 适合内容 |
 |------|----------|
@@ -241,7 +241,7 @@ Packages 可打包 extensions/skills/prompts/themes，npm/git，带 trust 与 pi
 
 Pi 强调：精确控制每次进入模型的内容；session 可检视；token/cache/context 可见。
 
-**Zene：** Context Engine 能力领先；下一杠杆是 **前缀稳定 / prefix cache** 与可解释投影。见 [context-engine.md](./context-engine.md)。
+**Zene：** Context Engine 能力领先；下一杠杆是 **前缀稳定 / prefix cache** 与可解释投影。见 [context-engine.md](../context-engine.md)。
 
 ### 4.9 集成表面
 
@@ -275,17 +275,17 @@ Zene：ACP + Cloud worker + Console 更适合远程产品。
 ### P0
 
 0. **统一 ID + RuntimeEvent 信封**（与控制面共用地基）  
-   细节与 Wave 顺序：[agent-runtime-optimization.md §16](./agent-runtime-optimization.md#16-merged-implementation-waves)。
+   细节与 Wave 顺序：[agent-runtime-optimization.md §16](../archive/agent-runtime-optimization.md#16-merged-implementation-waves)。
 
 1. **统一 Session Event Model**  
    逻辑事件：message、tool、permission、model change、compaction、branch/fork/rewind、checkpoint、custom state…  
    投影：LLM / UI / replay / analytics / export。  
-   细节：[session-as-source-of-truth.md](./session-as-source-of-truth.md)。
+   细节：[session-as-source-of-truth.md](../session-as-source-of-truth.md)。
 
 2. **明确 Context Projection 契约**  
    `observe` / `commit` / `project`；compaction 追加事件；注入物分类。  
    对外 port 名对齐 `ContextAssembler`。  
-   细节：[context-engine.md](./context-engine.md)。
+   细节：[context-engine.md](../context-engine.md)。
 
 3. **固定 Tool Batch 终止协议**（落在 `ToolExecutor`，非 Agent 私货）  
    block / error / terminate / cancel / retry 及批量、顺序、ACP 表达。
@@ -308,7 +308,7 @@ Zene：ACP + Cloud worker + Console 更适合远程产品。
 ### 6.1 与 AgentRuntime 文档的关系
 
 Pi 启发的 **数据面**（Session 树、投影、可观察）与
-[agent-runtime-optimization.md](./agent-runtime-optimization.md) 的 **控制面**
+[agent-runtime-optimization.md](../archive/agent-runtime-optimization.md) 的 **控制面**
 （Runtime actor、TurnEngine ports、Cloud/ACP 拆分）正交。
 **合并落地以该文 §16 Waves 为准**，避免「只拆 Runtime 仍毁 messages」或「只双写事件仍多处 queue」。
 
@@ -353,4 +353,4 @@ Pi 启发的 **数据面**（Session 树、投影、可观察）与
 ### 2026-08-11 — 对齐 AgentRuntime
 
 - P0 增加 RuntimeEvent/ID；Tool 协议归属 ToolExecutor；P1 增加 RuntimeHandle
-- 指向 [agent-runtime-optimization.md](./agent-runtime-optimization.md) Merged Waves
+- 指向 [agent-runtime-optimization.md](../archive/agent-runtime-optimization.md) Merged Waves

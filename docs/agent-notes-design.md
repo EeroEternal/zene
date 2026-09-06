@@ -4,10 +4,9 @@
 > 本文针对 Zene Cloud 多租户/多会话运行态与本地 CLI，定义 Notes 的分层存储位置、生命周期状态机、Context 注入与提升规则。
 
 相关文档：
-- [context-engine.md](./context-engine.md) — 语义上下文引擎与前缀布局
+- [context-engine.md](./context-engine.md) — 语义上下文引擎、前缀布局与治理规范
 - [session-as-source-of-truth.md](./session-as-source-of-truth.md) — Session 事实源模型
-- [context-optimization-plan.md](./context-optimization-plan.md) — Context 治理与优化演进计划
-- [deepseek-harness-context-lessons.md](./deepseek-harness-context-lessons.md) — DeepSeek Harness 经验启示
+- [deepseek-harness.md](./research/deepseek-harness.md) — DeepSeek Harness 经验启示与治理模型
 
 ---
 

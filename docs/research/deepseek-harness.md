@@ -1,6 +1,6 @@
 # DeepSeek Harness Context 治理启示录与 Zene Context 优化演进
 
-> 本文基于对 DeepSeek 开源 Agent Harness（`deepseek-ai/deepseek-harness`，简称 DSH）11 个 Agent Skills 的拆解，总结其在 Context 治理上的工程范式，并结合 Zene 的 [ContextEngine](./context-engine.md)、[Session 事实模型](./session-as-source-of-truth.md) 与 [Agent Runtime](./agent-runtime-optimization.md)，提出下一阶段的具体优化路径。
+> 本文基于对 DeepSeek 开源 Agent Harness（`deepseek-ai/deepseek-harness`，简称 DSH）11 个 Agent Skills 的拆解，总结其在 Context 治理上的工程范式，并结合 Zene 的 [ContextEngine](../context-engine.md)、[Session 事实模型](../session-as-source-of-truth.md) 与 [Agent Runtime](../archive/agent-runtime-optimization.md)，提出下一阶段的具体优化路径。
 
 ---
 
@@ -69,7 +69,7 @@
 
 ## 3. 对 Zene Context 优化的借鉴与落地方案
 
-对照 Zene 目前的架构体系（[context-engine.md](./context-engine.md)、[session-as-source-of-truth.md](./session-as-source-of-truth.md)、`zene-context`、ACP 与 Skills 体系），我们可以从以下四个层面进行增强：
+对照 Zene 目前的架构体系（[context-engine.md](../context-engine.md)、[session-as-source-of-truth.md](../session-as-source-of-truth.md)、`zene-context`、ACP 与 Skills 体系），我们可以从以下四个层面进行增强：
 
 ### 3.1 增强生成门禁：引入“会话视角残留”检查（Session Leakage Guard）
 
@@ -103,7 +103,7 @@
 
 ### 3.4 保持 Session 与 Context 投影的严格正交（Zene 既有优势深化）
 
-Zene 已经在 [session-as-source-of-truth.md](./session-as-source-of-truth.md) 中确立了：
+Zene 已经在 [session-as-source-of-truth.md](../session-as-source-of-truth.md) 中确立了：
 - **Session（L0/L1）** 是不可变事件事实源。
 - **Context（L2/L3）** 是单次推演的投影。
 
