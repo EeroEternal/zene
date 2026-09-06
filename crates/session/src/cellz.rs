@@ -285,6 +285,9 @@ impl CellzSessionStore {
                     SessionEvent::Checkpoint { .. } => "checkpoint",
                     SessionEvent::CompactionApplied { .. } => "compaction",
                     SessionEvent::BranchForked { .. } => "branch_fork",
+                    SessionEvent::BranchSummary { .. } => "branch_summary",
+                    SessionEvent::Label { .. } => "label",
+                    SessionEvent::Custom { .. } => "custom",
                     SessionEvent::Rewound { .. } => "rewound",
                     _ => "session_event",
                 };

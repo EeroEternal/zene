@@ -136,6 +136,13 @@ pub fn fork_session(session: &SessionRecord, workdir: &Path) -> SessionRecord {
     forked.context_window_usage = session.context_window_usage;
     forked.context_tokens_used = session.context_tokens_used;
     forked.record_branch_forked(&session.meta.id, &forked.meta.id.clone());
+    forked.record_branch_summary(
+        &forked.meta.id.clone(),
+        &format!(
+            "Forked from session {} at event {}",
+            session.meta.id, session.event_sequence
+        ),
+    );
     forked
 }
 
