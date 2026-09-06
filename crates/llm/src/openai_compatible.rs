@@ -243,6 +243,11 @@ pub(crate) fn to_proxy_request(request: &ChatRequest, stream: bool) -> Result<Pr
             serde_json::json!({ "include_usage": true }),
         );
     }
+    if let Some(effort) = &request.reasoning_effort {
+        proxy
+            .extra
+            .insert("reasoning_effort".to_string(), serde_json::json!(effort));
+    }
     if let Some(ctx) = &request.context {
         proxy
             .metadata
@@ -517,5 +522,19 @@ mod tests {
             e,
             StreamEvent::TextDelta(t) if t == "answer"
         )));
+    }
+
+    #[test]
+    fn to_proxy_request_includes_reasoning_effort() {
+        let req = ChatRequest {
+            model: "o1".into(),
+            messages: vec![Message::user("solve")],
+            tools: Vec::new(),
+            stream: false,
+            context: None,
+            reasoning_effort: Some("high".into()),
+        };
+        let proxy = to_proxy_request(&req, false).expect("proxy request");
+        assert_eq!(proxy.extra.get("reasoning_effort"), Some(&json!("high")));
     }
 }

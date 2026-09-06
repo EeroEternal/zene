@@ -271,6 +271,8 @@ pub struct ZeneConfig {
     #[serde(default)]
     pub agent_profile: AgentProfile,
     #[serde(default)]
+    pub reasoning_effort: Option<String>,
+    #[serde(default)]
     pub sandbox: SandboxSettings,
 }
 
@@ -412,6 +414,7 @@ impl Default for ZeneConfig {
             hooks: Vec::new(),
             web_search: WebSearchConfig::default(),
             agent_profile: AgentProfile::default(),
+            reasoning_effort: None,
             sandbox: SandboxSettings::default(),
         }
     }
@@ -633,6 +636,11 @@ impl ZeneConfig {
                 if let Ok(parsed) = AgentProfile::parse(&profile) {
                     self.agent_profile = parsed;
                 }
+            }
+        }
+        if let Ok(effort) = env::var("ZENE_REASONING_EFFORT") {
+            if !effort.is_empty() {
+                self.reasoning_effort = Some(effort);
             }
         }
         if let Ok(profile) = env::var("ZENE_SANDBOX") {

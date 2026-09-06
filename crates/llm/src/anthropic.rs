@@ -33,7 +33,14 @@ impl AnthropicProvider {
 
     async fn chat_once(&self, request: ChatRequest) -> Result<ChatResponse> {
         let (system, messages) = split_system_and_messages(&request.messages)?;
-        let body = build_request_body(&request.model, system, &messages, &request.tools, false);
+        let body = build_request_body(
+            &request.model,
+            system,
+            &messages,
+            &request.tools,
+            false,
+            request.reasoning_effort.as_deref(),
+        );
 
         let response = self
             .client
@@ -67,7 +74,14 @@ impl AnthropicProvider {
         request: ChatRequest,
     ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamEvent>> + Send>>> {
         let (system, messages) = split_system_and_messages(&request.messages)?;
-        let body = build_request_body(&request.model, system, &messages, &request.tools, true);
+        let body = build_request_body(
+            &request.model,
+            system,
+            &messages,
+            &request.tools,
+            true,
+            request.reasoning_effort.as_deref(),
+        );
 
         let response = self
             .client
@@ -133,7 +147,6 @@ fn anthropic_headers(api_key: &str) -> Result<HeaderMap> {
 fn split_system_and_messages(messages: &[Message]) -> Result<(Option<String>, Vec<Message>)> {
     let mut system_parts = Vec::new();
     let mut rest = Vec::new();
-
     for message in messages {
         if message.role == Role::System {
             if let Some(content) = &message.content {
@@ -159,12 +172,28 @@ fn build_request_body(
     messages: &[Message],
     tools: &[ToolDefinition],
     stream: bool,
+    reasoning_effort: Option<&str>,
 ) -> Value {
     let mut body = json!({
         "model": model,
         "max_tokens": 8192,
         "messages": messages_to_anthropic(messages),
     });
+
+    if let Some(effort) = reasoning_effort {
+        let budget = match effort.to_ascii_lowercase().as_str() {
+            "low" => 2048,
+            "medium" => 4096,
+            "high" => 8192,
+            s => s.parse::<u32>().unwrap_or(4096),
+        };
+        body["thinking"] = json!({
+            "type": "enabled",
+            "budget_tokens": budget,
+        });
+        // max_tokens must be larger than budget_tokens
+        body["max_tokens"] = json!(budget + 4096);
+    }
 
     if let Some(system) = system {
         body["system"] = Value::String(system);

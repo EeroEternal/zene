@@ -71,6 +71,42 @@ pub fn check_read_allowed_resolved(resolved: &Path) -> Result<(), String> {
     Ok(())
 }
 
+/// Re-check a resolved absolute path against home credential directories and sensitive files.
+pub fn check_write_allowed_resolved(resolved: &Path) -> Result<(), String> {
+    let normalized = resolved.to_string_lossy().replace('\\', "/");
+    if let Some(home) = std::env::var_os("HOME") {
+        let home = PathBuf::from(home);
+        for segment in [".ssh", ".gnupg", ".aws", ".azure"] {
+            let protected = home.join(segment);
+            if path_starts_with(resolved, &protected) {
+                return Err(format!(
+                    "writes are denied under protected credential directory: {normalized}"
+                ));
+            }
+        }
+        let gcloud = home.join(".config").join("gcloud");
+        if path_starts_with(resolved, &gcloud) {
+            return Err(format!(
+                "writes are denied under protected credential directory: {normalized}"
+            ));
+        }
+    }
+    if is_sensitive_env_file(&normalized) {
+        return Err(format!(
+            "writes are denied for sensitive env file: {normalized}"
+        ));
+    }
+    if is_under_git_internal(&normalized) {
+        return Err(format!("writes are denied under .git/: {normalized}"));
+    }
+    if is_sensitive_credential_name(&normalized) {
+        return Err(format!(
+            "writes are denied for credential-like path: {normalized}"
+        ));
+    }
+    Ok(())
+}
+
 fn is_sensitive_env_file(path: &str) -> bool {
     let name = path.rsplit('/').next().unwrap_or(path);
     if name == ".env" {
@@ -425,5 +461,14 @@ mod tests {
         let dir = tempdir().unwrap();
         let err = resolve_for_create(dir.path(), "../outside.txt").unwrap_err();
         assert!(err.to_string().contains("escapes workspace"));
+    }
+
+    #[test]
+    fn check_write_allowed_resolved_denies_sensitive_targets() {
+        assert!(check_write_allowed_resolved(Path::new("/workspace/.env")).is_err());
+        assert!(check_write_allowed_resolved(Path::new("/workspace/.env.local")).is_err());
+        assert!(check_write_allowed_resolved(Path::new("/workspace/.git/config")).is_err());
+        assert!(check_write_allowed_resolved(Path::new("/workspace/certs/privkey.pem")).is_err());
+        assert!(check_write_allowed_resolved(Path::new("/workspace/src/main.rs")).is_ok());
     }
 }

@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 pub use options::{url_host_port, SandboxOptions};
 use path_policy::{canonical_workdir, resolve_existing, resolve_for_create, verify_resolved_path};
-pub use path_policy::{check_read_allowed, check_write_allowed};
+pub use path_policy::{check_read_allowed, check_write_allowed, check_write_allowed_resolved};
 use std::process::Stdio;
 use std::time::Duration;
 
@@ -391,6 +391,9 @@ impl LocalSandbox {
             anyhow::bail!(msg);
         }
         let resolved = self.resolve_parent(path)?;
+        if let Err(msg) = path_policy::check_write_allowed_resolved(&resolved) {
+            anyhow::bail!(msg);
+        }
 
         if let Some(remote) = &self.remote_fs {
             if remote.can_write() {

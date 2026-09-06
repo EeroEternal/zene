@@ -15,6 +15,10 @@ struct TaskOutputArgs {
     task_id: Option<String>,
     #[serde(default)]
     action: Option<String>,
+    #[serde(default)]
+    wait: Option<bool>,
+    #[serde(default)]
+    timeout_secs: Option<u64>,
 }
 
 #[async_trait]
@@ -26,7 +30,7 @@ impl Tool for TaskOutputTool {
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
             name: "TaskOutput".to_string(),
-            description: "Inspect or cancel background Bash/Task jobs. Use action=list, get (default), or kill.".to_string(),
+            description: "Inspect or cancel background Bash/Task jobs. Use action=list, get (default), or kill. When wait=true, waits for completion up to 1 hour (3600s).".to_string(),
             parameters: json!({
                 "type": "object",
                 "properties": {
@@ -38,6 +42,14 @@ impl Tool for TaskOutputTool {
                         "type": "string",
                         "enum": ["list", "get", "kill"],
                         "description": "list all tasks, get one task's output, or kill a running task"
+                    },
+                    "wait": {
+                        "type": "boolean",
+                        "description": "Wait for the task to finish before returning output (capped at 3600s)"
+                    },
+                    "timeout_secs": {
+                        "type": "integer",
+                        "description": "Max seconds to wait if wait=true (default 3600, capped at 3600)"
                     }
                 },
                 "required": []
@@ -100,6 +112,29 @@ impl Tool for TaskOutputTool {
                         is_error: true,
                     });
                 };
+                let should_wait = args.wait.unwrap_or(false);
+                let timeout_secs = args.timeout_secs.unwrap_or(3600).min(3600);
+                if should_wait {
+                    let deadline =
+                        tokio::time::Instant::now() + std::time::Duration::from_secs(timeout_secs);
+                    loop {
+                        let is_running = {
+                            let guard = store.lock();
+                            let Some(task) = guard.get(id) else {
+                                return Ok(ToolResult {
+                                    content: format!("Unknown task_id `{id}`"),
+                                    is_error: true,
+                                });
+                            };
+                            task.status == BackgroundTaskStatus::Running
+                        };
+                        if !is_running || tokio::time::Instant::now() >= deadline {
+                            break;
+                        }
+                        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+                    }
+                }
+
                 let Some(task) = store.lock().get(id) else {
                     return Ok(ToolResult {
                         content: format!("Unknown task_id `{id}`"),
@@ -165,5 +200,52 @@ fn truncate(s: &str, max: usize) -> String {
         s.to_string()
     } else {
         format!("{}…", s.chars().take(max).collect::<String>())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::background::BackgroundTaskStore;
+    use parking_lot::Mutex;
+    use std::sync::Arc;
+    use tokio_util::sync::CancellationToken;
+    use zene_sandbox::LocalSandbox;
+
+    #[tokio::test]
+    async fn test_task_output_wait_and_get() {
+        let tool = TaskOutputTool;
+        let mut store = BackgroundTaskStore::new();
+        let cancel = CancellationToken::new();
+        store.insert_running(
+            "test-1".into(),
+            BackgroundTaskKind::Bash,
+            "sleep".into(),
+            cancel,
+        );
+        store.finish(
+            "test-1",
+            BackgroundTaskStatus::Completed,
+            "completed output".into(),
+            Some(0),
+        );
+
+        let shared_store = Arc::new(Mutex::new(store));
+        let sandbox = Arc::new(LocalSandbox::new("."));
+        let mut ctx = ToolContext::without_subagent(sandbox);
+        ctx.background = Some(shared_store);
+
+        let args = json!({
+            "task_id": "test-1",
+            "action": "get",
+            "wait": true,
+            "timeout_secs": 10
+        })
+        .to_string();
+
+        let result = tool.execute(&args, &ctx).await.unwrap();
+        assert!(!result.is_error);
+        assert!(result.content.contains("completed output"));
+        assert!(result.content.contains("exit_code: 0"));
     }
 }

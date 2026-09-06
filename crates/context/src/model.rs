@@ -60,6 +60,7 @@ mod tests {
                 tools: Vec::new(),
                 stream: false,
                 context: None,
+                reasoning_effort: None,
             })
             .await
             .unwrap();

@@ -178,6 +178,12 @@ mod tests {
         assert!(is_request(
             &json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{}})
         ));
+        assert!(is_request(
+            &json!({"jsonrpc":"2.0","id":2,"method":"session/set_config_option","params":{"sessionId":"s1","key":"mode","value":"plan"}})
+        ));
+        assert!(is_request(
+            &json!({"jsonrpc":"2.0","id":3,"method":"session/clear_queue","params":{"sessionId":"s1"}})
+        ));
         assert!(is_notification(
             &json!({"jsonrpc":"2.0","method":"session/cancel","params":{}})
         ));

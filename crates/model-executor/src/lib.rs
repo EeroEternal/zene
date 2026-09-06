@@ -18,6 +18,7 @@ pub struct ModelRequest {
     pub tools: Vec<ToolDefinition>,
     pub stream: bool,
     pub context: Option<ContextMetadata>,
+    pub reasoning_effort: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -34,6 +35,7 @@ impl From<ModelRequest> for ChatRequest {
             tools: request.tools,
             stream: request.stream,
             context: request.context,
+            reasoning_effort: request.reasoning_effort,
         }
     }
 }
@@ -46,6 +48,7 @@ impl From<ChatRequest> for ModelRequest {
             tools: request.tools,
             stream: request.stream,
             context: request.context,
+            reasoning_effort: request.reasoning_effort,
         }
     }
 }
@@ -85,6 +88,25 @@ pub fn build_request(
         tools,
         stream,
         context,
+        reasoning_effort: None,
+    }
+}
+
+pub fn build_request_with_reasoning(
+    model: &str,
+    messages: Vec<Message>,
+    tools: Vec<ToolDefinition>,
+    stream: bool,
+    context: Option<ContextMetadata>,
+    reasoning_effort: Option<String>,
+) -> ModelRequest {
+    ModelRequest {
+        model: model.to_string(),
+        messages,
+        tools,
+        stream,
+        context,
+        reasoning_effort,
     }
 }
 
@@ -281,12 +303,14 @@ mod tests {
             tools: Vec::new(),
             stream: true,
             context: None,
+            reasoning_effort: Some("high".into()),
         };
         let chat: ChatRequest = model.clone().into();
         let back: ModelRequest = chat.into();
         assert_eq!(back.model, "m");
         assert_eq!(back.messages.len(), 1);
         assert!(back.stream);
+        assert_eq!(back.reasoning_effort.as_deref(), Some("high"));
     }
 
     #[test]
