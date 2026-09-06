@@ -11,6 +11,27 @@ Core agent loop lives in `crates/core`. This document tracks engine-level behavi
 - Steer is typically used from Cloud / ACP / async callers (the interactive local REPL was removed).
 - Event: `AgentEvent::SteerInput { text }` for UI/replay hooks.
 
+### Tool batch `terminate` semantics
+
+- `zene_tools::Tool::terminate_batch()` (default `false`) marks a tool as
+  terminal — e.g. structured-output / "done" tools. `ToolRegistry::terminates_batch`
+  looks this up by name.
+- After a tool batch executes, `tool_executor::outcome_for_batch` computes a
+  `ToolBatchOutcome`: **`Terminate`** only when the batch is non-empty and
+  *every* result is both terminal-tagged and successful (`is_error == false`);
+  any non-terminal or errored result yields `Continue`. This is distinct from
+  deny (permission gate), tool error, and turn cancellation.
+- `TurnEngine::run` (`crates/turn/src/turn_loop.rs`) checks this outcome right
+  after `run_tools`: `Terminate` sets `TurnStatus::Terminated` and **breaks the
+  loop immediately**, skipping the automatic follow-up LLM call. `Continue`
+  proceeds through the normal drain-steer → next-step path.
+- **Relation to Steer/Follow-up (#158):** the steer/follow-up drain point
+  (`inject_steer`) sits *after* the terminate check and is only reached on
+  `Continue`. A terminated batch does **not** count as "settled" for follow-up
+  drain — pending steer/follow-up input is left queued and is picked up by the
+  *next* turn, not injected mid-turn. This keeps `terminate` a clean, single
+  round-trip stop with no implicit follow-up model call.
+
 ## Token estimation
 
 Implemented in `tokens.rs` as `TokenEstimator`. Call sites use `Agent::token_estimator()` → `TokenEstimator::for_provider(provider, model, chars_per_token)`.
