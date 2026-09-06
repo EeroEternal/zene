@@ -102,6 +102,7 @@ impl<'a> DefaultToolExecutor<'a> {
         let mut prepared = Vec::with_capacity(tool_calls.len());
         let mut mode_changes = Vec::new();
         let mut permission_decisions = Vec::new();
+        let mut terminate_batch = false;
 
         for call in tool_calls {
             if zene_turn::is_cancelled(cancel) {
@@ -164,6 +165,9 @@ impl<'a> DefaultToolExecutor<'a> {
                 .run_pre_tool_use(&call.name, &call.arguments)
                 .await?
             {
+                if block.terminate {
+                    terminate_batch = true;
+                }
                 Some((
                     zene_tools::ToolResult {
                         content: format!("Hook blocked tool: {}", block.reason),
@@ -335,8 +339,14 @@ impl<'a> DefaultToolExecutor<'a> {
             });
         }
 
+        let outcome = if terminate_batch {
+            ToolBatchOutcome::Terminate
+        } else {
+            outcome_for_batch(&terminal_results)
+        };
+
         Ok(ToolBatchResult {
-            outcome: outcome_for_batch(&terminal_results),
+            outcome,
             mode_changes,
             permission_decisions,
             messages,
@@ -449,7 +459,17 @@ fn clone_tool_context(ctx: &ToolContext) -> ToolContext {
 
 #[cfg(test)]
 mod tests {
-    use super::outcome_for_batch;
+    use super::*;
+    use async_trait::async_trait;
+    use std::sync::Arc;
+    use tempfile::tempdir;
+    use zene_hooks::{ExtensionHook, HookBlock, HookOutcome, HookPayload, HookRunner};
+    use zene_llm::ToolCall;
+    use zene_permission::{PermissionGate, PermissionMode, SharedToolPermission};
+    use zene_sandbox::LocalSandbox;
+    use zene_tools::{
+        shared_background_tasks, shared_plan_mode, shared_todo_store_from, ToolRegistry,
+    };
     use zene_turn::ToolBatchOutcome;
 
     #[test]
@@ -467,5 +487,126 @@ mod tests {
             ToolBatchOutcome::Continue
         );
         assert_eq!(outcome_for_batch(&[]), ToolBatchOutcome::Continue);
+    }
+
+    struct BlockingHook {
+        terminate: bool,
+    }
+
+    #[async_trait]
+    impl ExtensionHook for BlockingHook {
+        async fn on_event(&self, _payload: &HookPayload) -> anyhow::Result<HookOutcome> {
+            Ok(HookOutcome::Block(if self.terminate {
+                HookBlock::terminate("policy violation")
+            } else {
+                HookBlock::new("policy warning")
+            }))
+        }
+    }
+
+    #[tokio::test]
+    async fn tool_execution_block_without_terminate_continues() {
+        let dir = tempdir().unwrap();
+        let sandbox: Arc<dyn Sandbox> = Arc::new(LocalSandbox::new(dir.path()));
+        let tools = Arc::new(ToolRegistry::new(Vec::new()));
+        let permission: SharedToolPermission = Arc::new(parking_lot::Mutex::new(
+            PermissionGate::new(PermissionMode::BypassPermissions),
+        ));
+        let plan_mode = shared_plan_mode();
+        let plan_approval: PlanApprovalPrompter =
+            Arc::new(crate::plan_mode::default_plan_approval_prompter);
+        let todos = shared_todo_store_from(Vec::new());
+        let ask_user = zene_tools::default_ask_user_prompter();
+        let background = shared_background_tasks();
+        let hook_runner = HookRunner::new(
+            Vec::new(),
+            Arc::new(zene_hooks::BashHookExecutor::new(dir.path().to_path_buf())),
+        )
+        .with_extension(Arc::new(BlockingHook { terminate: false }));
+
+        let executor = DefaultToolExecutor::new(ToolExecutorDeps {
+            tools,
+            sandbox,
+            permission,
+            approval_broker: None,
+            plan_mode,
+            plan_approval: &plan_approval,
+            todos,
+            ask_user,
+            background,
+            subagent: None,
+            hooks: &hook_runner,
+        });
+
+        let tool_calls = vec![ToolCall {
+            id: "call_1".into(),
+            name: "test_tool".into(),
+            arguments: "{}".into(),
+        }];
+        let options = PromptOptions::default();
+        let mut dedup = ToolDedup::default();
+        let result = executor
+            .execute(&tool_calls, &options, None, "test", dir.path(), &mut dedup)
+            .await
+            .unwrap();
+
+        assert_eq!(result.outcome, ToolBatchOutcome::Continue);
+        assert_eq!(result.messages.len(), 1);
+        assert!(result.messages[0]
+            .content
+            .contains("Hook blocked tool: policy warning"));
+    }
+
+    #[tokio::test]
+    async fn tool_execution_block_with_terminate_terminates_batch() {
+        let dir = tempdir().unwrap();
+        let sandbox: Arc<dyn Sandbox> = Arc::new(LocalSandbox::new(dir.path()));
+        let tools = Arc::new(ToolRegistry::new(Vec::new()));
+        let permission: SharedToolPermission = Arc::new(parking_lot::Mutex::new(
+            PermissionGate::new(PermissionMode::BypassPermissions),
+        ));
+        let plan_mode = shared_plan_mode();
+        let plan_approval: PlanApprovalPrompter =
+            Arc::new(crate::plan_mode::default_plan_approval_prompter);
+        let todos = shared_todo_store_from(Vec::new());
+        let ask_user = zene_tools::default_ask_user_prompter();
+        let background = shared_background_tasks();
+        let hook_runner = HookRunner::new(
+            Vec::new(),
+            Arc::new(zene_hooks::BashHookExecutor::new(dir.path().to_path_buf())),
+        )
+        .with_extension(Arc::new(BlockingHook { terminate: true }));
+
+        let executor = DefaultToolExecutor::new(ToolExecutorDeps {
+            tools,
+            sandbox,
+            permission,
+            approval_broker: None,
+            plan_mode,
+            plan_approval: &plan_approval,
+            todos,
+            ask_user,
+            background,
+            subagent: None,
+            hooks: &hook_runner,
+        });
+
+        let tool_calls = vec![ToolCall {
+            id: "call_1".into(),
+            name: "test_tool".into(),
+            arguments: "{}".into(),
+        }];
+        let options = PromptOptions::default();
+        let mut dedup = ToolDedup::default();
+        let result = executor
+            .execute(&tool_calls, &options, None, "test", dir.path(), &mut dedup)
+            .await
+            .unwrap();
+
+        assert_eq!(result.outcome, ToolBatchOutcome::Terminate);
+        assert_eq!(result.messages.len(), 1);
+        assert!(result.messages[0]
+            .content
+            .contains("Hook blocked tool: policy violation"));
     }
 }

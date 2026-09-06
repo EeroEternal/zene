@@ -1120,7 +1120,10 @@ impl ContextEngine {
 
     fn capture_tail_sections(&mut self, hooks: Option<&dyn ContextHooks>) {
         if let Some(hooks) = hooks {
-            self.tail_sections = hooks.step_tail_decorations();
+            let mut sections = hooks.step_tail_decorations();
+            let mut extra = hooks.mutate_tail_decorations(self.epoch);
+            sections.append(&mut extra);
+            self.tail_sections = sections;
         }
     }
 

@@ -3,12 +3,41 @@ use std::process::Stdio;
 
 use anyhow::{Context, Result};
 use async_trait::async_trait;
+use serde::{Deserialize, Serialize};
 use tokio::io::AsyncWriteExt;
 use tokio::process::Command;
 use tracing::warn;
 
 use crate::engine::{hook_failure_reason, HookRunRequest};
-use crate::runner::HookBlock;
+
+/// User-visible block reason from a hook.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HookBlock {
+    pub reason: String,
+    #[serde(default)]
+    pub terminate: bool,
+}
+
+impl HookBlock {
+    pub fn new(reason: impl Into<String>) -> Self {
+        Self {
+            reason: reason.into(),
+            terminate: false,
+        }
+    }
+
+    pub fn terminate(reason: impl Into<String>) -> Self {
+        Self {
+            reason: reason.into(),
+            terminate: true,
+        }
+    }
+
+    pub fn with_terminate(mut self, terminate: bool) -> Self {
+        self.terminate = terminate;
+        self
+    }
+}
 
 /// Result of executing one hook invocation.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -70,10 +99,44 @@ impl HookExecutor for BashHookExecutor {
             .await
             .context("wait for hook command")?;
 
+        // 1. Structured JSON output check (stdout can define block/terminate explicitly)
+        if let Ok(value) = serde_json::from_slice::<serde_json::Value>(&output.stdout) {
+            if let Some(block_val) = value.get("block").and_then(|v| v.as_bool()) {
+                if block_val {
+                    let reason = value
+                        .get("reason")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("blocked by hook")
+                        .to_string();
+                    let terminate = value
+                        .get("terminate")
+                        .and_then(|v| v.as_bool())
+                        .unwrap_or(false);
+                    return Ok(HookOutcome::Block(HookBlock { reason, terminate }));
+                }
+            } else if let Some(decision) = value.get("decision").and_then(|v| v.as_str()) {
+                if decision == "block" || decision == "terminate" {
+                    let reason = value
+                        .get("reason")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("blocked by hook")
+                        .to_string();
+                    let terminate = decision == "terminate"
+                        || value
+                            .get("terminate")
+                            .and_then(|v| v.as_bool())
+                            .unwrap_or(false);
+                    return Ok(HookOutcome::Block(HookBlock { reason, terminate }));
+                }
+            }
+        }
+
+        // 2. Non-zero exit code check
         if !output.status.success() {
             let reason = hook_failure_reason(&output.stderr, &output.stdout);
+            let terminate = output.status.code() == Some(2);
             if request.blocking {
-                return Ok(HookOutcome::Block(HookBlock { reason }));
+                return Ok(HookOutcome::Block(HookBlock { reason, terminate }));
             }
             warn!(
                 command = %request.command,
