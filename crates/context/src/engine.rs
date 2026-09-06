@@ -14,7 +14,7 @@ use crate::assemble::{
 };
 use crate::compaction::{
     apply_steps_truncate_pass, compact_session, compact_session_forced, is_context_overflow_error,
-    CompactionResult,
+    CompactionOptions, CompactionParams, CompactionResult,
 };
 use crate::config::CompactionConfig;
 use crate::context_water::ContextWaterLevel;
@@ -697,14 +697,19 @@ impl ContextEngine {
         let compaction = match compact_session(
             deps.session,
             deps.client,
-            deps.model,
-            deps.compaction_config,
-            reason,
-            tools,
             deps.estimator,
-            deps.hooks,
-            prefire_cache.as_ref(),
-            memory_block.as_deref(),
+            CompactionParams {
+                model: deps.model,
+                config: deps.compaction_config,
+                reason,
+                tools,
+                options: CompactionOptions {
+                    hooks: deps.hooks,
+                    prefire: prefire_cache.as_ref(),
+                    memory_block: memory_block.as_deref(),
+                    ..Default::default()
+                },
+            },
         )
         .await
         {
@@ -821,16 +826,20 @@ impl ContextEngine {
         let result = compact_session_forced(
             deps.session,
             deps.client,
-            deps.model,
-            deps.compaction_config,
-            "manual",
-            tools,
             deps.estimator,
-            true,
-            user_hint,
-            deps.hooks,
-            prefire_cache.as_ref(),
-            memory_block.as_deref(),
+            CompactionParams {
+                model: deps.model,
+                config: deps.compaction_config,
+                reason: "manual",
+                tools,
+                options: CompactionOptions {
+                    hooks: deps.hooks,
+                    prefire: prefire_cache.as_ref(),
+                    memory_block: memory_block.as_deref(),
+                    force_summarize: true,
+                    user_hint,
+                },
+            },
         )
         .await;
         self.prefire.clear();
@@ -912,14 +921,19 @@ impl ContextEngine {
             match compact_session(
                 deps.session,
                 deps.client,
-                deps.model,
-                deps.compaction_config,
-                "context_overflow",
-                tools,
                 deps.estimator,
-                deps.hooks,
-                prefire_cache.as_ref(),
-                memory_block.as_deref(),
+                CompactionParams {
+                    model: deps.model,
+                    config: deps.compaction_config,
+                    reason: "context_overflow",
+                    tools,
+                    options: CompactionOptions {
+                        hooks: deps.hooks,
+                        prefire: prefire_cache.as_ref(),
+                        memory_block: memory_block.as_deref(),
+                        ..Default::default()
+                    },
+                },
             )
             .await
             {

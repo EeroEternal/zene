@@ -7,10 +7,10 @@ use parking_lot::Mutex;
 use tokio_util::sync::CancellationToken;
 use zene_llm::ToolCall;
 use zene_permission::{PermissionGate, PermissionMode, SharedApprovalBroker};
-use zene_tool_runtime::{apply_tool_bound_plan, plan_tool_output_bound, FsToolOutputStore};
 use zene_tools::{
-    default_ask_user_prompter, shared_background_tasks, shared_plan_mode, shared_todo_store,
-    PlanModeState, SharedAskUserPrompter, SharedBackgroundTasks, SharedPlanMode, SharedTodoStore,
+    apply_tool_bound_plan, default_ask_user_prompter, plan_tool_output_bound,
+    shared_background_tasks, shared_plan_mode, shared_todo_store, FsToolOutputStore, PlanModeState,
+    SharedAskUserPrompter, SharedBackgroundTasks, SharedPlanMode, SharedTodoStore,
     SharedToolPermission, SubagentEnv, ToolContext, ToolRegistry,
 };
 use zene_turn::ToolBatchOutcome;
@@ -351,21 +351,25 @@ impl<'a> DefaultToolExecutor<'a> {
 /// stay empty, and ask-user uses the default prompter while the catalog omits
 /// those tools. Missing permission inherits bypass so Explore/Coder keep prior
 /// auto-allow unless a gate is passed from the parent.
+pub(crate) struct SubagentToolBatchDeps {
+    pub tools: Arc<ToolRegistry>,
+    pub sandbox: Arc<dyn Sandbox>,
+    pub subagent_env: SubagentEnv,
+    pub permission: Option<SharedToolPermission>,
+    pub broker: Option<SharedApprovalBroker>,
+    pub tool_policy: zene_tools::ToolPolicy,
+}
+
 pub(crate) async fn execute_subagent_tool_batch(
-    tools: Arc<ToolRegistry>,
-    sandbox: Arc<dyn Sandbox>,
+    deps: SubagentToolBatchDeps,
     tool_calls: &[ToolCall],
     cancel: Option<&CancellationToken>,
-    subagent_env: SubagentEnv,
-    permission: Option<SharedToolPermission>,
-    broker: Option<SharedApprovalBroker>,
-    tool_policy: zene_tools::ToolPolicy,
 ) -> Result<ToolBatchResult> {
     debug_assert!(
-        !tool_policy.plan_mode && !tool_policy.ask_user && !tool_policy.hooks,
+        !deps.tool_policy.plan_mode && !deps.tool_policy.ask_user && !deps.tool_policy.hooks,
         "subagent tool batch expects ToolPolicy::subagent()"
     );
-    let permission = permission.unwrap_or_else(|| {
+    let permission = deps.permission.unwrap_or_else(|| {
         Arc::new(Mutex::new(PermissionGate::new(
             PermissionMode::BypassPermissions,
         )))
@@ -375,35 +379,31 @@ pub(crate) async fn execute_subagent_tool_batch(
     let todos = shared_todo_store();
     let ask_user = default_ask_user_prompter();
     let background = shared_background_tasks();
-    let hooks = HookRunner::with_bash(Vec::new(), sandbox.workdir().to_path_buf());
-    let _ = tool_policy;
+    let hooks = HookRunner::with_bash(Vec::new(), deps.sandbox.workdir().to_path_buf());
+    let _ = deps.tool_policy;
     let options = PromptOptions {
         stream: false,
         quiet: true,
         ..PromptOptions::default()
     };
     let mut dedup = ToolDedup::new();
+    let workdir = deps.sandbox.workdir().to_path_buf();
     let executor = DefaultToolExecutor::new(ToolExecutorDeps {
-        tools,
-        sandbox: Arc::clone(&sandbox),
+        tools: deps.tools,
+        sandbox: deps.sandbox,
         permission,
-        approval_broker: broker,
+        approval_broker: deps.broker,
         plan_mode,
         plan_approval: &plan_approval,
         todos,
         ask_user,
         background,
-        subagent: Some(subagent_env),
+        subagent: Some(deps.subagent_env),
         hooks: &hooks,
     });
     executor
         .execute(
-            tool_calls,
-            &options,
-            cancel,
-            "subagent",
-            sandbox.workdir(),
-            &mut dedup,
+            tool_calls, &options, cancel, "subagent", &workdir, &mut dedup,
         )
         .await
 }

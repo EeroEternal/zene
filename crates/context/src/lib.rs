@@ -41,8 +41,8 @@ pub use compaction::{
     is_context_overflow_error, is_degenerate_summary, keep_recent_token_budget,
     last_user_query_index, plan_compaction, plan_compaction_segment, should_compact,
     subagent_compaction_config, tail_start_index, truncate_old_message_bodies,
-    truncate_old_tool_results, CompactionPlan, CompactionResult, CompactionStats,
-    MIN_SUMMARY_SEED_CHARS,
+    truncate_old_tool_results, CompactionOptions, CompactionParams, CompactionPlan,
+    CompactionResult, CompactionStats, Pass2Options, MIN_SUMMARY_SEED_CHARS,
 };
 pub use config::{CompactionConfig, DEFAULT_CONTEXT_WINDOW_TOKENS};
 pub use context_water::ContextWaterLevel;

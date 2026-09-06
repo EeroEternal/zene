@@ -16,7 +16,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::debug;
 use zene_config::ZeneConfig;
 use zene_context::{
-    ContextEngine, ContextModel, EstimateProvider, PrefireClientFactory, StepContext,
+    ContextDeps, ContextEngine, ContextModel, EstimateProvider, PrefireClientFactory, StepContext,
     TokenEstimator,
 };
 use zene_llm::{ChatClient, Message, StreamEvent, TokenUsage, ToolDefinition};
@@ -146,17 +146,17 @@ async fn recover_overflow(
     let prefire_factory = prefire_client_factory(deps.config);
     let (mut overflow_truncated, mut overflow_summarized) = overflow_state.flags();
     let overflow = {
-        let mut context_deps = crate::make_context_deps(
-            deps.session,
-            &compaction_config,
-            &deps.config.model,
-            deps.context_model,
-            Some(&hooks),
-            deps.system_prompt,
-            &estimator,
-            &mut handler,
-            prefire_factory,
-        );
+        let mut context_deps = ContextDeps {
+            session: deps.session,
+            compaction_config: &compaction_config,
+            model: &deps.config.model,
+            client: deps.context_model,
+            hooks: Some(&hooks),
+            system_prompt: deps.system_prompt,
+            estimator: &estimator,
+            handler: &mut handler,
+            prefire_client_factory: prefire_factory,
+        };
         deps.context
             .handle_overflow(
                 &mut context_deps,

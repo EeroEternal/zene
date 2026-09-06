@@ -64,29 +64,6 @@ pub use zene_permission::{
 use zene_turn::{RuntimeEventHandler, SessionId, SteerBuffer, StepId, TurnId, TurnState};
 pub use zene_workspace::{build_system_prompt, FsWorkspaceProvider, WorkspaceProvider};
 
-pub(crate) fn make_context_deps<'a>(
-    session: &'a mut SessionRecord,
-    compaction_config: &'a zene_context::CompactionConfig,
-    model: &'a str,
-    client: &'a dyn zene_context::ContextModel,
-    hooks: Option<&'a dyn zene_context::ContextHooks>,
-    system_prompt: &'a str,
-    estimator: &'a TokenEstimator,
-    handler: &'a mut dyn zene_context::ContextEventHandler,
-    prefire_client_factory: Option<PrefireClientFactory>,
-) -> ContextDeps<'a> {
-    ContextDeps {
-        session,
-        compaction_config,
-        model,
-        client,
-        hooks,
-        system_prompt,
-        estimator,
-        handler,
-        prefire_client_factory,
-    }
-}
 pub use worktree::ensure_session_worktree;
 
 pub struct Agent {
@@ -345,17 +322,17 @@ impl Agent {
             self.sandbox.workdir(),
         );
         let prefire_factory = self.prefire_client_factory();
-        let mut deps = make_context_deps(
-            &mut self.session,
-            &compaction_config,
-            &self.config.model,
-            self.context_model.as_ref(),
-            Some(&hooks),
-            &self.system_prompt,
-            &estimator,
-            &mut handler,
-            prefire_factory,
-        );
+        let mut deps = ContextDeps {
+            session: &mut self.session,
+            compaction_config: &compaction_config,
+            model: &self.config.model,
+            client: self.context_model.as_ref(),
+            hooks: Some(&hooks),
+            system_prompt: &self.system_prompt,
+            estimator: &estimator,
+            handler: &mut handler,
+            prefire_client_factory: prefire_factory,
+        };
         let result = self
             .context
             .compact_forced(&mut deps, &tools, user_hint)

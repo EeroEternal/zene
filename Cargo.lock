@@ -4946,7 +4946,6 @@ dependencies = [
  "zene-permission",
  "zene-sandbox",
  "zene-session",
- "zene-tool-runtime",
  "zene-tools",
  "zene-turn",
  "zene-workspace",
@@ -5113,14 +5112,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "zene-tool-runtime"
-version = "0.1.15"
-dependencies = [
- "tempfile",
- "tracing",
-]
-
-[[package]]
 name = "zene-tools"
 version = "0.1.15"
 dependencies = [
@@ -5137,6 +5128,7 @@ dependencies = [
  "thiserror 2.0.18",
  "tokio",
  "tokio-util",
+ "tracing",
  "zene-config",
  "zene-index",
  "zene-llm",

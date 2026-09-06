@@ -7,6 +7,7 @@ mod fetch_url;
 mod glob;
 mod grep;
 mod line_endings;
+mod output_bound;
 mod output_sanitizer;
 mod permission;
 mod plan;
@@ -17,6 +18,7 @@ mod registry;
 mod repomap;
 mod scope;
 mod skill;
+mod spill_store;
 mod subagent;
 mod task;
 mod task_output;
@@ -39,11 +41,16 @@ pub use line_endings::{
     detect_line_ending_style, make_carriage_returns_visible, materialize_model_text,
     to_model_text_view, LineEndingStyle, ModelTextView,
 };
+pub use output_bound::{
+    plan_tool_output_bound, tool_max_output_bytes, tool_output_handles_enabled, ToolBoundPlan,
+    ToolOutputSpill, TOOL_MAX_OUTPUT_BYTES,
+};
 pub use permission::{SharedToolPermission, ToolPermission};
 pub use plan_mode::{shared_plan_mode, PlanModeState, SharedPlanMode};
 pub use publish_github::PublishGithubTool;
 pub use registry::{Tool, ToolCatalog, ToolContext, ToolRegistry, ToolResult};
 pub use scope::{RuntimeScope, SessionPersistence, SessionPolicy, ToolPolicy};
+pub use spill_store::{apply_tool_bound_plan, FsToolOutputStore, ToolOutputStore};
 pub use subagent::{SubagentEnv, SubagentProfile, SubagentRunner, DEFAULT_SUBAGENT_MAX_DEPTH};
 pub use todo::{TodoListTool, TodoWriteTool};
 pub use todo_store::{
