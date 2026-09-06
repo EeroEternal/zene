@@ -362,7 +362,10 @@ mod tests {
         let registry = ToolRegistry::deferred(vec![Box::new(TerminalTool)]);
         assert!(registry.contains("Terminal"));
         assert!(registry.definitions().is_empty());
-        assert_eq!(registry.activate_many(["Terminal", "missing"]), vec!["Terminal"]);
+        assert_eq!(
+            registry.activate_many(["Terminal", "missing"]),
+            vec!["Terminal"]
+        );
         assert_eq!(registry.definitions().len(), 1);
         assert_eq!(registry.deactivate_many(["Terminal"]), vec!["Terminal"]);
         assert!(registry.definitions().is_empty());

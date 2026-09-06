@@ -22,6 +22,13 @@ Part of the composable [Zene (Zen Engine)](https://github.com/ParaTensor/zene) a
 
 ## Usage
 
+`ToolRegistry::new` keeps all supplied tools active. Use
+`ToolRegistry::deferred` (or `register_deferred`) for a large catalog: those
+tools remain executable/registered but their schemas are omitted from
+`definitions()` until `activate`/`activate_many` is called. Deactivation only
+removes a schema from subsequent model requests; it does not unregister the
+tool.
+
 ```rust
 use std::sync::Arc;
 use zene_sandbox::{LocalSandbox, SandboxOptions};

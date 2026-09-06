@@ -149,16 +149,26 @@ impl RuntimeHandle {
     }
 
     pub async fn activate_tools(&self, names: Vec<String>) -> Result<Vec<String>> {
-        match self.command(RuntimeCommand::ActivateTools { names }).await? {
+        match self
+            .command(RuntimeCommand::ActivateTools { names })
+            .await?
+        {
             RuntimeResponse::Tools { names } => Ok(names),
-            _ => Err(anyhow!("runtime returned an invalid activate tools response")),
+            _ => Err(anyhow!(
+                "runtime returned an invalid activate tools response"
+            )),
         }
     }
 
     pub async fn deactivate_tools(&self, names: Vec<String>) -> Result<Vec<String>> {
-        match self.command(RuntimeCommand::DeactivateTools { names }).await? {
+        match self
+            .command(RuntimeCommand::DeactivateTools { names })
+            .await?
+        {
             RuntimeResponse::Tools { names } => Ok(names),
-            _ => Err(anyhow!("runtime returned an invalid deactivate tools response")),
+            _ => Err(anyhow!(
+                "runtime returned an invalid deactivate tools response"
+            )),
         }
     }
 
