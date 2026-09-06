@@ -1,6 +1,6 @@
 # AGENTS.md — Code Agent Collaboration Specification
 
-Zene is an open-source coding-agent framework and CLI toolchain. The `zene` binary (`apps/cli`) speaks Agent Client Protocol (`zene acp`) for external clients, workers, and editors. For the hosted web platform, see `zene-cloud`.
+Zene (*Zen Engine*) is an open-source, headless coding-agent harness and backend. The `zene` binary (`apps/cli`) speaks Agent Client Protocol (`zene acp`) for external clients, workers, and editors. For the hosted web platform, see `zene-cloud`.
 
 Primary toolchain is Cargo (Rust workspace). Rust >= 1.85 (`unigateway-sdk` needs `edition2024`); if you hit `feature edition2024 is required`, run `rustup default stable`.
 
@@ -44,4 +44,4 @@ Primary toolchain is Cargo (Rust workspace). Rust >= 1.85 (`unigateway-sdk` need
 2. **Zero Hallucination Code**: Every definition must have callers; every cache field must have a store policy; metrics must track both success and failure; every `TODO` must reference an issue.
 3. **Release Guardrail & Gate Check**: Run full local quality gates before push via skill [`pre-push-local-gates`](.agents/skills/pre-push-local-gates/SKILL.md). Merging to main or creating release tags is strictly prohibited without explicit human approval.
 4. **Workflow & PRs**: Code and docs changes go through GitHub PRs (`branch → PR → review → merge`; reference `Refs: ParaTensor/zene#N`). Direct pushes to `main` are limited to release chores and trivial fixes.
-5. **System Boundaries & Zero UI in Core**: `zene` strictly owns core agent execution (turn loop, context projection, sandbox, tools, session persistence, and ACP protocol). Never introduce HTML/CSS web consoles, cloud multi-tenant control planes, or hosted platform services into this repository (belong to `zene-cloud`); context engine performs no unmediated network IO or monolithic vector DB.
+5. **Zen Boundaries & Zero UI in Core**: `zene` (*Zen Engine*) is strictly a headless, composable agent harness (turn loop, context projection, sandbox, tools, durable session, and ACP protocol). Never introduce HTML/CSS web consoles, cloud multi-tenant control planes, or hosted platform services into this repository (belong to `zene-cloud`); context engine performs no unmediated network IO or monolithic vector DB.

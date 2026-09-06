@@ -183,7 +183,7 @@ impl AcpServer {
                                 err_response(
                                     current.rpc_id.clone(),
                                     dispatch_error_code("session/prompt", &err),
-                                    &format!("{err:#}"),
+                                    format!("{err:#}"),
                                 )
                             }
                             Err(_) => err_response(
@@ -265,7 +265,7 @@ impl AcpServer {
                 .await
             {
                 warn!("ACP {method}: {e:#}");
-                let reply = err_response(id, dispatch_error_code(&method, &e), &format!("{e:#}"));
+                let reply = err_response(id, dispatch_error_code(&method, &e), format!("{e:#}"));
                 self.writer.send_raw(reply.to_string())?;
             }
             Ok(())
@@ -274,7 +274,7 @@ impl AcpServer {
                 Ok(result) => ok_response(id, result),
                 Err(e) => {
                     warn!("ACP {method}: {e:#}");
-                    err_response(id, dispatch_error_code(&method, &e), &format!("{e:#}"))
+                    err_response(id, dispatch_error_code(&method, &e), format!("{e:#}"))
                 }
             };
             self.writer.send_raw(reply.to_string())?;

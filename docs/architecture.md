@@ -1,6 +1,6 @@
 # Architecture & Crates Specification
 
-Zene is an open-source coding-agent framework and CLI toolchain. The `zene` binary (`apps/cli`) implements the Agent Client Protocol (`zene acp`) for external clients, workers, and editors.
+Zene (*Zen Engine*) is an open-source, headless coding-agent harness and backend. The `zene` binary (`apps/cli`) implements the Agent Client Protocol (`zene acp`) for external clients, workers, and editors.
 
 This document defines the system architectural model, crate component boundaries, and dependency principles.
 
@@ -105,3 +105,5 @@ This document defines the system architectural model, crate component boundaries
    - `zene` does not ship embedded web frontends or admin panels. Web management and multi-tenant UI belong to `zene-cloud`.
 3. **Strict Sandbox Containment**:
    - All file and shell interactions must be validated against canonical paths before execution. Symlinks pointing outside the workspace or into sensitive credential files are denied.
+4. **Zen Engine: Composable & Standalone Bricks**:
+   - Designed like a headless harness (similar to Flue). Modules like `zene-sandbox`, `zene-context`, `zene-tools`, and `zene-session` must strive for standalone usability so developers can embed or adopt them independently without pulling in the entire framework.

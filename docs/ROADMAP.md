@@ -68,3 +68,16 @@ Zene is an open-source coding-agent framework and CLI toolchain. Its mission is 
 ### 4.3 Enhanced Model Adaptation
 - Deeper integration with provider-specific prompt-caching headers and token accounting.
 - Cross-worker durable outbox abstractions for distributed deployment topologies.
+
+---
+
+## 5. Zen Engine Open Harness (Developer Experience & Embeddability)
+
+### 5.1 Top-Level `zene` Facade SDK
+- Provide a clean, idiomatic `Agent::builder()` API for embedding Zene directly into any Rust application or service without boilerplate.
+
+### 5.2 Multi-Transport Backend Serving (`zene serve`)
+- Complement `zene acp` (stdio JSON-RPC) with a lightweight HTTP/SSE/WebSocket server mode (`zene serve`), allowing external backend microservices in Node.js, Python, or Go to invoke Zene over standard REST APIs (similar to Flue's `POST /agents/:id`).
+
+### 5.3 Standalone Crates Distribution
+- Ensure decoupled foundation crates (`zene-sandbox`, `zene-context`, `zene-tools`, `zene-session`) have standalone documentation, zero unnecessary cross-crate dependencies, and clean crates.io publication workflows.

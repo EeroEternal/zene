@@ -1,6 +1,13 @@
-# Zene
+# Zene (Zen Engine)
 
-Zene is an open-source coding-agent framework and CLI toolchain. The `zene` binary speaks Agent Client Protocol (`zene acp`) for external clients, workers, and editors.
+> **The Open, Minimalist Agent Harness.**
+> Composable, headless, durable, and cache-aligned.
+
+Zene (*Zen Engine*) is a headless, modular coding-agent backend and harness. Built on the Zen philosophy of extreme clarity, zero bloat, and composability, Zene provides the foundational execution machinery for autonomous agents:
+- **Headless & UI-Free**: 100% backend-focused. Speaks Agent Client Protocol (`zene acp`) for editors, background workers, and external applications.
+- **Composable Crate Architecture**: Context projection, sandbox isolation, tool execution, session persistence, and turn state machines are decoupled crates that can be used standalone or combined.
+- **Cache-Aligned Context**: 3-zone prompt layout preserving LLM KV prefix caches and automated compaction debouncing.
+- **Deterministic Sandboxing**: Native process isolation, permission gates, and tool execution boundaries.
 
 For the multi-tenant hosted web platform and console, see [zene-cloud](https://github.com/EeroEternal/zene-cloud).
 
