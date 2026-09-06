@@ -1,7 +1,7 @@
 use std::path::Path;
 use std::sync::Arc;
 
-use crate::tool_executor::execute_subagent_tool_batch;
+use crate::tool_executor::{execute_subagent_tool_batch, SubagentToolBatchDeps};
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use tokio_util::sync::CancellationToken;
@@ -69,20 +69,31 @@ impl SubagentRunner for CoreSubagentRunner {
             .map(|env| env.depth)
             .unwrap_or(0);
 
-        run_subagent_with_runner(
+        run_subagent(
             prompt,
             profile,
             sandbox,
             &self.config,
             executor,
-            parent_ctx.cancel.as_ref(),
-            parent_depth,
-            parent_ctx.permission.clone(),
-            None,
-            self.broker.clone(),
+            SubagentOptions {
+                cancel: parent_ctx.cancel.as_ref(),
+                parent_depth,
+                permission: parent_ctx.permission.clone(),
+                runner: None,
+                broker: self.broker.clone(),
+            },
         )
         .await
     }
+}
+
+#[derive(Clone, Default)]
+pub struct SubagentOptions<'a> {
+    pub cancel: Option<&'a CancellationToken>,
+    pub parent_depth: u32,
+    pub permission: Option<SharedToolPermission>,
+    pub runner: Option<Arc<dyn SubagentRunner>>,
+    pub broker: Option<zene_permission::SharedApprovalBroker>,
 }
 
 pub async fn run_subagent(
@@ -91,40 +102,11 @@ pub async fn run_subagent(
     sandbox: Arc<dyn Sandbox>,
     config: &ZeneConfig,
     model_executor: Arc<dyn ModelExecutor>,
-    cancel: Option<&CancellationToken>,
-    parent_depth: u32,
-    permission: Option<SharedToolPermission>,
+    options: SubagentOptions<'_>,
 ) -> Result<String> {
-    run_subagent_with_runner(
-        prompt,
-        profile,
-        sandbox,
-        config,
-        model_executor,
-        cancel,
-        parent_depth,
-        permission,
-        None,
-        None,
-    )
-    .await
-}
-
-pub(crate) async fn run_subagent_with_runner(
-    prompt: &str,
-    profile: SubagentProfile,
-    sandbox: Arc<dyn Sandbox>,
-    config: &ZeneConfig,
-    model_executor: Arc<dyn ModelExecutor>,
-    cancel: Option<&CancellationToken>,
-    parent_depth: u32,
-    permission: Option<SharedToolPermission>,
-    runner: Option<Arc<dyn SubagentRunner>>,
-    broker: Option<zene_permission::SharedApprovalBroker>,
-) -> Result<String> {
-    let scope = RuntimeScope::subagent(profile, parent_depth)?;
-    let runner = runner.unwrap_or_else(|| {
-        Arc::new(CoreSubagentRunner::new(config.clone()).with_broker(broker.clone()))
+    let scope = RuntimeScope::subagent(profile, options.parent_depth)?;
+    let runner = options.runner.unwrap_or_else(|| {
+        Arc::new(CoreSubagentRunner::new(config.clone()).with_broker(options.broker.clone()))
     });
     let subagent_env = scope.env(runner);
     let mut runtime = SubagentTurnRuntime::new(
@@ -133,12 +115,12 @@ pub(crate) async fn run_subagent_with_runner(
         config,
         model_executor,
         subagent_env,
-        permission,
-        broker,
+        options.permission,
+        options.broker,
     );
 
     TurnEngine::new(&mut runtime)
-        .run(TurnRequest::new(prompt, &(), cancel))
+        .run(TurnRequest::new(prompt, &(), options.cancel))
         .await
         .map(|outcome| outcome.final_text)
 }
@@ -224,14 +206,16 @@ impl<'a> SubagentTurnRuntime<'a> {
         cancel: Option<&CancellationToken>,
     ) -> Result<ToolBatchOutcome> {
         let batch = execute_subagent_tool_batch(
-            Arc::clone(&self.tools),
-            Arc::clone(&self.sandbox),
+            SubagentToolBatchDeps {
+                tools: Arc::clone(&self.tools),
+                sandbox: Arc::clone(&self.sandbox),
+                subagent_env: self.subagent_env.clone(),
+                permission: self.permission.clone(),
+                broker: self.broker.clone(),
+                tool_policy: self.scope.tool_policy,
+            },
             tool_calls,
             cancel,
-            self.subagent_env.clone(),
-            self.permission.clone(),
-            self.broker.clone(),
-            self.scope.tool_policy,
         )
         .await?;
         for message in batch.messages {
@@ -640,17 +624,18 @@ mod tests {
                 .as_ref()
                 .map(|env| env.depth)
                 .unwrap_or(0);
-            run_subagent_with_runner(
+            run_subagent(
                 prompt,
                 profile,
                 sandbox,
                 &self.config,
                 executor,
-                parent_ctx.cancel.as_ref(),
-                parent_depth,
-                parent_ctx.permission.clone(),
-                None,
-                None,
+                SubagentOptions {
+                    cancel: parent_ctx.cancel.as_ref(),
+                    parent_depth,
+                    permission: parent_ctx.permission.clone(),
+                    ..Default::default()
+                },
             )
             .await
         }
@@ -714,9 +699,7 @@ mod tests {
             Arc::clone(&sandbox),
             &config,
             Arc::new(backend),
-            None,
-            0,
-            None,
+            SubagentOptions::default(),
         )
         .await
         .expect("subagent should complete");
@@ -775,9 +758,7 @@ mod tests {
             sandbox,
             &config,
             Arc::new(backend),
-            None,
-            0,
-            None,
+            SubagentOptions::default(),
         )
         .await
         .expect("incomplete subagent should return a notice");
@@ -852,9 +833,10 @@ mod tests {
             Arc::clone(&sandbox),
             &config,
             Arc::new(backend),
-            None,
-            0,
-            Some(permission),
+            SubagentOptions {
+                permission: Some(permission),
+                ..Default::default()
+            },
         )
         .await
         .expect("subagent should complete after denial");

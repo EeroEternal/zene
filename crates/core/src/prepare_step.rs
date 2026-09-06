@@ -12,7 +12,8 @@ use tokio_util::sync::CancellationToken;
 use tracing::{debug, warn};
 use zene_config::ZeneConfig;
 use zene_context::{
-    ContextEngine, ContextModel, EstimateProvider, PrefireClientFactory, TokenEstimator,
+    ContextDeps, ContextEngine, ContextModel, EstimateProvider, PrefireClientFactory,
+    TokenEstimator,
 };
 use zene_llm::{ChatClient, ToolDefinition};
 use zene_session::{AgentRecordWriter, RecordEntry, SessionRecord};
@@ -62,17 +63,17 @@ pub(crate) async fn prepare_step_context(
     let mut handler =
         AgentContextHandler::new(deps.context_model, &deps.config.model, deps.workdir);
     let prefire_factory = prefire_client_factory(deps.config);
-    let mut context_deps = crate::make_context_deps(
-        deps.session,
-        &compaction_config,
-        &deps.config.model,
-        deps.context_model,
-        Some(&hooks),
-        deps.system_prompt,
-        &estimator,
-        &mut handler,
-        prefire_factory,
-    );
+    let mut context_deps = ContextDeps {
+        session: deps.session,
+        compaction_config: &compaction_config,
+        model: &deps.config.model,
+        client: deps.context_model,
+        hooks: Some(&hooks),
+        system_prompt: deps.system_prompt,
+        estimator: &estimator,
+        handler: &mut handler,
+        prefire_client_factory: prefire_factory,
+    };
     let prepared = deps.context.prepare_step(&mut context_deps, &tools).await?;
     if let Some(result) = &prepared.compaction {
         record_compaction(deps.record_writer, result)?;

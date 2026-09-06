@@ -15,7 +15,6 @@ members = [
     "crates/mcp",
     "crates/hooks",
     "crates/permission",
-    "crates/tool-runtime",
     "crates/turn",
     "crates/workspace",
     "crates/index",
@@ -66,7 +65,6 @@ zene-runtime = { path = "crates/runtime" }
 zene-agent-runtime = { path = "crates/agent-runtime" }
 zene-hooks = { path = "crates/hooks" }
 zene-permission = { version = "0.1.12", path = "crates/permission" }
-zene-tool-runtime = { path = "crates/tool-runtime" }
 zene-turn = { path = "crates/turn" }
 zene-workspace = { path = "crates/workspace" }
 zene-index = { path = "crates/index" }

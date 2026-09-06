@@ -289,19 +289,24 @@ async fn summarize_prepared_input(
     }
 }
 
+#[derive(Clone, Default)]
+pub struct Pass2Options<'a> {
+    pub system: Option<&'a Message>,
+    pub context_window: Option<u32>,
+    pub hint: Option<&'a str>,
+}
+
 /// Pass2 of two-pass compaction: merge NOTE₁ with recent tail messages.
 pub async fn summarize_pass2(
     client: &dyn ContextModel,
     model: &str,
-    system: Option<&Message>,
     note1: &str,
     tail: &[Message],
-    context_window: Option<u32>,
     estimator: &TokenEstimator,
-    hint: Option<&str>,
+    options: Pass2Options<'_>,
 ) -> Result<String> {
     let mut msgs = Vec::new();
-    if let Some(system) = system {
+    if let Some(system) = options.system {
         msgs.push(system.clone());
     }
     msgs.push(Message::user(format!(
@@ -311,12 +316,12 @@ pub async fn summarize_pass2(
         note_for_pass2(note1)
     )));
     msgs.extend(tail.iter().cloned());
-    msgs.push(Message::user(pass2_user_prompt(note1, hint)));
+    msgs.push(Message::user(pass2_user_prompt(note1, options.hint)));
     summarize_prepared_input(
         client,
         model,
         &msgs,
-        context_window,
+        options.context_window,
         estimator,
         "Produce the final compaction summary",
     )
@@ -349,12 +354,14 @@ pub async fn summarize_prefix(
             return summarize_pass2(
                 client,
                 model,
-                system,
                 &cache.note1,
                 tail,
-                context_window,
                 estimator,
-                hint,
+                Pass2Options {
+                    system,
+                    context_window,
+                    hint,
+                },
             )
             .await;
         }
@@ -382,12 +389,14 @@ pub async fn summarize_prefix(
             return summarize_pass2(
                 client,
                 model,
-                system,
                 &note1,
                 &body[split.split_idx..],
-                context_window,
                 estimator,
-                hint,
+                Pass2Options {
+                    system,
+                    context_window,
+                    hint,
+                },
             )
             .await;
         }
@@ -849,7 +858,7 @@ where
 /// Retained for tests. Not used by [`compact_with_phases`] (#130).
 #[allow(dead_code)]
 fn try_truncate_only_on_messages(
-    messages: &mut Vec<Message>,
+    messages: &mut [Message],
     config: &CompactionConfig,
     tools: &[ToolDefinition],
     estimator: &TokenEstimator,
@@ -958,18 +967,34 @@ where
         .unwrap_or_else(|| "(empty summary)".to_string()))
 }
 
+#[derive(Clone, Default)]
+pub struct CompactionOptions<'a> {
+    pub hooks: Option<&'a dyn ContextHooks>,
+    pub prefire: Option<&'a PrefireCache>,
+    pub memory_block: Option<&'a str>,
+    pub force_summarize: bool,
+    pub user_hint: Option<&'a str>,
+}
+
+pub struct CompactionParams<'a> {
+    pub model: &'a str,
+    pub config: &'a CompactionConfig,
+    pub reason: &'a str,
+    pub tools: &'a [ToolDefinition],
+    pub options: CompactionOptions<'a>,
+}
+
 pub async fn compact_session<S: ContextSession + ?Sized>(
     session: &mut S,
     client: &dyn ContextModel,
-    model: &str,
-    config: &CompactionConfig,
-    reason: &str,
-    tools: &[ToolDefinition],
     estimator: &TokenEstimator,
-    hooks: Option<&dyn ContextHooks>,
-    prefire: Option<&PrefireCache>,
-    memory_block: Option<&str>,
+    params: CompactionParams<'_>,
 ) -> Result<Option<CompactionResult>> {
+    let model = params.model;
+    let config = params.config;
+    let reason = params.reason;
+    let tools = params.tools;
+    let options = params.options;
     // #130: do not rewrite existing prefix bodies in place (BodyMutate).
     // Commit-time shaping + slice/summarize (epoch++) are the only size valves.
     if let Some(result) = try_slice_keep_compaction(session, config, tools, estimator) {
@@ -991,8 +1016,8 @@ pub async fn compact_session<S: ContextSession + ?Sized>(
         &prefix,
         Some(config.context_window_tokens),
         estimator,
-        prefire,
-        None,
+        options.prefire,
+        options.user_hint,
     )
     .await?;
 
@@ -1018,8 +1043,6 @@ pub async fn compact_session<S: ContextSession + ?Sized>(
         plan.compacted_count,
         reason,
         tokens_before,
-        hooks,
-        memory_block,
     );
 
     let tokens_after = estimate_session_tokens(session, tools, estimator);
@@ -1041,29 +1064,26 @@ pub async fn compact_session<S: ContextSession + ?Sized>(
 pub async fn compact_session_forced<S: ContextSession + ?Sized>(
     session: &mut S,
     client: &dyn ContextModel,
-    model: &str,
-    config: &CompactionConfig,
-    reason: &str,
-    tools: &[ToolDefinition],
     estimator: &TokenEstimator,
-    force_summarize: bool,
-    user_hint: Option<&str>,
-    hooks: Option<&dyn ContextHooks>,
-    prefire: Option<&PrefireCache>,
-    memory_block: Option<&str>,
+    params: CompactionParams<'_>,
 ) -> Result<Option<CompactionResult>> {
-    if !force_summarize {
+    let model = params.model;
+    let config = params.config;
+    let reason = params.reason;
+    let tools = params.tools;
+    let options = params.options;
+    if !options.force_summarize {
         return compact_session(
             session,
             client,
-            model,
-            config,
-            reason,
-            tools,
             estimator,
-            hooks,
-            prefire,
-            memory_block,
+            CompactionParams {
+                model,
+                config,
+                reason,
+                tools,
+                options,
+            },
         )
         .await;
     }
@@ -1096,8 +1116,8 @@ pub async fn compact_session_forced<S: ContextSession + ?Sized>(
         &prefix,
         Some(config.context_window_tokens),
         estimator,
-        prefire,
-        user_hint,
+        options.prefire,
+        options.user_hint,
     )
     .await?;
 
@@ -1114,8 +1134,6 @@ pub async fn compact_session_forced<S: ContextSession + ?Sized>(
         plan.compacted_count,
         reason,
         tokens_before,
-        hooks,
-        memory_block,
     );
 
     let tokens_after = estimate_session_tokens(session, tools, estimator);
@@ -1139,8 +1157,6 @@ fn apply_full_replace_to_session<S: ContextSession + ?Sized>(
     compacted_count: usize,
     reason: &str,
     tokens_before: u32,
-    _hooks: Option<&dyn ContextHooks>,
-    _memory_block: Option<&str>,
 ) {
     let messages = projected_messages(session);
     let system = messages.first().filter(|m| m.role == Role::System).cloned();
