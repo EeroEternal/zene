@@ -7,7 +7,7 @@ use crate::client::{McpStdioClient, McpToolInfo};
 use crate::http::McpHttpClient;
 
 pub enum McpClientHandle {
-    Stdio(McpStdioClient),
+    Stdio(Box<McpStdioClient>),
     Http(McpHttpClient),
 }
 

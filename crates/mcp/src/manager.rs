@@ -66,6 +66,7 @@ impl McpManager {
             } else {
                 McpStdioClient::connect(&server_name, &server_config, sandbox)
                     .await
+                    .map(Box::new)
                     .map(McpClientHandle::Stdio)
             };
 

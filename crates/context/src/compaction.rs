@@ -1074,7 +1074,7 @@ pub async fn compact_session_forced<S: ContextSession + ?Sized>(
         Some(plan) => plan,
         None => {
             let prefix_start = system_prefix_start(&messages);
-            let min_keep = config.min_keep_messages.min(4).max(1);
+            let min_keep = config.min_keep_messages.clamp(1, 4);
             if messages.len().saturating_sub(prefix_start) <= min_keep {
                 return Ok(None);
             }

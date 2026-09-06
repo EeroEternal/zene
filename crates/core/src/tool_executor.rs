@@ -67,6 +67,11 @@ impl<'a> DefaultToolExecutor<'a> {
         Self { deps }
     }
 
+    fn is_tool_blocked_by_plan_mode(&self, tool_name: &str) -> bool {
+        let state = self.deps.plan_mode.lock();
+        state.is_active() && !state.is_tool_allowed(tool_name)
+    }
+
     pub(crate) async fn execute(
         &self,
         tool_calls: &[ToolCall],
@@ -174,10 +179,7 @@ impl<'a> DefaultToolExecutor<'a> {
                     },
                     None,
                 ))
-            } else if {
-                let state = self.deps.plan_mode.lock();
-                state.is_active() && !state.is_tool_allowed(&call.name)
-            } {
+            } else if self.is_tool_blocked_by_plan_mode(&call.name) {
                 Some((
                     zene_tools::ToolResult {
                         content: PlanModeState::blocked_message(&call.name),
