@@ -15,7 +15,7 @@ This document describes the structure and lifecycle of the `docs/` tree.
 - `docs/ROADMAP.md`: Project vision, completed foundations, active milestones, and future directions.
 
 ### Specialized Subdirectories
-- `docs/ai/agents/`: Engineering hard rules, commit conventions, loop charters, and agent governance.
+- `docs/governance/`: Engineering hard rules, commit conventions, loop charters, and agent governance.
 - `docs/research/`: Architectural comparisons, benchmarks, and external harness research (e.g. Pi, DeepSeek).
 - `docs/archive/`: Historical implementation wave logs and closed-out design iterations.
 

@@ -16,11 +16,11 @@ Primary toolchain is Cargo (Rust workspace). Rust >= 1.85 (`unigateway-sdk` need
 
 | Tier | Content | Entry Point |
 | --- | --- | --- |
-| **Standing Constraints** | Inviolable rules across all tasks | This file ("Always Active"); expanded in [`docs/ai/agents/`](docs/ai/agents/) |
+| **Standing Constraints** | Inviolable rules across all tasks | This file ("Always Active"); expanded in [`docs/governance/`](docs/governance/) |
 | **Reusable Workflows** | Domain procedures & validation commands | `.agents/skills/*/SKILL.md` (Authoritative) |
-| **Commit Conventions** | Conventional commits & PR standards | [`commit-style.md`](docs/ai/agents/commit-style.md) |
+| **Commit Conventions** | Conventional commits & PR standards | [`commit-style.md`](docs/governance/commit-style.md) |
 | **Architecture & Crates** | System boundaries & crate responsibilities | [`docs/architecture.md`](docs/architecture.md) |
-| **Daemon Loops** | Engineering loops & charters | [`engineering.md`](docs/ai/agents/engineering.md) + [`loop-charter.md`](docs/ai/agents/loop-charter.md) |
+| **Daemon Loops** | Engineering loops & charters | [`engineering.md`](docs/governance/engineering.md) + [`loop-charter.md`](docs/governance/loop-charter.md) |
 
 - **Token Budget & Zero-Sum Updates**: As a resident system prompt weight, this file has a strict hard limit of **80 lines / 1200 Tokens**. Follow the **zero-sum rule (add one, remove one)**.
 - **Anti-Anecdote & Batch Threshold**: Never add global rules based on isolated single-session mistakes. Rules must appear in **≥ 2 independent session transcripts** and be refined via skill [`promote-lesson`](.agents/skills/promote-lesson/SKILL.md) with explicit human review.
@@ -35,8 +35,8 @@ Primary toolchain is Cargo (Rust workspace). Rust >= 1.85 (`unigateway-sdk` need
 | Writing design proposals in `docs/` / Mermaid | skill [`verify-design-doc`](.agents/skills/verify-design-doc/SKILL.md) |
 | Code review / PR audit / acceptance verification | skill [`review`](.agents/skills/review/SKILL.md) (Independent read-only context) |
 | Pre-push local quality gates | skill [`pre-push-local-gates`](.agents/skills/pre-push-local-gates/SKILL.md) |
-| Commit message conventions | [`commit-style.md`](docs/ai/agents/commit-style.md) |
-| Autonomous agent loops / engineering daemons | [`engineering.md`](docs/ai/agents/engineering.md) + [`loop-charter.md`](docs/ai/agents/loop-charter.md) |
+| Commit message conventions | [`commit-style.md`](docs/governance/commit-style.md) |
+| Autonomous agent loops / engineering daemons | [`engineering.md`](docs/governance/engineering.md) + [`loop-charter.md`](docs/governance/loop-charter.md) |
 
 ## Always Active (Highest Standing Constraints)
 
