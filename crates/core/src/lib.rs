@@ -321,7 +321,7 @@ impl Agent {
     }
 
     pub fn context_water(&self) -> &ContextWaterLevel {
-        &self.context.water()
+        self.context.water()
     }
 
     /// Manually compact the conversation (`/compact [hint]`).

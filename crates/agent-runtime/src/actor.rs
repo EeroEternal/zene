@@ -281,7 +281,7 @@ struct ActivePrompt {
 }
 
 enum ActivePoll {
-    Finished(std::result::Result<(Agent, Result<String>), JoinError>),
+    Finished(Box<std::result::Result<(Agent, Result<String>), JoinError>>),
     Command(Option<RuntimeMessage>),
 }
 
@@ -358,13 +358,14 @@ async fn run_actor(
         let poll = {
             let current = active.as_mut().expect("active prompt exists");
             tokio::select! {
-                result = &mut current.task => ActivePoll::Finished(result),
+                result = &mut current.task => ActivePoll::Finished(Box::new(result)),
                 message = commands.recv() => ActivePoll::Command(message),
             }
         };
 
         match poll {
             ActivePoll::Finished(result) => {
+                let result = *result;
                 let current = active.take().expect("active prompt exists");
                 let cancelled = current.cancel.is_cancelled();
                 match result {
