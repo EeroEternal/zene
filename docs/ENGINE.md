@@ -115,6 +115,22 @@ Tail selection snaps so assistant `tool_calls` are never split from their tool r
 
 MCP tool results over `ZENE_MAX_MCP_OUTPUT_BYTES` / `MAX_MCP_OUTPUT_BYTES` (default 20_000) are truncated inline and spilled to `.zene/tool-output/` so large payloads do not force premature auto-compact.
 
+### Deferred tool schemas
+
+The tool registry separates registered tools from the active model-facing
+schema. Built-in tools remain active by default; MCP tools are registered
+deferred, so a large MCP catalog does not appear in every `tools[]` payload.
+Call `Agent::activate_tools` / `deactivate_tools` (or ACP
+`session/activate_tools` / `session/deactivate_tools`) to change the active
+set for subsequent turns. The runtime returns the names it changed and ignores
+unknown names.
+
+Activation is additive at the request-shaping layer: the next request includes
+the newly active definitions, while existing conversation messages and the
+stable system prefix remain unchanged. Providers that support additive tool
+updates can preserve their prefix cache; activation still changes the tool
+portion of the request and may require provider-side schema reprocessing.
+
 ### Prefire two-pass + segments
 
 When usage reaches auto-compact threshold minus `ZENE_PREFIRE_LEAD_PERCENT` (default 10pp), a background pass1 summarizes ~95% of history into NOTE₁. At compact time, pass2 merges NOTE₁ with the recent tail (prefire hit). Without a valid cache, large prefixes still use synchronous two-pass. Compacted prefixes are also written under `~/.zene/sessions/<id>/compaction_segments/` for recovery.
@@ -181,7 +197,7 @@ Before/after compaction, checkpoints are saved under `~/.zene/sessions/<id>/comp
 
 `zene acp` (--yolo optional) speaks an Agent Client Protocol subset over stdin/stdout NDJSON JSON-RPC:
 
-- Requests: `initialize`, `session/new`, `session/load`, `session/resume`, `session/list`, `session/close`, `session/set_mode`, `session/prompt`
+- Requests: `initialize`, `session/new`, `session/load`, `session/resume`, `session/list`, `session/close`, `session/set_mode`, `session/activate_tools`, `session/deactivate_tools`, `session/prompt`
 - Notifications in: `session/cancel` (honored during an active prompt)
 - Notifications out: `session/update` (`agent_message_chunk`, `agent_thought_chunk`, `user_message_chunk`, `tool_call`, `tool_call_update`, `plan`, `current_mode_update`, `available_commands_update`, `usage_update`)
 - Requests out: `session/request_permission` (client replies with `optionId`; `toolCallId` matches the live tool call)

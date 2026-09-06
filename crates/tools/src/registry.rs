@@ -3,6 +3,7 @@ use std::sync::Arc;
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use jsonschema::Validator;
+use parking_lot::RwLock;
 use serde_json::Value;
 use tokio_util::sync::CancellationToken;
 use zene_llm::ToolDefinition;
@@ -75,6 +76,7 @@ pub trait Tool: Send + Sync {
 
 pub struct ToolRegistry {
     tools: Vec<Box<dyn Tool>>,
+    active: RwLock<std::collections::BTreeSet<String>>,
 }
 
 /// Read-only tool definitions for a runtime scope.
@@ -99,11 +101,34 @@ impl ToolCatalog for ToolRegistry {
 
 impl ToolRegistry {
     pub fn new(tools: Vec<Box<dyn Tool>>) -> Self {
-        Self { tools }
+        let active = tools.iter().map(|tool| tool.name().to_string()).collect();
+        Self {
+            tools,
+            active: RwLock::new(active),
+        }
+    }
+
+    /// Register tools without exposing their schemas to the model yet.
+    pub fn deferred(tools: Vec<Box<dyn Tool>>) -> Self {
+        Self {
+            tools,
+            active: RwLock::new(std::collections::BTreeSet::new()),
+        }
     }
 
     pub fn extend(&mut self, other: Self) {
+        let other_active = other.active.into_inner();
         self.tools.extend(other.tools);
+        self.active.get_mut().extend(other_active);
+    }
+
+    pub fn register(&mut self, tool: Box<dyn Tool>) {
+        self.active.get_mut().insert(tool.name().to_string());
+        self.tools.push(tool);
+    }
+
+    pub fn register_deferred(&mut self, tool: Box<dyn Tool>) {
+        self.tools.push(tool);
     }
 
     pub fn merge(mut base: Self, other: Self) -> Self {
@@ -112,7 +137,61 @@ impl ToolRegistry {
     }
 
     pub fn definitions(&self) -> Vec<ToolDefinition> {
+        self.tools
+            .iter()
+            .filter(|tool| self.active.read().contains(tool.name()))
+            .map(|tool| tool.definition())
+            .collect()
+    }
+
+    pub fn registered_definitions(&self) -> Vec<ToolDefinition> {
         self.tools.iter().map(|tool| tool.definition()).collect()
+    }
+
+    pub fn active_tool_names(&self) -> Vec<String> {
+        self.active.read().iter().cloned().collect()
+    }
+
+    /// Activate a registered tool for subsequent model requests.
+    pub fn activate(&self, name: &str) -> bool {
+        if !self.contains(name) {
+            return false;
+        }
+        self.active.write().insert(name.to_string());
+        true
+    }
+
+    /// Deactivate a tool from subsequent model requests without unregistering it.
+    pub fn deactivate(&self, name: &str) -> bool {
+        self.active.write().remove(name)
+    }
+
+    pub fn activate_many<I, S>(&self, names: I) -> Vec<String>
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
+        names
+            .into_iter()
+            .filter_map(|name| {
+                let name = name.as_ref();
+                self.activate(name).then(|| name.to_string())
+            })
+            .collect()
+    }
+
+    pub fn deactivate_many<I, S>(&self, names: I) -> Vec<String>
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
+        names
+            .into_iter()
+            .filter_map(|name| {
+                let name = name.as_ref();
+                self.deactivate(name).then(|| name.to_string())
+            })
+            .collect()
     }
 
     pub fn contains(&self, name: &str) -> bool {
@@ -276,5 +355,19 @@ mod tests {
             }),
         };
         assert!(validate_tool_arguments(&definition, r#"{"path":"foo.rs"}"#).is_none());
+    }
+
+    #[test]
+    fn deferred_tools_are_registered_but_not_model_visible_until_activated() {
+        let registry = ToolRegistry::deferred(vec![Box::new(TerminalTool)]);
+        assert!(registry.contains("Terminal"));
+        assert!(registry.definitions().is_empty());
+        assert_eq!(
+            registry.activate_many(["Terminal", "missing"]),
+            vec!["Terminal"]
+        );
+        assert_eq!(registry.definitions().len(), 1);
+        assert_eq!(registry.deactivate_many(["Terminal"]), vec!["Terminal"]);
+        assert!(registry.definitions().is_empty());
     }
 }

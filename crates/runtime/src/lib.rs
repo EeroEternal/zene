@@ -37,6 +37,12 @@ pub enum RuntimeCommand {
     SetMode {
         mode_id: String,
     },
+    ActivateTools {
+        names: Vec<String>,
+    },
+    DeactivateTools {
+        names: Vec<String>,
+    },
     GetMode,
     Shutdown,
 }
@@ -152,6 +158,7 @@ pub enum RuntimeResponse {
     Accepted,
     Prompt { text: String },
     Mode { mode_id: String },
+    Tools { names: Vec<String> },
 }
 
 /// Transport-neutral recovery state exposed to control-plane adapters.
@@ -177,6 +184,8 @@ pub trait RuntimeControl: Send + Sync {
     async fn resume_safe_turn(&self) -> Result<String>;
     async fn cancel(&self) -> Result<()>;
     async fn set_mode(&self, mode_id: String) -> Result<String>;
+    async fn activate_tools(&self, names: Vec<String>) -> Result<Vec<String>>;
+    async fn deactivate_tools(&self, names: Vec<String>) -> Result<Vec<String>>;
     async fn current_mode(&self) -> Result<String>;
     async fn shutdown(&self) -> Result<()>;
     async fn approve(&self, request_id: String, decision: ApprovalDecision) -> Result<()>;

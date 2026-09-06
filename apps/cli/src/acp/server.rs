@@ -294,6 +294,8 @@ impl AcpServer {
             "session/list" => self.handle_session_list(params),
             "session/close" => self.handle_session_close(params).await,
             "session/set_mode" => self.handle_session_set_mode(params).await,
+            "session/activate_tools" => self.handle_session_activate_tools(params).await,
+            "session/deactivate_tools" => self.handle_session_deactivate_tools(params).await,
             "session/set_config_option" => self.handle_session_set_config_option(params).await,
             "session/clear_queue" => self.handle_session_clear_queue(params),
             "session/steer" => self.handle_session_steer(params).await,
@@ -496,6 +498,49 @@ impl AcpServer {
         self.writer
             .session_update(&sid, current_mode_update(&active))?;
         Ok(json!({}))
+    }
+
+    async fn handle_session_activate_tools(&mut self, params: Value) -> Result<Value> {
+        self.handle_session_tool_activation(params, true).await
+    }
+
+    async fn handle_session_deactivate_tools(&mut self, params: Value) -> Result<Value> {
+        self.handle_session_tool_activation(params, false).await
+    }
+
+    async fn handle_session_tool_activation(
+        &mut self,
+        params: Value,
+        activate: bool,
+    ) -> Result<Value> {
+        let sid = params
+            .get("sessionId")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| anyhow!("sessionId required"))?
+            .to_string();
+        let names = params
+            .get("toolNames")
+            .or_else(|| params.get("tools"))
+            .and_then(Value::as_array)
+            .ok_or_else(|| anyhow!("toolNames array required"))?
+            .iter()
+            .map(|value| {
+                value
+                    .as_str()
+                    .map(str::to_string)
+                    .ok_or_else(|| anyhow!("toolNames must contain strings"))
+            })
+            .collect::<Result<Vec<_>>>()?;
+        let sess = self
+            .sessions
+            .get_mut(&sid)
+            .ok_or_else(|| anyhow!("unknown sessionId: {sid}"))?;
+        let changed = if activate {
+            sess.runtime.activate_tools(names).await?
+        } else {
+            sess.runtime.deactivate_tools(names).await?
+        };
+        Ok(json!({ "toolNames": changed }))
     }
 
     async fn handle_session_set_config_option(&mut self, params: Value) -> Result<Value> {

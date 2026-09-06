@@ -104,7 +104,7 @@ impl McpManager {
             }
         }
 
-        Ok((Self { clients }, ToolRegistry::new(tool_boxes)))
+        Ok((Self { clients }, ToolRegistry::deferred(tool_boxes)))
     }
 
     pub fn is_empty(&self) -> bool {
