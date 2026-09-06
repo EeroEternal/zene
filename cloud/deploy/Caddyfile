@@ -1,7 +1,0 @@
-zene.run, www.zene.run {
-	encode gzip
-	handle /internal/* {
-		respond 404
-	}
-	reverse_proxy 127.0.0.1:8788
-}
