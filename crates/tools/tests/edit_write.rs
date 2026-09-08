@@ -178,3 +178,71 @@ async fn edit_rejects_no_op() {
     assert!(edit.is_error);
     assert!(edit.content.contains("No changes to make"));
 }
+
+#[tokio::test]
+async fn edit_recovers_via_whitespace_tolerant_matching() {
+    let dir = tempdir().unwrap();
+    let ctx = ctx(dir.path());
+
+    run_tool(
+        "Write",
+        serde_json::json!({
+            "path": "indent.txt",
+            "content": "fn test() {\n    let a = 1;\n    let b = 2;\n}\n"
+        }),
+        &ctx,
+    )
+    .await;
+
+    // Model provides 2 spaces instead of 4 spaces
+    let edit = run_tool(
+        "Edit",
+        serde_json::json!({
+            "path": "indent.txt",
+            "old_string": "  let a = 1;\n  let b = 2;",
+            "new_string": "    let a = 10;\n    let b = 20;"
+        }),
+        &ctx,
+    )
+    .await;
+    assert!(!edit.is_error);
+    assert!(edit.content.contains("whitespace-tolerant alignment"));
+
+    let content = ctx.sandbox.read_text("indent.txt").await.unwrap();
+    assert_eq!(
+        content,
+        "fn test() {\n    let a = 10;\n    let b = 20;\n}\n"
+    );
+}
+
+#[tokio::test]
+async fn edit_whitespace_tolerant_rejects_ambiguous_matches() {
+    let dir = tempdir().unwrap();
+    let ctx = ctx(dir.path());
+
+    run_tool(
+        "Write",
+        serde_json::json!({
+            "path": "ambiguous.txt",
+            "content": "    let x = 1;\n    let y = 2;\n\n    let x = 1;\n    let y = 2;\n"
+        }),
+        &ctx,
+    )
+    .await;
+
+    // Model provides 2 spaces (exact match count is 0), but it matches 2 normalized blocks
+    let edit = run_tool(
+        "Edit",
+        serde_json::json!({
+            "path": "ambiguous.txt",
+            "old_string": "  let x = 1;\n  let y = 2;",
+            "new_string": "  let x = 10;\n  let y = 20;"
+        }),
+        &ctx,
+    )
+    .await;
+    assert!(edit.is_error);
+    assert!(edit
+        .content
+        .contains("matched 2 locations with normalized whitespace"));
+}

@@ -47,6 +47,71 @@ fn replace_once_literal(content: &str, old_string: &str, new_string: &str) -> St
     result
 }
 
+#[derive(Debug, Clone, Copy)]
+struct LineSpan {
+    start: usize,
+    end: usize,
+}
+
+fn find_whitespace_tolerant_match(
+    content: &str,
+    needle: &str,
+) -> Result<Option<(usize, usize)>, usize> {
+    let needle_lines: Vec<&str> = needle
+        .split('\n')
+        .map(|l| l.strip_suffix('\r').unwrap_or(l).trim())
+        .collect();
+
+    if needle_lines.is_empty() || (needle_lines.len() == 1 && needle_lines[0].is_empty()) {
+        return Ok(None);
+    }
+
+    let mut file_lines: Vec<(&str, LineSpan)> = Vec::new();
+    let mut offset = 0;
+    for raw_line in content.split_inclusive('\n') {
+        let stripped = raw_line
+            .strip_suffix("\r\n")
+            .or_else(|| raw_line.strip_suffix('\n'))
+            .unwrap_or(raw_line);
+        file_lines.push((
+            stripped.trim(),
+            LineSpan {
+                start: offset,
+                end: offset + stripped.len(),
+            },
+        ));
+        offset += raw_line.len();
+    }
+
+    if file_lines.len() < needle_lines.len() {
+        return Ok(None);
+    }
+
+    let mut matched_spans = Vec::new();
+    let window_size = needle_lines.len();
+
+    for i in 0..=file_lines.len() - window_size {
+        let mut all_match = true;
+        for j in 0..window_size {
+            if file_lines[i + j].0 != needle_lines[j] {
+                all_match = false;
+                break;
+            }
+        }
+        if all_match {
+            let start = file_lines[i].1.start;
+            let end = file_lines[i + window_size - 1].1.end;
+            matched_spans.push((start, end));
+        }
+    }
+
+    match matched_spans.len() {
+        0 => Ok(None),
+        1 => Ok(Some(matched_spans[0])),
+        n => Err(n),
+    }
+}
+
 #[async_trait]
 impl Tool for EditTool {
     fn name(&self) -> &str {
@@ -95,13 +160,47 @@ impl Tool for EditTool {
         if !args.replace_all {
             let count = count_occurrences(content, &args.old_string);
             if count == 0 {
-                return Ok(ToolResult {
-                    content: format!(
-                        "old_string not found in {}, The file contents may be out of date. Please use the Read Tool to reload the content.\n",
-                        args.path
-                    ),
-                    is_error: true,
-                });
+                // Fallback to whitespace-tolerant matching to avoid roundtrip failures
+                // caused by minor indentation or trailing space discrepancies.
+                match find_whitespace_tolerant_match(content, &args.old_string) {
+                    Ok(Some((start, end))) => {
+                        let mut new_content = String::with_capacity(
+                            content.len().saturating_sub(end - start) + args.new_string.len(),
+                        );
+                        new_content.push_str(&content[..start]);
+                        new_content.push_str(&args.new_string);
+                        new_content.push_str(&content[end..]);
+
+                        let materialized =
+                            materialize_model_text(&new_content, model_view.line_ending_style);
+                        ctx.sandbox.write_text(&args.path, &materialized).await?;
+                        return Ok(ToolResult {
+                            content: format!(
+                                "Replaced 1 occurrence (matched via whitespace-tolerant alignment) in {}",
+                                args.path
+                            ),
+                            is_error: false,
+                        });
+                    }
+                    Err(fuzzy_count) => {
+                        return Ok(ToolResult {
+                            content: format!(
+                                "old_string not found exactly, and matched {} locations with normalized whitespace in {}. Please provide more surrounding lines in old_string to disambiguate.\n",
+                                fuzzy_count, args.path
+                            ),
+                            is_error: true,
+                        });
+                    }
+                    Ok(None) => {
+                        return Ok(ToolResult {
+                            content: format!(
+                                "old_string not found in {}, The file contents may be out of date. Please use the Read Tool to reload the content.\n",
+                                args.path
+                            ),
+                            is_error: true,
+                        });
+                    }
+                }
             }
             if count > 1 {
                 return Ok(ToolResult {
