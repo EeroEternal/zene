@@ -1,0 +1,63 @@
+# Zene (Zen Engine)
+
+> Zene (*Zen Engine*) is an open-source, headless coding-agent harness and development platform. It speaks Agent Client Protocol (`zene acp`) for external clients, workers, and IDEs, and provides a zero-boilerplate Rust SDK (`zene-core`).
+
+## Core Architecture
+- **Headless Agent Harness**: Turn execution loop, prefix-caching context projection, durable session storage, and sandboxed subprocess execution.
+- **Protocol**: Speaks Agent Client Protocol (ACP) over stdio JSON-RPC for editors (Cursor, Zed, VS Code) and automation daemons.
+- **Zero UI in Core**: Core is strictly headless and composable. Hosted platform/web consoles belong to `zene-cloud`.
+- **Minimalist Facade**: `Agent::builder(workdir)`, `Agent::core(workdir)`, and `Agent::minimal(workdir)` in `zene-core`.
+
+## Quickstart for Agents & Developers
+
+### Installation
+```bash
+# Pre-built binary installation (Linux x86_64, macOS Apple Silicon / Intel)
+curl -fsSL https://zene.sh/install.sh | bash
+
+# Or install from source via Cargo
+cargo install --git https://github.com/EeroEternal/zene --locked zene-cli
+```
+
+### Starting the ACP Server
+```bash
+zene acp
+```
+
+### Rust SDK (`zene-core`)
+```rust
+use zene_core::Agent;
+
+#[tokio::main]
+async fn main() -> anyhow::Result<()> {
+    // 1. Read-only inspection agent
+    let mut agent = Agent::minimal(".")
+        .bypass_permissions()
+        .build()
+        .await?;
+
+    let response = agent.prompt("Analyze the project structure", Default::default()).await?;
+    println!("{response}");
+
+    // 2. Full core harness (Read, Write, Edit, Bash, Grep, Glob)
+    let mut core_agent = Agent::core(".")
+        .bypass_permissions()
+        .build()
+        .await?;
+
+    let res = core_agent.prompt("Run cargo test and fix any issues", Default::default()).await?;
+    println!("{res}");
+    Ok(())
+}
+```
+
+## Available Toolsets
+- `minimal_tools()`: `Read`, `Grep`, `Glob` (Safe, read-only exploration).
+- `core_tools()`: `Read`, `Write`, `Edit`, `Bash`, `Grep`, `Glob` (Standard agent harness, zero external dependencies).
+- `builtin_tools()`: Full suite with optional Web Search (`DuckDuckGo` / `Tavily`) and ACP collaborative tools.
+
+## Documentation & Endpoints
+- Full Specification for Agents: https://zene.sh/llms-full.txt
+- Complete Changelog: https://zene.sh/CHANGELOG.md
+- Installer Script: https://zene.sh/install.sh
+- Source Code: https://github.com/EeroEternal/zene

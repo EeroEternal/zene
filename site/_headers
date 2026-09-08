@@ -1,0 +1,23 @@
+/*
+  Access-Control-Allow-Origin: *
+  X-Robots-Tag: all
+
+/install.sh
+  Content-Type: text/plain; charset=utf-8
+  Cache-Control: public, max-age=300
+
+/llms.txt
+  Content-Type: text/markdown; charset=utf-8
+  Cache-Control: public, max-age=300
+
+/llms-full.txt
+  Content-Type: text/markdown; charset=utf-8
+  Cache-Control: public, max-age=300
+
+/CHANGELOG.md
+  Content-Type: text/markdown; charset=utf-8
+  Cache-Control: public, max-age=300
+
+/README.md
+  Content-Type: text/markdown; charset=utf-8
+  Cache-Control: public, max-age=300
