@@ -6,187 +6,457 @@
   <title>Zene (Zen Engine) — The Open, Minimalist Coding-Agent Harness</title>
   <meta name="description" content="Headless, composable coding-agent harness and development platform speaking Agent Client Protocol (ACP). Zero UI in core, prefix-cached context projection, and durable sessions.">
   <link rel="stylesheet" href="style.css">
-  <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🧘</text></svg>">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 24 24%22 fill=%22none%22 stroke=%22%238aa4ff%22 stroke-width=%222%22 stroke-linecap=%22round%22 stroke-linejoin=%22round%22><polyline points=%224 17 10 11 4 5%22/><line x1=%2212%22 y1=%2219%22 x2=%2220%22 y2=%2219%22/></svg>">
 </head>
 <body>
 
-  <!-- Agent Notice Banner -->
-  <div class="agent-banner">
-    🤖 <strong>For AI Agents & LLMs:</strong> Fetch structured API context at <a href="/llms.txt">/llms.txt</a> or <a href="/CHANGELOG.md">/CHANGELOG.md</a>
+  <!-- Site Header (Console-Kit SiteHeader Specification) -->
+  <header class="site-header">
+    <div class="header-container">
+      <div class="brand-group">
+        <a href="/" class="brand-logo">
+          <div class="brand-icon">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+              <polyline points="4 17 10 11 4 5"></polyline>
+              <line x1="12" y1="19" x2="20" y2="19"></line>
+            </svg>
+          </div>
+          <span>Zene</span>
+        </a>
+        <div class="brand-separator"></div>
+        <span class="version-chip">v{{VERSION}}</span>
+        <div class="status-badge" style="margin-left: 4px;">
+          <span class="status-dot"></span>
+          <span>ACP READY</span>
+        </div>
+      </div>
+
+      <nav class="nav-links">
+        <a href="#architecture" class="nav-link">Architecture</a>
+        <a href="#workbench" class="nav-link">Workbench</a>
+        <a href="#capabilities" class="nav-link">Capabilities</a>
+        <a href="#changelog" class="nav-link">Changelog</a>
+      </nav>
+
+      <div class="header-actions">
+        <a href="/llms.txt" class="btn btn-outline" title="Machine readable API documentation for LLMs and agents">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="12" cy="12" r="10"></circle>
+            <line x1="12" y1="16" x2="12" y2="12"></line>
+            <line x1="12" y1="8" x2="12.01" y2="8"></line>
+          </svg>
+          <span>llms.txt</span>
+        </a>
+        <a href="https://github.com/EeroEternal/zene" target="_blank" rel="noopener" class="btn btn-secondary">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
+            <path fill-rule="evenodd" clip-rule="evenodd" d="M12 2C6.477 2 2 6.484 2 12.017c0 4.425 2.865 8.18 6.839 9.504.5.092.682-.217.682-.483 0-.237-.008-.868-.013-1.703-2.782.605-3.369-1.343-3.369-1.343-.454-1.158-1.11-1.466-1.11-1.466-.908-.62.069-.608.069-.608 1.003.07 1.53 1.032 1.53 1.032.892 1.53 2.341 1.088 2.91.832.092-.647.35-1.088.636-1.338-2.22-.253-4.555-1.113-4.555-4.951 0-1.093.39-1.988 1.029-2.688-.103-.253-.446-1.272.098-2.65 0 0 .84-.27 2.75 1.026A9.564 9.564 0 0112 6.844c.85.004 1.705.115 2.504.337 1.909-1.296 2.747-1.027 2.747-1.027.546 1.379.202 2.398.1 2.651.64.7 1.028 1.595 1.028 2.688 0 3.848-2.339 4.695-4.566 4.943.359.309.678.92.678 1.855 0 1.338-.012 2.419-.012 2.747 0 .268.18.58.688.482A10.019 10.019 0 0022 12.017C22 6.484 17.522 2 12 2z"/>
+          </svg>
+          <span>GitHub</span>
+        </a>
+      </div>
+    </div>
+  </header>
+
+  <!-- Operational Diagnostics Ribbon -->
+  <div class="status-ribbon">
+    <div class="ribbon-container">
+      <div class="ribbon-item">
+        <span class="status-dot"></span>
+        <span>ENGINE: HEADLESS HARNESS</span>
+      </div>
+      <div class="ribbon-item">
+        <span>PROTOCOL: ACP v1 (STDIO JSON-RPC)</span>
+      </div>
+      <div class="ribbon-item">
+        <span>CONTEXT: PREFIX-CACHED L1/L2</span>
+      </div>
+      <div class="ribbon-item">
+        <span>DISCOVERY: <a href="/llms.txt" class="ribbon-link">/llms.txt</a> • <a href="/CHANGELOG.md" class="ribbon-link">/CHANGELOG.md</a></span>
+      </div>
+    </div>
   </div>
 
-  <div class="container">
-    <!-- Navigation -->
-    <header>
-      <div class="logo-group">
-        <span style="font-size: 1.6rem;">🧘</span>
-        <span class="logo-title">Zene</span>
-        <span class="logo-badge">v{{VERSION}}</span>
-      </div>
-      <nav>
-        <a href="#features">Features</a>
-        <a href="#quickstart">Quickstart</a>
-        <a href="#sdk">SDK</a>
-        <a href="#changelog">Changelog</a>
-        <a href="https://github.com/EeroEternal/zene" target="_blank" rel="noopener">GitHub ↗</a>
-      </nav>
-    </header>
+  <!-- Main Application Shell -->
+  <main class="main-shell">
 
-    <!-- Hero -->
-    <section class="hero">
-      <div class="hero-tagline">Zen Engine • Open Agent Harness</div>
-      <h1 class="hero-title">The Open, Minimalist<br>Coding-Agent Harness</h1>
-      <p class="hero-desc">
-        A headless, composable agent harness speaking Agent Client Protocol (ACP). Built for IDEs, autonomous loops, and developer agents with prefix-cached context projection and sandboxed tool execution.
+    <!-- Console Hero -->
+    <section class="console-hero">
+      <div class="hero-header-line">
+        <span class="status-badge">ZEN ENGINE ARCHITECTURE</span>
+        <span style="color: var(--border);">/</span>
+        <span style="font-family: var(--font-mono); font-size: 11px; color: var(--muted-foreground);">EDITION 2024</span>
+      </div>
+      <h1 class="hero-title">The Open, Minimalist Coding-Agent Harness</h1>
+      <p class="hero-description">
+        Zene is a headless, composable agent harness speaking Agent Client Protocol (ACP) for external editors (Zed, Cursor, VS Code) and automation daemons. Built with prefix-cached context projection, durable turn sessions, and sandboxed tool execution.
       </p>
 
-      <div class="install-box">
-        <span class="install-cmd" id="install-cmd">curl -fsSL https://zene.sh/install.sh | bash</span>
-        <button class="copy-btn" onclick="copyInstallCmd()">Copy</button>
-      </div>
-    </section>
+      <div class="hero-actions-row">
+        <button class="btn btn-primary" onclick="copyInstallCmd()">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
+            <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
+          </svg>
+          <span id="copy-btn-text">Copy Install Command</span>
+        </button>
 
-    <!-- Features Grid -->
-    <section id="features">
-      <h2 class="section-title">Core Principles & Capabilities</h2>
-      <div class="features-grid">
-        <div class="feature-card">
-          <div class="feature-icon">🔌</div>
-          <div class="feature-title">Agent Client Protocol (ACP)</div>
-          <div class="feature-desc">Native stdio JSON-RPC implementation connecting headless agents to external editors (Zed, Cursor, VS Code) and automation daemons.</div>
-        </div>
+        <a href="#workbench" class="btn btn-secondary">
+          <span>Open Workbench</span>
+        </a>
 
-        <div class="feature-card">
-          <div class="feature-icon">⚡</div>
-          <div class="feature-title">Prefix-Cached Context Engine</div>
-          <div class="feature-desc">Append-only event-driven context projection designed specifically for LLM prompt caching (Anthropic, OpenAI-compatible gateways) with intelligent auto-compaction.</div>
-        </div>
-
-        <div class="feature-card">
-          <div class="feature-icon">🧘</div>
-          <div class="feature-title">Zen Boundaries & Zero UI</div>
-          <div class="feature-desc">Core is strictly headless and composable. No heavy web consoles, bloated UI hydration, or unmediated network IO embedded in core.</div>
-        </div>
-
-        <div class="feature-card">
-          <div class="feature-icon">🎛️</div>
-          <div class="feature-title">Turn Engine & Steer Buffers</div>
-          <div class="feature-desc">Pi-aligned turn lifecycle supporting real-time steering and follow-up message queues without interrupting active agent loop boundaries.</div>
-        </div>
-
-        <div class="feature-card">
-          <div class="feature-icon">🛡️</div>
-          <div class="feature-title">Sandboxed Tool Execution</div>
-          <div class="feature-desc">Local subprocess isolation, permission gates (Default, AcceptEdits, BypassPermissions), approval brokers, and async MCP manager.</div>
-        </div>
-
-        <div class="feature-card">
-          <div class="feature-icon">📦</div>
-          <div class="feature-title">Zero-Boilerplate Rust SDK</div>
-          <div class="feature-desc">Instant single-line agent initialization via <code>Agent::core(".")</code> or <code>Agent::minimal(".")</code> with pre-configured lightweight toolsets.</div>
+        <div class="install-command-bar">
+          <span class="install-prompt">$</span>
+          <span class="install-text" id="install-cmd">curl -fsSL https://zene.sh/install.sh | bash</span>
+          <button class="btn-copy-bar" onclick="copyInstallCmd()">copy</button>
         </div>
       </div>
     </section>
 
-    <!-- Quickstart & Code Showcase -->
-    <section id="quickstart" class="code-section">
-      <h2 class="section-title">Quickstart</h2>
-      <div class="code-panel">
-        <div class="code-header">
-          <span>Terminal • CLI & ACP Server</span>
-          <span>bash</span>
+    <!-- KPI Architecture Stat Cards (Console-Kit StatCard Specification) -->
+    <section class="stat-grid" id="architecture">
+      <!-- Tile 1 -->
+      <div class="stat-card">
+        <div class="stat-header">
+          <span class="stat-label">Core Boundary</span>
+          <div class="stat-icon-wrapper">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <polygon points="12 2 2 7 12 12 22 7 12 2"></polygon>
+              <polyline points="2 17 12 22 22 17"></polyline>
+              <polyline points="2 12 12 17 22 12"></polyline>
+            </svg>
+          </div>
         </div>
-        <pre><code># 1. Install pre-built binary
-curl -fsSL https://zene.sh/install.sh | bash
+        <div class="stat-value">Zero UI</div>
+        <div class="stat-footer">
+          <span class="status-dot"></span>
+          <span>Headless core; 0 DOM/webview weight</span>
+        </div>
+      </div>
 
-# 2. Run ACP protocol server (communicates over stdio JSON-RPC)
-zene acp
+      <!-- Tile 2 -->
+      <div class="stat-card">
+        <div class="stat-header">
+          <span class="stat-label">Protocol Interface</span>
+          <div class="stat-icon-wrapper">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <rect x="2" y="2" width="20" height="8" rx="2" ry="2"></rect>
+              <rect x="2" y="14" width="20" height="8" rx="2" ry="2"></rect>
+              <line x1="6" y1="6" x2="6.01" y2="6"></line>
+              <line x1="6" y1="18" x2="6.01" y2="18"></line>
+            </svg>
+          </div>
+        </div>
+        <div class="stat-value">ACP Stdio</div>
+        <div class="stat-footer">
+          <span class="status-dot"></span>
+          <span>JSON-RPC 2.0 for Zed, Cursor & CLI</span>
+        </div>
+      </div>
 
-# 3. Inspect configuration and saved sessions
-zene config
-zene sessions</code></pre>
+      <!-- Tile 3 -->
+      <div class="stat-card">
+        <div class="stat-header">
+          <span class="stat-label">Context Engine</span>
+          <div class="stat-icon-wrapper">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <rect x="4" y="4" width="16" height="16" rx="2" ry="2"></rect>
+              <rect x="9" y="9" width="6" height="6"></rect>
+              <line x1="9" y1="1" x2="9" y2="4"></line>
+              <line x1="15" y1="1" x2="15" y2="4"></line>
+              <line x1="9" y1="20" x2="9" y2="23"></line>
+              <line x1="15" y1="20" x2="15" y2="23"></line>
+            </svg>
+          </div>
+        </div>
+        <div class="stat-value">Prefix-Cached</div>
+        <div class="stat-footer">
+          <span class="status-dot"></span>
+          <span>Append-only projection & compaction</span>
+        </div>
+      </div>
+
+      <!-- Tile 4 -->
+      <div class="stat-card">
+        <div class="stat-header">
+          <span class="stat-label">Tool Execution</span>
+          <div class="stat-icon-wrapper">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"></path>
+            </svg>
+          </div>
+        </div>
+        <div class="stat-value">Sandboxed</div>
+        <div class="stat-footer">
+          <span class="status-dot"></span>
+          <span>Permission brokers & approval gates</span>
+        </div>
       </div>
     </section>
 
-    <!-- Rust SDK Section -->
-    <section id="sdk" class="code-section">
-      <h2 class="section-title">Embedding in Rust (`zene-core`)</h2>
-      <div class="code-panel">
-        <div class="code-header">
-          <span>Rust SDK • Minimalist Harness Embedding</span>
-          <span>rust</span>
+    <!-- Workbench & Technical Showcase -->
+    <section id="workbench" class="section-intro">
+      <h2 class="section-title">Operational Workbench</h2>
+      <p class="section-desc">Executable integration workflows across CLI, ACP stdio transport, and embedded Rust harnesses.</p>
+    </section>
+
+    <div class="workbench-card">
+      <div class="workbench-tabbar">
+        <div class="tab-group">
+          <button class="wb-tab active" onclick="switchTab(0)">CLI & ACP Server</button>
+          <button class="wb-tab" onclick="switchTab(1)">ACP Protocol (JSON-RPC)</button>
+          <button class="wb-tab" onclick="switchTab(2)">Rust SDK (zene-core)</button>
+          <button class="wb-tab" onclick="switchTab(3)">Config (~/.zene/config.json)</button>
         </div>
-        <pre><code>use zene_core::Agent;
+        <div class="tab-action">
+          <span class="feature-badge" id="tab-lang-badge">BASH</span>
+        </div>
+      </div>
 
-#[tokio::main]
-async fn main() -> anyhow::Result&lt;()&gt; {
-    // Single-line read-only probe agent (Read, Grep, Glob)
-    let mut probe = Agent::minimal(".")
-        .bypass_permissions()
-        .build()
-        .await?;
+      <!-- Pane 0: CLI -->
+      <div class="workbench-pane active" id="pane-0">
+<pre><code><span class="syn-comment"># 1. Install pre-compiled release binary</span>
+<span class="syn-prompt">$ </span><span class="syn-cmd">curl</span> <span class="syn-flag">-fsSL</span> https://zene.sh/install.sh | <span class="syn-cmd">bash</span>
 
-    let summary = probe.prompt("Analyze the codebase structure", Default::default()).await?;
-    println!("{summary}");
+<span class="syn-comment"># 2. Launch headless ACP protocol server over stdio</span>
+<span class="syn-prompt">$ </span><span class="syn-cmd">zene</span> <span class="syn-arg">acp</span>
 
-    // Standard core agent harness with full local coding capabilities (Read, Write, Edit, Bash)
-    let mut agent = Agent::core(".")
-        .bypass_permissions()
-        .build()
-        .await?;
+<span class="syn-comment"># 3. Query active configuration, sessions, and tool gate statuses</span>
+<span class="syn-prompt">$ </span><span class="syn-cmd">zene</span> <span class="syn-arg">config</span>
+<span class="syn-prompt">$ </span><span class="syn-cmd">zene</span> <span class="syn-arg">sessions</span></code></pre>
+      </div>
 
-    agent.prompt("Run cargo clippy and fix any unused warnings", Default::default()).await?;
+      <!-- Pane 1: ACP Protocol -->
+      <div class="workbench-pane" id="pane-1">
+<pre><code><span class="syn-comment">// Editor (Zed / Cursor) sends initialize request over stdio</span>
+{
+  <span class="syn-key">"jsonrpc"</span>: <span class="syn-val">"2.0"</span>,
+  <span class="syn-key">"id"</span>: <span class="syn-val">1</span>,
+  <span class="syn-key">"method"</span>: <span class="syn-val">"initialize"</span>,
+  <span class="syn-key">"params"</span>: {
+    <span class="syn-key">"protocolVersion"</span>: <span class="syn-val">1</span>,
+    <span class="syn-key">"clientInfo"</span>: { <span class="syn-key">"name"</span>: <span class="syn-val">"zed"</span>, <span class="syn-key">"version"</span>: <span class="syn-val">"0.175.0"</span> },
+    <span class="syn-key">"capabilities"</span>: { <span class="syn-key">"roots"</span>: { <span class="syn-key">"listChanged"</span>: <span class="syn-val">true</span> } }
+  }
+}
+
+<span class="syn-comment">// Zene server responds with session ID and supported tools</span>
+{
+  <span class="syn-key">"jsonrpc"</span>: <span class="syn-val">"2.0"</span>,
+  <span class="syn-key">"id"</span>: <span class="syn-val">1</span>,
+  <span class="syn-key">"result"</span>: {
+    <span class="syn-key">"protocolVersion"</span>: <span class="syn-val">1</span>,
+    <span class="syn-key">"serverInfo"</span>: { <span class="syn-key">"name"</span>: <span class="syn-val">"zene-acp"</span>, <span class="syn-key">"version"</span>: <span class="syn-val">"{{VERSION}}"</span> }
+  }
+}</code></pre>
+      </div>
+
+      <!-- Pane 2: Rust SDK -->
+      <div class="workbench-pane" id="pane-2">
+<pre><code><span class="syn-cmd">use</span> zene_core::{Agent, Result};
+
+<span class="syn-cmd">#[tokio::main]</span>
+<span class="syn-cmd">async fn</span> <span class="syn-key">main</span>() -> Result&lt;()&gt; {
+    <span class="syn-comment">// Initialize zero-boilerplate headless agent in current workspace</span>
+    <span class="syn-cmd">let</span> agent = Agent::<span class="syn-key">core</span>(<span class="syn-val">"."</span>).<span class="syn-key">await</span>?;
+
+    <span class="syn-comment">// Execute turn loop with prefix-cached context projection</span>
+    <span class="syn-cmd">let</span> response = agent.<span class="syn-key">step</span>(<span class="syn-val">"Analyze workspace architecture and report crate boundaries"</span>).<span class="syn-key">await</span>?;
+    <span class="syn-cmd">println!</span>(<span class="syn-val">"{response}"</span>);
+
     Ok(())
 }</code></pre>
       </div>
+
+      <!-- Pane 3: Config -->
+      <div class="workbench-pane" id="pane-3">
+<pre><code>{
+  <span class="syn-key">"model"</span>: <span class="syn-val">"anthropic/claude-3-7-sonnet-latest"</span>,
+  <span class="syn-key">"api_base"</span>: <span class="syn-val">"https://api.anthropic.com/v1"</span>,
+  <span class="syn-key">"context"</span>: {
+    <span class="syn-key">"auto_compact"</span>: <span class="syn-val">true</span>,
+    <span class="syn-key">"prefix_caching"</span>: <span class="syn-val">true</span>,
+    <span class="syn-key">"max_tokens"</span>: <span class="syn-val">200000</span>
+  },
+  <span class="syn-key">"sandbox"</span>: {
+    <span class="syn-key">"mode"</span>: <span class="syn-val">"Default"</span>,
+    <span class="syn-key">"timeout_seconds"</span>: <span class="syn-val">60</span>
+  }
+}</code></pre>
+      </div>
+    </div>
+
+    <!-- Core Capabilities (SectionCard Grid) -->
+    <section id="capabilities" class="section-intro">
+      <h2 class="section-title">Core Principles & System Boundaries</h2>
+      <p class="section-desc">Modular abstractions built strictly for headless runtime performance and durable execution.</p>
     </section>
 
-    <!-- Changelog Section -->
-    <section id="changelog" class="changelog-section">
-      <div class="changelog-header">
-        <div>
-          <h2 class="section-title" style="margin-bottom: 0.25rem;">Changelog</h2>
-          <p style="color: var(--text-muted); font-size: 0.95rem;">Release history and evolution of the Zen Engine harness.</p>
+    <div class="features-grid">
+      <!-- Card 1 -->
+      <div class="feature-card">
+        <div class="feature-card-header">
+          <div class="feature-icon-box">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M4 11a9 9 0 0 1 9 9"></path>
+              <path d="M4 4a16 16 0 0 1 16 16"></path>
+              <circle cx="5" cy="19" r="1"></circle>
+            </svg>
+          </div>
+          <span class="feature-badge">PROTOCOL</span>
         </div>
-        <div class="changelog-actions">
-          <button class="toggle-btn" onclick="toggleAllReleases(true)">Expand All</button>
-          <button class="toggle-btn" onclick="toggleAllReleases(false)">Collapse All</button>
-          <a href="/CHANGELOG.md" class="raw-badge-link" target="_blank">View Raw CHANGELOG.md ↗</a>
+        <div class="feature-title">Agent Client Protocol (ACP)</div>
+        <div class="feature-description">Native stdio JSON-RPC implementation connecting headless agents to external editors (Zed, Cursor, VS Code) and automation daemons.</div>
+      </div>
+
+      <!-- Card 2 -->
+      <div class="feature-card">
+        <div class="feature-card-header">
+          <div class="feature-icon-box">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <polyline points="22 12 18 12 15 21 9 3 6 12 2 12"></polyline>
+            </svg>
+          </div>
+          <span class="feature-badge">CONTEXT</span>
+        </div>
+        <div class="feature-title">Prefix-Cached Context Engine</div>
+        <div class="feature-description">Append-only event-driven context projection designed specifically for LLM prompt caching with intelligent auto-compaction.</div>
+      </div>
+
+      <!-- Card 3 -->
+      <div class="feature-card">
+        <div class="feature-card-header">
+          <div class="feature-icon-box">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect>
+              <line x1="9" y1="3" x2="9" y2="21"></line>
+            </svg>
+          </div>
+          <span class="feature-badge">HARNESS</span>
+        </div>
+        <div class="feature-title">Zen Boundaries & Zero UI</div>
+        <div class="feature-description">Core is strictly headless and composable. Never introduce web consoles, bloated UI hydration, or unmediated network IO embedded in core.</div>
+      </div>
+
+      <!-- Card 4 -->
+      <div class="feature-card">
+        <div class="feature-card-header">
+          <div class="feature-icon-box">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <circle cx="12" cy="12" r="3"></circle>
+              <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
+            </svg>
+          </div>
+          <span class="feature-badge">LIFECYCLE</span>
+        </div>
+        <div class="feature-title">Turn Engine & Steer Buffers</div>
+        <div class="feature-description">Pi-aligned turn lifecycle supporting real-time steering and follow-up message queues without interrupting active agent loop boundaries.</div>
+      </div>
+
+      <!-- Card 5 -->
+      <div class="feature-card">
+        <div class="feature-card-header">
+          <div class="feature-icon-box">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"></path>
+            </svg>
+          </div>
+          <span class="feature-badge">SECURITY</span>
+        </div>
+        <div class="feature-title">Sandboxed Tool Execution</div>
+        <div class="feature-description">Local subprocess isolation, permission gates (Default, AcceptEdits, BypassPermissions), approval brokers, and async MCP manager.</div>
+      </div>
+
+      <!-- Card 6 -->
+      <div class="feature-card">
+        <div class="feature-card-header">
+          <div class="feature-icon-box">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M16.5 9.4 7.55 4.24a1.48 1.48 0 0 0-1.5 0l-4.5 2.6a1.5 1.5 0 0 0-.75 1.3v5.2a1.5 1.5 0 0 0 .75 1.3l4.5 2.6c.46.26 1.04.26 1.5 0l8.95-5.16a1.5 1.5 0 0 0 .75-1.3v-5.2a1.5 1.5 0 0 0-.75-1.3z"></path>
+            </svg>
+          </div>
+          <span class="feature-badge">EMBEDDING</span>
+        </div>
+        <div class="feature-title">Zero-Boilerplate Rust SDK</div>
+        <div class="feature-description">Instant single-line agent initialization via <code>Agent::core(".")</code> or <code>Agent::minimal(".")</code> with pre-configured lightweight toolsets.</div>
+      </div>
+    </div>
+
+    <!-- Changelog & Audit Log (Console-Kit Accordion Specification) -->
+    <section id="changelog" class="changelog-section">
+      <div class="changelog-header-bar">
+        <div>
+          <h2 class="section-title">Release History & Audit Log</h2>
+          <p class="section-desc">Complete immutable audit trail extracted from repository changelog.</p>
+        </div>
+        <div>
+          <a href="/CHANGELOG.md" class="btn btn-outline" target="_blank" rel="noopener">Raw CHANGELOG.md ↗</a>
         </div>
       </div>
 
-      <div class="changelog-container">
+      <div class="releases-container">
         <!-- CHANGELOG_INJECTION_POINT -->
       </div>
     </section>
 
-    <!-- Footer -->
-    <footer>
-      <div>Zene (Zen Engine) is an open-source project released under the MIT License.</div>
-      <div class="footer-links">
-        <a href="/llms.txt">/llms.txt</a>
-        <a href="/llms-full.txt">/llms-full.txt</a>
-        <a href="/CHANGELOG.md">/CHANGELOG.md</a>
-        <a href="/install.sh">/install.sh</a>
-        <a href="https://github.com/EeroEternal/zene">GitHub</a>
+  </main>
+
+  <!-- Site Footer (Console-Kit Operational Footer) -->
+  <footer class="site-footer">
+    <div class="footer-container">
+      <div class="footer-meta">
+        <span>© 2026 Zene Project Authors</span>
+        <span style="color: var(--border);">•</span>
+        <span>Apache-2.0 / MIT License</span>
+        <span style="color: var(--border);">•</span>
+        <span>Rust Edition 2024</span>
       </div>
-    </footer>
-  </div>
+      <div class="footer-links">
+        <a href="/llms.txt">llms.txt</a>
+        <a href="/llms-full.txt">llms-full.txt</a>
+        <a href="/CHANGELOG.md">CHANGELOG.md</a>
+        <a href="https://github.com/EeroEternal/zene" target="_blank" rel="noopener">GitHub Repository</a>
+      </div>
+    </div>
+  </footer>
 
   <script>
     function copyInstallCmd() {
-      const text = document.getElementById('install-cmd').innerText;
-      navigator.clipboard.writeText(text).then(() => {
-        const btn = document.querySelector('.copy-btn');
-        btn.innerText = 'Copied!';
-        setTimeout(() => { btn.innerText = 'Copy'; }, 2000);
+      const cmd = "curl -fsSL https://zene.sh/install.sh | bash";
+      navigator.clipboard.writeText(cmd).then(() => {
+        const btnText = document.getElementById('copy-btn-text');
+        const original = btnText.innerText;
+        btnText.innerText = 'Copied to clipboard!';
+        setTimeout(() => {
+          btnText.innerText = original;
+        }, 2000);
       });
     }
 
-    function toggleAllReleases(open) {
-      document.querySelectorAll('.changelog-container details').forEach(d => {
-        d.open = open;
+    function switchTab(index) {
+      const tabs = document.querySelectorAll('.wb-tab');
+      const panes = document.querySelectorAll('.workbench-pane');
+      const badge = document.getElementById('tab-lang-badge');
+
+      tabs.forEach((t, i) => {
+        if (i === index) {
+          t.classList.add('active');
+        } else {
+          t.classList.remove('active');
+        }
       });
+
+      panes.forEach((p, i) => {
+        if (i === index) {
+          p.classList.add('active');
+        } else {
+          p.classList.remove('active');
+        }
+      });
+
+      const badges = ['BASH', 'JSON-RPC', 'RUST', 'JSON'];
+      if (badge && badges[index]) {
+        badge.innerText = badges[index];
+      }
     }
   </script>
 </body>
