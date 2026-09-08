@@ -230,10 +230,17 @@ fn validate_tool_arguments(definition: &ToolDefinition, arguments: &str) -> Opti
     let parsed: Value = match serde_json::from_str(arguments) {
         Ok(value) => value,
         Err(err) => {
+            let preview = if arguments.len() > 160 {
+                format!("{}...", &arguments[..160])
+            } else {
+                arguments.to_string()
+            };
             return Some(ToolResult {
                 content: format!(
-                    "Invalid JSON arguments for tool `{}`: {err}",
-                    definition.name
+                    "Invalid JSON arguments for tool `{}`: {err} (raw length={}, preview: `{}`)",
+                    definition.name,
+                    arguments.len(),
+                    preview
                 ),
                 is_error: true,
             });
