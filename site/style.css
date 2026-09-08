@@ -1,40 +1,40 @@
 /* ==========================================================================
-   Zene Portal Stylesheet — Aligned with console-kit Design System
+   Zene Portal Stylesheet — Aligned with console-kit Design System (Light Theme)
    Specification: docs/design.md, design/tokens.md, admin/src/index.css
    ========================================================================== */
 
 :root {
-  /* Surface Tokens (Console-Kit Dark Theme Baseline) */
+  /* Surface Tokens (Console-Kit Light Baseline) */
   --brand: #2744a5;
-  --background: #09090b;
-  --foreground: #f2f2f2;
-  --card: #0e0e11;
-  --card-foreground: #f2f2f2;
-  --popover: #0e0e11;
-  --popover-foreground: #f2f2f2;
+  --background: #fafafa;
+  --foreground: #22222a;
+  --card: #ffffff;
+  --card-foreground: #22222a;
+  --popover: #ffffff;
+  --popover-foreground: #22222a;
 
-  /* Primary Interactive Accent */
-  --primary: #8aa4ff;
-  --primary-foreground: #0f172a;
-  --primary-hover: #a5b4fc;
-  --primary-active: #708be6;
-  --primary-subtle: rgba(138, 164, 255, 0.1);
-  --primary-light: rgba(138, 164, 255, 0.15);
+  /* Primary Interactive Accent (Console-Kit Light Mode: #2744A5) */
+  --primary: #2744a5;
+  --primary-foreground: #ffffff;
+  --primary-hover: #1f3a89;
+  --primary-active: #182f70;
+  --primary-subtle: rgba(39, 68, 165, 0.08);
+  --primary-light: #e8f0ff;
 
   /* Secondary & Muted Surfaces */
-  --secondary: #242428;
-  --secondary-foreground: #cccccc;
-  --muted: #242428;
-  --muted-foreground: #878792;
-  --accent: #242428;
-  --accent-foreground: #f2f2f2;
+  --secondary: #f4f4f5;
+  --secondary-foreground: #454554;
+  --muted: #f4f4f5;
+  --muted-foreground: #71717a;
+  --accent: #f4f4f5;
+  --accent-foreground: #22222a;
 
   /* Borders & Inputs */
-  --border: #2c2c30;
-  --border-subtle: #202024;
-  --border-focus: rgba(138, 164, 255, 0.35);
-  --input: #2c2c30;
-  --ring: #8aa4ff;
+  --border: #e4e4e7;
+  --border-subtle: #eeeeef;
+  --border-focus: rgba(39, 68, 165, 0.25);
+  --input: #e4e4e7;
+  --ring: #2744a5;
 
   /* Status Colors (Semantic + Alpha) */
   --success: #21c45d;
@@ -43,13 +43,13 @@
   --warning: #ffa71a;
   --warning-foreground: #fff5e5;
   --warning-subtle: rgba(255, 167, 26, 0.12);
-  --destructive: #df3a3a;
+  --destructive: #ef4343;
   --destructive-foreground: #ffffff;
-  --destructive-subtle: rgba(223, 58, 58, 0.12);
+  --destructive-subtle: rgba(239, 67, 67, 0.12);
   --info: #3b82f6;
   --info-subtle: rgba(59, 130, 246, 0.12);
 
-  /* Code Syntax Surface Tokens (Console-Kit index.css) */
+  /* Code Syntax Surface Tokens (Console-Kit Terminal Workbench) */
   --code-background: #0d1117;
   --code-border: #1f242c;
   --code-foreground: #c9d1d9;
@@ -126,7 +126,7 @@ a {
   top: 0;
   z-index: 50;
   height: var(--topbar-height);
-  background-color: rgba(9, 9, 11, 0.85);
+  background-color: rgba(255, 255, 255, 0.92);
   backdrop-filter: blur(12px);
   -webkit-backdrop-filter: blur(12px);
   border-bottom: 1px solid var(--border);
@@ -166,7 +166,7 @@ a {
   display: flex;
   align-items: center;
   justify-content: center;
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.2);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.05);
 }
 
 .brand-separator {
@@ -243,14 +243,14 @@ a {
 }
 
 .btn-secondary {
-  background-color: var(--secondary);
+  background-color: #ffffff;
   color: var(--secondary-foreground);
   border-color: var(--border);
 }
 .btn-secondary:hover {
-  background-color: var(--muted);
+  background-color: var(--secondary);
   color: var(--foreground);
-  border-color: var(--border-focus);
+  border-color: #d4d4d8;
 }
 
 .btn-outline {
@@ -267,7 +267,7 @@ a {
    Operational Ribbon (System Diagnostics)
    ========================================================================== */
 .status-ribbon {
-  background-color: #0c0c0f;
+  background-color: #ffffff;
   border-bottom: 1px solid var(--border);
   padding: 6px 24px;
   font-size: 11px;
@@ -296,7 +296,7 @@ a {
   height: 6px;
   border-radius: 50%;
   background-color: var(--success);
-  box-shadow: 0 0 8px rgba(33, 196, 93, 0.6);
+  box-shadow: 0 0 6px rgba(33, 196, 93, 0.4);
 }
 
 .ribbon-link {
@@ -342,7 +342,7 @@ a {
   border-radius: var(--radius-full);
   background-color: var(--primary-subtle);
   color: var(--primary);
-  border: 1px solid rgba(138, 164, 255, 0.2);
+  border: 1px solid rgba(39, 68, 165, 0.2);
 }
 
 .hero-title {
@@ -372,15 +372,16 @@ a {
 .install-command-bar {
   display: flex;
   align-items: center;
-  background-color: var(--code-background);
-  border: 1px solid var(--code-border);
+  background-color: #ffffff;
+  border: 1px solid var(--border);
   border-radius: var(--radius-md);
   padding: 4px 6px 4px 12px;
   height: 36px;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.03);
 }
 
 .install-prompt {
-  color: var(--code-muted);
+  color: var(--muted-foreground);
   font-family: var(--font-mono);
   font-size: 12px;
   margin-right: 8px;
@@ -390,7 +391,7 @@ a {
 .install-text {
   font-family: var(--font-mono);
   font-size: 12px;
-  color: var(--code-foreground);
+  color: var(--foreground);
   margin-right: 12px;
 }
 
@@ -406,7 +407,7 @@ a {
   transition: all 0.15s ease;
 }
 .btn-copy-bar:hover {
-  background-color: var(--muted);
+  background-color: #e4e4e7;
   color: var(--foreground);
 }
 
@@ -427,10 +428,12 @@ a {
   padding: 16px;
   display: flex;
   flex-direction: column;
-  transition: border-color 0.15s ease;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.02);
 }
 .stat-card:hover {
-  border-color: var(--border-focus);
+  border-color: #c7c7cc;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.04);
 }
 
 .stat-header {
@@ -453,7 +456,7 @@ a {
   width: 28px;
   height: 28px;
   border-radius: var(--radius-md);
-  background-color: var(--secondary);
+  background-color: var(--primary-light);
   color: var(--primary);
   display: flex;
   align-items: center;
@@ -506,6 +509,7 @@ a {
   border-radius: var(--radius-lg);
   overflow: hidden;
   margin-bottom: 40px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.08);
 }
 
 .workbench-tabbar {
@@ -593,11 +597,13 @@ a {
   padding: 20px;
   display: flex;
   flex-direction: column;
-  transition: border-color 0.15s ease, background-color 0.15s ease;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.02);
 }
 
 .feature-card:hover {
-  border-color: var(--border-focus);
+  border-color: #c7c7cc;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.04);
 }
 
 .feature-card-header {
@@ -611,7 +617,7 @@ a {
   width: 32px;
   height: 32px;
   border-radius: var(--radius-md);
-  background-color: var(--secondary);
+  background-color: var(--primary-light);
   color: var(--primary);
   display: flex;
   align-items: center;
@@ -626,7 +632,7 @@ a {
   border-radius: var(--radius-sm);
   background-color: var(--secondary);
   color: var(--muted-foreground);
-  border: 1px solid var(--border-subtle);
+  border: 1px solid var(--border);
 }
 
 .feature-title {
@@ -669,11 +675,12 @@ a {
   border: 1px solid var(--border);
   border-radius: var(--radius-lg);
   overflow: hidden;
-  transition: border-color 0.15s ease;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.02);
 }
 
 .release-card[open] {
-  border-color: var(--border-focus);
+  border-color: #c7c7cc;
 }
 
 .release-summary {
@@ -693,7 +700,7 @@ a {
 }
 
 .release-summary:hover {
-  background-color: rgba(255, 255, 255, 0.02);
+  background-color: #fbfbfc;
 }
 
 .release-summary-left {
@@ -709,9 +716,9 @@ a {
   font-weight: 600;
   padding: 2px 8px;
   border-radius: var(--radius-sm);
-  background-color: var(--primary-subtle);
+  background-color: var(--primary-light);
   color: var(--primary);
-  border: 1px solid rgba(138, 164, 255, 0.25);
+  border: 1px solid rgba(39, 68, 165, 0.2);
 }
 
 .release-date {
@@ -733,25 +740,25 @@ a {
   border-radius: var(--radius-sm);
   background-color: var(--secondary);
   color: var(--secondary-foreground);
-  border: 1px solid var(--border-subtle);
+  border: 1px solid var(--border);
 }
 
 .pill-added, .pill-feat, .pill-features {
   background-color: var(--success-subtle);
   color: var(--success);
-  border-color: rgba(33, 196, 93, 0.2);
+  border-color: rgba(33, 196, 93, 0.25);
 }
 
 .pill-fixed, .pill-fix, .pill-bugfixes {
   background-color: var(--warning-subtle);
-  color: var(--warning);
-  border-color: rgba(255, 167, 26, 0.2);
+  color: #b45309;
+  border-color: rgba(245, 158, 11, 0.25);
 }
 
 .pill-docs, .pill-documentation {
   background-color: var(--info-subtle);
   color: var(--info);
-  border-color: rgba(59, 130, 246, 0.2);
+  border-color: rgba(59, 130, 246, 0.25);
 }
 
 .chevron-icon {
@@ -769,8 +776,8 @@ a {
 
 .changelog-content {
   padding: 16px 20px 20px;
-  border-top: 1px solid var(--border-subtle);
-  background-color: #0c0c0e;
+  border-top: 1px solid var(--border);
+  background-color: #fafafc;
 }
 
 .changelog-group {
@@ -801,7 +808,7 @@ a {
   margin-bottom: 6px;
   font-size: 13px;
   line-height: 20px;
-  color: var(--secondary-foreground);
+  color: var(--foreground);
 }
 
 .changelog-group li::before {
@@ -812,11 +819,11 @@ a {
 }
 
 .changelog-group li code {
-  background-color: var(--code-background);
-  border: 1px solid var(--code-border);
+  background-color: #f1f1f4;
+  border: 1px solid var(--border);
   padding: 1px 4px;
   border-radius: var(--radius-sm);
-  color: var(--code-foreground);
+  color: #0f172a;
 }
 
 .changelog-group li a {
@@ -832,7 +839,7 @@ a {
    ========================================================================== */
 .site-footer {
   border-top: 1px solid var(--border);
-  background-color: #070709;
+  background-color: #ffffff;
   padding: 32px 24px;
 }
 
