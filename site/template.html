@@ -34,7 +34,7 @@
 
     <!-- Hero -->
     <section class="hero">
-      <div class="hero-tagline">Zen Engine • 禅引擎</div>
+      <div class="hero-tagline">Zen Engine • Open Agent Harness</div>
       <h1 class="hero-title">The Open, Minimalist<br>Coding-Agent Harness</h1>
       <p class="hero-desc">
         A headless, composable agent harness speaking Agent Client Protocol (ACP). Built for IDEs, autonomous loops, and developer agents with prefix-cached context projection and sandboxed tool execution.
@@ -148,7 +148,9 @@ async fn main() -> anyhow::Result&lt;()&gt; {
           <h2 class="section-title" style="margin-bottom: 0.25rem;">Changelog</h2>
           <p style="color: var(--text-muted); font-size: 0.95rem;">Release history and evolution of the Zen Engine harness.</p>
         </div>
-        <div>
+        <div class="changelog-actions">
+          <button class="toggle-btn" onclick="toggleAllReleases(true)">Expand All</button>
+          <button class="toggle-btn" onclick="toggleAllReleases(false)">Collapse All</button>
           <a href="/CHANGELOG.md" class="raw-badge-link" target="_blank">View Raw CHANGELOG.md ↗</a>
         </div>
       </div>
@@ -178,6 +180,12 @@ async fn main() -> anyhow::Result&lt;()&gt; {
         const btn = document.querySelector('.copy-btn');
         btn.innerText = 'Copied!';
         setTimeout(() => { btn.innerText = 'Copy'; }, 2000);
+      });
+    }
+
+    function toggleAllReleases(open) {
+      document.querySelectorAll('.changelog-container details').forEach(d => {
+        d.open = open;
       });
     }
   </script>
