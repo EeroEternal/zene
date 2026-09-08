@@ -93,8 +93,13 @@ function parseChangelog(content) {
 }
 
 function renderReleasesHtml(releases) {
-  return releases.map(rel => {
+  return releases.map((rel, index) => {
     let sectionsHtml = '';
+    const sectionBadges = rel.sections.map(s => {
+      const cls = s.title.toLowerCase().replace(/[^a-z0-9]/g, '');
+      return `<span class="section-pill pill-${cls}">${escapeHtml(s.title)} (${s.items.length})</span>`;
+    }).join(' ');
+
     for (const sec of rel.sections) {
       let itemsHtml = sec.items.map(item => {
         return `<li>${formatInlineMarkdown(item.text)}</li>`;
@@ -108,16 +113,24 @@ function renderReleasesHtml(releases) {
       `;
     }
 
+    const isOpen = index === 0 ? ' open' : '';
+
     return `
-      <article class="release-card" id="${rel.version}">
-        <div class="release-title-row">
-          <span class="release-version">${escapeHtml(rel.version)}</span>
-          <span class="release-date">${escapeHtml(rel.date)}</span>
-        </div>
+      <details class="release-card" id="${rel.version}"${isOpen}>
+        <summary class="release-summary">
+          <div class="release-summary-left">
+            <span class="release-version">${escapeHtml(rel.version)}</span>
+            <span class="release-date">${escapeHtml(rel.date)}</span>
+            <span class="release-badges">${sectionBadges}</span>
+          </div>
+          <div class="release-summary-right">
+            <span class="chevron-icon">›</span>
+          </div>
+        </summary>
         <div class="changelog-content">
           ${sectionsHtml}
         </div>
-      </article>
+      </details>
     `;
   }).join('\n');
 }
