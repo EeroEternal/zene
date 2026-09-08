@@ -1,0 +1,60 @@
+# Zene (Zen Engine) — Comprehensive Reference for Agents
+
+## 1. System Overview
+Zene is a minimalist, headless coding-agent harness written in Rust. It decouples the core turn execution loop, context projection, tool sandboxing, and durable sessions from UI and hosted cloud control planes.
+
+- Repository: https://github.com/EeroEternal/zene
+- Protocol: Agent Client Protocol (ACP) over stdio JSON-RPC
+- Primary Crates:
+  - `zene-core`: Fluent `AgentBuilder` and unified library facade (`Agent::builder`, `Agent::core`, `Agent::minimal`).
+  - `zene-tools`: Extensible tool catalog, including zero-dependency `core_tools()` and `minimal_tools()`.
+  - `zene-context`: Event-backed context projection, prefix cache calculation, compaction, and memory injection.
+  - `zene-turn`: Turn execution engine with steer buffer, follow-up buffer, and lifecycle events.
+  - `zene-sandbox`: Subprocess execution sandbox with filesystem and network boundaries.
+  - `zene-session`: Append-only event store and snapshot checkpoints.
+  - `zene-permission`: Permission gates (`Default`, `AcceptEdits`, `BypassPermissions`, `Manual`) and rule matching.
+  - `zene-mcp`: Model Context Protocol client manager for custom tool integration.
+  - `zene-cli`: Headless CLI and ACP server binary (`zene acp`).
+
+## 2. Agent Client Protocol (ACP)
+The `zene acp` command speaks NDJSON JSON-RPC 2.0 over stdin/stdout.
+
+Supported methods:
+- `initialize`: Protocol negotiation and capability exchange.
+- `session/new`: Creates a new isolated turn session.
+- `session/load`: Restores an existing session from durable storage.
+- `session/prompt`: Sends a prompt turn to the agent. Streams events:
+  - `session/update`: Agent thoughts, streaming text delta, tool call requests, tool call outputs.
+  - `session/approval`: Permission prompt when a tool execution requires human confirmation.
+- `session/cancel`: Cancels an in-flight prompt turn.
+- `session/steer`: Injects steering instructions during active turn execution without starting a new turn.
+
+## 3. Context Engine & Prefix Caching
+Zene implements strict append-only event-driven context projection:
+- **Event Log**: Sessions store events (`UserMessage`, `ModelTurn`, `ToolCall`, `ToolResult`, `ModeChanged`).
+- **Prefix Caching**: Injects stable prompt prefix (system prompt + memory) to maximize KV-cache reuse on LLM inference engines (Anthropic prompt caching, OpenAI compatible gateways).
+- **Compaction**: Automatic water-level monitoring and intelligent compaction when conversation token limits approach context windows.
+
+## 4. Configuration Reference (~/.zene/config.toml)
+```toml
+model = "claude-3-7-sonnet"
+provider = "anthropic" # or "openai"
+base_url = "https://api.anthropic.com/v1"
+anthropic_api_key = "sk-ant-..."
+permission_mode = "manual" # "manual" | "accept_edits" | "yolo"
+
+[compaction]
+auto_compact = true
+context_window_tokens = 200000
+
+[sandbox]
+profile = "workspace"
+auto_allow_bash = false
+```
+
+## 5. Changelog Summary
+Refer to https://zene.sh/CHANGELOG.md for complete version history:
+- v0.1.16: Minimalist Agent Facade (`Agent::builder`, `Agent::core`, `Agent::minimal`), `core_tools()` & `minimal_tools()`, Pi-aligned steer & follow-up queues.
+- v0.1.15: Inference gateway stale-epoch tolerance and context architecture assessment.
+- v0.1.14: Anchor boundaries prefix caching scoring, gateway telemetry headers.
+- v0.1.13: Context governance, output sanitizer, memory store.

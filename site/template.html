@@ -1,0 +1,185 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Zene (Zen Engine) — The Open, Minimalist Coding-Agent Harness</title>
+  <meta name="description" content="Headless, composable coding-agent harness and development platform speaking Agent Client Protocol (ACP). Zero UI in core, prefix-cached context projection, and durable sessions.">
+  <link rel="stylesheet" href="style.css">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🧘</text></svg>">
+</head>
+<body>
+
+  <!-- Agent Notice Banner -->
+  <div class="agent-banner">
+    🤖 <strong>For AI Agents & LLMs:</strong> Fetch structured API context at <a href="/llms.txt">/llms.txt</a> or <a href="/CHANGELOG.md">/CHANGELOG.md</a>
+  </div>
+
+  <div class="container">
+    <!-- Navigation -->
+    <header>
+      <div class="logo-group">
+        <span style="font-size: 1.6rem;">🧘</span>
+        <span class="logo-title">Zene</span>
+        <span class="logo-badge">v{{VERSION}}</span>
+      </div>
+      <nav>
+        <a href="#features">Features</a>
+        <a href="#quickstart">Quickstart</a>
+        <a href="#sdk">SDK</a>
+        <a href="#changelog">Changelog</a>
+        <a href="https://github.com/EeroEternal/zene" target="_blank" rel="noopener">GitHub ↗</a>
+      </nav>
+    </header>
+
+    <!-- Hero -->
+    <section class="hero">
+      <div class="hero-tagline">Zen Engine • 禅引擎</div>
+      <h1 class="hero-title">The Open, Minimalist<br>Coding-Agent Harness</h1>
+      <p class="hero-desc">
+        A headless, composable agent harness speaking Agent Client Protocol (ACP). Built for IDEs, autonomous loops, and developer agents with prefix-cached context projection and sandboxed tool execution.
+      </p>
+
+      <div class="install-box">
+        <span class="install-cmd" id="install-cmd">curl -fsSL https://zene.sh/install.sh | bash</span>
+        <button class="copy-btn" onclick="copyInstallCmd()">Copy</button>
+      </div>
+    </section>
+
+    <!-- Features Grid -->
+    <section id="features">
+      <h2 class="section-title">Core Principles & Capabilities</h2>
+      <div class="features-grid">
+        <div class="feature-card">
+          <div class="feature-icon">🔌</div>
+          <div class="feature-title">Agent Client Protocol (ACP)</div>
+          <div class="feature-desc">Native stdio JSON-RPC implementation connecting headless agents to external editors (Zed, Cursor, VS Code) and automation daemons.</div>
+        </div>
+
+        <div class="feature-card">
+          <div class="feature-icon">⚡</div>
+          <div class="feature-title">Prefix-Cached Context Engine</div>
+          <div class="feature-desc">Append-only event-driven context projection designed specifically for LLM prompt caching (Anthropic, OpenAI-compatible gateways) with intelligent auto-compaction.</div>
+        </div>
+
+        <div class="feature-card">
+          <div class="feature-icon">🧘</div>
+          <div class="feature-title">Zen Boundaries & Zero UI</div>
+          <div class="feature-desc">Core is strictly headless and composable. No heavy web consoles, bloated UI hydration, or unmediated network IO embedded in core.</div>
+        </div>
+
+        <div class="feature-card">
+          <div class="feature-icon">🎛️</div>
+          <div class="feature-title">Turn Engine & Steer Buffers</div>
+          <div class="feature-desc">Pi-aligned turn lifecycle supporting real-time steering and follow-up message queues without interrupting active agent loop boundaries.</div>
+        </div>
+
+        <div class="feature-card">
+          <div class="feature-icon">🛡️</div>
+          <div class="feature-title">Sandboxed Tool Execution</div>
+          <div class="feature-desc">Local subprocess isolation, permission gates (Default, AcceptEdits, BypassPermissions), approval brokers, and async MCP manager.</div>
+        </div>
+
+        <div class="feature-card">
+          <div class="feature-icon">📦</div>
+          <div class="feature-title">Zero-Boilerplate Rust SDK</div>
+          <div class="feature-desc">Instant single-line agent initialization via <code>Agent::core(".")</code> or <code>Agent::minimal(".")</code> with pre-configured lightweight toolsets.</div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Quickstart & Code Showcase -->
+    <section id="quickstart" class="code-section">
+      <h2 class="section-title">Quickstart</h2>
+      <div class="code-panel">
+        <div class="code-header">
+          <span>Terminal • CLI & ACP Server</span>
+          <span>bash</span>
+        </div>
+        <pre><code># 1. Install pre-built binary
+curl -fsSL https://zene.sh/install.sh | bash
+
+# 2. Run ACP protocol server (communicates over stdio JSON-RPC)
+zene acp
+
+# 3. Inspect configuration and saved sessions
+zene config
+zene sessions</code></pre>
+      </div>
+    </section>
+
+    <!-- Rust SDK Section -->
+    <section id="sdk" class="code-section">
+      <h2 class="section-title">Embedding in Rust (`zene-core`)</h2>
+      <div class="code-panel">
+        <div class="code-header">
+          <span>Rust SDK • Minimalist Harness Embedding</span>
+          <span>rust</span>
+        </div>
+        <pre><code>use zene_core::Agent;
+
+#[tokio::main]
+async fn main() -> anyhow::Result&lt;()&gt; {
+    // Single-line read-only probe agent (Read, Grep, Glob)
+    let mut probe = Agent::minimal(".")
+        .bypass_permissions()
+        .build()
+        .await?;
+
+    let summary = probe.prompt("Analyze the codebase structure", Default::default()).await?;
+    println!("{summary}");
+
+    // Standard core agent harness with full local coding capabilities (Read, Write, Edit, Bash)
+    let mut agent = Agent::core(".")
+        .bypass_permissions()
+        .build()
+        .await?;
+
+    agent.prompt("Run cargo clippy and fix any unused warnings", Default::default()).await?;
+    Ok(())
+}</code></pre>
+      </div>
+    </section>
+
+    <!-- Changelog Section -->
+    <section id="changelog" class="changelog-section">
+      <div class="changelog-header">
+        <div>
+          <h2 class="section-title" style="margin-bottom: 0.25rem;">Changelog</h2>
+          <p style="color: var(--text-muted); font-size: 0.95rem;">Release history and evolution of the Zen Engine harness.</p>
+        </div>
+        <div>
+          <a href="/CHANGELOG.md" class="raw-badge-link" target="_blank">View Raw CHANGELOG.md ↗</a>
+        </div>
+      </div>
+
+      <div class="changelog-container">
+        <!-- CHANGELOG_INJECTION_POINT -->
+      </div>
+    </section>
+
+    <!-- Footer -->
+    <footer>
+      <div>Zene (Zen Engine) is an open-source project released under the MIT License.</div>
+      <div class="footer-links">
+        <a href="/llms.txt">/llms.txt</a>
+        <a href="/llms-full.txt">/llms-full.txt</a>
+        <a href="/CHANGELOG.md">/CHANGELOG.md</a>
+        <a href="/install.sh">/install.sh</a>
+        <a href="https://github.com/EeroEternal/zene">GitHub</a>
+      </div>
+    </footer>
+  </div>
+
+  <script>
+    function copyInstallCmd() {
+      const text = document.getElementById('install-cmd').innerText;
+      navigator.clipboard.writeText(text).then(() => {
+        const btn = document.querySelector('.copy-btn');
+        btn.innerText = 'Copied!';
+        setTimeout(() => { btn.innerText = 'Copy'; }, 2000);
+      });
+    }
+  </script>
+</body>
+</html>
