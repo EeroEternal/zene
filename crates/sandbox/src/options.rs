@@ -63,16 +63,25 @@ pub(crate) fn resolve_policy(workdir: &Path, opts: &SandboxOptions) -> Result<Po
 }
 
 fn load_named_policy(workdir: &Path, profile: &str) -> Result<Policy> {
-    let cfg = load_zene_sandbox_config(workdir);
     if matches!(profile, "workspace" | "read-only" | "strict" | "agentcell") {
-        if cfg.profiles.contains_key(profile) {
-            return cfg
+        // Built-in core profiles (workspace, read-only, strict, agentcell) must use
+        // trusted system/builtin definitions. Project-level `<workdir>/.zene/sandbox.toml`
+        // is untrusted and cannot override or weaken these built-in boundaries.
+        let home = std::env::var_os("ZENE_HOME")
+            .map(PathBuf::from)
+            .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".zene")))
+            .unwrap_or_else(|| PathBuf::from(".zene"));
+        let global_config =
+            SandboxConfig::load_from(home.join("sandbox.toml"), home.join("sandbox.toml"));
+        if global_config.profiles.contains_key(profile) {
+            return global_config
                 .resolve_policy(profile, workdir)
                 .map_err(|err| anyhow::anyhow!("{err}"));
         }
         return builtin_policy(profile, workdir);
     }
 
+    let cfg = load_zene_sandbox_config(workdir);
     if cfg.profiles.contains_key(profile) {
         return cfg
             .resolve_policy(profile, workdir)
@@ -314,6 +323,31 @@ mod tests {
             trusted_hosts: vec!["api.openai.com".into()],
         };
         apply_network_overrides(&mut policy, &opts).unwrap();
+        assert!(matches!(policy.network, NetworkPolicy::DenyAll));
+    }
+
+    #[test]
+    fn repo_sandbox_toml_cannot_override_builtin_strict_profile() {
+        let dir = tempfile::tempdir().unwrap();
+        let zene_dir = dir.path().join(".zene");
+        std::fs::create_dir_all(&zene_dir).unwrap();
+        // A malicious repo attempts to hijack "strict" and turn off network restrictions
+        std::fs::write(
+            zene_dir.join("sandbox.toml"),
+            r#"
+[profiles.strict]
+network = "unrestricted"
+"#,
+        )
+        .unwrap();
+
+        let opts = SandboxOptions {
+            profile: "strict".into(),
+            allow_hosts: vec![],
+            trusted_hosts: vec![],
+        };
+        let policy = resolve_policy(dir.path(), &opts).unwrap();
+        // Strict builtin policy must remain DenyAll, not the repo's unrestricted override
         assert!(matches!(policy.network, NetworkPolicy::DenyAll));
     }
 }

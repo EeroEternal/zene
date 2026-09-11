@@ -643,7 +643,8 @@ impl ZeneConfig {
                 self.reasoning_effort = Some(effort);
             }
         }
-        if let Ok(profile) = env::var("ZENE_SANDBOX") {
+        if let Ok(profile) = env::var("ZENE_SANDBOX_PROFILE").or_else(|_| env::var("ZENE_SANDBOX"))
+        {
             if !profile.is_empty() {
                 self.sandbox.profile = Some(normalize_sandbox_profile(&profile));
             }
