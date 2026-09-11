@@ -24,6 +24,14 @@ struct Cli {
     /// Auto-approve Write / Edit / Bash (yolo permission mode; used by `zene acp`)
     #[arg(long, global = true)]
     yolo: bool,
+
+    /// Override sandbox profile (`off` | `workspace` | `read-only` | `strict` | custom)
+    #[arg(long, global = true)]
+    sandbox_profile: Option<String>,
+
+    /// Extra egress allowlist hosts (comma-separated or multiple flags)
+    #[arg(long, global = true, value_delimiter = ',')]
+    allow_hosts: Vec<String>,
 }
 
 #[derive(Subcommand)]
@@ -151,7 +159,24 @@ async fn main() -> Result<()> {
             Ok(())
         }
         Some(Commands::Acp) => {
-            acp::run_acp(workdir, cli.yolo).await?;
+            let sandbox_profile = cli.sandbox_profile.or_else(|| {
+                std::env::var("ZENE_SANDBOX_PROFILE")
+                    .or_else(|_| std::env::var("ZENE_SANDBOX"))
+                    .ok()
+                    .filter(|s| !s.trim().is_empty())
+            });
+            let mut allow_hosts = cli.allow_hosts;
+            if allow_hosts.is_empty() {
+                if let Ok(hosts) = std::env::var("ZENE_SANDBOX_ALLOW_HOSTS") {
+                    allow_hosts = hosts
+                        .split(',')
+                        .map(str::trim)
+                        .filter(|s| !s.is_empty())
+                        .map(str::to_string)
+                        .collect();
+                }
+            }
+            acp::run_acp(workdir, cli.yolo, sandbox_profile, allow_hosts).await?;
             Ok(())
         }
         None => {

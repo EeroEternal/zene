@@ -13,7 +13,7 @@ use zene_core::{
     Agent, ApprovalRequest, AskUserOption, PermissionGate, PermissionMode, PromptChoice,
 };
 use zene_runtime::{RuntimeControl, RuntimeRecoveryInfo};
-use zene_sandbox::LocalSandbox;
+use zene_sandbox::{LocalSandbox, SandboxOptions};
 use zene_session::{list_sessions_for_workdir, SessionRecord};
 use zene_turn::{RuntimeEvent, RuntimeEventKind};
 
@@ -67,18 +67,30 @@ struct AcpSession {
 pub struct AcpServer {
     workdir: PathBuf,
     yolo: bool,
+    sandbox_profile: Option<String>,
+    allow_hosts: Vec<String>,
     sessions: HashMap<String, AcpSession>,
     writer: AcpWriter,
     client_caps: ClientCapabilities,
 }
 
 /// Run the ACP stdio agent until stdin closes.
-pub async fn run_acp(workdir: PathBuf, yolo: bool) -> Result<()> {
-    AcpServer::run(workdir, yolo).await
+pub async fn run_acp(
+    workdir: PathBuf,
+    yolo: bool,
+    sandbox_profile: Option<String>,
+    allow_hosts: Vec<String>,
+) -> Result<()> {
+    AcpServer::run(workdir, yolo, sandbox_profile, allow_hosts).await
 }
 
 impl AcpServer {
-    async fn run(workdir: PathBuf, yolo: bool) -> Result<()> {
+    async fn run(
+        workdir: PathBuf,
+        yolo: bool,
+        sandbox_profile: Option<String>,
+        allow_hosts: Vec<String>,
+    ) -> Result<()> {
         let shared = Arc::new(Mutex::new(SharedState::new()));
         let (out_tx, mut out_rx) = mpsc::unbounded_channel::<String>();
         let writer = AcpWriter {
@@ -143,6 +155,8 @@ impl AcpServer {
         let mut server = Self {
             workdir,
             yolo,
+            sandbox_profile,
+            allow_hosts,
             sessions: HashMap::new(),
             writer,
             client_caps: ClientCapabilities::default(),
@@ -702,7 +716,35 @@ impl AcpServer {
         } else {
             PermissionMode::parse(&config.permission_mode)
         };
-        let mut sandbox = LocalSandbox::with_keel(cwd)
+        let effective_profile = self
+            .sandbox_profile
+            .clone()
+            .unwrap_or_else(|| config.sandbox.effective_profile(config.agent_profile));
+
+        let mut effective_allow_hosts = config.sandbox.allow_hosts.clone();
+        for host in &self.allow_hosts {
+            if !effective_allow_hosts.contains(host) {
+                effective_allow_hosts.push(host.clone());
+            }
+        }
+
+        let mut trusted_hosts = Vec::new();
+        if let Ok((host, _port)) = zene_sandbox::url_host_port(&config.base_url) {
+            trusted_hosts.push(host);
+        }
+        if let Some(ref anthropic_url) = config.anthropic_base_url {
+            if let Ok((host, _port)) = zene_sandbox::url_host_port(anthropic_url) {
+                trusted_hosts.push(host);
+            }
+        }
+
+        let sandbox_opts = SandboxOptions {
+            profile: effective_profile,
+            allow_hosts: effective_allow_hosts,
+            trusted_hosts,
+        };
+
+        let mut sandbox = LocalSandbox::with_options(cwd, sandbox_opts)
             .await
             .context("initialize Keel execution layer")?;
         if self.client_caps.fs_read || self.client_caps.fs_write {
