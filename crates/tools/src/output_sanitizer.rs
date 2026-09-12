@@ -107,6 +107,37 @@ impl OutputSanitizer {
             tail.join("\n")
         )
     }
+
+    /// DeepSeek Harness style tool-result pruning:
+    /// For very large tool result bodies (> 8192 chars), preserve the head (4096 chars)
+    /// and tail (1024 chars), replacing the middle with an omission marker.
+    /// This prevents single verbose tool calls from blowing the context window
+    /// while keeping critical tool exit / output details.
+    pub fn prune_tool_result(
+        text: &str,
+        threshold: usize,
+        head_len: usize,
+        tail_len: usize,
+    ) -> String {
+        let char_count = text.chars().count();
+        if char_count <= threshold || char_count <= head_len + tail_len {
+            return text.to_string();
+        }
+
+        let head: String = text.chars().take(head_len).collect();
+        let tail: String = text.chars().skip(char_count - tail_len).collect();
+        let omitted = char_count - head_len - tail_len;
+
+        format!(
+            "{head}\n\n[... tool output pruned {omitted} characters to preserve prefix cache ...]\n\n{tail}"
+        )
+    }
+
+    /// Default pruning configuration matching DeepSeek Harness standards:
+    /// threshold: 8192 chars, head: 4096 chars, tail: 1024 chars.
+    pub fn prune_default(text: &str) -> String {
+        Self::prune_tool_result(text, 8192, 4096, 1024)
+    }
 }
 
 #[cfg(test)]
@@ -137,5 +168,19 @@ test result: ok. 28 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; fin
         assert!(out.contains("omitted"));
         assert!(out.contains("line 0"));
         assert!(out.contains("line 499"));
+    }
+
+    #[test]
+    fn test_prune_tool_result_preserves_head_and_tail() {
+        let text = (0..10_000).map(|_| "a").collect::<String>();
+        let pruned = OutputSanitizer::prune_default(&text);
+        assert!(pruned.len() < 6000);
+        assert!(pruned.contains("tool output pruned"));
+        assert!(pruned.starts_with(&"a".repeat(100)));
+        assert!(pruned.ends_with(&"a".repeat(100)));
+
+        // Text below threshold is untouched
+        let short = "short output";
+        assert_eq!(OutputSanitizer::prune_default(short), short);
     }
 }

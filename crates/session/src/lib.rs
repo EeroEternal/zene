@@ -3,6 +3,7 @@ mod checkpoint;
 mod paths;
 mod record;
 mod todo;
+pub mod trajectory;
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -23,6 +24,10 @@ pub use checkpoint::{
 };
 pub use paths::{sessions_dir, workdir_slug, zene_home};
 pub use todo::{TodoItem, TodoStatus};
+pub use trajectory::{
+    CorrectionPattern, LessonCandidate, SessionTrajectoryMiningReport, ToolChurnPattern,
+    TrajectoryCorpusMiner,
+};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SessionMeta {
@@ -210,6 +215,19 @@ pub enum SessionEvent {
         name: String,
         value: serde_json::Value,
     },
+    /// Record a failed or cancelled assistant attempt. This is durable for audit
+    /// and trajectory inspection, but does NOT project into conversation messages.
+    AssistantAttemptFailed {
+        #[serde(default)]
+        sequence: u64,
+        id: String,
+        turn_id: Option<String>,
+        step_id: Option<String>,
+        created_at: DateTime<Utc>,
+        error: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        duration_ms: Option<u64>,
+    },
     Rewound {
         #[serde(default)]
         sequence: u64,
@@ -265,6 +283,26 @@ pub struct SessionView {
 }
 
 impl SessionView {
+    /// Pure-function derivation of messages from active events without any fallback.
+    /// Returns Err if the event log cannot independently reconstruct the messages.
+    pub fn strict_derive_messages(
+        events: &[SessionEvent],
+        session_id: Option<&str>,
+    ) -> std::result::Result<Vec<Message>, ProjectionFallbackReason> {
+        let view = Self::try_from_events(events, &[], session_id)?;
+        Ok(view.messages)
+    }
+
+    /// Derive conversation messages purely from the active event log.
+    /// If incomplete, falls back to the provided fallback slice.
+    pub fn derive_messages(
+        events: &[SessionEvent],
+        fallback: &[Message],
+        session_id: Option<&str>,
+    ) -> Vec<Message> {
+        Self::from_events_for_session(events, fallback, session_id).messages
+    }
+
     pub fn from_events(events: &[SessionEvent], fallback: &[Message]) -> Self {
         Self::from_events_for_session(events, fallback, None)
     }
@@ -536,6 +574,9 @@ impl SessionEvent {
             | Self::Custom {
                 sequence: value, ..
             }
+            | Self::AssistantAttemptFailed {
+                sequence: value, ..
+            }
             | Self::Rewound {
                 sequence: value, ..
             } => *value = sequence,
@@ -561,6 +602,7 @@ impl SessionEvent {
             | Self::BranchSummary { sequence, .. }
             | Self::Label { sequence, .. }
             | Self::Custom { sequence, .. }
+            | Self::AssistantAttemptFailed { sequence, .. }
             | Self::Rewound { sequence, .. } => *sequence,
         }
     }
@@ -926,6 +968,31 @@ impl SessionRecord {
             value,
         });
         self.meta.updated_at = Utc::now();
+    }
+
+    /// Record an attempt failure without polluting conversation messages.
+    pub fn record_assistant_attempt_failed(
+        &mut self,
+        turn_id: Option<&str>,
+        step_id: Option<&str>,
+        error: &str,
+        duration_ms: Option<u64>,
+    ) -> ConversationEventIdentity {
+        let id = Uuid::new_v4().to_string();
+        self.append_event(SessionEvent::AssistantAttemptFailed {
+            sequence: 0,
+            id: id.clone(),
+            turn_id: turn_id.map(str::to_string),
+            step_id: step_id.map(str::to_string),
+            created_at: Utc::now(),
+            error: error.to_string(),
+            duration_ms,
+        });
+        self.meta.updated_at = Utc::now();
+        ConversationEventIdentity {
+            id,
+            sequence: self.event_sequence,
+        }
     }
 
     pub fn record_rewound(&mut self, checkpoint_id: &str) {
@@ -2142,5 +2209,60 @@ mod tests {
         assert!(listed.iter().any(|m| m.id == good.meta.id));
         assert!(listed.iter().any(|m| m.id == "legacy"));
         std::env::remove_var("ZENE_HOME");
+    }
+
+    #[test]
+    fn assistant_attempt_failed_is_durable_but_excluded_from_messages() {
+        let mut session = SessionRecord::new(Path::new("."));
+        session.push_message(Message::user("do something"));
+        let attempt = session.record_assistant_attempt_failed(
+            Some("turn-1"),
+            Some("step-1"),
+            "Rate limit reached or cancelled",
+            Some(120),
+        );
+        assert_eq!(session.events.len(), 2);
+        assert_eq!(attempt.sequence, 2);
+
+        // Assert message projection excludes the failed attempt
+        let view = session.view();
+        assert_eq!(view.messages.len(), 1);
+        assert_eq!(view.messages[0].content, Some("do something".into()));
+        assert!(!view.used_materialized_fallback);
+
+        // Strict pure-function derivation gives exact same clean history
+        let derived = SessionView::strict_derive_messages(&session.events, None)
+            .expect("strict derive succeeds");
+        assert_eq!(derived.len(), 1);
+        assert_eq!(derived[0].content, Some("do something".into()));
+
+        // Push successful message after attempt failure
+        session.push_message(Message::assistant("successful reply"));
+        let view_after = session.view();
+        assert_eq!(view_after.messages.len(), 2);
+        assert_eq!(
+            view_after.messages[1].content,
+            Some("successful reply".into())
+        );
+    }
+
+    #[test]
+    fn strict_derive_messages_deterministic_and_idempotent() {
+        let mut session = SessionRecord::new(Path::new("."));
+        session.push_message(Message::system("system prompt"));
+        session.push_message(Message::user("query 1"));
+        session.push_message(Message::assistant("reply 1"));
+        session.push_message(Message::user("query 2"));
+
+        let derived_1 =
+            SessionView::strict_derive_messages(&session.events, None).expect("first derive");
+        let derived_2 =
+            SessionView::strict_derive_messages(&session.events, None).expect("second derive");
+
+        assert_eq!(
+            serde_json::to_vec(&derived_1).unwrap(),
+            serde_json::to_vec(&derived_2).unwrap()
+        );
+        assert_eq!(derived_1.len(), 4);
     }
 }

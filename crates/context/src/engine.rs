@@ -998,6 +998,13 @@ impl ContextEngine {
     ) -> StepContext {
         let mode = delivery_mode_from_env();
         let view = session.view();
+        #[cfg(debug_assertions)]
+        if view.cache_drift_detected && !view.used_materialized_fallback {
+            tracing::warn!(
+                session_id = %session.session_id(),
+                "Session cache drift detected: event projection takes precedence over materialized compatibility cache"
+            );
+        }
         let mut messages = view.messages;
         relocate_prefix_adjacent_decorations(&mut messages);
         apply_tail_decorations(&mut messages, &self.tail_sections);

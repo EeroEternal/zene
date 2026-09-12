@@ -22,6 +22,7 @@ const CONTEXT_OVERFLOW_KEYWORDS: &[&str] = &[
     "request too large",
     "context overflow",
     "model_context_window_exceeded",
+    "context_window_exceeded",
     "413",
     "payload too large",
     "request entity too large",

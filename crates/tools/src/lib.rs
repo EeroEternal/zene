@@ -47,6 +47,7 @@ pub use output_bound::{
     plan_tool_output_bound, tool_max_output_bytes, tool_output_handles_enabled, ToolBoundPlan,
     ToolOutputSpill, TOOL_MAX_OUTPUT_BYTES,
 };
+pub use output_sanitizer::OutputSanitizer;
 pub use permission::{SharedToolPermission, ToolPermission};
 pub use plan_mode::{shared_plan_mode, PlanModeState, SharedPlanMode};
 pub use publish_github::{CloudPublishConfig, PublishGithubTool};

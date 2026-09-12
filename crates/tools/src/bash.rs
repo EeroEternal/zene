@@ -158,12 +158,13 @@ async fn exec_with_timeout(
 }
 
 fn format_exec_result_for_command(command: &str, result: zene_sandbox::ExecResult) -> ToolResult {
-    let content = crate::output_sanitizer::OutputSanitizer::sanitize_exec_output(
+    let raw = crate::output_sanitizer::OutputSanitizer::sanitize_exec_output(
         command,
         &result.stdout,
         &result.stderr,
         result.exit_code,
     );
+    let content = crate::output_sanitizer::OutputSanitizer::prune_default(&raw);
     ToolResult {
         content,
         is_error: result.exit_code != 0,

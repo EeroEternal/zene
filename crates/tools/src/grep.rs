@@ -57,7 +57,7 @@ impl Tool for GrepTool {
             .collect::<Vec<_>>()
             .join("\n");
         Ok(ToolResult {
-            content,
+            content: crate::output_sanitizer::OutputSanitizer::prune_default(&content),
             is_error: false,
         })
     }

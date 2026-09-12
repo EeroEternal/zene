@@ -47,7 +47,7 @@ impl Tool for ReadTool {
         let args: ReadArgs = serde_json::from_str(arguments).context("parse Read args")?;
         match format_read(&args, ctx).await {
             Ok(content) => Ok(ToolResult {
-                content,
+                content: crate::output_sanitizer::OutputSanitizer::prune_default(&content),
                 is_error: false,
             }),
             Err(err) => Ok(ToolResult {
