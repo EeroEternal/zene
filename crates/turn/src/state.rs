@@ -156,6 +156,9 @@ impl SteerBuffer {
     }
 
     pub fn take_all(&mut self) -> Vec<String> {
+        if self.pending.is_empty() {
+            return Vec::new();
+        }
         let count = match self.mode {
             QueueMode::OneAtATime => 1,
             QueueMode::All => self.pending.len(),
@@ -193,6 +196,9 @@ impl FollowUpBuffer {
     }
 
     pub fn take_all(&mut self) -> Vec<String> {
+        if self.pending.is_empty() {
+            return Vec::new();
+        }
         let count = match self.mode {
             QueueMode::OneAtATime => 1,
             QueueMode::All => self.pending.len(),
@@ -285,5 +291,18 @@ mod tests {
         follow_up.push("second".into());
         follow_up.set_mode(QueueMode::All);
         assert_eq!(follow_up.take_all(), vec!["first", "second"]);
+    }
+
+    #[test]
+    fn empty_buffer_take_all_does_not_panic() {
+        let mut steer = SteerBuffer::default();
+        assert!(steer.take_all().is_empty());
+        steer.set_mode(QueueMode::OneAtATime);
+        assert!(steer.take_all().is_empty());
+
+        let mut follow_up = FollowUpBuffer::default();
+        assert!(follow_up.take_all().is_empty());
+        follow_up.set_mode(QueueMode::OneAtATime);
+        assert!(follow_up.take_all().is_empty());
     }
 }
