@@ -56,6 +56,24 @@ impl ZeneContextHooks {
             sections.push(lines.join("\n"));
         }
 
+        let finished_subagents: Vec<_> = background_tasks
+            .iter()
+            .filter(|task| {
+                task.kind == BackgroundTaskKind::Subagent
+                    && task.status == BackgroundTaskStatus::Completed
+            })
+            .collect();
+        if !finished_subagents.is_empty() {
+            let mut lines = vec![
+                "Finished subagents stay addressable by id. Continue one by calling Task with resume_task_id."
+                    .to_string(),
+            ];
+            for task in finished_subagents {
+                lines.push(format!("- {}: {}", task.id, task.label));
+            }
+            sections.push(lines.join("\n"));
+        }
+
         Self { sections }
     }
 }

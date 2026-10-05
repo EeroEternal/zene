@@ -15,6 +15,10 @@ struct GlobArgs {
 
 #[async_trait]
 impl Tool for GlobTool {
+    fn replay_safe(&self) -> bool {
+        true
+    }
+
     fn name(&self) -> &str {
         "Glob"
     }

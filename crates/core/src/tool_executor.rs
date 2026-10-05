@@ -81,6 +81,7 @@ impl<'a> DefaultToolExecutor<'a> {
         workdir: &Path,
         dedup: &mut ToolDedup,
     ) -> Result<ToolBatchResult> {
+        let tool_calls = expand_codemode_calls(tool_calls);
         let ctx = ToolContext {
             sandbox: Arc::clone(&self.deps.sandbox),
             cancel: cancel.cloned(),
@@ -442,6 +443,37 @@ fn bound_tool_output(workdir: &Path, tool_name: &str, content: String) -> String
     let plan = plan_tool_output_bound(content, tool_name);
     let store = FsToolOutputStore::new(workdir);
     apply_tool_bound_plan(plan, &store)
+}
+
+fn expand_codemode_calls(tool_calls: &[ToolCall]) -> Vec<ToolCall> {
+    let mut expanded = Vec::with_capacity(tool_calls.len());
+    for call in tool_calls {
+        if call.name != zene_tools::CODEMODE_TOOL_NAME {
+            expanded.push(call.clone());
+            continue;
+        }
+        match zene_tools::parse_codemode(&call.arguments) {
+            Ok(calls) => {
+                for (index, inner) in calls.into_iter().enumerate() {
+                    expanded.push(ToolCall {
+                        id: format!("{}:{index}", call.id),
+                        name: inner.name,
+                        arguments: inner.arguments,
+                    });
+                }
+            }
+            Err(err) => expanded.push(ToolCall {
+                id: call.id.clone(),
+                name: call.name.clone(),
+                arguments: format!(
+                    r#"{{"error":{}}}"#,
+                    serde_json::to_string(&err.to_string())
+                        .unwrap_or_else(|_| "\"codemode parse failed\"".into())
+                ),
+            }),
+        }
+    }
+    expanded
 }
 
 fn clone_tool_context(ctx: &ToolContext) -> ToolContext {

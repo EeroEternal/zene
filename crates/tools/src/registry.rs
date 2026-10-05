@@ -72,6 +72,19 @@ pub trait Tool: Send + Sync {
     fn terminate_batch(&self) -> bool {
         false
     }
+
+    /// Crash recovery may re-run the call only when the tool is idempotent.
+    /// Side-effecting tools stay unsafe: the model is told the call was interrupted.
+    fn replay_safe(&self) -> bool {
+        false
+    }
+}
+
+/// Model-facing note for a tool call that did not finish and must not be replayed.
+pub fn interrupted_tool_notice(tool_name: &str) -> String {
+    format!(
+        "Tool `{tool_name}` was interrupted before a durable completion. It was not replayed. Decide whether to retry it."
+    )
 }
 
 pub struct ToolRegistry {
@@ -118,8 +131,17 @@ impl ToolRegistry {
 
     pub fn extend(&mut self, other: Self) {
         let other_active = other.active.into_inner();
-        self.tools.extend(other.tools);
-        self.active.get_mut().extend(other_active);
+        let active = self.active.get_mut();
+        for tool in other.tools {
+            let name = tool.name().to_string();
+            if self.tools.iter().any(|existing| existing.name() == name) {
+                continue;
+            }
+            if other_active.contains(&name) {
+                active.insert(name);
+            }
+            self.tools.push(tool);
+        }
     }
 
     pub fn register(&mut self, tool: Box<dyn Tool>) {
@@ -196,6 +218,13 @@ impl ToolRegistry {
 
     pub fn contains(&self, name: &str) -> bool {
         self.tools.iter().any(|tool| tool.name() == name)
+    }
+
+    pub fn replay_safe(&self, name: &str) -> bool {
+        self.tools
+            .iter()
+            .find(|tool| tool.name() == name)
+            .is_some_and(|tool| tool.replay_safe())
     }
 
     pub async fn execute(
@@ -316,6 +345,37 @@ mod tests {
         let registry = ToolRegistry::new(vec![Box::new(TerminalTool)]);
         assert!(registry.terminates_batch("Terminal"));
         assert!(!registry.terminates_batch("missing"));
+    }
+
+    struct NamedTool(&'static str, &'static str);
+
+    #[async_trait]
+    impl Tool for NamedTool {
+        fn name(&self) -> &str {
+            self.0
+        }
+        fn definition(&self) -> ToolDefinition {
+            ToolDefinition {
+                name: self.0.to_string(),
+                description: self.1.to_string(),
+                parameters: json!({"type": "object"}),
+            }
+        }
+        async fn execute(&self, _arguments: &str, _ctx: &ToolContext) -> Result<ToolResult> {
+            Ok(ToolResult {
+                content: self.1.to_string(),
+                is_error: false,
+            })
+        }
+    }
+
+    #[test]
+    fn extend_keeps_existing_tool_on_name_collision() {
+        let mut base = ToolRegistry::new(vec![Box::new(NamedTool("Read", "builtin"))]);
+        let extra = ToolRegistry::new(vec![Box::new(NamedTool("Read", "mcp"))]);
+        base.extend(extra);
+        assert_eq!(base.definitions().len(), 1);
+        assert_eq!(base.definitions()[0].description, "builtin");
     }
 
     #[test]

@@ -1,5 +1,6 @@
 use crate::ask_user::AskUserQuestionTool;
 use crate::bash::BashTool;
+use crate::codemode::CodemodeTool;
 use crate::edit::EditTool;
 use crate::fetch_url::FetchUrlTool;
 use crate::glob::GlobTool;
@@ -87,6 +88,7 @@ fn with_cloud_publish(
 
 fn all_builtin_tool_boxes(web_search: WebSearchConfig) -> Vec<Box<dyn crate::registry::Tool>> {
     with_cloud_publish(vec![
+        Box::new(CodemodeTool),
         Box::new(ReadTool),
         Box::new(WriteTool),
         Box::new(EditTool),
