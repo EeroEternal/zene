@@ -1,8 +1,7 @@
 use crate::config::CompactionConfig;
 use anyhow::{bail, Context, Result};
 use tracing::info;
-use zene_llm::{Message, MessageKind, Role, ToolDefinition};
-use zene_model_executor::{ModelRequest, ModelResponse};
+use zene_llm::{ChatRequest, ChatResponse, Message, MessageKind, Role, ToolDefinition};
 
 use crate::model::ContextModel;
 
@@ -25,6 +24,27 @@ const TRUNCATE_ASSISTANT_TEXT_MAX_CHARS: usize = 1_200;
 /// Cleaned summaries shorter than this are treated as degenerate and retried
 /// (aligned with grok-build `MIN_SUMMARY_SEED_CHARS`).
 pub const MIN_SUMMARY_SEED_CHARS: usize = 500;
+
+/// Drop the oldest non-system messages, keeping the system prefix and a short tail.
+/// Used once when summarization fails so the retry is not the same request.
+pub fn degrade_oldest_messages(messages: &mut Vec<Message>) -> bool {
+    const KEEP_TAIL: usize = 4;
+    let system = usize::from(
+        messages
+            .first()
+            .is_some_and(|message| message.role == Role::System),
+    );
+    let body = messages.len().saturating_sub(system);
+    if body <= KEEP_TAIL {
+        return false;
+    }
+    let drop_until = messages.len() - KEEP_TAIL;
+    if drop_until <= system {
+        return false;
+    }
+    messages.drain(system..drop_until);
+    true
+}
 
 pub fn should_compact(estimated_tokens: u32, config: &CompactionConfig) -> bool {
     let threshold = (config.context_window_tokens as f32 * config.trigger_ratio).floor() as u32;
@@ -238,7 +258,7 @@ async fn summarize_prepared_input(
     loop {
         let input = prepare_summary_input(messages, stage, budget, estimator);
         let conversation = format_messages_for_summary(&input);
-        let request = ModelRequest {
+        let request = ChatRequest {
             model: model.to_string(),
             messages: vec![
                 Message::system(SUMMARY_SYSTEM_PROMPT),
@@ -571,15 +591,6 @@ fn projected_messages<S: ContextSession + ?Sized>(session: &S) -> Vec<Message> {
     session.view().messages
 }
 
-fn estimate_session_tokens<S: ContextSession + ?Sized>(
-    session: &S,
-    tools: &[ToolDefinition],
-    estimator: &TokenEstimator,
-) -> u32 {
-    let messages = projected_messages(session);
-    tokens::estimate_context(&messages, tools, estimator) as u32
-}
-
 fn record_compaction_result<S: ContextSession + ?Sized>(
     session: &mut S,
     result: &CompactionResult,
@@ -605,8 +616,8 @@ fn try_truncate_only_compaction<S: ContextSession + ?Sized>(
     tools: &[ToolDefinition],
     estimator: &TokenEstimator,
 ) -> Option<CompactionResult> {
-    let tokens_before = estimate_session_tokens(session, tools, estimator);
     let messages = projected_messages(session);
+    let tokens_before = tokens::estimate_context(&messages, tools, estimator) as u32;
     let plan = plan_compaction(&messages, config, estimator)?;
     let prefix_start = system_prefix_start(&messages);
     let mut projected = messages;
@@ -653,8 +664,8 @@ fn try_slice_keep_compaction<S: ContextSession + ?Sized>(
     tools: &[ToolDefinition],
     estimator: &TokenEstimator,
 ) -> Option<CompactionResult> {
-    let tokens_before = estimate_session_tokens(session, tools, estimator);
     let messages = projected_messages(session);
+    let tokens_before = tokens::estimate_context(&messages, tools, estimator) as u32;
     let plan = plan_compaction(&messages, config, estimator)?;
 
     let sliced = build_sliced_messages(&messages, plan.tail_start);
@@ -789,8 +800,8 @@ async fn compact_with_phases<F, Fut>(
     chat: F,
 ) -> Result<Option<CompactionResult>>
 where
-    F: Fn(ModelRequest) -> Fut,
-    Fut: std::future::Future<Output = Result<ModelResponse>>,
+    F: Fn(ChatRequest) -> Fut,
+    Fut: std::future::Future<Output = Result<ChatResponse>>,
 {
     let tokens_before = tokens::estimate_context(messages, tools, estimator) as u32;
 
@@ -806,7 +817,7 @@ where
 
     let prefix_start = system_prefix_start(messages);
     let prefix = messages[prefix_start..plan.tail_start].to_vec();
-    let request = ModelRequest {
+    let request = ChatRequest {
         model: model.to_string(),
         messages: vec![
             Message::system(SUMMARY_SYSTEM_PROMPT),
@@ -929,8 +940,8 @@ pub async fn compact_message_list_with_chat<F, Fut>(
     chat: F,
 ) -> Result<Option<CompactionResult>>
 where
-    F: Fn(ModelRequest) -> Fut,
-    Fut: std::future::Future<Output = Result<ModelResponse>>,
+    F: Fn(ChatRequest) -> Fut,
+    Fut: std::future::Future<Output = Result<ChatResponse>>,
 {
     compact_with_phases(messages, model, config, reason, tools, estimator, chat).await
 }
@@ -942,11 +953,11 @@ pub async fn summarize_messages_with_chat<F, Fut>(
     chat: F,
 ) -> Result<String>
 where
-    F: FnOnce(ModelRequest) -> Fut,
-    Fut: std::future::Future<Output = Result<ModelResponse>>,
+    F: FnOnce(ChatRequest) -> Fut,
+    Fut: std::future::Future<Output = Result<ChatResponse>>,
 {
     let conversation = format_messages_for_summary(messages);
-    let request = ModelRequest {
+    let request = ChatRequest {
         model: model.to_string(),
         messages: vec![
             Message::system(SUMMARY_SYSTEM_PROMPT),
@@ -995,7 +1006,8 @@ pub async fn compact_session<S: ContextSession + ?Sized>(
     let reason = params.reason;
     let tools = params.tools;
     let options = params.options;
-    let tokens_before = estimate_session_tokens(session, tools, estimator);
+    let tokens_before =
+        tokens::estimate_context(&projected_messages(session), tools, estimator) as u32;
     if let Some(hooks) = options.hooks {
         hooks.on_session_before_compact(reason, tokens_before);
     }
@@ -1005,8 +1017,8 @@ pub async fn compact_session<S: ContextSession + ?Sized>(
         return Ok(Some(result));
     }
 
-    let tokens_before = estimate_session_tokens(session, tools, estimator);
     let messages = projected_messages(session);
+    let tokens_before = tokens::estimate_context(&messages, tools, estimator) as u32;
     let plan = match plan_compaction(&messages, config, estimator) {
         Some(plan) => plan,
         None => return Ok(None),
@@ -1049,7 +1061,8 @@ pub async fn compact_session<S: ContextSession + ?Sized>(
         tokens_before,
     );
 
-    let tokens_after = estimate_session_tokens(session, tools, estimator);
+    let tokens_after =
+        tokens::estimate_context(&projected_messages(session), tools, estimator) as u32;
     session.patch_last_compaction_tokens_after(tokens_after);
 
     Ok(Some(CompactionResult {
@@ -1092,8 +1105,8 @@ pub async fn compact_session_forced<S: ContextSession + ?Sized>(
         .await;
     }
 
-    let tokens_before = estimate_session_tokens(session, tools, estimator);
     let messages = projected_messages(session);
+    let tokens_before = tokens::estimate_context(&messages, tools, estimator) as u32;
     let plan = match plan_compaction(&messages, config, estimator) {
         Some(plan) => plan,
         None => {
@@ -1140,7 +1153,8 @@ pub async fn compact_session_forced<S: ContextSession + ?Sized>(
         tokens_before,
     );
 
-    let tokens_after = estimate_session_tokens(session, tools, estimator);
+    let tokens_after =
+        tokens::estimate_context(&projected_messages(session), tools, estimator) as u32;
     session.patch_last_compaction_tokens_after(tokens_after);
 
     Ok(Some(CompactionResult {

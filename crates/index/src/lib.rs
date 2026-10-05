@@ -10,7 +10,6 @@ mod render;
 mod store;
 
 pub use render::DEFAULT_TOKEN_BUDGET;
-pub use store::{refresh as refresh_index, RefreshStats, Symbol, SymbolIndex};
 
 use std::path::Path;
 
@@ -68,7 +67,7 @@ mod tests {
         fs::write(dir.path().join("a.rs"), "pub fn alpha() {}\n").unwrap();
         fs::write(dir.path().join("b.rs"), "pub fn beta() {}\n").unwrap();
 
-        let (_, first) = refresh_index(dir.path()).unwrap();
+        let (_, first) = store::refresh(dir.path()).unwrap();
         assert_eq!(first.parsed, 2);
         assert_eq!(first.cached, 0);
 
@@ -77,7 +76,7 @@ mod tests {
             "pub fn beta() {}\npub fn gamma() {}\n",
         )
         .unwrap();
-        let (index, second) = refresh_index(dir.path()).unwrap();
+        let (index, second) = store::refresh(dir.path()).unwrap();
         assert_eq!(second.parsed, 1);
         assert_eq!(second.cached, 1);
         assert!(index.files["b.rs"].defs.iter().any(|s| s.name == "gamma"));

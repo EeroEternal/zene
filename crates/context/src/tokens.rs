@@ -279,32 +279,6 @@ pub fn estimate_context(
     estimator.estimate_request_tokens(messages, tools) as usize
 }
 
-/// Heuristic token estimate: ~4 characters per token (legacy default).
-#[allow(dead_code)]
-pub fn estimate_chars_as_tokens(text: &str) -> u32 {
-    TokenEstimator::default().estimate_chars_as_tokens(text)
-}
-
-#[allow(dead_code)]
-pub fn estimate_message_tokens(message: &Message) -> u32 {
-    TokenEstimator::default().estimate_message_tokens(message)
-}
-
-#[allow(dead_code)]
-pub fn estimate_messages_tokens(messages: &[Message]) -> u32 {
-    TokenEstimator::default().estimate_messages_tokens(messages)
-}
-
-#[allow(dead_code)]
-pub fn estimate_tools_tokens(tools: &[ToolDefinition]) -> u32 {
-    TokenEstimator::default().estimate_tools_tokens(tools)
-}
-
-#[allow(dead_code)]
-pub fn estimate_request_tokens(messages: &[Message], tools: &[ToolDefinition]) -> u32 {
-    TokenEstimator::default().estimate_request_tokens(messages, tools)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -338,7 +312,7 @@ mod tests {
     #[test]
     fn tool_message_includes_content() {
         let message = Message::tool_result("call_1", "Read", "file contents");
-        assert!(estimate_message_tokens(&message) > 4);
+        assert!(TokenEstimator::default().estimate_message_tokens(&message) > 4);
     }
 
     #[test]
@@ -351,8 +325,10 @@ mod tests {
                 arguments: r#"{"path":"a.rs"}"#.into(),
             }],
         );
+        let est = TokenEstimator::default();
         assert!(
-            estimate_message_tokens(&message) > estimate_message_tokens(&Message::assistant("hi"))
+            est.estimate_message_tokens(&message)
+                > est.estimate_message_tokens(&Message::assistant("hi"))
         );
     }
 
@@ -363,7 +339,7 @@ mod tests {
             description: "Read a file".into(),
             parameters: serde_json::json!({"type": "object"}),
         }];
-        assert!(estimate_tools_tokens(&tools) > 0);
+        assert!(TokenEstimator::default().estimate_tools_tokens(&tools) > 0);
     }
 
     #[test]

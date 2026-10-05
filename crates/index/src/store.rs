@@ -25,6 +25,11 @@ pub struct Symbol {
 pub struct FileSymbols {
     pub hash: String,
     pub language: String,
+    /// Change-detection metadata so refresh can skip re-reading unchanged files.
+    #[serde(default)]
+    pub mtime_ms: u64,
+    #[serde(default)]
+    pub size: u64,
     pub defs: Vec<Symbol>,
     pub refs: Vec<String>,
 }
@@ -58,6 +63,7 @@ pub fn refresh(workdir: &Path) -> Result<(SymbolIndex, RefreshStats)> {
     let source_files = collect_source_files(workdir)?;
     let mut live = BTreeMap::new();
     let mut stats = RefreshStats::default();
+    let mut dirty = false;
 
     for abs in source_files {
         let rel = relative_path(workdir, &abs);
@@ -67,6 +73,21 @@ pub fn refresh(workdir: &Path) -> Result<(SymbolIndex, RefreshStats)> {
         };
         if meta.len() > MAX_FILE_BYTES {
             continue;
+        }
+        let mtime_ms = meta
+            .modified()
+            .ok()
+            .and_then(|m| m.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0);
+        // ponytail: mtime+size change detection (git/rsync style); a same-size
+        // edit within the same mtime tick is missed until mtime moves.
+        if let Some(existing) = index.files.get(&rel) {
+            if existing.size == meta.len() && existing.mtime_ms == mtime_ms {
+                live.insert(rel, existing.clone());
+                stats.cached += 1;
+                continue;
+            }
         }
         let bytes = match fs::read(&abs) {
             Ok(b) => b,
@@ -81,8 +102,14 @@ pub fn refresh(workdir: &Path) -> Result<(SymbolIndex, RefreshStats)> {
         let hash = content_hash(&bytes);
         if let Some(existing) = index.files.get(&rel) {
             if existing.hash == hash {
-                live.insert(rel, existing.clone());
+                // Same content: refresh change-detection metadata so the next
+                // refresh can skip the read entirely.
+                let mut cached = existing.clone();
+                cached.mtime_ms = mtime_ms;
+                cached.size = meta.len();
+                live.insert(rel, cached);
                 stats.cached += 1;
+                dirty = true;
                 continue;
             }
         }
@@ -96,11 +123,14 @@ pub fn refresh(workdir: &Path) -> Result<(SymbolIndex, RefreshStats)> {
                     FileSymbols {
                         hash,
                         language: language.as_str().to_string(),
+                        mtime_ms,
+                        size: meta.len(),
                         defs,
                         refs,
                     },
                 );
                 stats.parsed += 1;
+                dirty = true;
             }
             Err(_) => continue,
         }
@@ -111,8 +141,13 @@ pub fn refresh(workdir: &Path) -> Result<(SymbolIndex, RefreshStats)> {
         .keys()
         .filter(|k| !live.contains_key(*k))
         .count();
+    if stats.removed > 0 {
+        dirty = true;
+    }
     index.files = live;
-    save_index(&path, &index)?;
+    if dirty {
+        save_index(&path, &index)?;
+    }
     Ok((index, stats))
 }
 

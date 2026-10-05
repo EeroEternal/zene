@@ -50,17 +50,62 @@ pub fn checkpoints_dir(session_id: &str) -> PathBuf {
     session_record_dir(session_id).join("compaction_checkpoints")
 }
 
+/// Retention cap: snapshots are full-session copies, so only the newest few
+/// are kept per session.
+/// ponytail: pruning by file mtime (no content reads); raise if `/rewind`
+/// ever needs deeper history.
+const MAX_CHECKPOINTS: usize = 5;
+
+fn write_atomic(path: &Path, raw: &str) -> Result<()> {
+    let tmp = path.with_extension("json.tmp");
+    fs::write(&tmp, raw).with_context(|| format!("write {}", tmp.display()))?;
+    fs::rename(&tmp, path).with_context(|| format!("rename {}", path.display()))?;
+    Ok(())
+}
+
+/// Best-effort retention: drop all but the newest [`MAX_CHECKPOINTS`].
+/// `keep` (the just-written checkpoint, also `LATEST`) is never pruned.
+fn prune_checkpoints(dir: &Path, keep: &str) {
+    let Ok(entries) = fs::read_dir(dir) else {
+        return;
+    };
+    let mut files: Vec<(std::time::SystemTime, PathBuf)> = Vec::new();
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|e| e.to_str()) != Some("json") {
+            continue;
+        }
+        let modified = entry
+            .metadata()
+            .and_then(|m| m.modified())
+            .unwrap_or(std::time::UNIX_EPOCH);
+        files.push((modified, path));
+    }
+    if files.len() <= MAX_CHECKPOINTS {
+        return;
+    }
+    files.sort_by(|a, b| {
+        let a_keep = a.1.file_stem().and_then(|s| s.to_str()) == Some(keep);
+        let b_keep = b.1.file_stem().and_then(|s| s.to_str()) == Some(keep);
+        b_keep.cmp(&a_keep).then_with(|| b.0.cmp(&a.0))
+    });
+    for (_, path) in files.into_iter().skip(MAX_CHECKPOINTS) {
+        let _ = fs::remove_file(path);
+    }
+}
+
 pub fn save_checkpoint(session: &SessionRecord, reason: &str) -> Result<SessionCheckpoint> {
     let dir = checkpoints_dir(&session.meta.id);
     fs::create_dir_all(&dir).context("create compaction_checkpoints dir")?;
     let checkpoint = SessionCheckpoint::from_session(session, reason);
     let path = dir.join(format!("{}.json", checkpoint.id));
-    let raw = serde_json::to_string_pretty(&checkpoint).context("serialize checkpoint")?;
-    fs::write(&path, raw).with_context(|| format!("write checkpoint {}", path.display()))?;
+    let raw = serde_json::to_string(&checkpoint).context("serialize checkpoint")?;
+    write_atomic(&path, &raw)?;
 
     // Keep a pointer to the latest checkpoint for `/rewind`.
     let latest = dir.join("LATEST");
     fs::write(&latest, checkpoint.id.as_bytes()).context("write LATEST checkpoint pointer")?;
+    prune_checkpoints(&dir, &checkpoint.id);
     Ok(checkpoint)
 }
 
@@ -85,27 +130,6 @@ pub fn latest_checkpoint_id(session_id: &str) -> Result<Option<String>> {
     }
 }
 
-pub fn list_checkpoints(session_id: &str) -> Result<Vec<SessionCheckpoint>> {
-    let dir = checkpoints_dir(session_id);
-    if !dir.exists() {
-        return Ok(Vec::new());
-    }
-    let mut out = Vec::new();
-    for entry in fs::read_dir(&dir).context("read checkpoints dir")? {
-        let entry = entry.context("read checkpoint entry")?;
-        let path = entry.path();
-        if path.extension().and_then(|e| e.to_str()) != Some("json") {
-            continue;
-        }
-        let raw = fs::read_to_string(&path).context("read checkpoint file")?;
-        if let Ok(cp) = serde_json::from_str::<SessionCheckpoint>(&raw) {
-            out.push(cp);
-        }
-    }
-    out.sort_by(|a, b| b.created_at.cmp(&a.created_at));
-    Ok(out)
-}
-
 pub fn restore_checkpoint(session: &mut SessionRecord, checkpoint: &SessionCheckpoint) {
     session.messages = checkpoint.messages.clone();
     session.todos = checkpoint.todos.clone();
@@ -118,7 +142,6 @@ pub fn restore_checkpoint(session: &mut SessionRecord, checkpoint: &SessionCheck
         Some(checkpoint.messages.clone()),
     );
     session.event_sequence = session.event_sequence.max(checkpoint.event_sequence);
-    session.todos = checkpoint.todos.clone();
     session.meta.updated_at = Utc::now();
 }
 
@@ -173,6 +196,36 @@ mod tests {
         assert!(
             matches!(session.events.last(), Some(SessionEvent::Rewound { checkpoint_id, .. }) if checkpoint_id == &cp.id)
         );
+        match prev {
+            Some(v) => env::set_var("ZENE_HOME", v),
+            None => env::remove_var("ZENE_HOME"),
+        }
+    }
+
+    #[test]
+    fn checkpoint_pruning_keeps_recent() {
+        let _guard = crate::ZENE_HOME_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let dir = tempfile::tempdir().unwrap();
+        let prev = env::var("ZENE_HOME").ok();
+        env::set_var("ZENE_HOME", dir.path());
+        let mut session = SessionRecord::new(Path::new("."));
+        session.ensure_system_message("sys");
+        for _ in 0..(MAX_CHECKPOINTS + 2) {
+            save_checkpoint(&session, "test").expect("save");
+        }
+        let kept = std::fs::read_dir(checkpoints_dir(&session.meta.id))
+            .unwrap()
+            .flatten()
+            .filter(|e| e.path().extension().and_then(|e| e.to_str()) == Some("json"))
+            .count();
+        assert_eq!(kept, MAX_CHECKPOINTS);
+        // LATEST must always survive pruning and be loadable.
+        let latest = latest_checkpoint_id(&session.meta.id)
+            .unwrap()
+            .expect("latest checkpoint");
+        load_checkpoint(&session.meta.id, &latest).expect("load latest");
         match prev {
             Some(v) => env::set_var("ZENE_HOME", v),
             None => env::remove_var("ZENE_HOME"),

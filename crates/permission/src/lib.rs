@@ -13,7 +13,7 @@ pub use broker::{
     ApprovalBroker, ApprovalRequest, AutoApprovalBroker, SharedApprovalBroker,
     TerminalApprovalBroker,
 };
-pub use cloud_github::{deny_cloud_github_cli, deny_git_cli, deny_git_cli_with_message};
+pub use cloud_github::{deny_cloud_github_cli, deny_git_cli};
 
 /// Shared permission gate used by main agent and subagents.
 pub trait ToolPermission: Send + Sync {
