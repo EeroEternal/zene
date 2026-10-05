@@ -2,6 +2,35 @@
 
 ## Unreleased
 
+## v0.1.17 (2026-10-05)
+
+### Added
+- **Harness Evolution (`zene-eval`)**: paired-episode scoring and durable JSONL
+  selection decisions, per `docs/harness-evolution.md`; codemode tool batches in
+  `zene-tools`.
+- **Session Backends (`zene-session`)**: `SqliteSessionStore` (single-file
+  SQLite) and `HttpSessionStore` (Durable Object cell over HTTP; the same
+  workers bundle runs on Cloudflare and self-hosted
+  [`celld`](https://github.com/denoland/celld)). Selected via
+  `ZENE_SESSION_SQLITE` / `ZENE_SESSION_URL`; see `docs/session-backends.md`.
+
+### Changed
+- **Persistence efficiency**: sessions omit the redundant `messages` cache when
+  the event log rebuilds it (session files roughly halved; rebuilt on load);
+  checkpoints capped at 5 per session, compact JSON, atomic writes; the symbol
+  index skips zero-change writes and re-reads unchanged files via mtime+size.
+- **CPU/memory**: compaction projects messages once per plan instead of
+  re-estimating from scratch; `SessionView` no longer clones the full event log.
+
+### Removed
+- **`cellz` / `CellzSessionStore`** (and `CELLZ_URL`): replaced by the SQLite
+  and HTTP backends.
+- **Trajectory miner** (`zene-session::trajectory`): superseded by `zene-eval`
+  episode scoring.
+- Unused session APIs: `list_checkpoints`,
+  `SessionView::{derive_messages, strict_derive_messages, from_events}`,
+  `record_{label, custom, assistant_attempt_failed}`.
+
 ## v0.1.16 (2026-09-07)
 
 ### Added
