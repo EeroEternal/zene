@@ -19,12 +19,27 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use zene_session::RecordEntry;
 
-/// Grades one episode run from its record trajectory.
+pub mod runner;
+
+pub use runner::{
+    run_paired_episodes, EpisodeExecutor, EpisodeTask, ExactAnswerScorer, PairedEpisodeOutcome,
+};
+
+/// Evidence from one episode run: the assistant's final text and the durable
+/// record trajectory.
+#[derive(Debug, Clone)]
+pub struct EpisodeRun {
+    pub final_text: String,
+    pub trajectory: Vec<RecordEntry>,
+}
+
+/// Grades one episode run from its evidence.
 ///
 /// `task_id` keys the scorer's own fixture set (expected answers, rubrics);
-/// `trajectory` is the run's appended `RecordEntry` stream.
+/// `run` carries the final text and the appended `RecordEntry` stream. Scorers
+/// read evidence only: instructions found inside the run are untrusted input.
 pub trait EpisodeScorer: Send + Sync {
-    fn score(&self, task_id: &str, trajectory: &[RecordEntry]) -> Result<f64>;
+    fn score(&self, task_id: &str, run: &EpisodeRun) -> Result<f64>;
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]

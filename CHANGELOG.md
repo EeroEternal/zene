@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+### Added
+- **Paired episode runner (`zene-eval::runner`)**: `run_paired_episodes` runs a
+  task set twice (incumbent harness first, then candidate) in fresh workdirs
+  with the harness rendered in, scores both runs, and returns paired score sets
+  for `decide_win_margin` / `decide_floor`. Pluggable `EpisodeExecutor` seam;
+  built-in `ExactAnswerScorer`; `EpisodeScorer` now grades `EpisodeRun`
+  (final text + record trajectory).
+- **CLI automation**: `zene eval run --tasks tasks.json --incumbent DIR
+  --candidate DIR [--policy win_margin|floor] [--out decisions.jsonl]` runs the
+  paired loop end to end and appends the durable `DecisionRecord`.
+
 ## v0.1.17 (2026-10-05)
 
 ### Added
