@@ -29,7 +29,7 @@
 | 事实源可回放 | `RecordEntry` 枚举 + `AgentRecordWriter` append-only 记录 | `crates/session/src/record.rs:30,286-343` |
 | 无头运行 | `zene acp` stdio JSON-RPC,yolo 模式自动批准 | `apps/cli/src/main.rs:77-79,188` |
 
-**缺口只有一个**:没有「评估 + 选择」这一层 —— 全仓没有 eval/score 机制(`rg 'eval|score' crates/session/src` 无命中)。树、渲染、隔离启动都只是把现有约定收拢成数据。
+**剩余缺口**:树 + 渲染(P0)与配对 runner(§3.4)尚未实现;「评估 + 选择」一层已落地(`zene-eval`,见 §3.3)。树、渲染、隔离启动都只是把现有约定收拢成数据。
 
 ## 3. 核心对象
 
@@ -75,9 +75,9 @@ struct Mutation { id: String, op: MutationOp, config: Option<...> }
 ### 3.3 评估契约(唯一的新层)
 
 ```rust
-/// 方法侧实现:一次 episode 轨迹 → 分数
+/// 方法侧实现(与 zene-eval 实现一致):一次 episode 轨迹 → 分数
 trait EpisodeScorer {
-    fn score(&self, task: &Task, record: &RecordEntry /* 轨迹 */) -> Result<f64>;
+    fn score(&self, task_id: &str, trajectory: &[RecordEntry]) -> Result<f64>;
 }
 
 /// 机制侧实现:候选 vs 在役,持久可审计
@@ -98,7 +98,7 @@ struct SelectionDecision {
 
 决策记录追加进 session 的 `RecordEntry` 流(或独立 manifest),**与 session-as-source-of-truth 同构:决策是事实,不是日志**。
 
-> 已落地:`crates/eval`(`zene-eval`)提供 `EpisodeScorer`、`SelectionDecision`、`decide_win_margin`/`decide_floor` 和 JSONL 的 `append_decision_record`,含单元测试。配对 runner(§3.4)尚未实现。
+> 已落地:`crates/eval`(`zene-eval`)提供 `EpisodeScorer`、`SelectionDecision`、`decide_win_margin`/`decide_floor` 和 JSONL 的 `append_decision_record`,含单元测试。配对 runner(§3.4)尚未实现。`DecisionRecord`(task_ids、candidate/incumbent tree、baseline_commit、决策)即 §3.5 「manifest 每步一行」的落地形态。
 
 ### 3.4 配对 episode runner
 
@@ -144,6 +144,6 @@ P0 本身独立有价值:树 = 可序列化的 harness 组合,直接服务 `zene
 
 ## 7. 验证记录(verify-design-doc)
 
-- §2 每条现状均出自 `rg` 实测输出,路径与行号如上;其中「无评估层」由 `rg 'eval|score' crates/session/src` 空命中确认
+- §2 每条现状均出自 `rg` 实测输出,路径与行号如上;「评估层」一度缺口(`rg 'eval|score'` 无命中),现已由 `zene-eval` 补上,剩余缺口见 §2
 - 本文无 SQL、无 mermaid(图均为 ASCII)
 - 未验证项:P1 runner 与 `zene acp` yolo 模式的实际隔离性(多任务并发时 `ZENE_HOME` 是否充分隔离)需在 P1 动工时用并发 episode 实测
