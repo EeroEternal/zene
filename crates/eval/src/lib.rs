@@ -19,15 +19,23 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use zene_session::RecordEntry;
 
+pub mod propose;
 pub mod runner;
+pub mod tree;
 
+pub use propose::{parse_mutations, FailureEvidence, Proposer};
 pub use runner::{
-    run_paired_episodes, EpisodeExecutor, EpisodeTask, ExactAnswerScorer, PairedEpisodeOutcome,
+    run_episodes, run_paired_episodes, EpisodeExecutor, EpisodeTask, ExactAnswerScorer,
+    PairedEpisodeOutcome, ScoredEpisode,
+};
+pub use tree::{
+    apply_mutations, HarnessEntry, HarnessKind, HarnessTree, Mutation, MutationOp,
+    DENIED_CONFIG_KEYS,
 };
 
 /// Evidence from one episode run: the assistant's final text and the durable
 /// record trajectory.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EpisodeRun {
     pub final_text: String,
     pub trajectory: Vec<RecordEntry>,

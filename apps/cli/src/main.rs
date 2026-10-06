@@ -1,17 +1,12 @@
 use std::path::PathBuf;
 
-use anyhow::{bail, Context, Result};
-use async_trait::async_trait;
+use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use zene_config::{ensure_home, ZeneConfig};
-use zene_core::{Agent, PromptOptions};
-use zene_eval::{
-    append_decision_record, decide_floor, decide_win_margin, run_paired_episodes, DecisionRecord,
-    EpisodeExecutor, EpisodeRun, EpisodeTask, ExactAnswerScorer,
-};
 use zene_session::{export_session, list_sessions_for_workdir};
 
 mod acp;
+mod eval_cmd;
 
 #[derive(Parser)]
 #[command(
@@ -63,7 +58,7 @@ enum Commands {
     /// Evaluate a harness change with paired episodes (harness evolution)
     Eval {
         #[command(subcommand)]
-        command: EvalCommands,
+        command: eval_cmd::EvalCommands,
     },
     /// Speak Agent Client Protocol (ACP) over stdio JSON-RPC
     Acp,
@@ -73,87 +68,6 @@ enum Commands {
 enum McpCommands {
     /// List configured MCP servers and attempt a short connect
     Doctor,
-}
-
-#[derive(Subcommand)]
-enum EvalCommands {
-    /// Run paired episodes for a task set, decide, and record the decision
-    Run {
-        /// JSON task set: [{"id": "...", "prompt": "...", "expected": "..."}]
-        #[arg(long)]
-        tasks: PathBuf,
-        /// Directory holding the incumbent harness files
-        #[arg(long)]
-        incumbent: PathBuf,
-        /// Directory holding the candidate harness files
-        #[arg(long)]
-        candidate: PathBuf,
-        /// Root for episode workdirs (default: <workdir>/.zene/eval-runs)
-        #[arg(long)]
-        root: Option<PathBuf>,
-        /// Selection policy: win_margin | floor
-        #[arg(long, default_value = "win_margin")]
-        policy: String,
-        /// win_margin: candidate wins must exceed losses by more than this
-        #[arg(long, default_value_t = 0)]
-        margin: i64,
-        /// floor: minimum acceptable score on every task (policy=floor)
-        #[arg(long)]
-        floor: Option<f64>,
-        /// Baseline identity recorded with the decision (e.g. git sha)
-        #[arg(long, default_value = "unspecified")]
-        baseline: String,
-        /// Candidate harness identity recorded with the decision
-        #[arg(long, default_value = "candidate")]
-        candidate_tree: String,
-        /// Incumbent harness identity recorded with the decision
-        #[arg(long, default_value = "incumbent")]
-        incumbent_tree: String,
-        /// Append the decision record (JSONL) to this path
-        #[arg(long)]
-        out: Option<PathBuf>,
-    },
-}
-
-#[derive(serde::Deserialize)]
-struct CliTask {
-    id: String,
-    prompt: String,
-    #[serde(default)]
-    expected: Option<String>,
-}
-
-/// Runs one episode in-process: fresh workdir with the harness rendered in,
-/// yolo permissions, fixed config. Returns the run's evidence.
-struct CoreEpisodeExecutor {
-    config: ZeneConfig,
-}
-
-#[async_trait]
-impl EpisodeExecutor for CoreEpisodeExecutor {
-    async fn run(&self, task: &EpisodeTask, workdir: &std::path::Path) -> Result<EpisodeRun> {
-        let mut agent = Agent::builder(workdir)
-            .config(self.config.clone())
-            .core_tools()
-            .bypass_permissions()
-            .without_mcp()
-            .build()
-            .await?;
-        let final_text = agent
-            .prompt(
-                &task.prompt,
-                PromptOptions {
-                    quiet: true,
-                    ..Default::default()
-                },
-            )
-            .await?;
-        let trajectory = agent.execution_record_writer().read_all()?;
-        Ok(EpisodeRun {
-            final_text,
-            trajectory,
-        })
-    }
 }
 
 fn init_tracing() {
@@ -250,74 +164,7 @@ async fn main() -> Result<()> {
             }
             Ok(())
         }
-        Some(Commands::Eval { command }) => match command {
-            EvalCommands::Run {
-                tasks,
-                incumbent,
-                candidate,
-                root,
-                policy,
-                margin,
-                floor,
-                baseline,
-                candidate_tree,
-                incumbent_tree,
-                out,
-            } => {
-                let config =
-                    ZeneConfig::load(&workdir).map_err(|err| anyhow::anyhow!(err.to_string()))?;
-                let raw = std::fs::read_to_string(&tasks)
-                    .with_context(|| format!("read task set {}", tasks.display()))?;
-                let wire: Vec<CliTask> = serde_json::from_str(&raw).context("parse task set")?;
-                let mut expected = std::collections::BTreeMap::new();
-                let mut task_list = Vec::new();
-                for task in wire {
-                    if let Some(answer) = task.expected {
-                        expected.insert(task.id.clone(), answer);
-                    }
-                    task_list.push(EpisodeTask {
-                        id: task.id,
-                        prompt: task.prompt,
-                    });
-                }
-                let run_root = root.unwrap_or_else(|| workdir.join(".zene/eval-runs"));
-                let executor = CoreEpisodeExecutor { config };
-                let scorer = ExactAnswerScorer::new(expected);
-                let outcome = run_paired_episodes(
-                    &task_list, &incumbent, &candidate, &run_root, &executor, &scorer,
-                )
-                .await?;
-                let decision = match policy.as_str() {
-                    "win_margin" => decide_win_margin(
-                        &outcome.candidate_scores,
-                        &outcome.incumbent_scores,
-                        margin,
-                    )?,
-                    "floor" => decide_floor(
-                        &outcome.candidate_scores,
-                        floor.context("--floor is required for policy=floor")?,
-                    )?,
-                    other => bail!("unknown policy `{other}` (win_margin | floor)"),
-                };
-                println!("task_ids: {:?}", outcome.task_ids);
-                println!("incumbent_scores: {:?}", outcome.incumbent_scores);
-                println!("candidate_scores: {:?}", outcome.candidate_scores);
-                println!("{}", serde_json::to_string_pretty(&decision)?);
-                if let Some(out) = out {
-                    let record = DecisionRecord {
-                        task_ids: outcome.task_ids,
-                        candidate_tree,
-                        incumbent_tree,
-                        decision,
-                        baseline_commit: baseline,
-                        ts: chrono::Utc::now(),
-                    };
-                    append_decision_record(&out, &record)?;
-                    println!("decision record: {}", out.display());
-                }
-                Ok(())
-            }
-        },
+        Some(Commands::Eval { command }) => eval_cmd::dispatch(command, &workdir).await,
         Some(Commands::Acp) => {
             let sandbox_profile = cli.sandbox_profile.or_else(|| {
                 std::env::var("ZENE_SANDBOX_PROFILE")

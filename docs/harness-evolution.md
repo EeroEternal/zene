@@ -29,7 +29,7 @@
 | 事实源可回放 | `RecordEntry` 枚举 + `AgentRecordWriter` append-only 记录 | `crates/session/src/record.rs:30,286-343` |
 | 无头运行 | `zene acp` stdio JSON-RPC,yolo 模式自动批准 | `apps/cli/src/main.rs:77-79,188` |
 
-**剩余缺口**:树 + 渲染(P0)未实现 —— 当前"渲染"是 harness 目录树拷贝(`zene-eval::runner::prepare_workdir`),树与 kind 的数据化仍待 P0。评估、判定、配对 runner 与 CLI(`zene eval run`)均已落地。
+**剩余缺口**:多轮自动循环与周期复查(§3.5 可选层)。P0(树 + 渲染 + mutation 准入)、P1(评估契约 + 配对 runner)、P2(失败驱动 propose)均已落地:树为 `HarnessTree`(4 kind),渲染为 harness 目录文件,提案经严格 JSON 解析 + 准入(`zene-eval::tree`/`propose`),闭环命令 `zene eval evolve`。
 
 ## 3. 核心对象
 
@@ -103,6 +103,8 @@ struct SelectionDecision {
 > 已落地:`crates/eval`(`zene-eval`)提供 `EpisodeScorer`、`EpisodeRun`、`SelectionDecision`、`decide_win_margin`/`decide_floor` 和 JSONL 的 `append_decision_record`,含单元测试。`DecisionRecord`(task_ids、candidate/incumbent tree、baseline_commit、决策)即 §3.5 「manifest 每步一行」的落地形态。内置 `ExactAnswerScorer`(精确最终答案比对,fixture: task_id → 期望答案)。
 
 > 配对 runner(§3.4)已落地:`zene-eval::runner::run_paired_episodes` + `EpisodeExecutor` 接缝 + CLI `zene eval run --tasks ... --incumbent ... --candidate ...`。
+
+> P0/P2 已落地:`HarnessTree`(rules/skill/config/prompt 四 kind,渲染到现有文件约定)+ `apply_mutations` 准入(§3.2 契约逐条实现,含 `DENIED_CONFIG_KEYS` 端点/凭证/权限禁改清单 + skill 名防目录穿越 + frontmatter 校验)+ `Proposer` 接缝与严格 JSON 提案解析(`zene-eval::propose`)。闭环命令 `zene eval evolve --tasks ... --tree tree.json`:失败发现 → LLM 提案 → 准入 → 配对评估 → `DecisionRecord` + `tree.candidate.json`(人工 promote,不自动改基线)。
 
 ### 3.4 配对 episode runner
 

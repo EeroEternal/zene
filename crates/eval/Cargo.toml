@@ -12,6 +12,7 @@ async-trait.workspace = true
 chrono.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+toml.workspace = true
 zene-session = { workspace = true }
 
 [dev-dependencies]
