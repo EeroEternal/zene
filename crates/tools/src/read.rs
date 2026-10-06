@@ -27,6 +27,10 @@ impl Tool for ReadTool {
         "Read"
     }
 
+    fn replay_safe(&self) -> bool {
+        true
+    }
+
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
             name: "Read".to_string(),

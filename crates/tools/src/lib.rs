@@ -2,6 +2,7 @@ mod ask_user;
 mod background;
 mod bash;
 mod builtin;
+mod codemode;
 mod edit;
 mod fetch_url;
 mod glob;
@@ -38,6 +39,7 @@ pub use background::{
 pub use builtin::{
     agent_tools, builtin_tools, core_tools, default_builtin_tools, minimal_tools, tools_for_profile,
 };
+pub use codemode::{parse_codemode, CodemodeCall, CodemodeTool, CODEMODE_TOOL_NAME};
 pub use fetch_url::FetchUrlTool;
 pub use line_endings::{
     detect_line_ending_style, make_carriage_returns_visible, materialize_model_text,
@@ -51,7 +53,9 @@ pub use output_sanitizer::OutputSanitizer;
 pub use permission::{SharedToolPermission, ToolPermission};
 pub use plan_mode::{shared_plan_mode, PlanModeState, SharedPlanMode};
 pub use publish_github::{CloudPublishConfig, PublishGithubTool};
-pub use registry::{Tool, ToolCatalog, ToolContext, ToolRegistry, ToolResult};
+pub use registry::{
+    interrupted_tool_notice, Tool, ToolCatalog, ToolContext, ToolRegistry, ToolResult,
+};
 pub use scope::{RuntimeScope, SessionPersistence, SessionPolicy, ToolPolicy};
 pub use spill_store::{apply_tool_bound_plan, FsToolOutputStore, ToolOutputStore};
 pub use subagent::{SubagentEnv, SubagentProfile, SubagentRunner, DEFAULT_SUBAGENT_MAX_DEPTH};

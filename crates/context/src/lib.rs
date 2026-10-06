@@ -96,9 +96,7 @@ pub use prefire_stub::{prefire_lead_percent, PrefireCache, PrefireState};
 pub use segment_store::{CompactionSegmentStore, CompactionSegmentWrite, FsCompactionSegmentStore};
 pub use session::ContextSession;
 pub use tokens::{
-    estimate_chars_as_tokens, estimate_context, estimate_message_tokens, estimate_messages_tokens,
-    estimate_request_tokens, estimate_tools_tokens, EstimateMode, EstimateProvider,
-    TiktokenEncoding, TokenEstimator,
+    estimate_context, EstimateMode, EstimateProvider, TiktokenEncoding, TokenEstimator,
 };
 pub use two_pass::{
     fingerprint_messages, note_for_pass2, pass2_user_prompt, split_messages_for_two_pass,

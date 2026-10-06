@@ -5,110 +5,11 @@ use std::sync::Arc;
 use anyhow::Result;
 use async_trait::async_trait;
 use futures::Stream;
-use zene_llm::{
-    ChatClient, ChatRequest, ChatResponse, ContextMetadata, Message, StreamEvent, TokenUsage,
-    ToolCall, ToolDefinition,
-};
-
-/// Turn/runtime-facing model request (provider details stay behind adapters).
-#[derive(Debug, Clone)]
-pub struct ModelRequest {
-    pub model: String,
-    pub messages: Vec<Message>,
-    pub tools: Vec<ToolDefinition>,
-    pub stream: bool,
-    pub context: Option<ContextMetadata>,
-    pub reasoning_effort: Option<String>,
-}
-
-#[derive(Debug, Clone)]
-pub struct ModelResponse {
-    pub message: Message,
-    pub usage: Option<TokenUsage>,
-}
-
-impl From<ModelRequest> for ChatRequest {
-    fn from(request: ModelRequest) -> Self {
-        ChatRequest {
-            model: request.model,
-            messages: request.messages,
-            tools: request.tools,
-            stream: request.stream,
-            context: request.context,
-            reasoning_effort: request.reasoning_effort,
-        }
-    }
-}
-
-impl From<ChatRequest> for ModelRequest {
-    fn from(request: ChatRequest) -> Self {
-        ModelRequest {
-            model: request.model,
-            messages: request.messages,
-            tools: request.tools,
-            stream: request.stream,
-            context: request.context,
-            reasoning_effort: request.reasoning_effort,
-        }
-    }
-}
-
-impl From<ModelResponse> for ChatResponse {
-    fn from(response: ModelResponse) -> Self {
-        ChatResponse {
-            message: response.message,
-            usage: response.usage,
-        }
-    }
-}
-
-impl From<ChatResponse> for ModelResponse {
-    fn from(response: ChatResponse) -> Self {
-        ModelResponse {
-            message: response.message,
-            usage: response.usage,
-        }
-    }
-}
+use zene_llm::{ChatClient, ChatRequest, ChatResponse, Message, StreamEvent, ToolCall};
 
 /// Stream item type at the ModelExecutor boundary (provider `StreamEvent` today).
 pub type ModelEvent = StreamEvent;
 pub type ModelStream = Pin<Box<dyn Stream<Item = Result<ModelEvent>> + Send>>;
-
-pub fn build_request(
-    model: &str,
-    messages: Vec<Message>,
-    tools: Vec<ToolDefinition>,
-    stream: bool,
-    context: Option<ContextMetadata>,
-) -> ModelRequest {
-    ModelRequest {
-        model: model.to_string(),
-        messages,
-        tools,
-        stream,
-        context,
-        reasoning_effort: None,
-    }
-}
-
-pub fn build_request_with_reasoning(
-    model: &str,
-    messages: Vec<Message>,
-    tools: Vec<ToolDefinition>,
-    stream: bool,
-    context: Option<ContextMetadata>,
-    reasoning_effort: Option<String>,
-) -> ModelRequest {
-    ModelRequest {
-        model: model.to_string(),
-        messages,
-        tools,
-        stream,
-        context,
-        reasoning_effort,
-    }
-}
 
 #[derive(Debug, Default)]
 pub struct OverflowRetryState {
@@ -128,8 +29,8 @@ impl OverflowRetryState {
 
 #[async_trait]
 pub trait ModelExecutor: Send + Sync {
-    async fn complete(&self, request: ModelRequest) -> Result<ModelResponse>;
-    async fn stream(&self, request: ModelRequest) -> Result<ModelStream>;
+    async fn complete(&self, request: ChatRequest) -> Result<ChatResponse>;
+    async fn stream(&self, request: ChatRequest) -> Result<ModelStream>;
 }
 
 pub struct ChatClientExecutor {
@@ -144,11 +45,11 @@ impl ChatClientExecutor {
 
 #[async_trait]
 impl ModelExecutor for ChatClientExecutor {
-    async fn complete(&self, request: ModelRequest) -> Result<ModelResponse> {
-        Ok(self.client.chat(request.into()).await?.into())
+    async fn complete(&self, request: ChatRequest) -> Result<ChatResponse> {
+        self.client.chat(request).await
     }
-    async fn stream(&self, request: ModelRequest) -> Result<ModelStream> {
-        self.client.chat_stream(request.into()).await
+    async fn stream(&self, request: ChatRequest) -> Result<ModelStream> {
+        self.client.chat_stream(request).await
     }
 }
 
@@ -264,13 +165,13 @@ mod tests {
     struct FakeExecutor;
     #[async_trait]
     impl ModelExecutor for FakeExecutor {
-        async fn complete(&self, request: ModelRequest) -> Result<ModelResponse> {
-            Ok(ModelResponse {
+        async fn complete(&self, request: ChatRequest) -> Result<ChatResponse> {
+            Ok(ChatResponse {
                 message: Message::assistant(request.messages.len().to_string()),
                 usage: None,
             })
         }
-        async fn stream(&self, _request: ModelRequest) -> Result<ModelStream> {
+        async fn stream(&self, _request: ChatRequest) -> Result<ModelStream> {
             Ok(Box::pin(stream::iter([Ok(StreamEvent::Done {
                 usage: None,
             })])))
@@ -279,13 +180,14 @@ mod tests {
 
     #[tokio::test]
     async fn fake_executor_covers_boundaries() {
-        let request = build_request(
-            "fake",
-            vec![Message::user("hello")],
-            Vec::new(),
-            false,
-            None,
-        );
+        let request = ChatRequest {
+            model: "fake".into(),
+            messages: vec![Message::user("hello")],
+            tools: Vec::new(),
+            stream: false,
+            context: None,
+            reasoning_effort: None,
+        };
         let response = FakeExecutor.complete(request.clone()).await.unwrap();
         assert_eq!(response.message.content.as_deref(), Some("1"));
         let mut stream = FakeExecutor.stream(request).await.unwrap();
@@ -293,24 +195,6 @@ mod tests {
             stream.next().await.unwrap().unwrap(),
             StreamEvent::Done { usage: None }
         ));
-    }
-
-    #[test]
-    fn model_request_round_trips_chat_request() {
-        let model = ModelRequest {
-            model: "m".into(),
-            messages: vec![Message::user("hi")],
-            tools: Vec::new(),
-            stream: true,
-            context: None,
-            reasoning_effort: Some("high".into()),
-        };
-        let chat: ChatRequest = model.clone().into();
-        let back: ModelRequest = chat.into();
-        assert_eq!(back.model, "m");
-        assert_eq!(back.messages.len(), 1);
-        assert!(back.stream);
-        assert_eq!(back.reasoning_effort.as_deref(), Some("high"));
     }
 
     #[test]

@@ -21,6 +21,10 @@ struct RepoMapArgs {
 
 #[async_trait]
 impl Tool for RepoMapTool {
+    fn replay_safe(&self) -> bool {
+        true
+    }
+
     fn name(&self) -> &str {
         "RepoMap"
     }

@@ -13,8 +13,8 @@ use crate::assemble::{
     assemble_outbound, delivery_mode_from_env, stable_system_boundary, DeliveryMode,
 };
 use crate::compaction::{
-    apply_steps_truncate_pass, compact_session, compact_session_forced, is_context_overflow_error,
-    CompactionOptions, CompactionParams, CompactionResult,
+    apply_steps_truncate_pass, compact_session, compact_session_forced, degrade_oldest_messages,
+    is_context_overflow_error, CompactionOptions, CompactionParams, CompactionResult,
 };
 use crate::config::CompactionConfig;
 use crate::context_water::ContextWaterLevel;
@@ -821,6 +821,17 @@ impl ContextEngine {
                 }
                 Err(err) => {
                     warn!(error = %err, "overflow compact failed");
+                    if degrade_oldest_messages(deps.session.messages_mut()) {
+                        info!(
+                            "overflow compact failed; dropped oldest messages and will retry once"
+                        );
+                        deps.session.ensure_system_message(deps.system_prompt);
+                        return Ok(OverflowHandleResult {
+                            retry: true,
+                            compaction: None,
+                            events,
+                        });
+                    }
                     self.water.suppress_auto_compact();
                     return Err(err);
                 }

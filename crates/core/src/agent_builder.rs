@@ -430,20 +430,35 @@ impl AgentBuilder {
             tool_dedup: ToolDedup::new(),
             hooks,
             record_writer,
-            session_store: self.session_store.unwrap_or_else(|| {
-                if let Ok(url) = std::env::var("CELLZ_URL") {
-                    if !url.is_empty() {
-                        return Arc::new(zene_session::CellzSessionStore::new(url));
-                    }
-                }
-                Arc::new(FileSessionStore)
-            }),
+            session_store: match self.session_store {
+                Some(store) => store,
+                None => default_session_store()?,
+            },
             mcp,
             background: self.background.unwrap_or_else(shared_background_tasks),
             approval_broker: self.approval_broker,
             runtime_approval_waiters: false,
         })
     }
+}
+
+/// Default session store picked from the environment:
+/// `ZENE_SESSION_URL` targets a Durable Object / `celld` cell over HTTP
+/// (contract and reference worker: `docs/session-backends.md`),
+/// `ZENE_SESSION_SQLITE` a local SQLite file; otherwise one JSON file per
+/// session under `~/.zene/sessions`.
+fn default_session_store() -> Result<Arc<dyn SessionStore>> {
+    if let Ok(url) = std::env::var("ZENE_SESSION_URL") {
+        if !url.is_empty() {
+            return Ok(Arc::new(zene_session::HttpSessionStore::new(url)));
+        }
+    }
+    if let Ok(path) = std::env::var("ZENE_SESSION_SQLITE") {
+        if !path.is_empty() {
+            return Ok(Arc::new(zene_session::SqliteSessionStore::open(&path)?));
+        }
+    }
+    Ok(Arc::new(FileSessionStore))
 }
 
 pub(crate) fn permission_rules_from_config(config: &ZeneConfig) -> Vec<PermissionRule> {

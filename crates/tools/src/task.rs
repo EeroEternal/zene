@@ -23,6 +23,8 @@ struct TaskArgs {
     cwd: Option<String>,
     #[serde(default)]
     run_in_background: bool,
+    #[serde(default)]
+    resume_task_id: Option<String>,
 }
 
 #[async_trait]
@@ -54,6 +56,10 @@ impl Tool for TaskTool {
                     "run_in_background": {
                         "type": "boolean",
                         "description": "If true, start the subagent in the background and return a task_id immediately"
+                    },
+                    "resume_task_id": {
+                        "type": "string",
+                        "description": "Continue a finished subagent. The previous report is included and the same task id is reused."
                     }
                 },
                 "required": ["prompt"]
@@ -82,16 +88,29 @@ impl Tool for TaskTool {
             });
         }
 
+        let prompt = match resume_prompt(ctx, &args) {
+            Ok(prompt) => prompt,
+            Err(content) => {
+                return Ok(ToolResult {
+                    content,
+                    is_error: true,
+                });
+            }
+        };
+
         if args.run_in_background {
-            return spawn_background_task(ctx, &args.prompt, profile, args.cwd.as_deref()).await;
+            return spawn_background_task(
+                ctx,
+                &prompt,
+                profile,
+                args.cwd.as_deref(),
+                args.resume_task_id,
+            )
+            .await;
         }
 
         let cwd = args.cwd.as_deref().map(Path::new);
-        match env
-            .runner
-            .run_subagent(&args.prompt, profile, cwd, ctx)
-            .await
-        {
+        match env.runner.run_subagent(&prompt, profile, cwd, ctx).await {
             Ok(text) => Ok(ToolResult {
                 content: format_subagent_report(profile, &text),
                 is_error: false,
@@ -104,11 +123,35 @@ impl Tool for TaskTool {
     }
 }
 
+fn resume_prompt(ctx: &ToolContext, args: &TaskArgs) -> Result<String, String> {
+    let Some(id) = args.resume_task_id.as_deref() else {
+        return Ok(args.prompt.clone());
+    };
+    let Some(store) = ctx.background.as_ref() else {
+        return Err("Background tasks are not available in this context.".into());
+    };
+    let task = store
+        .lock()
+        .get(id)
+        .ok_or_else(|| format!("No subagent task `{id}`."))?;
+    if task.kind != BackgroundTaskKind::Subagent {
+        return Err(format!("Task `{id}` is not a subagent."));
+    }
+    if task.status == BackgroundTaskStatus::Running {
+        return Err(format!("Subagent `{id}` is still running."));
+    }
+    Ok(format!(
+        "Previous subagent result for `{id}`:\n{}\n\nContinue with this instruction:\n{}",
+        task.output, args.prompt
+    ))
+}
+
 async fn spawn_background_task(
     ctx: &ToolContext,
     prompt: &str,
     profile: SubagentProfile,
     cwd: Option<&str>,
+    resume_task_id: Option<String>,
 ) -> Result<ToolResult> {
     let Some(store) = ctx.background.clone() else {
         return Ok(ToolResult {
@@ -123,7 +166,7 @@ async fn spawn_background_task(
         });
     };
 
-    let id = BackgroundTaskStore::alloc_id("task");
+    let id = resume_task_id.unwrap_or_else(|| BackgroundTaskStore::alloc_id("task"));
     let cancel = CancellationToken::new();
     let label = format!("[{profile:?}] {}", truncate(prompt, 120));
     store.lock().insert_running(

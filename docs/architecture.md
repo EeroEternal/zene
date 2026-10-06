@@ -80,7 +80,6 @@ This document defines the system architectural model, crate component boundaries
   - Local process isolation based on Keel. Enforces workspace confinement, symlink escape checks, sensitive path deny rules (`.env*`, `.git/`, SSH/cloud credentials), and network egress rules.
 - **`crates/tools`**:
   - Built-in agent tools: `Read`, `Write`, `Edit`, `Bash`, `Task`, `TaskOutput`, `WebSearch`, `TodoWrite`.
-- **`crates/tool-runtime`**:
   - Large tool output spilling, paging, and output bound enforcement.
 - **`crates/permission`**:
   - Fine-grained permission gates (allow / deny / ask), pattern-based matching, and interactive approval broker interfaces.
@@ -94,7 +93,7 @@ This document defines the system architectural model, crate component boundaries
 - **`crates/config`**:
   - TOML configuration loader (`~/.zene/config.toml` + project `.zene/config.toml` + environment variable overrides).
 - **`crates/session`**:
-  - Append-only event-sourced conversation transcript store, checkpoint snapshots, rewind operations, and Cellz storage engine.
+  - Append-only event-sourced conversation transcript store, checkpoint snapshots, rewind operations, and pluggable session stores (file, SQLite, HTTP Durable Object cell).
 
 ## 3. Core Design Principles
 

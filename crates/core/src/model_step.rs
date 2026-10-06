@@ -2,9 +2,8 @@
 //!
 //! Wave 14: the default turn path still enters via Agent wiring, but the
 //! overflow-retry / stream assembly loop lives here (parallel to
-//! [`crate::tool_executor::DefaultToolExecutor`] for tools). Request type
-//! remains [`zene_model_executor::ModelRequest`]; providers still see `ChatRequest`
-//! inside [`zene_model_executor::ChatClientExecutor`].
+//! [`crate::tool_executor::DefaultToolExecutor`] for tools). Request type is the
+//! provider [`zene_llm::ChatRequest`] end to end.
 
 use std::io::{self, Write};
 use std::path::Path;
@@ -19,8 +18,10 @@ use zene_context::{
     ContextDeps, ContextEngine, ContextModel, EstimateProvider, PrefireClientFactory, StepContext,
     TokenEstimator,
 };
-use zene_llm::{ChatClient, Message, StreamEvent, TokenUsage, ToolDefinition};
-use zene_model_executor::{ModelExecutor, ModelRequest};
+#[cfg(test)]
+use zene_llm::ChatResponse;
+use zene_llm::{ChatClient, ChatRequest, Message, StreamEvent, TokenUsage, ToolDefinition};
+use zene_model_executor::ModelExecutor;
 use zene_session::{AgentRecordWriter, RecordEntry, SessionRecord};
 use zene_tools::{SharedBackgroundTasks, SharedTodoStore};
 use zene_turn::PreparedContext;
@@ -96,14 +97,14 @@ async fn run_llm_step(
             "llm step context estimate"
         );
 
-        let request = model_executor::build_request_with_reasoning(
-            &deps.config.model,
-            messages.clone(),
-            tools.to_vec(),
-            options.stream,
-            Some(metadata.clone()),
-            deps.config.reasoning_effort.clone(),
-        );
+        let request = ChatRequest {
+            model: deps.config.model.clone(),
+            messages: messages.clone(),
+            tools: tools.to_vec(),
+            stream: options.stream,
+            context: Some(metadata.clone()),
+            reasoning_effort: deps.config.reasoning_effort.clone(),
+        };
 
         let result = if options.stream {
             run_streaming_step(deps.model_executor, request, options, cancel).await
@@ -181,7 +182,7 @@ async fn recover_overflow(
 
 pub(crate) async fn run_streaming_step(
     executor: &dyn ModelExecutor,
-    request: ModelRequest,
+    request: ChatRequest,
     options: &PromptOptions,
     cancel: Option<&CancellationToken>,
 ) -> Result<(Message, Option<TokenUsage>)> {
@@ -284,14 +285,11 @@ mod tests {
 
     #[async_trait]
     impl ModelExecutor for TextThenDone {
-        async fn complete(
-            &self,
-            _request: ModelRequest,
-        ) -> Result<zene_model_executor::ModelResponse> {
+        async fn complete(&self, _request: ChatRequest) -> Result<ChatResponse> {
             unreachable!("complete not used")
         }
 
-        async fn stream(&self, _request: ModelRequest) -> Result<ModelStream> {
+        async fn stream(&self, _request: ChatRequest) -> Result<ModelStream> {
             Ok(Box::pin(futures::stream::iter(vec![
                 Ok(StreamEvent::TextDelta("hi".into())),
                 Ok(StreamEvent::Done { usage: None }),
@@ -306,7 +304,7 @@ mod tests {
             quiet: true,
             ..PromptOptions::default()
         };
-        let request = ModelRequest {
+        let request = ChatRequest {
             model: "test".into(),
             messages: vec![],
             tools: vec![],

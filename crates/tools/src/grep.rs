@@ -19,6 +19,10 @@ struct GrepArgs {
 
 #[async_trait]
 impl Tool for GrepTool {
+    fn replay_safe(&self) -> bool {
+        true
+    }
+
     fn name(&self) -> &str {
         "Grep"
     }

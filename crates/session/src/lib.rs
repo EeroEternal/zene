@@ -1,9 +1,9 @@
-mod cellz;
 mod checkpoint;
+mod http_store;
 mod paths;
 mod record;
+mod sqlite_store;
 mod todo;
-pub mod trajectory;
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -17,17 +17,14 @@ use zene_llm::Message;
 /// Current event-backed conversation schema. Older records may omit this field.
 pub const CURRENT_CONVERSATION_SCHEMA_VERSION: u16 = 1;
 
-pub use cellz::CellzSessionStore;
 pub use checkpoint::{
-    fork_session, latest_checkpoint_id, list_checkpoints, load_checkpoint, restore_checkpoint,
-    save_checkpoint, SessionCheckpoint,
+    fork_session, latest_checkpoint_id, load_checkpoint, restore_checkpoint, save_checkpoint,
+    SessionCheckpoint,
 };
+pub use http_store::HttpSessionStore;
 pub use paths::{sessions_dir, workdir_slug, zene_home};
+pub use sqlite_store::SqliteSessionStore;
 pub use todo::{TodoItem, TodoStatus};
-pub use trajectory::{
-    CorrectionPattern, LessonCandidate, SessionTrajectoryMiningReport, ToolChurnPattern,
-    TrajectoryCorpusMiner,
-};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SessionMeta {
@@ -206,6 +203,33 @@ pub enum SessionEvent {
         name: String,
         value: String,
     },
+    /// Tool schema set changed after the session started. Projection keeps the
+    /// stable system prefix and records only the delta.
+    ToolLoadoutChanged {
+        #[serde(default)]
+        sequence: u64,
+        id: String,
+        created_at: DateTime<Utc>,
+        added: Vec<String>,
+        removed: Vec<String>,
+    },
+    /// A turn ended because the process stopped before a normal completion.
+    TurnInterrupted {
+        #[serde(default)]
+        sequence: u64,
+        id: String,
+        turn_id: String,
+        created_at: DateTime<Utc>,
+        reason: String,
+    },
+    /// Host submit id. A repeated id is the same submission.
+    PromptAccepted {
+        #[serde(default)]
+        sequence: u64,
+        id: String,
+        created_at: DateTime<Utc>,
+        request_id: String,
+    },
     /// Extensible session fact for hosts that need durable non-message data.
     Custom {
         #[serde(default)]
@@ -216,7 +240,7 @@ pub enum SessionEvent {
         value: serde_json::Value,
     },
     /// Record a failed or cancelled assistant attempt. This is durable for audit
-    /// and trajectory inspection, but does NOT project into conversation messages.
+    /// and offline inspection, but does NOT project into conversation messages.
     AssistantAttemptFailed {
         #[serde(default)]
         sequence: u64,
@@ -267,8 +291,6 @@ impl ProjectionFallbackReason {
 #[derive(Debug, Clone)]
 pub struct SessionView {
     pub messages: Vec<Message>,
-    /// Complete append-only history retained for inspection and recovery.
-    pub events: Vec<SessionEvent>,
     /// Events on the active path, including the shared parent history and
     /// branch-local suffix. This is explicit even when it currently equals the
     /// complete history for a materialized fork.
@@ -283,32 +305,8 @@ pub struct SessionView {
 }
 
 impl SessionView {
-    /// Pure-function derivation of messages from active events without any fallback.
-    /// Returns Err if the event log cannot independently reconstruct the messages.
-    pub fn strict_derive_messages(
-        events: &[SessionEvent],
-        session_id: Option<&str>,
-    ) -> std::result::Result<Vec<Message>, ProjectionFallbackReason> {
-        let view = Self::try_from_events(events, &[], session_id)?;
-        Ok(view.messages)
-    }
-
-    /// Derive conversation messages purely from the active event log.
-    /// If incomplete, falls back to the provided fallback slice.
-    pub fn derive_messages(
-        events: &[SessionEvent],
-        fallback: &[Message],
-        session_id: Option<&str>,
-    ) -> Vec<Message> {
-        Self::from_events_for_session(events, fallback, session_id).messages
-    }
-
-    pub fn from_events(events: &[SessionEvent], fallback: &[Message]) -> Self {
-        Self::from_events_for_session(events, fallback, None)
-    }
-
     /// Return the event-backed projection or an error when compatibility fallback
-    /// would be required. Legacy callers should continue using [`Self::from_events`].
+    /// would be required. Legacy callers should continue using [`Self::from_events_for_session`].
     pub fn try_from_events(
         events: &[SessionEvent],
         fallback: &[Message],
@@ -444,7 +442,6 @@ impl SessionView {
         }
         Self {
             messages,
-            events: events.to_vec(),
             active_events,
             active_branch_id,
             active_path_start_sequence,
@@ -479,8 +476,11 @@ impl SessionStore for FileSessionStore {
     fn save(&self, session: &SessionRecord) -> Result<()> {
         fs::create_dir_all(sessions_dir()).context("create sessions dir")?;
         let path = session_path(&session.meta.id);
-        let raw = serde_json::to_string_pretty(session).context("serialize session")?;
-        fs::write(path, raw).context("write session file")?;
+        let raw = serde_json::to_string(session).context("serialize session")?;
+        // Atomic replace so a crash mid-write cannot truncate the session.
+        let tmp = format!("{}.tmp", path.display());
+        fs::write(&tmp, &raw).context("write session tmp file")?;
+        fs::rename(&tmp, &path).context("replace session file")?;
         Ok(())
     }
 
@@ -497,7 +497,7 @@ impl SessionStore for FileSessionStore {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct SessionRecord {
     pub meta: SessionMeta,
     pub messages: Vec<Message>,
@@ -516,11 +516,55 @@ pub struct SessionRecord {
     #[serde(default)]
     pub todos: Vec<TodoItem>,
     /// Last observed context occupancy percent (0..=100).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub context_window_usage: Option<u8>,
     /// Last observed effective prompt tokens used for water-level checks.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub context_tokens_used: Option<u32>,
+}
+
+impl Serialize for SessionRecord {
+    fn serialize<S: serde::Serializer>(
+        &self,
+        serializer: S,
+    ) -> std::result::Result<S::Ok, S::Error> {
+        // Slim persistence: events are the conversation SoT, so the
+        // `messages` cache is only written when the event log cannot rebuild
+        // it exactly (legacy or drifted records). `parse_session_raw`
+        // rehydrates the cache from events on load.
+        let cache_redundant = SessionView::try_from_events(&self.events, &[], Some(&self.meta.id))
+            .is_ok_and(|view| view.messages == self.messages);
+        let messages: &[Message] = if cache_redundant { &[] } else { &self.messages };
+
+        // ponytail: field list mirrors SessionRecord; keep in sync on additions.
+        #[derive(Serialize)]
+        struct Disk<'a> {
+            meta: &'a SessionMeta,
+            messages: &'a [Message],
+            conversation_schema_version: u16,
+            events: &'a [SessionEvent],
+            event_sequence: u64,
+            compactions: &'a [CompactionEntry],
+            todos: &'a [TodoItem],
+            #[serde(skip_serializing_if = "Option::is_none")]
+            context_window_usage: Option<u8>,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            context_tokens_used: Option<u32>,
+        }
+
+        Disk {
+            meta: &self.meta,
+            messages,
+            conversation_schema_version: self.conversation_schema_version,
+            events: &self.events,
+            event_sequence: self.event_sequence,
+            compactions: &self.compactions,
+            todos: &self.todos,
+            context_window_usage: self.context_window_usage,
+            context_tokens_used: self.context_tokens_used,
+        }
+        .serialize(serializer)
+    }
 }
 
 impl SessionEvent {
@@ -571,6 +615,15 @@ impl SessionEvent {
             | Self::Label {
                 sequence: value, ..
             }
+            | Self::ToolLoadoutChanged {
+                sequence: value, ..
+            }
+            | Self::TurnInterrupted {
+                sequence: value, ..
+            }
+            | Self::PromptAccepted {
+                sequence: value, ..
+            }
             | Self::Custom {
                 sequence: value, ..
             }
@@ -601,6 +654,9 @@ impl SessionEvent {
             | Self::BranchForked { sequence, .. }
             | Self::BranchSummary { sequence, .. }
             | Self::Label { sequence, .. }
+            | Self::ToolLoadoutChanged { sequence, .. }
+            | Self::TurnInterrupted { sequence, .. }
+            | Self::PromptAccepted { sequence, .. }
             | Self::Custom { sequence, .. }
             | Self::AssistantAttemptFailed { sequence, .. }
             | Self::Rewound { sequence, .. } => *sequence,
@@ -642,6 +698,16 @@ impl SessionRecord {
     /// when the candidate can be projected without materialized fallback.
     /// Legacy compaction, rewind, and incomplete event logs therefore remain
     /// legacy records until a future migration can reconstruct their facts.
+    /// Rebuild the materialized `messages` cache from the event log after a
+    /// slim load; persisted sessions omit the cache when events rebuild it.
+    fn rehydrate_messages_cache(&mut self) {
+        if !self.messages.is_empty() || self.events.is_empty() {
+            return;
+        }
+        self.messages =
+            SessionView::from_events_for_session(&self.events, &[], Some(&self.meta.id)).messages;
+    }
+
     pub fn migrate_to_event_backed(&mut self) -> bool {
         if self.is_event_backed() {
             return false;
@@ -911,6 +977,46 @@ impl SessionRecord {
         self.meta.updated_at = Utc::now();
     }
 
+    pub fn record_tool_loadout_changed(&mut self, added: &[String], removed: &[String]) {
+        self.append_event(SessionEvent::ToolLoadoutChanged {
+            sequence: 0,
+            id: Uuid::new_v4().to_string(),
+            created_at: Utc::now(),
+            added: added.to_vec(),
+            removed: removed.to_vec(),
+        });
+        self.meta.updated_at = Utc::now();
+    }
+
+    pub fn record_turn_interrupted(&mut self, turn_id: &str, reason: &str) {
+        self.append_event(SessionEvent::TurnInterrupted {
+            sequence: 0,
+            id: Uuid::new_v4().to_string(),
+            turn_id: turn_id.to_string(),
+            created_at: Utc::now(),
+            reason: reason.to_string(),
+        });
+        self.meta.updated_at = Utc::now();
+    }
+
+    /// Returns false when `request_id` was already accepted on this session.
+    pub fn claim_prompt_request(&mut self, request_id: &str) -> bool {
+        let seen = self.events.iter().any(|event| {
+            matches!(event, SessionEvent::PromptAccepted { request_id: existing, .. } if existing == request_id)
+        });
+        if seen {
+            return false;
+        }
+        self.append_event(SessionEvent::PromptAccepted {
+            sequence: 0,
+            id: Uuid::new_v4().to_string(),
+            created_at: Utc::now(),
+            request_id: request_id.to_string(),
+        });
+        self.meta.updated_at = Utc::now();
+        true
+    }
+
     pub fn record_model_changed(&mut self, model: &str) {
         self.append_event(SessionEvent::ModelChanged {
             sequence: 0,
@@ -943,56 +1049,6 @@ impl SessionRecord {
             summary: summary.to_string(),
         });
         self.meta.updated_at = Utc::now();
-    }
-
-    /// Append a durable label fact. Repeated names intentionally preserve the
-    /// complete label history; consumers choose the latest value if needed.
-    pub fn record_label(&mut self, name: &str, value: &str) {
-        self.append_event(SessionEvent::Label {
-            sequence: 0,
-            id: Uuid::new_v4().to_string(),
-            created_at: Utc::now(),
-            name: name.to_string(),
-            value: value.to_string(),
-        });
-        self.meta.updated_at = Utc::now();
-    }
-
-    /// Append a durable host-defined fact without making it part of LLM context.
-    pub fn record_custom(&mut self, name: &str, value: serde_json::Value) {
-        self.append_event(SessionEvent::Custom {
-            sequence: 0,
-            id: Uuid::new_v4().to_string(),
-            created_at: Utc::now(),
-            name: name.to_string(),
-            value,
-        });
-        self.meta.updated_at = Utc::now();
-    }
-
-    /// Record an attempt failure without polluting conversation messages.
-    pub fn record_assistant_attempt_failed(
-        &mut self,
-        turn_id: Option<&str>,
-        step_id: Option<&str>,
-        error: &str,
-        duration_ms: Option<u64>,
-    ) -> ConversationEventIdentity {
-        let id = Uuid::new_v4().to_string();
-        self.append_event(SessionEvent::AssistantAttemptFailed {
-            sequence: 0,
-            id: id.clone(),
-            turn_id: turn_id.map(str::to_string),
-            step_id: step_id.map(str::to_string),
-            created_at: Utc::now(),
-            error: error.to_string(),
-            duration_ms,
-        });
-        self.meta.updated_at = Utc::now();
-        ConversationEventIdentity {
-            id,
-            sequence: self.event_sequence,
-        }
     }
 
     pub fn record_rewound(&mut self, checkpoint_id: &str) {
@@ -1263,6 +1319,7 @@ pub fn session_path(id: &str) -> PathBuf {
 pub fn parse_session_raw(raw: &str, fallback_id: Option<&str>) -> Result<SessionRecord> {
     if let Ok(mut record) = serde_json::from_str::<SessionRecord>(raw) {
         record.normalize_event_sequence();
+        record.rehydrate_messages_cache();
         return Ok(record);
     }
 
@@ -1405,7 +1462,7 @@ pub fn list_sessions_for_workdir(workdir: &Path) -> Result<Vec<SessionMeta>> {
             sessions.push(record.meta);
         }
     }
-    sessions.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+    sessions.sort_by_key(|a| std::cmp::Reverse(a.updated_at));
     Ok(sessions)
 }
 
@@ -1619,22 +1676,12 @@ mod tests {
     fn session_metadata_facts_are_append_only_and_excluded_from_context() {
         let mut session = SessionRecord::new(Path::new("."));
         session.push_message(Message::user("hello"));
-        session.record_label("topic", "event-tree");
-        session.record_custom("host_state", serde_json::json!({"expanded": true}));
         let before = session.event_sequence;
         session.record_branch_summary("branch-1", "Continue from this point.");
 
         assert_eq!(session.event_sequence, before + 1);
         assert!(matches!(
             session.events[1],
-            SessionEvent::Label { ref name, ref value, .. } if name == "topic" && value == "event-tree"
-        ));
-        assert!(matches!(
-            session.events[2],
-            SessionEvent::Custom { ref name, ref value, .. } if name == "host_state" && value["expanded"] == true
-        ));
-        assert!(matches!(
-            session.events[3],
             SessionEvent::BranchSummary { ref branch_id, ref summary, .. }
                 if branch_id == "branch-1" && summary == "Continue from this point."
         ));
@@ -2212,52 +2259,45 @@ mod tests {
     }
 
     #[test]
-    fn assistant_attempt_failed_is_durable_but_excluded_from_messages() {
+    fn slim_persistence_drops_redundant_cache_and_rehydrates_on_load() {
         let mut session = SessionRecord::new(Path::new("."));
-        session.push_message(Message::user("do something"));
-        let attempt = session.record_assistant_attempt_failed(
-            Some("turn-1"),
-            Some("step-1"),
-            "Rate limit reached or cancelled",
-            Some(120),
-        );
-        assert_eq!(session.events.len(), 2);
-        assert_eq!(attempt.sequence, 2);
+        session.ensure_system_message("sys");
+        session.push_message(Message::user("hi"));
+        session.push_message(Message::assistant("hello"));
 
-        // Assert message projection excludes the failed attempt
-        let view = session.view();
-        assert_eq!(view.messages.len(), 1);
-        assert_eq!(view.messages[0].content, Some("do something".into()));
-        assert!(!view.used_materialized_fallback);
+        // Event-backed sessions persist without the redundant messages cache.
+        let raw = serde_json::to_string(&session).unwrap();
+        let value: serde_json::Value = serde_json::from_str(&raw).unwrap();
+        assert_eq!(value["messages"], serde_json::json!([]));
 
-        // Strict pure-function derivation gives exact same clean history
-        let derived = SessionView::strict_derive_messages(&session.events, None)
-            .expect("strict derive succeeds");
-        assert_eq!(derived.len(), 1);
-        assert_eq!(derived[0].content, Some("do something".into()));
+        // Load rebuilds the cache from the event log.
+        let loaded = parse_session_raw(&raw, Some(&session.meta.id)).unwrap();
+        assert_eq!(loaded.messages, session.messages);
 
-        // Push successful message after attempt failure
-        session.push_message(Message::assistant("successful reply"));
-        let view_after = session.view();
-        assert_eq!(view_after.messages.len(), 2);
-        assert_eq!(
-            view_after.messages[1].content,
-            Some("successful reply".into())
-        );
+        // Cache-only legacy records keep their messages on disk.
+        let mut legacy = SessionRecord::new(Path::new("."));
+        legacy.messages.push(Message::user("cache only"));
+        let raw_legacy = serde_json::to_string(&legacy).unwrap();
+        let value_legacy: serde_json::Value = serde_json::from_str(&raw_legacy).unwrap();
+        assert_eq!(value_legacy["messages"].as_array().unwrap().len(), 1);
+        let loaded_legacy = parse_session_raw(&raw_legacy, None).unwrap();
+        assert_eq!(loaded_legacy.messages, legacy.messages);
     }
 
     #[test]
-    fn strict_derive_messages_deterministic_and_idempotent() {
+    fn event_projection_is_deterministic_and_idempotent() {
         let mut session = SessionRecord::new(Path::new("."));
         session.push_message(Message::system("system prompt"));
         session.push_message(Message::user("query 1"));
         session.push_message(Message::assistant("reply 1"));
         session.push_message(Message::user("query 2"));
 
-        let derived_1 =
-            SessionView::strict_derive_messages(&session.events, None).expect("first derive");
-        let derived_2 =
-            SessionView::strict_derive_messages(&session.events, None).expect("second derive");
+        let derived_1 = SessionView::try_from_events(&session.events, &[], None)
+            .expect("first derive")
+            .messages;
+        let derived_2 = SessionView::try_from_events(&session.events, &[], None)
+            .expect("second derive")
+            .messages;
 
         assert_eq!(
             serde_json::to_vec(&derived_1).unwrap(),
