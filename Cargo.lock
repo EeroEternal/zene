@@ -4158,7 +4158,9 @@ version = "0.1.17"
 dependencies = [
  "anyhow",
  "async-trait",
+ "chrono",
  "clap",
+ "serde",
  "serde_json",
  "tokio",
  "tokio-util",
@@ -4168,6 +4170,7 @@ dependencies = [
  "zene-agent-runtime",
  "zene-config",
  "zene-core",
+ "zene-eval",
  "zene-llm",
  "zene-mcp",
  "zene-runtime",
@@ -4244,10 +4247,12 @@ name = "zene-eval"
 version = "0.1.17"
 dependencies = [
  "anyhow",
+ "async-trait",
  "chrono",
  "serde",
  "serde_json",
  "tempfile",
+ "tokio",
  "zene-session",
 ]
 

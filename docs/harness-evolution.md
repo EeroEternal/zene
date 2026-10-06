@@ -29,7 +29,7 @@
 | 事实源可回放 | `RecordEntry` 枚举 + `AgentRecordWriter` append-only 记录 | `crates/session/src/record.rs:30,286-343` |
 | 无头运行 | `zene acp` stdio JSON-RPC,yolo 模式自动批准 | `apps/cli/src/main.rs:77-79,188` |
 
-**剩余缺口**:树 + 渲染(P0)与配对 runner(§3.4)尚未实现;「评估 + 选择」一层已落地(`zene-eval`,见 §3.3)。树、渲染、隔离启动都只是把现有约定收拢成数据。
+**剩余缺口**:树 + 渲染(P0)未实现 —— 当前"渲染"是 harness 目录树拷贝(`zene-eval::runner::prepare_workdir`),树与 kind 的数据化仍待 P0。评估、判定、配对 runner 与 CLI(`zene eval run`)均已落地。
 
 ## 3. 核心对象
 
@@ -75,10 +75,12 @@ struct Mutation { id: String, op: MutationOp, config: Option<...> }
 ### 3.3 评估契约(唯一的新层)
 
 ```rust
-/// 方法侧实现(与 zene-eval 实现一致):一次 episode 轨迹 → 分数
+/// 方法侧实现(与 zene-eval 实现一致):一次 episode 证据 → 分数
 trait EpisodeScorer {
-    fn score(&self, task_id: &str, trajectory: &[RecordEntry]) -> Result<f64>;
+    fn score(&self, task_id: &str, run: &EpisodeRun) -> Result<f64>;
 }
+// EpisodeRun { final_text: String, trajectory: Vec<RecordEntry> }
+// 评分对象是"最终回答 + 执行轨迹";轨迹本身不含最终文本,故单独携带
 
 /// 机制侧实现:候选 vs 在役,持久可审计
 struct SelectionDecision {
@@ -98,7 +100,9 @@ struct SelectionDecision {
 
 决策记录追加进 session 的 `RecordEntry` 流(或独立 manifest),**与 session-as-source-of-truth 同构:决策是事实,不是日志**。
 
-> 已落地:`crates/eval`(`zene-eval`)提供 `EpisodeScorer`、`SelectionDecision`、`decide_win_margin`/`decide_floor` 和 JSONL 的 `append_decision_record`,含单元测试。配对 runner(§3.4)尚未实现。`DecisionRecord`(task_ids、candidate/incumbent tree、baseline_commit、决策)即 §3.5 「manifest 每步一行」的落地形态。
+> 已落地:`crates/eval`(`zene-eval`)提供 `EpisodeScorer`、`EpisodeRun`、`SelectionDecision`、`decide_win_margin`/`decide_floor` 和 JSONL 的 `append_decision_record`,含单元测试。`DecisionRecord`(task_ids、candidate/incumbent tree、baseline_commit、决策)即 §3.5 「manifest 每步一行」的落地形态。内置 `ExactAnswerScorer`(精确最终答案比对,fixture: task_id → 期望答案)。
+
+> 配对 runner(§3.4)已落地:`zene-eval::runner::run_paired_episodes` + `EpisodeExecutor` 接缝 + CLI `zene eval run --tasks ... --incumbent ... --candidate ...`。
 
 ### 3.4 配对 episode runner
 

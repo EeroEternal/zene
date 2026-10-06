@@ -12,7 +12,9 @@ path = "src/main.rs"
 [dependencies]
 anyhow.workspace = true
 async-trait.workspace = true
+chrono.workspace = true
 clap.workspace = true
+serde.workspace = true
 tokio.workspace = true
 tokio-util.workspace = true
 tracing.workspace = true
@@ -21,6 +23,7 @@ serde_json.workspace = true
 uuid.workspace = true
 zene-config = { workspace = true }
 zene-core = { workspace = true }
+zene-eval = { workspace = true }
 zene-agent-runtime = { workspace = true }
 zene-sandbox = { workspace = true }
 zene-session = { workspace = true }
