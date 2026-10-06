@@ -3,6 +3,20 @@
 ## Unreleased
 
 ### Added
+- **Harness tree + mutation admission (`zene-eval::tree`)**: `HarnessTree` with
+  `rules`/`skill`/`config`/`prompt` kinds rendered to existing filesystem
+  conventions; `apply_mutations` enforces the create/update/remove contract and
+  a `DENIED_CONFIG_KEYS` boundary (endpoints, credentials, permissions, sandbox,
+  hooks, model stay outside the tree), plus skill-name path-escape and
+  frontmatter validation.
+- **Failure-driven proposals (`zene-eval::propose`)**: `Proposer` seam,
+  `FailureEvidence`, and strict-JSON `parse_mutations`; proposals are untrusted
+  and re-validated by admission.
+- **`zene eval evolve`**: discover failures on the current tree → LLM-proposed
+  mutations → admission → paired evaluation → `DecisionRecord` +
+  `tree.candidate.json` for manual promotion (baseline never auto-modified).
+
+### Added
 - **Paired episode runner (`zene-eval::runner`)**: `run_paired_episodes` runs a
   task set twice (incumbent harness first, then candidate) in fresh workdirs
   with the harness rendered in, scores both runs, and returns paired score sets

@@ -37,6 +37,43 @@ pub struct PairedEpisodeOutcome {
     pub task_ids: Vec<String>,
     pub candidate_scores: Vec<f64>,
     pub incumbent_scores: Vec<f64>,
+    pub incumbent_runs: Vec<EpisodeRun>,
+    pub candidate_runs: Vec<EpisodeRun>,
+}
+
+/// One scored episode run from [`run_episodes`].
+#[derive(Debug, Clone)]
+pub struct ScoredEpisode {
+    pub task_id: String,
+    pub score: f64,
+    pub run: EpisodeRun,
+}
+
+/// Run every task once under one harness in fresh workdirs. Used for failure
+/// discovery before proposing mutations (docs/harness-evolution.md §3.4).
+pub async fn run_episodes(
+    tasks: &[EpisodeTask],
+    harness: &Path,
+    run_root: &Path,
+    executor: &dyn EpisodeExecutor,
+    scorer: &dyn EpisodeScorer,
+) -> Result<Vec<ScoredEpisode>> {
+    let mut scored = Vec::new();
+    for task in tasks {
+        let workdir = run_root.join(&task.id);
+        prepare_workdir(harness, &workdir)?;
+        let run = executor
+            .run(task, &workdir)
+            .await
+            .with_context(|| format!("run task `{}`", task.id))?;
+        let score = scorer.score(&task.id, &run)?;
+        scored.push(ScoredEpisode {
+            task_id: task.id.clone(),
+            score,
+            run,
+        });
+    }
+    Ok(scored)
 }
 
 /// Run every task twice — incumbent harness first, then candidate — score both
@@ -53,6 +90,8 @@ pub async fn run_paired_episodes(
         task_ids: Vec::new(),
         candidate_scores: Vec::new(),
         incumbent_scores: Vec::new(),
+        incumbent_runs: Vec::new(),
+        candidate_runs: Vec::new(),
     };
     for task in tasks {
         let incumbent_dir = run_root.join(&task.id).join("incumbent");
@@ -76,6 +115,8 @@ pub async fn run_paired_episodes(
         outcome
             .candidate_scores
             .push(scorer.score(&task.id, &candidate_run)?);
+        outcome.incumbent_runs.push(incumbent_run);
+        outcome.candidate_runs.push(candidate_run);
     }
     Ok(outcome)
 }
@@ -235,6 +276,8 @@ mod tests {
         assert_eq!(outcome.task_ids, vec!["t1", "t2"]);
         assert_eq!(outcome.incumbent_scores, vec![0.0, 1.0]);
         assert_eq!(outcome.candidate_scores, vec![1.0, 1.0]);
+        assert_eq!(outcome.incumbent_runs[0].final_text, "wrong");
+        assert_eq!(outcome.candidate_runs[0].final_text, "right");
         let calls = executor.calls.lock().unwrap();
         assert_eq!(
             calls.as_slice(),
