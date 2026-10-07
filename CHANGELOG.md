@@ -3,6 +3,10 @@
 ## Unreleased
 
 ### Added
+- **`zene analysis`**: read-only digest over harness-evolution results — pending
+  `*.candidate.json` judgments, repeated task failures across recorded
+  decisions, and the recent decision history. Human-facing surface; `zene eval`
+  is now hidden from help (internal machinery).
 - **Harness tree + mutation admission (`zene-eval::tree`)**: `HarnessTree` with
   `rules`/`skill`/`config`/`prompt` kinds rendered to existing filesystem
   conventions; `apply_mutations` enforces the create/update/remove contract and

@@ -129,6 +129,7 @@ zene sessions          # list saved sessions for current workdir
 zene config            # show config paths
 zene export --session <id> --output out.zip
 zene mcp doctor        # probe configured MCP servers
+zene analysis          # read-only harness-evolution digest (judge candidates)
 ```
  
 For detailed system layering and crate breakdown, see [docs/architecture.md](docs/architecture.md).

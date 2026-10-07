@@ -6,6 +6,7 @@ use zene_config::{ensure_home, ZeneConfig};
 use zene_session::{export_session, list_sessions_for_workdir};
 
 mod acp;
+mod analysis_cmd;
 mod eval_cmd;
 
 #[derive(Parser)]
@@ -55,7 +56,10 @@ enum Commands {
         #[command(subcommand)]
         command: McpCommands,
     },
-    /// Evaluate a harness change with paired episodes (harness evolution)
+    /// Read-only digest of harness-evolution results for human judgment
+    Analysis(analysis_cmd::AnalysisArgs),
+    /// Internal: harness evolution machinery (prefer `zene analysis`)
+    #[command(hide = true)]
     Eval {
         #[command(subcommand)]
         command: eval_cmd::EvalCommands,
@@ -164,6 +168,7 @@ async fn main() -> Result<()> {
             }
             Ok(())
         }
+        Some(Commands::Analysis(args)) => analysis_cmd::run(&workdir, args),
         Some(Commands::Eval { command }) => eval_cmd::dispatch(command, &workdir).await,
         Some(Commands::Acp) => {
             let sandbox_profile = cli.sandbox_profile.or_else(|| {
@@ -197,7 +202,7 @@ async fn main() -> Result<()> {
             println!("  config    Print config path and defaults");
             println!("  export    Export a session and its record to a zip file");
             println!("  mcp       Probe configured MCP servers");
-            println!("  eval      Run paired harness episodes and record the decision");
+            println!("  analysis  Show harness-evolution digest (pending candidates, failures)");
             println!();
             println!("Run 'zene --help' for more options.");
             Ok(())
