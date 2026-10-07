@@ -8,6 +8,7 @@ use zene_session::{export_session, list_sessions_for_workdir};
 mod acp;
 mod analysis_cmd;
 mod eval_cmd;
+mod tui;
 
 #[derive(Parser)]
 #[command(
@@ -58,6 +59,8 @@ enum Commands {
     },
     /// Read-only digest of harness-evolution results for human judgment
     Analysis(analysis_cmd::AnalysisArgs),
+    /// Interactive terminal chat with the agent (minimal TUI)
+    Tui,
     /// Internal: harness evolution machinery (prefer `zene analysis`)
     #[command(hide = true)]
     Eval {
@@ -169,6 +172,7 @@ async fn main() -> Result<()> {
             Ok(())
         }
         Some(Commands::Analysis(args)) => analysis_cmd::run(&workdir, args),
+        Some(Commands::Tui) => tui::run(&workdir).await,
         Some(Commands::Eval { command }) => eval_cmd::dispatch(command, &workdir).await,
         Some(Commands::Acp) => {
             let sandbox_profile = cli.sandbox_profile.or_else(|| {
@@ -203,6 +207,7 @@ async fn main() -> Result<()> {
             println!("  export    Export a session and its record to a zip file");
             println!("  mcp       Probe configured MCP servers");
             println!("  analysis  Show harness-evolution digest (pending candidates, failures)");
+            println!("  tui       Interactive terminal chat with the agent");
             println!();
             println!("Run 'zene --help' for more options.");
             Ok(())
