@@ -47,8 +47,7 @@ This document defines the system architectural model, crate component boundaries
 - **`apps/cli` (`zene`)**:
   - Primary executable. Exposes `zene acp` (Agent Client Protocol stdio server) and utility inspection commands (`doctor`, `config`, `sessions`).
   - Dispatches ACP requests (`session/new`, `session/prompt`, `session/set_mode`, `session/set_config_option`, `session/clear_queue`, `session/cancel`).
-- **`apps/inference-gateway`**:
-  - Optional smart inference gateway service for upstream LLM load balancing, prefix cache alignment, and retry routing.
+- **Inference gateway**: out of tree — use [UniGateway](https://github.com/EeroEternal/unigateway) (`unigateway-sdk`) and point zene at it via `ZENE_INFERENCE_GATEWAY_URL`.
 
 ### Runtime & Execution Layer (`crates/`)
 

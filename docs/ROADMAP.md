@@ -36,7 +36,7 @@ Zene is an open-source coding-agent framework and CLI toolchain. Its mission is 
 - **Compaction & Prefix Caching**:
   - Compaction snapshotting with debouncing;
   - Stable system prefix preserving KV-cache across turns;
-  - Delta and Full delivery protocol with `apps/inference-gateway`.
+  - Delta and Full delivery protocol with an external inference gateway (UniGateway).
 
 ### Phase 2 — Decoupled Architecture & ACP (✅ Complete)
 - **17 Crates Separation**: Strict boundaries between runtime (`zene-runtime`), actor (`zene-agent-runtime`), context (`zene-context`), tools (`zene-tools`), and execution (`zene-turn`).
