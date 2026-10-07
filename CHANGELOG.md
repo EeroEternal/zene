@@ -3,6 +3,10 @@
 ## Unreleased
 
 ### Added
+- **`zene tui`**: minimal terminal chat (ratatui) over the same agent core as
+  `zene acp` — transcript pane + input line, responsive during long turns.
+  AGENTS.md constraint #5 relaxed from "Zero UI in Core" to "Terminal-Only UI
+  in Core" (web consoles/cloud planes still banned, they belong to zene-cloud).
 - **`zene analysis`**: read-only digest over harness-evolution results — pending
   `*.candidate.json` judgments, repeated task failures across recorded
   decisions, and the recent decision history. Human-facing surface; `zene eval`

@@ -4,7 +4,7 @@
 > Composable, headless, durable, and cache-aligned.
 
 Zene (*Zen Engine*) is a headless, modular coding-agent backend and harness. Built on the Zen philosophy of extreme clarity, zero bloat, and composability, Zene provides the foundational execution machinery for autonomous agents:
-- **Headless & UI-Free**: 100% backend-focused. Speaks Agent Client Protocol (`zene acp`) for editors, background workers, and external applications.
+- **Headless & Composable**: 100% backend-focused. Speaks Agent Client Protocol (`zene acp`) for editors, background workers, and external applications. A minimal terminal chat (`zene tui`) is included for local use.
 - **Composable Crate Architecture**: Context projection, sandbox isolation, tool execution, session persistence, and turn state machines are decoupled crates that can be used standalone or combined.
 - **Cache-Aligned Context**: 3-zone prompt layout preserving LLM KV prefix caches and automated compaction debouncing.
 - **Deterministic Sandboxing**: Native process isolation, permission gates, and tool execution boundaries.
@@ -120,7 +120,7 @@ Skills live under `.agents/skills/*/SKILL.md`. Zene lists discovered skills in t
 
 ## `zene` commands
 
-The interactive local REPL and headless `-p` were removed. Product UI is Cloud Console.
+The interactive local REPL and headless `-p` were removed. Local interaction is `zene tui`; product UI is Cloud Console.
 
 ```bash
 zene acp               # Agent Client Protocol over stdio (Cloud workers / editors)
@@ -130,6 +130,7 @@ zene config            # show config paths
 zene export --session <id> --output out.zip
 zene mcp doctor        # probe configured MCP servers
 zene analysis          # read-only harness-evolution digest (judge candidates)
+zene tui               # minimal terminal chat with the agent
 ```
  
 For detailed system layering and crate breakdown, see [docs/architecture.md](docs/architecture.md).
