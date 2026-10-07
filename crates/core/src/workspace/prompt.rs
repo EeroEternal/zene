@@ -1,5 +1,5 @@
-use crate::skills::format_available_skills;
-use crate::WorkspaceProvider;
+use super::skills::format_available_skills;
+use super::WorkspaceProvider;
 
 pub const CLOUD_GITHUB_RULE: &str = "\
 # Cloud GitHub
@@ -59,7 +59,7 @@ pub fn build_system_prompt_ext(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::provider::FsWorkspaceProvider;
+    use crate::workspace::provider::FsWorkspaceProvider;
     use std::fs;
     use tempfile::TempDir;
 

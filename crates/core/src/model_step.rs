@@ -9,6 +9,7 @@ use std::io::{self, Write};
 use std::path::Path;
 use std::sync::Arc;
 
+use crate::model_executor::ModelExecutor;
 use anyhow::{Context, Result};
 use futures::StreamExt;
 use tokio_util::sync::CancellationToken;
@@ -21,7 +22,6 @@ use zene_context::{
 #[cfg(test)]
 use zene_llm::ChatResponse;
 use zene_llm::{ChatClient, ChatRequest, Message, StreamEvent, TokenUsage, ToolDefinition};
-use zene_model_executor::ModelExecutor;
 use zene_session::{AgentRecordWriter, RecordEntry, SessionRecord};
 use zene_tools::{SharedBackgroundTasks, SharedTodoStore};
 use zene_turn::PreparedContext;
@@ -278,8 +278,8 @@ fn check_cancelled(cancel: Option<&CancellationToken>) -> Result<bool> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model_executor::ModelStream;
     use async_trait::async_trait;
-    use zene_model_executor::ModelStream;
 
     struct TextThenDone;
 

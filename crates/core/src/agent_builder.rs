@@ -22,13 +22,13 @@ use zene_tools::{
 
 use crate::plan_mode::{default_plan_approval_prompter, PlanApprovalPrompter};
 use crate::tool_dedup::ToolDedup;
+use crate::workspace::{build_system_prompt, FsWorkspaceProvider};
 use crate::Agent;
 use zene_hooks::{ExtensionHook, HookRunner, HookSpec};
 use zene_permission::{
     PermissionGate, PermissionMode, PermissionRule, RuleAction, SharedToolPermission,
 };
 use zene_turn::{FollowUpBuffer, SteerBuffer};
-use zene_workspace::{build_system_prompt, FsWorkspaceProvider};
 
 /// How MCP servers are attached when building an [`Agent`].
 #[derive(Default)]
@@ -64,7 +64,7 @@ pub struct AgentBuilder {
     background: Option<SharedBackgroundTasks>,
     record_writer: Option<AgentRecordWriter>,
     session_store: Option<Arc<dyn SessionStore>>,
-    model_executor: Option<Arc<dyn zene_model_executor::ModelExecutor>>,
+    model_executor: Option<Arc<dyn crate::model_executor::ModelExecutor>>,
     approval_broker: Option<zene_permission::SharedApprovalBroker>,
     external_session_id: Option<String>,
     include_workspace_context: Option<bool>,
@@ -208,7 +208,10 @@ impl AgentBuilder {
     }
 
     /// Inject a runtime model executor instead of wrapping [`ChatClient`].
-    pub fn model_executor(mut self, executor: Arc<dyn zene_model_executor::ModelExecutor>) -> Self {
+    pub fn model_executor(
+        mut self,
+        executor: Arc<dyn crate::model_executor::ModelExecutor>,
+    ) -> Self {
         self.model_executor = Some(executor);
         self
     }
@@ -404,7 +407,7 @@ impl AgentBuilder {
         Ok(Agent {
             config: self.config,
             model_executor: self.model_executor.unwrap_or_else(|| {
-                Arc::new(zene_model_executor::ChatClientExecutor::new(Arc::clone(
+                Arc::new(crate::model_executor::ChatClientExecutor::new(Arc::clone(
                     &client,
                 )))
             }),

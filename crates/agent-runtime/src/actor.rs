@@ -8,7 +8,7 @@ use tokio::sync::{broadcast, oneshot, watch};
 use tokio::task::{JoinError, JoinHandle};
 use tokio_util::sync::CancellationToken;
 
-use zene_runtime::{
+use crate::runtime::{
     ApprovalDecision, ApprovalWaiters, ExecutionState, RuntimeCommand, RuntimeCommandMessage,
     RuntimeCommandReceiver, RuntimeCommandRouter, RuntimeControl, RuntimeEventPublisher,
     RuntimeLifecycle, RuntimeRecoveryInfo, RuntimeResponse,

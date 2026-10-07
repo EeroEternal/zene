@@ -1,6 +1,9 @@
 use std::path::Path;
 use std::sync::Arc;
 
+#[cfg(test)]
+use crate::model_executor::ModelStream;
+use crate::model_executor::{ChatClientExecutor, ModelExecutor};
 use crate::tool_executor::{execute_subagent_tool_batch, SubagentToolBatchDeps};
 use anyhow::{Context, Result};
 use async_trait::async_trait;
@@ -9,9 +12,6 @@ use zene_config::ZeneConfig;
 #[cfg(test)]
 use zene_llm::ChatResponse;
 use zene_llm::{ChatClient, ChatRequest, Message, TokenUsage, ToolCall};
-#[cfg(test)]
-use zene_model_executor::ModelStream;
-use zene_model_executor::{ChatClientExecutor, ModelExecutor};
 use zene_sandbox::Sandbox;
 use zene_tools::{
     RuntimeScope, SubagentEnv, SubagentProfile, SubagentRunner, ToolCatalog, ToolContext,

@@ -4987,7 +4987,6 @@ dependencies = [
  "zene-config",
  "zene-core",
  "zene-permission",
- "zene-runtime",
  "zene-sandbox",
  "zene-session",
  "zene-turn",
@@ -5015,7 +5014,6 @@ dependencies = [
  "zene-eval",
  "zene-llm",
  "zene-mcp",
- "zene-runtime",
  "zene-sandbox",
  "zene-session",
  "zene-turn",
@@ -5075,13 +5073,11 @@ dependencies = [
  "zene-hooks",
  "zene-llm",
  "zene-mcp",
- "zene-model-executor",
  "zene-permission",
  "zene-sandbox",
  "zene-session",
  "zene-tools",
  "zene-turn",
- "zene-workspace",
 ]
 
 [[package]]
@@ -5110,24 +5106,6 @@ dependencies = [
  "tempfile",
  "tokio",
  "tracing",
-]
-
-[[package]]
-name = "zene-index"
-version = "0.1.17"
-dependencies = [
- "anyhow",
- "ignore",
- "serde",
- "serde_json",
- "streaming-iterator",
- "tempfile",
- "tree-sitter",
- "tree-sitter-go",
- "tree-sitter-javascript",
- "tree-sitter-python",
- "tree-sitter-rust",
- "tree-sitter-typescript",
 ]
 
 [[package]]
@@ -5168,17 +5146,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "zene-model-executor"
-version = "0.1.17"
-dependencies = [
- "anyhow",
- "async-trait",
- "futures",
- "tokio",
- "zene-llm",
-]
-
-[[package]]
 name = "zene-permission"
 version = "0.1.17"
 dependencies = [
@@ -5186,16 +5153,6 @@ dependencies = [
  "parking_lot",
  "serde_json",
  "tokio",
-]
-
-[[package]]
-name = "zene-runtime"
-version = "0.1.17"
-dependencies = [
- "anyhow",
- "async-trait",
- "tokio",
- "zene-turn",
 ]
 
 [[package]]
@@ -5243,6 +5200,7 @@ version = "0.1.17"
 dependencies = [
  "anyhow",
  "async-trait",
+ "ignore",
  "jsonschema",
  "parking_lot",
  "regex",
@@ -5250,13 +5208,19 @@ dependencies = [
  "schemars",
  "serde",
  "serde_json",
+ "streaming-iterator",
  "tempfile",
  "thiserror 2.0.18",
  "tokio",
  "tokio-util",
  "tracing",
+ "tree-sitter",
+ "tree-sitter-go",
+ "tree-sitter-javascript",
+ "tree-sitter-python",
+ "tree-sitter-rust",
+ "tree-sitter-typescript",
  "zene-config",
- "zene-index",
  "zene-llm",
  "zene-permission",
  "zene-sandbox",
@@ -5273,14 +5237,6 @@ dependencies = [
  "tracing",
  "uuid",
  "zene-llm",
-]
-
-[[package]]
-name = "zene-workspace"
-version = "0.1.17"
-dependencies = [
- "tempfile",
- "tracing",
 ]
 
 [[package]]

@@ -4,9 +4,9 @@
 use std::io;
 use std::sync::Arc;
 
+use crate::runtime::{ApprovalDecision, ApprovalWaiters, RuntimeEventPublisher};
 use async_trait::async_trait;
 use zene_permission::{ApprovalBroker, ApprovalRequest, PromptChoice};
-use zene_runtime::{ApprovalDecision, ApprovalWaiters, RuntimeEventPublisher};
 use zene_turn::RuntimeEventKind;
 
 pub fn prompt_choice(decision: ApprovalDecision) -> PromptChoice {
@@ -57,8 +57,8 @@ impl ApprovalBroker for RuntimeOwnedBroker {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::runtime::ExecutionState;
     use tokio::sync::{broadcast, watch};
-    use zene_runtime::ExecutionState;
     use zene_turn::SessionId;
 
     #[tokio::test]

@@ -8,8 +8,8 @@ use zene_context::{ContextDeps, ContextEngine, PrefireClientFactory};
 pub use zene_llm::ChatClient;
 use zene_llm::{Message, TokenUsage, ToolCall};
 
+use crate::model_executor::ModelExecutor;
 use zene_mcp::McpManager;
-use zene_model_executor::ModelExecutor;
 pub use zene_sandbox::{LocalSandbox, Sandbox};
 use zene_session::{
     fork_session, latest_checkpoint_id, load_checkpoint, restore_checkpoint, save_checkpoint,
@@ -27,10 +27,10 @@ use zene_tools::{
 mod agent_builder;
 mod agent_turn;
 mod context_config;
-pub use zene_model_executor as model_executor;
 mod context_events;
 mod context_hooks;
 mod events;
+pub mod model_executor;
 mod model_step;
 mod plan_mode;
 mod prepare_step;
@@ -41,6 +41,7 @@ mod tool_executor;
 pub mod tool_scheduler;
 mod turn_session;
 mod usage;
+pub mod workspace;
 mod worktree;
 
 pub use zene_context::{
@@ -57,6 +58,7 @@ pub use plan_mode::PlanApprovalPrompter;
 pub use subagent::{run_subagent, CoreSubagentRunner};
 pub use tool_dedup::{append_reminder, ToolDedup};
 pub use tool_scheduler::{classify_tool_accesses, ToolScheduler};
+pub use workspace::{build_system_prompt, FsWorkspaceProvider, WorkspaceProvider};
 pub use zene_hooks::{
     ExtensionHook, HookBlock, HookEvent, HookOutcome, HookPayload, HookRunner, HookSpec,
 };
@@ -71,7 +73,6 @@ use zene_turn::{
     FollowUpBuffer, QueueMode, RuntimeEventHandler, SessionId, SteerBuffer, StepId, TurnId,
     TurnState,
 };
-pub use zene_workspace::{build_system_prompt, FsWorkspaceProvider, WorkspaceProvider};
 
 pub use worktree::ensure_session_worktree;
 
@@ -348,7 +349,7 @@ impl Agent {
         // Recreate the client and context model.
         let client = Arc::new(zene_llm::ChatClient::from_config(&self.config).await?);
         self.context_model = client.clone();
-        self.model_executor = Arc::new(zene_model_executor::ChatClientExecutor::new(client));
+        self.model_executor = Arc::new(crate::model_executor::ChatClientExecutor::new(client));
         self.config
             .persist_connection_settings()
             .context("save model settings to ~/.zene/config.toml")?;
@@ -685,7 +686,7 @@ impl Agent {
 
     /// Ask the runtime actor to own approval waiters for this session.
     ///
-    /// Transports then send `RuntimeCommand::Approval` (via `zene-runtime` /
+    /// Transports then send `RuntimeCommand::Approval` (via `zene-agent-runtime` /
     /// `zene-agent-runtime`) instead of injecting an ACP/Cloud-specific broker.
     pub fn enable_runtime_approval_waiters(&mut self) {
         self.runtime_approval_waiters = true;

@@ -6,8 +6,8 @@ use anyhow::{Context, Result};
 use ignore::WalkBuilder;
 use serde::{Deserialize, Serialize};
 
-use crate::language::{skip_dir, SourceLanguage};
-use crate::parse::parse_file;
+use super::language::{skip_dir, SourceLanguage};
+use super::parse::parse_file;
 
 const INDEX_VERSION: u32 = 1;
 const MAX_FILES: usize = 4000;

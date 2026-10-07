@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet};
 
-use crate::store::SymbolIndex;
+use super::store::SymbolIndex;
 
 const DAMPING: f64 = 0.85;
 const ITERATIONS: usize = 20;

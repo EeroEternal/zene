@@ -1,5 +1,5 @@
-use crate::rank::score_files;
-use crate::store::{RefreshStats, SymbolIndex};
+use super::rank::score_files;
+use super::store::{RefreshStats, SymbolIndex};
 
 pub const DEFAULT_TOKEN_BUDGET: u32 = 2500;
 const MAX_DEFS_PER_FILE: usize = 40;

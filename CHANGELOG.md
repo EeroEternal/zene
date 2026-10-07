@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+### Changed
+- **Merged 4 single-consumer crates**: `zene-index` → `zene-tools::index`,
+  `zene-workspace` + `zene-model-executor` → `zene-core::{workspace, model_executor}`,
+  `zene-runtime` → `zene-agent-runtime::runtime`. Pure module moves (git rename
+  history preserved); no behavior change. Workspace: 17 → 13 crates.
+
 ### Added
 - **`zene tui`**: minimal terminal chat (ratatui) over the same agent core as
   `zene acp` — transcript pane + input line, responsive during long turns.
