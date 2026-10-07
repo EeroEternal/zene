@@ -87,7 +87,11 @@ fn task_stats(records: &[DecisionRecord]) -> BTreeMap<&str, TaskStats> {
                 if *score < 1.0 {
                     entry.failed += 1;
                 }
-                entry.worst = entry.worst.min(*score);
+                entry.worst = if entry.seen == 1 {
+                    *score
+                } else {
+                    entry.worst.min(*score)
+                };
             }
         }
     }
@@ -208,6 +212,13 @@ mod tests {
         assert!(digest.contains("`t1` failed 3/4 runs (worst 0.00)"));
         assert!(digest.contains("Select"));
         assert!(digest.contains("Reject"));
+    }
+
+    #[test]
+    fn digest_reports_worst_score_without_zero_floor() {
+        let records = vec![record(SelectionOutcome::Reject, &["t1"], &[0.5], &[0.6])];
+        let digest = render_digest(&records, Path::new("d.jsonl"), None, 10);
+        assert!(digest.contains("`t1` failed 2/2 runs (worst 0.50)"));
     }
 
     #[test]
