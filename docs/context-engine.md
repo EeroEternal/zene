@@ -232,7 +232,7 @@ Explore 子 agent 继续用 Read/Grep/Glob（加上来的 Repo Map）做调研�
 - `pinned_boundary` = `stable_system_boundary`（system + compaction summary）
 - 大 tool 输出可句柄化（`ZENE_TOOL_OUTPUT_HANDLES`）
 - Cloud Worker 注入 `ZENE_RUN_ID`；Run 结束 `close_session`
-- 网关：`apps/inference-gateway`，可选 Redis session store
+- 网关：外部 [UniGateway](https://github.com/EeroEternal/unigateway)（`ZENE_INFERENCE_GATEWAY_URL`）
 
 推理收益三档仍见 [agent-inference-context.md](./agent-inference-context.md)。**A 档**（full messages + 稳定前缀）是 prefix cache 的大头；前缀抖动时 B/C 档也救不了。
 

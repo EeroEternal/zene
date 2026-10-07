@@ -142,9 +142,8 @@ Zene is organized into a modular workspace of crates and binaries:
 ```
 zene/
 ├── apps/
-│   ├── cli/               # zene binary: ACP server & CLI subcommands
-│   └── inference-gateway/ # Local reverse proxy for session prefix caching
-├── crates/                # 17 domain-isolated crates (context, tools, sandbox, session, turn...)
+│   └── cli/               # zene binary: ACP server & CLI subcommands
+├── crates/                # Domain-isolated crates (context, tools, sandbox, session, turn...)
 └── docs/                  # System architecture, engine specs, and research
 ```
 
