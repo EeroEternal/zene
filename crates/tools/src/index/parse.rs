@@ -2,8 +2,8 @@ use anyhow::{Context, Result};
 use streaming_iterator::StreamingIterator;
 use tree_sitter::{Parser, Query, QueryCursor};
 
-use crate::language::SourceLanguage;
-use crate::store::Symbol;
+use super::language::SourceLanguage;
+use super::store::Symbol;
 
 pub fn parse_file(language: SourceLanguage, source: &str) -> Result<(Vec<Symbol>, Vec<String>)> {
     let lang = ts_language(language);

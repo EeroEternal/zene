@@ -17,8 +17,7 @@ This document defines the system architectural model, crate component boundaries
                 ▼
    ┌──────────────────────────────────────────────────────────┐
    │  Runtime & Control Layer                                 │
-   │  - crates/agent-runtime (State machine, Actor, Recovery) │
-   │  - crates/runtime (RuntimeControl trait, Router, State)  │
+   │  - crates/agent-runtime (Actor, Recovery, RuntimeControl) │
    └────────────┬─────────────────────────────────────────────┘
                 │
                 ▼
@@ -32,9 +31,8 @@ This document defines the system architectural model, crate component boundaries
 ┌──────────────────┐   ┌──────────────────┐   ┌──────────────────┐
 │ Context Engine   │   │ Tools & Sandbox  │   │ Session & State  │
 │ - context        │   │ - tools          │   │ - session        │
-│ - model-executor │   │ - sandbox (Keel) │   │ - workspace      │
-│ - index          │   │ - permission     │   │ - config         │
-│ - llm            │   │ - tool-runtime   │   │                  │
+│ - llm            │   │ - sandbox (Keel) │   │ - config         │
+│                  │   │ - permission     │   │                  │
 └──────────────────┘   │ - hooks          │   │                  │
                        │ - mcp            │   │                  │
                        └──────────────────┘   └──────────────────┘
@@ -51,16 +49,12 @@ This document defines the system architectural model, crate component boundaries
 
 ### Runtime & Execution Layer (`crates/`)
 
-- **`crates/runtime`**:
-  - Transport-neutral control contract (`RuntimeControl`). Defines command and state channels (`Prompt`, `Steer`, `SetMode`, `Approval`, `Shutdown`).
 - **`crates/agent-runtime`**:
-  - Long-lived Actor runtime managing turn execution, asynchronous approval queues, and durable recovery checkpoints.
+  - Long-lived Actor runtime managing turn execution, asynchronous approval queues, and durable recovery checkpoints. Hosts the transport-neutral control contract (`RuntimeControl`): command and state channels (`Prompt`, `Steer`, `SetMode`, `Approval`, `Shutdown`).
 - **`crates/core`**:
-  - Composition root for the agent. Coordinates context assembly, tool invocation batches, plan mode guards, and subagent delegation.
+  - Composition root for the agent. Coordinates context assembly, tool invocation batches, plan mode guards, and subagent delegation. Includes the workspace provider (`AGENTS.md`, skills, directory overview) and the model execution boundary (`ModelExecutor` + overflow retry ladders).
 - **`crates/turn`**:
   - Deterministic turn loop state machine (`TurnId`, `StepResult`, `SteerBuffer`, ordered event sequences).
-- **`crates/model-executor`**:
-  - Intermediate model request/response boundary bridging turns with provider calls; handles overflow retry ladders.
 - **`crates/llm`**:
   - Provider adapters (OpenAI-compatible, Anthropic). Implements streaming delta parsing, retry backoff with 429/413 classification, and reasoning effort propagation.
 
@@ -68,10 +62,6 @@ This document defines the system architectural model, crate component boundaries
 
 - **`crates/context`**:
   - Semantic context engine: token estimation, context water level, automatic multi-stage compaction (truncate → slice → summarize), memory extraction, and KV cache prefix layout.
-- **`crates/index`**:
-  - Codebase symbol graph and indexing engine powering the `RepoMap` tool.
-- **`crates/workspace`**:
-  - Discovers and loads project workspace context: `AGENTS.md`, active git branch, directory structure, and `.agents/skills/`.
 
 ### Tooling, Sandbox & Security (`crates/`)
 
@@ -80,6 +70,7 @@ This document defines the system architectural model, crate component boundaries
 - **`crates/tools`**:
   - Built-in agent tools: `Read`, `Write`, `Edit`, `Bash`, `Task`, `TaskOutput`, `WebSearch`, `TodoWrite`.
   - Large tool output spilling, paging, and output bound enforcement.
+  - Codebase symbol graph and indexing engine powering the `RepoMap` tool.
 - **`crates/permission`**:
   - Fine-grained permission gates (allow / deny / ask), pattern-based matching, and interactive approval broker interfaces.
 - **`crates/hooks`**:

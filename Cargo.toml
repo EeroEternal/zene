@@ -9,15 +9,11 @@ members = [
     "crates/session",
     "crates/context",
     "crates/core",
-    "crates/model-executor",
-    "crates/runtime",
     "crates/agent-runtime",
     "crates/mcp",
     "crates/hooks",
     "crates/permission",
     "crates/turn",
-    "crates/workspace",
-    "crates/index",
 ]
 resolver = "2"
 
@@ -60,14 +56,10 @@ zene-sandbox = { path = "crates/sandbox" }
 zene-session = { version = "0.1.12", path = "crates/session" }
 zene-tools = { path = "crates/tools" }
 zene-mcp = { path = "crates/mcp" }
-zene-model-executor = { version = "0.1.14", path = "crates/model-executor" }
-zene-runtime = { path = "crates/runtime" }
 zene-agent-runtime = { path = "crates/agent-runtime" }
 zene-hooks = { path = "crates/hooks" }
 zene-permission = { version = "0.1.12", path = "crates/permission" }
 zene-turn = { path = "crates/turn" }
-zene-workspace = { path = "crates/workspace" }
-zene-index = { path = "crates/index" }
 zene-eval = { path = "crates/eval" }
 unigateway-sdk = { version = "2.15.1", default-features = false, features = ["core"] }
 unigateway-session = { version = "2.15.1" }

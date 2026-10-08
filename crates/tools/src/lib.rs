@@ -7,6 +7,7 @@ mod edit;
 mod fetch_url;
 mod glob;
 mod grep;
+mod index;
 mod line_endings;
 mod output_bound;
 mod output_sanitizer;

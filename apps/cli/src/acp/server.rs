@@ -8,11 +8,11 @@ use serde_json::{json, Value};
 use tokio::sync::{mpsc, oneshot};
 use tracing::{debug, warn};
 use zene_agent_runtime::{ApprovalDecision, RuntimeHandle};
+use zene_agent_runtime::{RuntimeControl, RuntimeRecoveryInfo};
 use zene_config::ZeneConfig;
 use zene_core::{
     Agent, ApprovalRequest, AskUserOption, PermissionGate, PermissionMode, PromptChoice,
 };
-use zene_runtime::{RuntimeControl, RuntimeRecoveryInfo};
 use zene_sandbox::{LocalSandbox, SandboxOptions};
 use zene_session::{list_sessions_for_workdir, SessionRecord};
 use zene_turn::{RuntimeEvent, RuntimeEventKind};
@@ -1344,7 +1344,7 @@ async fn acp_permission_prompt(
 #[cfg(test)]
 mod recovery_tests {
     use super::*;
-    use zene_runtime::RuntimeRecoveryInfo;
+    use zene_agent_runtime::RuntimeRecoveryInfo;
 
     #[test]
     fn recovery_metadata_declares_no_automatic_resume() {

@@ -1,8 +1,8 @@
+use crate::index::DEFAULT_TOKEN_BUDGET;
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use serde::Deserialize;
 use serde_json::json;
-use zene_index::DEFAULT_TOKEN_BUDGET;
 use zene_llm::ToolDefinition;
 
 use crate::registry::{Tool, ToolContext, ToolResult};
@@ -60,7 +60,7 @@ impl Tool for RepoMapTool {
         let path = args.path.filter(|p| !p.trim().is_empty());
         let budget = args.token_budget.unwrap_or(DEFAULT_TOKEN_BUDGET);
         let map = tokio::task::spawn_blocking(move || {
-            zene_index::build_repo_map(&workdir, query.as_deref(), budget, path.as_deref())
+            crate::index::build_repo_map(&workdir, query.as_deref(), budget, path.as_deref())
         })
         .await
         .context("RepoMap worker")?

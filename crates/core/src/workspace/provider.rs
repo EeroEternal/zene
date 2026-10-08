@@ -1,4 +1,4 @@
-use crate::skills::{skill_meta_from_file, SkillMeta};
+use super::skills::{skill_meta_from_file, SkillMeta};
 
 /// Source for workspace sections injected into the system prompt.
 pub trait WorkspaceProvider: Send + Sync {
