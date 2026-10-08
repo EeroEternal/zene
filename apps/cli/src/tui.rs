@@ -20,6 +20,7 @@ use zene_config::ZeneConfig;
 use zene_core::{Agent, AgentEvent, PromptOptions};
 
 const HELP: &str = "commands:
+  /key <token>    set the API key for this session (masked in transcript)
   /model          show current model
   /model <name>   switch model (e.g. /model deepseek-chat)
   /clear          clear transcript
@@ -44,6 +45,7 @@ pub(crate) async fn run(workdir: &Path) -> Result<()> {
 enum Cmd {
     Prompt(String),
     SwitchModel(String),
+    SetKey(String),
     Quit,
 }
 
@@ -121,6 +123,19 @@ async fn agent_loop(
                     let _ = tx.send(UiMsg::Error(format!("model switch failed: {err:#}")));
                 }
             },
+            Cmd::SetKey(key) => {
+                let model = agent.config().model.clone();
+                match agent.switch_model(&model, None, None, Some(key)).await {
+                    Ok(()) => {
+                        let _ = tx.send(UiMsg::Notice(
+                            "api key set for this session — persist it in ~/.zene/config.toml (api_key) or DEEPSEEK_API_KEY".into(),
+                        ));
+                    }
+                    Err(err) => {
+                        let _ = tx.send(UiMsg::Error(format!("api key rejected: {err:#}")));
+                    }
+                }
+            }
             Cmd::Quit => break,
         }
     }
@@ -251,9 +266,48 @@ fn slash_command(ui: &mut Ui, input: &str) -> Option<Action> {
             Some(Action::None)
         }
         "quit" => Some(Action::Quit),
+        "key" | "api-key" if !arg.is_empty() => {
+            ui.push(MsgKind::User, format!("/key ••••{}", tail_mask(arg)));
+            ui.busy = true;
+            Some(Action::Send(Cmd::SetKey(arg.to_string())))
+        }
+        "key" | "api-key" => {
+            ui.push(MsgKind::Notice, "usage: /key <token>".into());
+            Some(Action::None)
+        }
         other => {
             ui.push(MsgKind::Error, format!("unknown command: /{other} — /help"));
             Some(Action::None)
+        }
+    }
+}
+
+/// Last two chars of a secret, for a masked transcript echo.
+fn tail_mask(secret: &str) -> String {
+    let len = secret.chars().count();
+    secret.chars().skip(len.saturating_sub(2)).collect()
+}
+
+/// State transition for one agent message (pure; testable).
+fn apply_msg(ui: &mut Ui, msg: UiMsg) {
+    match msg {
+        UiMsg::Stream(delta) => ui.streaming.push_str(&delta),
+        UiMsg::Tool(line) => ui.push(MsgKind::Tool, line),
+        UiMsg::Done(text) => {
+            ui.streaming.clear();
+            ui.push(MsgKind::Assistant, text);
+            ui.busy = false;
+        }
+        UiMsg::Error(text) => {
+            ui.streaming.clear();
+            ui.push(MsgKind::Error, text);
+            ui.busy = false;
+        }
+        // Notice is also the completion signal for SetKey/SwitchModel
+        // commands (and startup "ready"): always settle busy.
+        UiMsg::Notice(text) => {
+            ui.push(MsgKind::Notice, text);
+            ui.busy = false;
         }
     }
 }
@@ -266,21 +320,7 @@ fn ui_loop(
 ) -> Result<()> {
     loop {
         while let Ok(msg) = msgs.try_recv() {
-            match msg {
-                UiMsg::Stream(delta) => ui.streaming.push_str(&delta),
-                UiMsg::Tool(line) => ui.push(MsgKind::Tool, line),
-                UiMsg::Done(text) => {
-                    ui.streaming.clear();
-                    ui.push(MsgKind::Assistant, text);
-                    ui.busy = false;
-                }
-                UiMsg::Error(text) => {
-                    ui.streaming.clear();
-                    ui.push(MsgKind::Error, text);
-                    ui.busy = false;
-                }
-                UiMsg::Notice(text) => ui.push(MsgKind::Notice, text),
-            }
+            apply_msg(ui, msg);
         }
         // ponytail: blocking poll on the async runtime thread; split into a
         // task + select if the agent ever needs same-thread concurrency.
@@ -456,6 +496,38 @@ mod tests {
             Action::None
         ));
         assert!(matches!(ui.messages.last().unwrap().kind, MsgKind::Notice));
+    }
+
+    #[test]
+    fn notice_and_done_settle_busy() {
+        let mut ui = Ui::new("m".into(), "w".into());
+        ui.busy = true;
+        apply_msg(&mut ui, UiMsg::Notice("api key set".into()));
+        assert!(!ui.busy);
+        ui.busy = true;
+        apply_msg(&mut ui, UiMsg::Stream("tok".into()));
+        assert!(ui.busy, "streaming must not settle the turn");
+        apply_msg(&mut ui, UiMsg::Done("answer".into()));
+        assert!(!ui.busy);
+        assert!(ui.streaming.is_empty());
+    }
+
+    #[test]
+    fn slash_key_masks_token_and_sends() {
+        let mut ui = Ui::new("m".into(), "w".into());
+        type_str(&mut ui, "/key sk-secret-token-12345");
+        match apply_key(&mut ui, key(KeyCode::Enter)) {
+            Action::Send(Cmd::SetKey(k)) => assert_eq!(k, "sk-secret-token-12345"),
+            _ => panic!("/key must send the key"),
+        }
+        let echo = ui.messages.last().unwrap();
+        assert!(matches!(echo.kind, MsgKind::User));
+        assert!(
+            !echo.text.contains("secret-token"),
+            "token leaked: {}",
+            echo.text
+        );
+        assert!(echo.text.ends_with("45"));
     }
 
     #[test]
