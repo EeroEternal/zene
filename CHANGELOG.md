@@ -1,12 +1,25 @@
 # Changelog
 
-## Unreleased
+## v0.1.18 (2026-10-07)
 
 ### Changed
 - **Merged 4 single-consumer crates**: `zene-index` → `zene-tools::index`,
   `zene-workspace` + `zene-model-executor` → `zene-core::{workspace, model_executor}`,
   `zene-runtime` → `zene-agent-runtime::runtime`. Pure module moves (git rename
   history preserved); no behavior change. Workspace: 17 → 13 crates.
+
+### Removed
+- **`apps/inference-gateway`** (1045 lines) + dev script: use external
+  [UniGateway](https://github.com/EeroEternal/unigateway) instead; point zene at
+  it via `ZENE_INFERENCE_GATEWAY_URL`. Orphaned deps (`tower-http`,
+  `unigateway-session`, `unigateway-session-redis`) dropped.
+
+### Fixed
+- **`zene analysis` worst-score reporting**: `min()` seeded with
+  `f64::default()` floored the reported worst score at 0.0 on all-positive
+  score sets; now seeded from the first observed score.
+- **Install script URLs**: `install-release.sh` / README pointed at the old
+  `ParaTensor/zene` repo; now `EeroEternal/zene`.
 
 ### Added
 - **`zene tui`**: minimal terminal chat (ratatui) over the same agent core as
