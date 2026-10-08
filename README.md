@@ -25,10 +25,10 @@ Or manually:
 cargo install --path apps/cli --locked
 ```
 
-Pre-built binaries are published on [GitHub Releases](https://github.com/ParaTensor/zene/releases) when a version tag (`v*`) is pushed. Each release includes `zene` for Linux and macOS (x86_64 + Apple Silicon). Download install (no compile):
+Pre-built binaries are published on [GitHub Releases](https://github.com/EeroEternal/zene/releases) when a version tag (`v*`) is pushed. Each release includes `zene` for Linux and macOS (x86_64 + Apple Silicon). Download install (no compile):
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/ParaTensor/zene/main/scripts/install-release.sh | bash
+curl -fsSL https://raw.githubusercontent.com/EeroEternal/zene/main/scripts/install-release.sh | bash
 ```
 
 Or build without installing:

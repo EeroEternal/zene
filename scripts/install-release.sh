@@ -51,13 +51,13 @@ if [ -n "$TARGET" ]; then
   echo "Detected platform: $OS ($ARCH)"
   echo "Fetching latest release tag from GitHub..."
 
-  LATEST_TAG=$(curl -sfI https://github.com/ParaTensor/zene/releases/latest | grep -i "location:" | grep -oE "tag/v[0-9.]+" | cut -d/ -f2 || echo "")
+  LATEST_TAG=$(curl -sfI https://github.com/EeroEternal/zene/releases/latest | grep -i "location:" | grep -oE "tag/v[0-9.]+" | cut -d/ -f2 || echo "")
 
   if [ -z "$LATEST_TAG" ]; then
     LATEST_TAG="v0.1.0"
   fi
 
-  ZENE_URL="https://github.com/ParaTensor/zene/releases/download/${LATEST_TAG}/zene-${TARGET}"
+  ZENE_URL="https://github.com/EeroEternal/zene/releases/download/${LATEST_TAG}/zene-${TARGET}"
 
   if install_binary "$ZENE_URL" "$ZENE_PATH" "zene"; then
     if [ "$OS" = "Darwin" ]; then
@@ -112,7 +112,7 @@ if ! command -v cargo &> /dev/null; then
 fi
 
 echo "Installing Zene from GitHub..."
-if cargo install --git https://github.com/ParaTensor/zene --locked zene-cli; then
+if cargo install --git https://github.com/EeroEternal/zene --locked zene-cli; then
   echo "✓ zene installed to ~/.cargo/bin/zene"
   echo "=== Installation Completed ==="
   echo "Make sure ~/.cargo/bin is in your shell PATH."
