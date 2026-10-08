@@ -88,7 +88,19 @@ fn init_tracing() {
 async fn main() -> Result<()> {
     let cli_args: Vec<String> = std::env::args().collect();
     let is_acp = cli_args.iter().any(|a| a == "acp");
-    if is_acp {
+    let is_tui = cli_args.iter().any(|a| a == "tui");
+    if is_tui {
+        // TUI owns the screen: log writes corrupt ratatui's diff rendering even
+        // on stderr. Silent by default; RUST_LOG opts in (visible glitches then).
+        tracing_subscriber::fmt()
+            .with_env_filter(
+                tracing_subscriber::EnvFilter::try_from_default_env()
+                    .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("off")),
+            )
+            .with_target(false)
+            .with_writer(std::io::stderr)
+            .init();
+    } else if is_acp {
         // Keep ACP stdout reserved for NDJSON; send logs to stderr.
         tracing_subscriber::fmt()
             .with_env_filter(
