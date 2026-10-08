@@ -1,5 +1,21 @@
 # Changelog
 
+## v0.1.19 (2026-10-08)
+
+### Added
+- **Full TUI chat**: streaming output (`TextDelta` renders tokens live), tool
+  activity lines (`⚙/✓/✗ <tool>`), borderless layout (header / transcript /
+  input / hints).
+- **TUI slash commands**: `/model [name]` (runtime model switch), `/key <token>`
+  (session API key, masked in transcript), `/help`, `/clear`, `/quit`.
+  Slash commands work even while a turn is running.
+
+### Fixed
+- **TUI log bleed**: tracing is silent during `zene tui` (log writes corrupted
+  ratatui rendering); `RUST_LOG` opts into stderr logging.
+- **Busy state settling**: `/key`/`/model` completions left the UI stuck at
+  "working…"; Notice now settles the turn state.
+
 ## v0.1.18 (2026-10-07)
 
 ### Changed
