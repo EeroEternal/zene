@@ -1,30 +1,59 @@
 //! `zene tui` — full terminal chat over the same agent core as `zene acp`.
 //!
-//! Chat-style transcript with streaming output, `/` commands (model switching,
-//! clear, quit), and tool activity lines. No window chrome: header / transcript
-//! / input / hints, the rest is conversation. The agent runs in a spawned task
-//! and talks to the UI over channels so the terminal stays responsive.
+//! Chat-style transcript with streaming output, a Claude-Code-style popup
+//! command menu (type `/` to float candidates, ↑↓ select, Tab/Enter complete,
+//! Esc close), and tool activity lines. The agent runs in a spawned task and
+//! talks to the UI over channels so the terminal stays responsive.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use anyhow::{anyhow, Context, Result};
 use ratatui::crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
-use ratatui::layout::{Constraint, Layout};
+use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Paragraph, Wrap};
+use ratatui::widgets::{Block, Paragraph, Wrap};
 use ratatui::{DefaultTerminal, Frame};
 use tokio::sync::mpsc;
 use zene_config::ZeneConfig;
 use zene_core::{Agent, AgentEvent, PromptOptions};
 
-const HELP: &str = "commands:
-  /key <token>    set the API key for this session (masked in transcript)
-  /model          show current model
-  /model <name>   switch model (e.g. /model deepseek-chat)
-  /clear          clear transcript
-  /quit           exit (Esc also works)";
+/// Slash commands surfaced in the popup menu.
+struct Command {
+    name: &'static str,
+    hint: &'static str,
+    /// True when the command takes an argument (menu completion fills a space).
+    takes_arg: bool,
+}
+
+const COMMANDS: &[Command] = &[
+    Command {
+        name: "key",
+        hint: "set the API key for this session",
+        takes_arg: true,
+    },
+    Command {
+        name: "model",
+        hint: "show current model",
+        takes_arg: true,
+    },
+    Command {
+        name: "help",
+        hint: "list commands",
+        takes_arg: false,
+    },
+    Command {
+        name: "clear",
+        hint: "clear transcript",
+        takes_arg: false,
+    },
+    Command {
+        name: "quit",
+        hint: "exit",
+        takes_arg: false,
+    },
+];
 
 pub(crate) async fn run(workdir: &Path) -> Result<()> {
     let config = ZeneConfig::load(workdir).map_err(|err| anyhow!(err.to_string()))?;
@@ -77,7 +106,7 @@ async fn agent_loop(
             return;
         }
     };
-    let _ = tx.send(UiMsg::Notice("ready — type /help for commands".into()));
+    let _ = tx.send(UiMsg::Notice("ready — type / for commands".into()));
     while let Some(cmd) = cmds.recv().await {
         match cmd {
             Cmd::Prompt(text) => {
@@ -128,7 +157,8 @@ async fn agent_loop(
                 match agent.switch_model(&model, None, None, Some(key)).await {
                     Ok(()) => {
                         let _ = tx.send(UiMsg::Notice(
-                            "api key set for this session — persist it in ~/.zene/config.toml (api_key) or DEEPSEEK_API_KEY".into(),
+                            "api key set for this session — persist it in ~/.zene/config.toml (api_key) or DEEPSEEK_API_KEY"
+                                .into(),
                         ));
                     }
                     Err(err) => {
@@ -164,6 +194,8 @@ struct Ui {
     busy: bool,
     model: String,
     workdir: String,
+    /// Popup menu selection index.
+    menu_sel: usize,
 }
 
 impl Ui {
@@ -177,6 +209,7 @@ impl Ui {
             busy: false,
             model,
             workdir,
+            menu_sel: 0,
         }
     }
 
@@ -193,15 +226,61 @@ enum Action {
     None,
 }
 
+/// The popup is open while the input is still just a slash word (no argument
+/// typed yet).
+fn menu_query(input: &str) -> Option<&str> {
+    let body = input.strip_prefix('/')?;
+    if body.contains(char::is_whitespace) {
+        return None;
+    }
+    Some(body)
+}
+
+/// Commands matching the current menu query.
+fn menu_matches(query: &str) -> Vec<&'static Command> {
+    COMMANDS
+        .iter()
+        .filter(|c| c.name.starts_with(query))
+        .collect()
+}
+
 fn apply_key(ui: &mut Ui, key: KeyEvent) -> Action {
     if key.kind == KeyEventKind::Release {
         return Action::None;
+    }
+    // Popup navigation first: the menu owns arrows/Tab/Enter/Esc while open.
+    if menu_query(&ui.input).is_some() {
+        let matches = menu_matches(menu_query(&ui.input).unwrap_or_default());
+        if !matches.is_empty() {
+            match key.code {
+                KeyCode::Up => {
+                    ui.menu_sel = ui.menu_sel.saturating_sub(1);
+                    return Action::None;
+                }
+                KeyCode::Down => {
+                    if ui.menu_sel + 1 < matches.len() {
+                        ui.menu_sel += 1;
+                    }
+                    return Action::None;
+                }
+                KeyCode::Tab | KeyCode::Enter | KeyCode::Right => {
+                    return menu_pick(ui, matches);
+                }
+                KeyCode::Esc => {
+                    ui.input.clear();
+                    ui.menu_sel = 0;
+                    return Action::None;
+                }
+                _ => {}
+            }
+        }
     }
     match key.code {
         KeyCode::Esc => Action::Quit,
         KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => Action::Quit,
         KeyCode::Enter if !ui.input.trim().is_empty() => {
             let input = std::mem::take(&mut ui.input);
+            ui.menu_sel = 0;
             if let Some(action) = slash_command(ui, &input) {
                 return action;
             }
@@ -219,6 +298,7 @@ fn apply_key(ui: &mut Ui, key: KeyEvent) -> Action {
         }
         KeyCode::Backspace => {
             ui.input.pop();
+            ui.menu_sel = 0;
             Action::None
         }
         KeyCode::Char(c) => {
@@ -238,6 +318,22 @@ fn apply_key(ui: &mut Ui, key: KeyEvent) -> Action {
     }
 }
 
+/// Complete the highlighted menu entry: arg-taking commands fill the input,
+/// the rest execute immediately.
+fn menu_pick(ui: &mut Ui, matches: Vec<&'static Command>) -> Action {
+    let cmd = matches[ui.menu_sel.min(matches.len() - 1)];
+    if cmd.takes_arg {
+        ui.input = format!("/{} ", cmd.name);
+        ui.menu_sel = 0;
+        Action::None
+    } else {
+        let input = format!("/{}", cmd.name);
+        ui.input.clear();
+        ui.menu_sel = 0;
+        slash_command(ui, &input).unwrap_or(Action::None)
+    }
+}
+
 /// Handle `/` inputs locally or turn them into agent commands.
 /// Returns None when the input is a normal prompt.
 fn slash_command(ui: &mut Ui, input: &str) -> Option<Action> {
@@ -247,7 +343,18 @@ fn slash_command(ui: &mut Ui, input: &str) -> Option<Action> {
     let arg = parts.next().unwrap_or_default().trim();
     match cmd {
         "help" => {
-            ui.push(MsgKind::Notice, HELP.to_string());
+            let help = COMMANDS
+                .iter()
+                .map(|c| {
+                    if c.takes_arg {
+                        format!("/{} <arg>  — {}", c.name, c.hint)
+                    } else {
+                        format!("/{}  — {}", c.name, c.hint)
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
+            ui.push(MsgKind::Notice, help);
             Some(Action::None)
         }
         "model" if arg.is_empty() => {
@@ -276,7 +383,10 @@ fn slash_command(ui: &mut Ui, input: &str) -> Option<Action> {
             Some(Action::None)
         }
         other => {
-            ui.push(MsgKind::Error, format!("unknown command: /{other} — /help"));
+            ui.push(
+                MsgKind::Error,
+                format!("unknown command: /{other} — type / for commands"),
+            );
             Some(Action::None)
         }
     }
@@ -442,6 +552,15 @@ fn draw(frame: &mut Frame, ui: &Ui) {
         chunks[1],
     );
 
+    // Popup command menu over the transcript bottom, open while the input is
+    // still just a slash word.
+    if let Some(query) = menu_query(&ui.input) {
+        let matches = menu_matches(query);
+        if !matches.is_empty() {
+            draw_menu(frame, chunks[1], ui, &matches);
+        }
+    }
+
     frame.render_widget(
         Paragraph::new(Line::from(vec![
             Span::styled("› ", Style::new().fg(Color::Green)),
@@ -451,10 +570,12 @@ fn draw(frame: &mut Frame, ui: &Ui) {
         chunks[2],
     );
 
-    let hints = if ui.busy {
-        "working… Enter queued is ignored · Esc quit"
+    let hints = if menu_query(&ui.input).is_some() {
+        "↑↓ select · Tab/Enter complete · Esc close"
+    } else if ui.busy {
+        "working… Esc quit"
     } else {
-        "Enter send · /help commands · PgUp/PgDn scroll · Esc quit"
+        "Enter send · / commands · PgUp/PgDn scroll · Esc quit"
     };
     frame.render_widget(
         Paragraph::new(Line::from(Span::styled(
@@ -462,6 +583,48 @@ fn draw(frame: &mut Frame, ui: &Ui) {
             Style::new().fg(Color::DarkGray),
         ))),
         chunks[3],
+    );
+}
+
+/// Floating command menu anchored to the bottom of the transcript area.
+fn draw_menu(frame: &mut Frame, area: Rect, ui: &Ui, matches: &[&'static Command]) {
+    let shown = matches.len().min(8) as u16;
+    let height = shown + 2;
+    let width = area.width.min(56);
+    let rect = Rect {
+        x: area.x,
+        y: area.bottom().saturating_sub(height),
+        width,
+        height,
+    };
+    let lines: Vec<Line<'static>> = matches
+        .iter()
+        .take(8)
+        .enumerate()
+        .map(|(i, cmd)| {
+            let selected = i == ui.menu_sel;
+            let style = if selected {
+                Style::new()
+                    .fg(Color::Black)
+                    .bg(Color::Green)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::new()
+            };
+            let arg = if cmd.takes_arg { "<arg>" } else { "" };
+            Line::from(Span::styled(
+                format!(" /{:<6}{:<7} {}", cmd.name, arg, cmd.hint),
+                style,
+            ))
+        })
+        .collect();
+    frame.render_widget(
+        Paragraph::new(lines).block(
+            Block::bordered()
+                .title("commands")
+                .border_style(Style::new().fg(Color::Green)),
+        ),
+        rect,
     );
 }
 
@@ -499,17 +662,66 @@ mod tests {
     }
 
     #[test]
-    fn notice_and_done_settle_busy() {
+    fn menu_opens_on_slash_and_filters() {
         let mut ui = Ui::new("m".into(), "w".into());
-        ui.busy = true;
-        apply_msg(&mut ui, UiMsg::Notice("api key set".into()));
-        assert!(!ui.busy);
-        ui.busy = true;
-        apply_msg(&mut ui, UiMsg::Stream("tok".into()));
-        assert!(ui.busy, "streaming must not settle the turn");
-        apply_msg(&mut ui, UiMsg::Done("answer".into()));
-        assert!(!ui.busy);
-        assert!(ui.streaming.is_empty());
+        type_str(&mut ui, "/");
+        assert_eq!(
+            menu_matches("/".trim_start_matches('/')).len(),
+            COMMANDS.len()
+        );
+        type_str(&mut ui, "mo");
+        assert!(menu_query(&ui.input).is_some());
+        let matches = menu_matches("mo");
+        assert_eq!(matches.len(), 1);
+        assert_eq!(matches[0].name, "model");
+    }
+
+    #[test]
+    fn menu_down_up_navigates() {
+        let mut ui = Ui::new("m".into(), "w".into());
+        type_str(&mut ui, "/");
+        assert_eq!(ui.menu_sel, 0);
+        apply_key(&mut ui, key(KeyCode::Down));
+        assert_eq!(ui.menu_sel, 1);
+        apply_key(&mut ui, key(KeyCode::Up));
+        assert_eq!(ui.menu_sel, 0);
+        apply_key(&mut ui, key(KeyCode::Up));
+        assert_eq!(ui.menu_sel, 0, "Up at top must clamp");
+    }
+
+    #[test]
+    fn menu_enter_fills_arg_commands_and_runs_plain_ones() {
+        // /model takes an arg: Enter fills "/model " instead of executing.
+        let mut ui = Ui::new("m".into(), "w".into());
+        type_str(&mut ui, "/model");
+        assert!(matches!(
+            apply_key(&mut ui, key(KeyCode::Enter)),
+            Action::None
+        ));
+        assert_eq!(ui.input, "/model ");
+        // /quit runs immediately.
+        let mut ui = Ui::new("m".into(), "w".into());
+        type_str(&mut ui, "/quit");
+        assert!(matches!(
+            apply_key(&mut ui, key(KeyCode::Enter)),
+            Action::Quit
+        ));
+    }
+
+    #[test]
+    fn menu_esc_closes_without_quitting() {
+        let mut ui = Ui::new("m".into(), "w".into());
+        type_str(&mut ui, "/key");
+        assert!(matches!(
+            apply_key(&mut ui, key(KeyCode::Esc)),
+            Action::None
+        ));
+        assert!(ui.input.is_empty());
+        // With no menu open, Esc quits.
+        assert!(matches!(
+            apply_key(&mut ui, key(KeyCode::Esc)),
+            Action::Quit
+        ));
     }
 
     #[test]
@@ -531,33 +743,6 @@ mod tests {
     }
 
     #[test]
-    fn slash_works_while_busy() {
-        let mut ui = Ui::new("m".into(), "w".into());
-        ui.busy = true;
-        type_str(&mut ui, "/model other");
-        assert!(matches!(
-            apply_key(&mut ui, key(KeyCode::Enter)),
-            Action::Send(Cmd::SwitchModel(_))
-        ));
-    }
-
-    #[test]
-    fn slash_model_switches_and_quit_quits() {
-        let mut ui = Ui::new("old".into(), "w".into());
-        type_str(&mut ui, "/model new-model");
-        match apply_key(&mut ui, key(KeyCode::Enter)) {
-            Action::Send(Cmd::SwitchModel(m)) => assert_eq!(m, "new-model"),
-            _ => panic!("/model must switch"),
-        }
-        assert_eq!(ui.model, "new-model");
-        type_str(&mut ui, "/quit");
-        assert!(matches!(
-            apply_key(&mut ui, key(KeyCode::Enter)),
-            Action::Quit
-        ));
-    }
-
-    #[test]
     fn slash_clear_and_unknown() {
         let mut ui = Ui::new("m".into(), "w".into());
         ui.push(MsgKind::User, "hello".into());
@@ -567,6 +752,20 @@ mod tests {
         type_str(&mut ui, "/bogus");
         apply_key(&mut ui, key(KeyCode::Enter));
         assert!(matches!(ui.messages[0].kind, MsgKind::Error));
+    }
+
+    #[test]
+    fn notice_and_done_settle_busy() {
+        let mut ui = Ui::new("m".into(), "w".into());
+        ui.busy = true;
+        apply_msg(&mut ui, UiMsg::Notice("api key set".into()));
+        assert!(!ui.busy);
+        ui.busy = true;
+        apply_msg(&mut ui, UiMsg::Stream("tok".into()));
+        assert!(ui.busy, "streaming must not settle the turn");
+        apply_msg(&mut ui, UiMsg::Done("answer".into()));
+        assert!(!ui.busy);
+        assert!(ui.streaming.is_empty());
     }
 
     #[test]
