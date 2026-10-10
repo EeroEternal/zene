@@ -2,8 +2,9 @@
 //!
 //! Chat-style transcript with streaming output, a Claude-Code-style popup
 //! command menu (type `/` to float candidates, ↑↓ select, Tab/Enter complete,
-//! Esc close), and tool activity lines. The agent runs in a spawned task and
-//! talks to the UI over channels so the terminal stays responsive.
+//! Esc close), and a pi.dev-style provider wizard for API keys. The agent runs
+//! in a spawned task and talks to the UI over channels so the terminal stays
+//! responsive.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -30,8 +31,8 @@ struct Command {
 const COMMANDS: &[Command] = &[
     Command {
         name: "key",
-        hint: "set the API key for this session",
-        takes_arg: true,
+        hint: "configure provider & API key",
+        takes_arg: false,
     },
     Command {
         name: "model",
@@ -55,6 +56,62 @@ const COMMANDS: &[Command] = &[
     },
 ];
 
+/// A provider preset for the key wizard.
+struct Provider {
+    name: &'static str,
+    /// Zene config provider field (`openai` / `anthropic`).
+    provider: &'static str,
+    base_url: &'static str,
+    model: &'static str,
+    /// Env var consulted for the "configured" status hint.
+    env: &'static str,
+}
+
+const PROVIDERS: &[Provider] = &[
+    Provider {
+        name: "DeepSeek",
+        provider: "openai",
+        base_url: "https://api.deepseek.com",
+        model: "deepseek-chat",
+        env: "DEEPSEEK_API_KEY",
+    },
+    Provider {
+        name: "Zhipu (GLM)",
+        provider: "openai",
+        base_url: "https://open.bigmodel.cn/api/paas/v4",
+        model: "glm-4-plus",
+        env: "ZHIPUAI_API_KEY",
+    },
+    Provider {
+        name: "Moonshot (Kimi)",
+        provider: "openai",
+        base_url: "https://api.moonshot.cn/v1",
+        model: "moonshot-v1-8k",
+        env: "MOONSHOT_API_KEY",
+    },
+    Provider {
+        name: "OpenAI",
+        provider: "openai",
+        base_url: "https://api.openai.com/v1",
+        model: "gpt-4o",
+        env: "OPENAI_API_KEY",
+    },
+    Provider {
+        name: "Anthropic",
+        provider: "anthropic",
+        base_url: "https://api.anthropic.com",
+        model: "claude-sonnet-4-5",
+        env: "ANTHROPIC_API_KEY",
+    },
+    Provider {
+        name: "Custom (base URL)…",
+        provider: "openai",
+        base_url: "",
+        model: "",
+        env: "",
+    },
+];
+
 pub(crate) async fn run(workdir: &Path) -> Result<()> {
     let config = ZeneConfig::load(workdir).map_err(|err| anyhow!(err.to_string()))?;
     let model = config.model.clone();
@@ -70,11 +127,19 @@ pub(crate) async fn run(workdir: &Path) -> Result<()> {
     result
 }
 
+/// Agent-side configuration update (model / provider / endpoint / key).
+#[derive(Default, Debug)]
+struct Configure {
+    model: Option<String>,
+    provider: Option<String>,
+    base_url: Option<String>,
+    api_key: String,
+}
+
 /// Messages into the agent task.
 enum Cmd {
     Prompt(String),
-    SwitchModel(String),
-    SetKey(String),
+    Configure(Configure),
     Quit,
 }
 
@@ -144,25 +209,31 @@ async fn agent_loop(
                     }
                 }
             }
-            Cmd::SwitchModel(model) => match agent.switch_model(&model, None, None, None).await {
-                Ok(()) => {
-                    let _ = tx.send(UiMsg::Notice(format!("model → {model}")));
-                }
-                Err(err) => {
-                    let _ = tx.send(UiMsg::Error(format!("model switch failed: {err:#}")));
-                }
-            },
-            Cmd::SetKey(key) => {
-                let model = agent.config().model.clone();
-                match agent.switch_model(&model, None, None, Some(key)).await {
+            Cmd::Configure(update) => {
+                let current = agent.config().model.clone();
+                let model = update.model.clone().unwrap_or(current);
+                // Empty key means "unchanged" — never clobber an existing one.
+                let api_key = if update.api_key.is_empty() {
+                    None
+                } else {
+                    Some(update.api_key)
+                };
+                match agent
+                    .switch_model(
+                        &model,
+                        update.provider.clone(),
+                        update.base_url.clone(),
+                        api_key,
+                    )
+                    .await
+                {
                     Ok(()) => {
-                        let _ = tx.send(UiMsg::Notice(
-                            "api key set for this session — persist it in ~/.zene/config.toml (api_key) or DEEPSEEK_API_KEY"
-                                .into(),
-                        ));
+                        let _ = tx.send(UiMsg::Notice(format!(
+                            "configured — model → {model} (key held for this session; persist in ~/.zene/config.toml)"
+                        )));
                     }
                     Err(err) => {
-                        let _ = tx.send(UiMsg::Error(format!("api key rejected: {err:#}")));
+                        let _ = tx.send(UiMsg::Error(format!("configuration failed: {err:#}")));
                     }
                 }
             }
@@ -185,6 +256,44 @@ struct Msg {
     text: String,
 }
 
+/// The pi.dev-style API key wizard: pick provider, then type the key.
+#[derive(Clone, Copy, PartialEq, Debug)]
+enum WizardStage {
+    PickProvider,
+    EnterBaseUrl,
+    EnterKey,
+}
+
+struct Wizard {
+    stage: WizardStage,
+    /// Provider filter query (stage 1).
+    query: String,
+    sel: usize,
+    provider: Option<&'static Provider>,
+    /// Collected for the Custom preset.
+    base_url: String,
+}
+
+impl Wizard {
+    fn new() -> Self {
+        Self {
+            stage: WizardStage::PickProvider,
+            query: String::new(),
+            sel: 0,
+            provider: None,
+            base_url: String::new(),
+        }
+    }
+
+    fn matches(&self) -> Vec<&'static Provider> {
+        let q = self.query.to_lowercase();
+        PROVIDERS
+            .iter()
+            .filter(|p| p.name.to_lowercase().contains(&q))
+            .collect()
+    }
+}
+
 struct Ui {
     messages: Vec<Msg>,
     streaming: String,
@@ -194,8 +303,10 @@ struct Ui {
     busy: bool,
     model: String,
     workdir: String,
-    /// Popup menu selection index.
+    /// Popup command menu selection index.
     menu_sel: usize,
+    /// Key wizard, open while configuring a provider.
+    wizard: Option<Wizard>,
 }
 
 impl Ui {
@@ -210,6 +321,7 @@ impl Ui {
             model,
             workdir,
             menu_sel: 0,
+            wizard: None,
         }
     }
 
@@ -248,7 +360,11 @@ fn apply_key(ui: &mut Ui, key: KeyEvent) -> Action {
     if key.kind == KeyEventKind::Release {
         return Action::None;
     }
-    // Popup navigation first: the menu owns arrows/Tab/Enter/Esc while open.
+    // The wizard owns the keyboard while open.
+    if ui.wizard.is_some() {
+        return wizard_key(ui, key);
+    }
+    // Popup navigation: the menu owns arrows/Tab/Enter/Esc while open.
     if menu_query(&ui.input).is_some() {
         let matches = menu_matches(menu_query(&ui.input).unwrap_or_default());
         if !matches.is_empty() {
@@ -334,6 +450,116 @@ fn menu_pick(ui: &mut Ui, matches: Vec<&'static Command>) -> Action {
     }
 }
 
+/// Keyboard handling while the key wizard is open.
+fn wizard_key(ui: &mut Ui, key: KeyEvent) -> Action {
+    let wizard = ui.wizard.as_mut().expect("wizard is open");
+    match key.code {
+        KeyCode::Esc => {
+            ui.wizard = None;
+            ui.input.clear();
+            ui.push(MsgKind::Notice, "cancelled".into());
+            Action::None
+        }
+        KeyCode::Up => {
+            wizard.sel = wizard.sel.saturating_sub(1);
+            Action::None
+        }
+        KeyCode::Down => {
+            if wizard.sel + 1 < wizard.matches().len() {
+                wizard.sel += 1;
+            }
+            Action::None
+        }
+        KeyCode::Backspace => {
+            match wizard.stage {
+                WizardStage::PickProvider => {
+                    wizard.query.pop();
+                }
+                WizardStage::EnterBaseUrl | WizardStage::EnterKey => {
+                    ui.input.pop();
+                }
+            }
+            Action::None
+        }
+        KeyCode::Char(c) => {
+            match wizard.stage {
+                WizardStage::PickProvider => wizard.query.push(c),
+                WizardStage::EnterBaseUrl | WizardStage::EnterKey => ui.input.push(c),
+            }
+            Action::None
+        }
+        KeyCode::Enter | KeyCode::Right => wizard_advance(ui),
+        _ => Action::None,
+    }
+}
+
+/// Advance the wizard one stage; the last stage sends the configuration.
+fn wizard_advance(ui: &mut Ui) -> Action {
+    let wizard = ui.wizard.as_mut().expect("wizard is open");
+    match wizard.stage {
+        WizardStage::PickProvider => {
+            let matches = wizard.matches();
+            if matches.is_empty() {
+                return Action::None;
+            }
+            let picked = matches[wizard.sel.min(matches.len() - 1)];
+            wizard.provider = Some(picked);
+            wizard.sel = 0;
+            ui.input.clear();
+            wizard.stage = if picked.base_url.is_empty() {
+                WizardStage::EnterBaseUrl
+            } else {
+                WizardStage::EnterKey
+            };
+            Action::None
+        }
+        WizardStage::EnterBaseUrl => {
+            let base = ui.input.trim().to_string();
+            if base.is_empty() {
+                return Action::None;
+            }
+            ui.wizard.as_mut().expect("wizard is open").base_url = base;
+            ui.input.clear();
+            ui.wizard.as_mut().expect("wizard is open").stage = WizardStage::EnterKey;
+            Action::None
+        }
+        WizardStage::EnterKey => {
+            let key_text = ui.input.trim().to_string();
+            if key_text.is_empty() {
+                return Action::None;
+            }
+            let wizard = ui.wizard.take().expect("wizard is open");
+            let preset = wizard.provider.expect("provider picked");
+            let base_url = if wizard.base_url.is_empty() {
+                preset.base_url.to_string()
+            } else {
+                wizard.base_url
+            };
+            ui.input.clear();
+            ui.model = if preset.model.is_empty() {
+                ui.model.clone()
+            } else {
+                preset.model.to_string()
+            };
+            ui.push(
+                MsgKind::User,
+                format!("/key {} ••••{}", preset.name, tail_mask(&key_text)),
+            );
+            ui.busy = true;
+            Action::Send(Cmd::Configure(Configure {
+                model: if preset.model.is_empty() {
+                    None
+                } else {
+                    Some(preset.model.to_string())
+                },
+                provider: Some(preset.provider.to_string()),
+                base_url: Some(base_url),
+                api_key: key_text,
+            }))
+        }
+    }
+}
+
 /// Handle `/` inputs locally or turn them into agent commands.
 /// Returns None when the input is a normal prompt.
 fn slash_command(ui: &mut Ui, input: &str) -> Option<Action> {
@@ -365,7 +591,11 @@ fn slash_command(ui: &mut Ui, input: &str) -> Option<Action> {
             ui.push(MsgKind::User, input.to_string());
             ui.model = arg.to_string();
             ui.busy = true;
-            Some(Action::Send(Cmd::SwitchModel(arg.to_string())))
+            Some(Action::Send(Cmd::Configure(Configure {
+                model: Some(arg.to_string()),
+                api_key: String::new(),
+                ..Default::default()
+            })))
         }
         "clear" => {
             ui.messages.clear();
@@ -376,10 +606,15 @@ fn slash_command(ui: &mut Ui, input: &str) -> Option<Action> {
         "key" | "api-key" if !arg.is_empty() => {
             ui.push(MsgKind::User, format!("/key ••••{}", tail_mask(arg)));
             ui.busy = true;
-            Some(Action::Send(Cmd::SetKey(arg.to_string())))
+            Some(Action::Send(Cmd::Configure(Configure {
+                api_key: arg.to_string(),
+                ..Default::default()
+            })))
         }
         "key" | "api-key" => {
-            ui.push(MsgKind::Notice, "usage: /key <token>".into());
+            // Open the provider wizard (pi.dev-style).
+            ui.input.clear();
+            ui.wizard = Some(Wizard::new());
             Some(Action::None)
         }
         other => {
@@ -413,8 +648,8 @@ fn apply_msg(ui: &mut Ui, msg: UiMsg) {
             ui.push(MsgKind::Error, text);
             ui.busy = false;
         }
-        // Notice is also the completion signal for SetKey/SwitchModel
-        // commands (and startup "ready"): always settle busy.
+        // Notice is also the completion signal for Configure commands (and
+        // startup "ready"): always settle busy.
         UiMsg::Notice(text) => {
             ui.push(MsgKind::Notice, text);
             ui.busy = false;
@@ -561,16 +796,33 @@ fn draw(frame: &mut Frame, ui: &Ui) {
         }
     }
 
+    // Provider/key wizard panel.
+    if let Some(wizard) = &ui.wizard {
+        draw_wizard(frame, chunks[1], ui, wizard);
+    }
+
+    // Input line: masked while typing a secret.
+    let input_text = if ui
+        .wizard
+        .as_ref()
+        .is_some_and(|w| w.stage == WizardStage::EnterKey)
+    {
+        "•".repeat(ui.input.chars().count())
+    } else {
+        ui.input.clone()
+    };
     frame.render_widget(
         Paragraph::new(Line::from(vec![
             Span::styled("› ", Style::new().fg(Color::Green)),
-            Span::raw(ui.input.as_str()),
+            Span::raw(input_text),
             Span::styled("▌", Style::new().fg(Color::Green)),
         ])),
         chunks[2],
     );
 
-    let hints = if menu_query(&ui.input).is_some() {
+    let hints = if ui.wizard.is_some() {
+        "enter next · esc cancel"
+    } else if menu_query(&ui.input).is_some() {
         "↑↓ select · Tab/Enter complete · Esc close"
     } else if ui.busy {
         "working… Esc quit"
@@ -622,6 +874,80 @@ fn draw_menu(frame: &mut Frame, area: Rect, ui: &Ui, matches: &[&'static Command
         Paragraph::new(lines).block(
             Block::bordered()
                 .title("commands")
+                .border_style(Style::new().fg(Color::Green)),
+        ),
+        rect,
+    );
+}
+
+/// pi.dev-style provider wizard panel.
+fn draw_wizard(frame: &mut Frame, area: Rect, ui: &Ui, wizard: &Wizard) {
+    let width = area.width.min(64);
+    let mut lines: Vec<Line<'static>> = Vec::new();
+    match wizard.stage {
+        WizardStage::PickProvider => {
+            lines.push(Line::from(Span::styled(
+                "Select provider to configure:",
+                Style::new().fg(Color::Green),
+            )));
+            lines.push(Line::from(format!(" > {}▌", wizard.query)));
+            lines.push(Line::from(""));
+            for (i, p) in wizard.matches().iter().take(8).enumerate() {
+                let selected = i == wizard.sel;
+                let status = if p.env.is_empty() {
+                    "manual"
+                } else if std::env::var(p.env).is_ok_and(|v| !v.is_empty()) {
+                    "configured"
+                } else {
+                    "not configured"
+                };
+                let arrow = if selected { "→ " } else { "  " };
+                let name_style = if selected {
+                    Style::new()
+                        .fg(Color::Black)
+                        .bg(Color::Green)
+                        .add_modifier(Modifier::BOLD)
+                } else {
+                    Style::new()
+                };
+                lines.push(Line::from(vec![
+                    Span::styled(arrow, name_style),
+                    Span::styled(format!("{:<18}", p.name), name_style),
+                    Span::styled(format!("· {status}"), Style::new().fg(Color::DarkGray)),
+                ]));
+            }
+        }
+        WizardStage::EnterBaseUrl => {
+            let name = wizard.provider.map(|p| p.name).unwrap_or("Custom");
+            lines.push(Line::from(Span::styled(
+                format!("Base URL for {name}:"),
+                Style::new().fg(Color::Green),
+            )));
+            lines.push(Line::from(format!(" > {}▌", ui.input)));
+        }
+        WizardStage::EnterKey => {
+            let name = wizard.provider.map(|p| p.name).unwrap_or("provider");
+            lines.push(Line::from(Span::styled(
+                format!("Enter API key for {name}:"),
+                Style::new().fg(Color::Green),
+            )));
+            lines.push(Line::from(format!(
+                " > {}▌",
+                "•".repeat(ui.input.chars().count())
+            )));
+        }
+    }
+    let height = lines.len() as u16 + 2;
+    let rect = Rect {
+        x: area.x,
+        y: area.bottom().saturating_sub(height),
+        width,
+        height,
+    };
+    frame.render_widget(
+        Paragraph::new(lines).block(
+            Block::bordered()
+                .title("api key")
                 .border_style(Style::new().fg(Color::Green)),
         ),
         rect,
@@ -725,12 +1051,90 @@ mod tests {
     }
 
     #[test]
-    fn slash_key_masks_token_and_sends() {
+    fn slash_key_opens_wizard() {
+        let mut ui = Ui::new("m".into(), "w".into());
+        type_str(&mut ui, "/key");
+        assert!(matches!(
+            apply_key(&mut ui, key(KeyCode::Enter)),
+            Action::None
+        ));
+        let wizard = ui.wizard.as_ref().expect("wizard must open");
+        assert_eq!(wizard.stage, WizardStage::PickProvider);
+    }
+
+    #[test]
+    fn wizard_picks_provider_and_submits_key() {
+        let mut ui = Ui::new("m".into(), "w".into());
+        ui.wizard = Some(Wizard::new());
+        // Filter to DeepSeek, pick it.
+        type_str(&mut ui, "deep");
+        assert!(matches!(
+            apply_key(&mut ui, key(KeyCode::Enter)),
+            Action::None
+        ));
+        let wizard = ui.wizard.as_ref().unwrap();
+        assert_eq!(wizard.stage, WizardStage::EnterKey);
+        assert_eq!(wizard.provider.unwrap().name, "DeepSeek");
+        // Type the key, Enter sends Configure with provider fields filled.
+        type_str(&mut ui, "sk-secret-1234");
+        match apply_key(&mut ui, key(KeyCode::Enter)) {
+            Action::Send(Cmd::Configure(cfg)) => {
+                assert_eq!(cfg.api_key, "sk-secret-1234");
+                assert_eq!(cfg.provider.as_deref(), Some("openai"));
+                assert_eq!(cfg.base_url.as_deref(), Some("https://api.deepseek.com"));
+                assert_eq!(cfg.model.as_deref(), Some("deepseek-chat"));
+            }
+            _ => panic!("key stage must send Configure"),
+        }
+        assert!(ui.wizard.is_none());
+        // Transcript echo is masked.
+        let echo = ui.messages.last().unwrap();
+        assert!(!echo.text.contains("secret-1234"), "leaked: {}", echo.text);
+    }
+
+    #[test]
+    fn wizard_custom_provider_asks_base_url() {
+        let mut ui = Ui::new("m".into(), "w".into());
+        ui.wizard = Some(Wizard::new());
+        type_str(&mut ui, "custom");
+        apply_key(&mut ui, key(KeyCode::Enter));
+        assert_eq!(ui.wizard.as_ref().unwrap().stage, WizardStage::EnterBaseUrl);
+        type_str(&mut ui, "https://llm.example.com/v1");
+        apply_key(&mut ui, key(KeyCode::Enter));
+        assert_eq!(ui.wizard.as_ref().unwrap().stage, WizardStage::EnterKey);
+        type_str(&mut ui, "tok");
+        match apply_key(&mut ui, key(KeyCode::Enter)) {
+            Action::Send(Cmd::Configure(cfg)) => {
+                assert_eq!(cfg.base_url.as_deref(), Some("https://llm.example.com/v1"));
+                assert_eq!(cfg.model, None, "custom keeps the current model");
+            }
+            _ => panic!("must send Configure"),
+        }
+    }
+
+    #[test]
+    fn wizard_esc_cancels() {
+        let mut ui = Ui::new("m".into(), "w".into());
+        ui.wizard = Some(Wizard::new());
+        type_str(&mut ui, "deep");
+        assert!(matches!(
+            apply_key(&mut ui, key(KeyCode::Esc)),
+            Action::None
+        ));
+        assert!(ui.wizard.is_none());
+        assert!(matches!(
+            apply_key(&mut ui, key(KeyCode::Esc)),
+            Action::Quit
+        ));
+    }
+
+    #[test]
+    fn slash_key_with_token_sets_key_directly() {
         let mut ui = Ui::new("m".into(), "w".into());
         type_str(&mut ui, "/key sk-secret-token-12345");
         match apply_key(&mut ui, key(KeyCode::Enter)) {
-            Action::Send(Cmd::SetKey(k)) => assert_eq!(k, "sk-secret-token-12345"),
-            _ => panic!("/key must send the key"),
+            Action::Send(Cmd::Configure(cfg)) => assert_eq!(cfg.api_key, "sk-secret-token-12345"),
+            _ => panic!("/key <token> must configure"),
         }
         let echo = ui.messages.last().unwrap();
         assert!(matches!(echo.kind, MsgKind::User));
@@ -743,6 +1147,20 @@ mod tests {
     }
 
     #[test]
+    fn notice_and_done_settle_busy() {
+        let mut ui = Ui::new("m".into(), "w".into());
+        ui.busy = true;
+        apply_msg(&mut ui, UiMsg::Notice("configured".into()));
+        assert!(!ui.busy);
+        ui.busy = true;
+        apply_msg(&mut ui, UiMsg::Stream("tok".into()));
+        assert!(ui.busy, "streaming must not settle the turn");
+        apply_msg(&mut ui, UiMsg::Done("answer".into()));
+        assert!(!ui.busy);
+        assert!(ui.streaming.is_empty());
+    }
+
+    #[test]
     fn slash_clear_and_unknown() {
         let mut ui = Ui::new("m".into(), "w".into());
         ui.push(MsgKind::User, "hello".into());
@@ -752,20 +1170,6 @@ mod tests {
         type_str(&mut ui, "/bogus");
         apply_key(&mut ui, key(KeyCode::Enter));
         assert!(matches!(ui.messages[0].kind, MsgKind::Error));
-    }
-
-    #[test]
-    fn notice_and_done_settle_busy() {
-        let mut ui = Ui::new("m".into(), "w".into());
-        ui.busy = true;
-        apply_msg(&mut ui, UiMsg::Notice("api key set".into()));
-        assert!(!ui.busy);
-        ui.busy = true;
-        apply_msg(&mut ui, UiMsg::Stream("tok".into()));
-        assert!(ui.busy, "streaming must not settle the turn");
-        apply_msg(&mut ui, UiMsg::Done("answer".into()));
-        assert!(!ui.busy);
-        assert!(ui.streaming.is_empty());
     }
 
     #[test]
