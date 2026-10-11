@@ -24,37 +24,59 @@ use zene_core::{Agent, AgentEvent, PromptOptions};
 struct Command {
     name: &'static str,
     hint: &'static str,
-    /// True when the command takes an argument (menu completion fills a space).
-    takes_arg: bool,
 }
 
 const COMMANDS: &[Command] = &[
     Command {
         name: "key",
         hint: "configure provider & API key",
-        takes_arg: false,
     },
     Command {
         name: "model",
-        hint: "show current model",
-        takes_arg: true,
+        hint: "select model (/model <name>)",
     },
     Command {
         name: "help",
         hint: "list commands",
-        takes_arg: false,
     },
     Command {
         name: "clear",
         hint: "clear transcript",
-        takes_arg: false,
     },
     Command {
         name: "quit",
         hint: "exit",
-        takes_arg: false,
     },
 ];
+
+/// Model candidates for the current provider family (keyed by base_url).
+fn family_models(base_url: &str) -> &'static [&'static str] {
+    let b = base_url.to_lowercase();
+    if b.contains("deepseek") {
+        &["deepseek-chat", "deepseek-reasoner"]
+    } else if b.contains("bigmodel") || b.contains("zhipu") {
+        &["glm-4.5", "glm-4.5-air", "glm-4-flash", "glm-4-plus"]
+    } else if b.contains("moonshot") || b.contains("kimi") {
+        &["moonshot-v1-8k", "moonshot-v1-32k", "kimi-k2-0711-preview"]
+    } else if b.contains("openai") {
+        &["gpt-4o", "gpt-4o-mini", "gpt-4.1"]
+    } else if b.contains("anthropic") {
+        &["claude-sonnet-4-5", "claude-opus-4-1", "claude-haiku-4-5"]
+    } else {
+        &[]
+    }
+}
+
+/// Candidates filtered by the picker query; empty for unknown families
+/// (the picker then falls back to free-text input).
+fn model_candidates(base_url: &str, query: &str) -> Vec<&'static str> {
+    let q = query.to_lowercase();
+    family_models(base_url)
+        .iter()
+        .copied()
+        .filter(|m| m.to_lowercase().contains(&q))
+        .collect()
+}
 
 /// A provider preset for the key wizard.
 struct Provider {
@@ -115,11 +137,20 @@ const PROVIDERS: &[Provider] = &[
 pub(crate) async fn run(workdir: &Path) -> Result<()> {
     let config = ZeneConfig::load(workdir).map_err(|err| anyhow!(err.to_string()))?;
     let model = config.model.clone();
+    let base_url = if config.provider.trim().eq_ignore_ascii_case("anthropic") {
+        config
+            .anthropic_base_url
+            .clone()
+            .unwrap_or_else(|| config.base_url.clone())
+    } else {
+        config.base_url.clone()
+    };
     let (cmd_tx, cmd_rx) = mpsc::unbounded_channel::<Cmd>();
     let (msg_tx, mut msg_rx) = mpsc::unbounded_channel::<UiMsg>();
     tokio::spawn(agent_loop(workdir.to_path_buf(), config, cmd_rx, msg_tx));
 
     let mut ui = Ui::new(model, workdir.display().to_string());
+    ui.base_url = base_url;
     let terminal = ratatui::init();
     let result = ui_loop(terminal, &mut ui, &cmd_tx, &mut msg_rx);
     ratatui::restore();
@@ -218,6 +249,7 @@ async fn agent_loop(
                 } else {
                     Some(update.api_key)
                 };
+                let full = update.provider.is_some() || api_key.is_some();
                 match agent
                     .switch_model(
                         &model,
@@ -228,9 +260,14 @@ async fn agent_loop(
                     .await
                 {
                     Ok(()) => {
-                        let _ = tx.send(UiMsg::Notice(format!(
-                            "configured — model → {model}; provider + key saved to ~/.zene/config.toml"
-                        )));
+                        let msg = if full {
+                            format!(
+                                "configured — model → {model}; provider + key saved to ~/.zene/config.toml"
+                            )
+                        } else {
+                            format!("model → {model} (saved to ~/.zene/config.toml)")
+                        };
+                        let _ = tx.send(UiMsg::Notice(msg));
                     }
                     Err(err) => {
                         let _ = tx.send(UiMsg::Error(format!("configuration failed: {err:#}")));
@@ -256,12 +293,15 @@ struct Msg {
     text: String,
 }
 
-/// The pi.dev-style API key wizard: pick provider, then type the key.
+/// The pi.dev-style wizard: pick provider (for /key) or pick model (for
+/// /model), then type values.
 #[derive(Clone, Copy, PartialEq, Debug)]
 enum WizardStage {
     PickProvider,
     EnterBaseUrl,
     EnterKey,
+    PickModel,
+    EnterModel,
 }
 
 struct Wizard {
@@ -272,6 +312,8 @@ struct Wizard {
     provider: Option<&'static Provider>,
     /// Collected for the Custom preset.
     base_url: String,
+    /// Model candidates (PickModel stage).
+    models: Vec<&'static str>,
 }
 
 impl Wizard {
@@ -282,6 +324,19 @@ impl Wizard {
             sel: 0,
             provider: None,
             base_url: String::new(),
+            models: Vec::new(),
+        }
+    }
+
+    fn for_model(models: Vec<&'static str>) -> Self {
+        Self {
+            stage: if models.is_empty() {
+                WizardStage::EnterModel
+            } else {
+                WizardStage::PickModel
+            },
+            models,
+            ..Self::new()
         }
     }
 
@@ -291,6 +346,21 @@ impl Wizard {
             .iter()
             .filter(|p| p.name.to_lowercase().contains(&q))
             .collect()
+    }
+
+    /// Current selectable list length (for ↑↓ clamping), by stage.
+    fn list_len(&self) -> usize {
+        match self.stage {
+            WizardStage::PickProvider => self.matches().len(),
+            WizardStage::PickModel => {
+                let q = self.query.to_lowercase();
+                self.models
+                    .iter()
+                    .filter(|m| m.to_lowercase().contains(&q))
+                    .count()
+            }
+            _ => 0,
+        }
     }
 }
 
@@ -307,6 +377,8 @@ struct Ui {
     menu_sel: usize,
     /// Key wizard, open while configuring a provider.
     wizard: Option<Wizard>,
+    /// Current provider endpoint; selects the model candidate family.
+    base_url: String,
 }
 
 impl Ui {
@@ -322,6 +394,7 @@ impl Ui {
             workdir,
             menu_sel: 0,
             wizard: None,
+            base_url: String::new(),
         }
     }
 
@@ -438,16 +511,10 @@ fn apply_key(ui: &mut Ui, key: KeyEvent) -> Action {
 /// the rest execute immediately.
 fn menu_pick(ui: &mut Ui, matches: Vec<&'static Command>) -> Action {
     let cmd = matches[ui.menu_sel.min(matches.len() - 1)];
-    if cmd.takes_arg {
-        ui.input = format!("/{} ", cmd.name);
-        ui.menu_sel = 0;
-        Action::None
-    } else {
-        let input = format!("/{}", cmd.name);
-        ui.input.clear();
-        ui.menu_sel = 0;
-        slash_command(ui, &input).unwrap_or(Action::None)
-    }
+    let input = format!("/{}", cmd.name);
+    ui.input.clear();
+    ui.menu_sel = 0;
+    slash_command(ui, &input).unwrap_or(Action::None)
 }
 
 /// Keyboard handling while the key wizard is open.
@@ -465,17 +532,17 @@ fn wizard_key(ui: &mut Ui, key: KeyEvent) -> Action {
             Action::None
         }
         KeyCode::Down => {
-            if wizard.sel + 1 < wizard.matches().len() {
+            if wizard.sel + 1 < wizard.list_len() {
                 wizard.sel += 1;
             }
             Action::None
         }
         KeyCode::Backspace => {
             match wizard.stage {
-                WizardStage::PickProvider => {
+                WizardStage::PickProvider | WizardStage::PickModel => {
                     wizard.query.pop();
                 }
-                WizardStage::EnterBaseUrl | WizardStage::EnterKey => {
+                WizardStage::EnterBaseUrl | WizardStage::EnterKey | WizardStage::EnterModel => {
                     ui.input.pop();
                 }
             }
@@ -483,8 +550,10 @@ fn wizard_key(ui: &mut Ui, key: KeyEvent) -> Action {
         }
         KeyCode::Char(c) => {
             match wizard.stage {
-                WizardStage::PickProvider => wizard.query.push(c),
-                WizardStage::EnterBaseUrl | WizardStage::EnterKey => ui.input.push(c),
+                WizardStage::PickProvider | WizardStage::PickModel => wizard.query.push(c),
+                WizardStage::EnterBaseUrl | WizardStage::EnterKey | WizardStage::EnterModel => {
+                    ui.input.push(c)
+                }
             }
             Action::None
         }
@@ -545,6 +614,7 @@ fn wizard_advance(ui: &mut Ui) -> Action {
                 MsgKind::User,
                 format!("/key {} ••••{}", preset.name, tail_mask(&key_text)),
             );
+            ui.base_url = base_url.clone();
             ui.busy = true;
             Action::Send(Cmd::Configure(Configure {
                 model: if preset.model.is_empty() {
@@ -555,6 +625,48 @@ fn wizard_advance(ui: &mut Ui) -> Action {
                 provider: Some(preset.provider.to_string()),
                 base_url: Some(base_url),
                 api_key: key_text,
+            }))
+        }
+        WizardStage::PickModel => {
+            let candidates: Vec<&'static str> = {
+                let q = wizard.query.to_lowercase();
+                wizard
+                    .models
+                    .iter()
+                    .copied()
+                    .filter(|m| m.to_lowercase().contains(&q))
+                    .collect()
+            };
+            if candidates.is_empty() {
+                // No match — fall back to free-text model entry.
+                wizard.stage = WizardStage::EnterModel;
+                ui.input.clear();
+                return Action::None;
+            }
+            let picked = candidates[wizard.sel.min(candidates.len() - 1)].to_string();
+            ui.wizard = None;
+            ui.input.clear();
+            ui.model = picked.clone();
+            ui.push(MsgKind::User, format!("/model {picked}"));
+            ui.busy = true;
+            Action::Send(Cmd::Configure(Configure {
+                model: Some(picked),
+                ..Default::default()
+            }))
+        }
+        WizardStage::EnterModel => {
+            let name = ui.input.trim().to_string();
+            if name.is_empty() {
+                return Action::None;
+            }
+            ui.wizard = None;
+            ui.input.clear();
+            ui.model = name.clone();
+            ui.push(MsgKind::User, format!("/model {name}"));
+            ui.busy = true;
+            Action::Send(Cmd::Configure(Configure {
+                model: Some(name),
+                ..Default::default()
             }))
         }
     }
@@ -571,20 +683,18 @@ fn slash_command(ui: &mut Ui, input: &str) -> Option<Action> {
         "help" => {
             let help = COMMANDS
                 .iter()
-                .map(|c| {
-                    if c.takes_arg {
-                        format!("/{} <arg>  — {}", c.name, c.hint)
-                    } else {
-                        format!("/{}  — {}", c.name, c.hint)
-                    }
-                })
+                .map(|c| format!("/{}  — {}", c.name, c.hint))
                 .collect::<Vec<_>>()
                 .join("\n");
             ui.push(MsgKind::Notice, help);
             Some(Action::None)
         }
         "model" if arg.is_empty() => {
-            ui.push(MsgKind::Notice, format!("model: {}", ui.model));
+            // Open the model picker (pi.dev-style), free-text for unknown
+            // provider families.
+            let candidates = model_candidates(&ui.base_url, "");
+            ui.input.clear();
+            ui.wizard = Some(Wizard::for_model(candidates));
             Some(Action::None)
         }
         "model" => {
@@ -863,9 +973,8 @@ fn draw_menu(frame: &mut Frame, area: Rect, ui: &Ui, matches: &[&'static Command
             } else {
                 Style::new()
             };
-            let arg = if cmd.takes_arg { "<arg>" } else { "" };
             Line::from(Span::styled(
-                format!(" /{:<6}{:<7} {}", cmd.name, arg, cmd.hint),
+                format!(" /{:<6} {}", cmd.name, cmd.hint),
                 style,
             ))
         })
@@ -936,6 +1045,45 @@ fn draw_wizard(frame: &mut Frame, area: Rect, ui: &Ui, wizard: &Wizard) {
                 "•".repeat(ui.input.chars().count())
             )));
         }
+        WizardStage::PickModel => {
+            lines.push(Line::from(Span::styled(
+                format!("Select model for {}:", short_family(&ui.base_url)),
+                Style::new().fg(Color::Green),
+            )));
+            lines.push(Line::from(format!(" > {}▌", wizard.query)));
+            lines.push(Line::from(""));
+            let q = wizard.query.to_lowercase();
+            for (i, m) in wizard
+                .models
+                .iter()
+                .filter(|m| m.to_lowercase().contains(&q))
+                .take(10)
+                .enumerate()
+            {
+                let selected = i == wizard.sel;
+                let style = if selected {
+                    Style::new()
+                        .fg(Color::Black)
+                        .bg(Color::Green)
+                        .add_modifier(Modifier::BOLD)
+                } else {
+                    Style::new()
+                };
+                let current = if *m == ui.model { "  • current" } else { "" };
+                lines.push(Line::from(vec![
+                    Span::styled(if selected { "→ " } else { "  " }, style),
+                    Span::styled(format!("{:<24}", m), style),
+                    Span::styled(current, Style::new().fg(Color::DarkGray)),
+                ]));
+            }
+        }
+        WizardStage::EnterModel => {
+            lines.push(Line::from(Span::styled(
+                "Model name (not in the list):",
+                Style::new().fg(Color::Green),
+            )));
+            lines.push(Line::from(format!(" > {}▌", ui.input)));
+        }
     }
     let height = lines.len() as u16 + 2;
     let rect = Rect {
@@ -944,14 +1092,36 @@ fn draw_wizard(frame: &mut Frame, area: Rect, ui: &Ui, wizard: &Wizard) {
         width,
         height,
     };
+    let title = match wizard.stage {
+        WizardStage::PickModel | WizardStage::EnterModel => "model",
+        _ => "api key",
+    };
     frame.render_widget(
         Paragraph::new(lines).block(
             Block::bordered()
-                .title("api key")
+                .title(title)
                 .border_style(Style::new().fg(Color::Green)),
         ),
         rect,
     );
+}
+
+/// Short family label for picker headers.
+fn short_family(base_url: &str) -> &'static str {
+    let b = base_url.to_lowercase();
+    if b.contains("deepseek") {
+        "deepseek"
+    } else if b.contains("bigmodel") || b.contains("zhipu") {
+        "zhipu"
+    } else if b.contains("moonshot") || b.contains("kimi") {
+        "moonshot"
+    } else if b.contains("openai") {
+        "openai"
+    } else if b.contains("anthropic") {
+        "anthropic"
+    } else {
+        "this provider"
+    }
 }
 
 #[cfg(test)]
@@ -1016,15 +1186,18 @@ mod tests {
     }
 
     #[test]
-    fn menu_enter_fills_arg_commands_and_runs_plain_ones() {
-        // /model takes an arg: Enter fills "/model " instead of executing.
+    fn menu_enter_opens_model_wizard_and_quit_runs() {
+        // /model from the menu opens the model wizard (unknown family here:
+        // Ui::new has no base_url, so free-text entry stage).
         let mut ui = Ui::new("m".into(), "w".into());
         type_str(&mut ui, "/model");
         assert!(matches!(
             apply_key(&mut ui, key(KeyCode::Enter)),
             Action::None
         ));
-        assert_eq!(ui.input, "/model ");
+        assert!(ui.input.is_empty());
+        let wizard = ui.wizard.as_ref().expect("model wizard must open");
+        assert_eq!(wizard.stage, WizardStage::EnterModel);
         // /quit runs immediately.
         let mut ui = Ui::new("m".into(), "w".into());
         type_str(&mut ui, "/quit");
@@ -1110,6 +1283,62 @@ mod tests {
             }
             _ => panic!("must send Configure"),
         }
+    }
+
+    #[test]
+    fn slash_model_opens_family_picker_and_selects() {
+        let mut ui = Ui::new("deepseek-chat".into(), "w".into());
+        ui.base_url = "https://api.deepseek.com".into();
+        type_str(&mut ui, "/model");
+        apply_key(&mut ui, key(KeyCode::Enter));
+        let wizard = ui.wizard.as_ref().expect("model picker must open");
+        assert_eq!(wizard.stage, WizardStage::PickModel);
+        assert_eq!(wizard.models, model_candidates(&ui.base_url, ""));
+        // ↓ selects the second candidate (deepseek-reasoner).
+        apply_key(&mut ui, key(KeyCode::Down));
+        match apply_key(&mut ui, key(KeyCode::Enter)) {
+            Action::Send(Cmd::Configure(cfg)) => {
+                assert_eq!(cfg.model.as_deref(), Some("deepseek-reasoner"));
+                assert!(
+                    cfg.provider.is_none(),
+                    "model switch must not touch provider"
+                );
+            }
+            _ => panic!("Enter must send Configure with the picked model"),
+        }
+        assert_eq!(ui.model, "deepseek-reasoner");
+        assert!(ui.wizard.is_none());
+        assert!(matches!(ui.messages.last().unwrap().kind, MsgKind::User));
+    }
+
+    #[test]
+    fn model_picker_filters_and_free_text_on_empty() {
+        // Filter to zero matches → Enter falls back to free-text entry.
+        let mut ui = Ui::new("deepseek-chat".into(), "w".into());
+        ui.base_url = "https://api.deepseek.com".into();
+        type_str(&mut ui, "/model");
+        apply_key(&mut ui, key(KeyCode::Enter));
+        type_str(&mut ui, "zzz");
+        apply_key(&mut ui, key(KeyCode::Enter));
+        assert_eq!(ui.wizard.as_ref().unwrap().stage, WizardStage::EnterModel);
+        // Type a custom model name and submit.
+        type_str(&mut ui, "my-model");
+        match apply_key(&mut ui, key(KeyCode::Enter)) {
+            Action::Send(Cmd::Configure(cfg)) => {
+                assert_eq!(cfg.model.as_deref(), Some("my-model"));
+            }
+            _ => panic!("free-text model must send Configure"),
+        }
+        assert_eq!(ui.model, "my-model");
+    }
+
+    #[test]
+    fn model_family_detection() {
+        assert!(family_models("https://api.deepseek.com").contains(&"deepseek-chat"));
+        assert!(family_models("https://open.bigmodel.cn/api/paas/v4").contains(&"glm-4.5"));
+        assert!(family_models("https://api.anthropic.com").contains(&"claude-sonnet-4-5"));
+        // Unknown endpoints get no candidates → free-text picker.
+        assert!(family_models("https://llm.corp.example").is_empty());
     }
 
     #[test]
