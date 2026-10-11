@@ -229,7 +229,7 @@ async fn agent_loop(
                 {
                     Ok(()) => {
                         let _ = tx.send(UiMsg::Notice(format!(
-                            "configured — model → {model} (key held for this session; persist in ~/.zene/config.toml)"
+                            "configured — model → {model}; provider + key saved to ~/.zene/config.toml"
                         )));
                     }
                     Err(err) => {
